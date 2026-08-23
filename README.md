@@ -38,9 +38,13 @@ fidelity using the identical Qt calls CC uses.
       regular_polygon, path, text — text via its pre-flattened `rendered` outlines)
 - [x] Render board + geometry on a pan/zoom canvas (Y-up, mm)
 - [x] List params, element histogram and toolpaths in a side panel
-- [ ] Geometry editing (move/scale/create)
+- [x] **Write/save `.c2d`** — clone-and-rewrite recipe, round-trip verified
+      (36/36 elements byte-identical, SQLite integrity ok); `src/c2ddocument.cpp`
+- [x] **GRBL post-processor** emitting plaintext `.nc` in CC's own dialect
+      (`src/post_grbl.{h,cpp}`) — the Carbide-Motion-free machine path
+- [ ] Geometry editing (move/scale/create) — mutate `Element::raw`, then save
 - [ ] Toolpath-parameter editing (all 7 types are captured as JSON already)
-- [ ] Write/save `.c2d` (INSERT elements, UPDATE params — recipe is proven)
+- [ ] CAM: compute cutter paths → feed the GRBL post (Tier 2)
 
 ## Roadmap
 
@@ -52,13 +56,18 @@ fidelity using the identical Qt calls CC uses.
 
 ## Why not just use Carbide Motion?
 
-Carbide Motion is a machine controller, not a CAM program — it streams the
-**pre-computed, encrypted** `gcode.egc` embedded in the `.c2d`. Since only CC can
-produce that `.egc`, a Linux-generated file will *open* in CC but won't *run* in
-CM. The answer isn't to break the encryption — it's to skip CM: the Shapeoko
-controller is a GRBL-family board speaking plain g-code over USB serial
-(`/dev/ttyACM*` on Linux, `/dev/cu.usbmodem*` on macOS), which any sender can
-drive. The encryption protects the file at rest, not the wire.
+Carbide Motion is a machine controller, not a CAM program. The `.c2d` stores an
+**encrypted** `gcode.egc` cache, but that's not what reaches the machine — when
+CC cuts or exports it writes **plaintext `.nc`** (the binary has
+`sendToCarbideMotion`, `tmp_gcode_%1.nc`, filter `*.nc *.txt *.tap`). So the
+encryption only protects the toolpath copy *at rest inside the design file*; the
+program on the wire is plain g-code. See the dialect + evidence in
+[shapeoko-c2d/docs/GCODE-AND-CRYPTO.md](https://github.com/phobicdotno/shapeoko-c2d/blob/main/docs/GCODE-AND-CRYPTO.md).
+
+That means we skip CM entirely: emit standard `.nc` (`src/post_grbl.cpp`
+implements CC's own GRBL dialect) and stream it to the GRBL-family controller over
+USB serial (`/dev/ttyACM*` on Linux, `/dev/cu.usbmodem*` on macOS) — or just hand
+the `.nc` to Carbide Motion. No `.egc`, no decryption, ever.
 
 Carbide Motion itself only runs on macOS/Windows, so if you want CM's CAM output
 as a reference, capture it there. On macOS the cleanest tap is `dtrace` on CM's
@@ -100,7 +109,8 @@ src/
   element.{h,cpp}     J1 element JSON  ->  QPainterPath (point model + text)
   c2ddocument.{h,cpp} open container, read params/items, decode payloads
   canvas.{h,cpp}      QGraphicsView board + geometry renderer (Y-up)
-  mainwindow.{h,cpp}  window, file open, info sidebar
+  post_grbl.{h,cpp}   CAM ops -> plaintext .nc g-code (CC's GRBL dialect)
+  mainwindow.{h,cpp}  window, file open/save-as, info sidebar
   main.cpp
 ```
 
