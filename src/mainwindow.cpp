@@ -30,6 +30,9 @@ MainWindow::MainWindow(QWidget *parent)
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     fileMenu->addAction(QStringLiteral("&Open…"), QKeySequence::Open,
                         this, &MainWindow::onOpen);
+    fileMenu->addAction(QStringLiteral("Save &As…"), QKeySequence::SaveAs,
+                        this, &MainWindow::onSaveAs);
+    fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("E&xit"), QKeySequence::Quit,
                         qApp, &QApplication::quit);
 
@@ -43,6 +46,28 @@ void MainWindow::onOpen()
         QStringLiteral("Carbide Create (*.c2d);;All files (*)"));
     if (!path.isEmpty())
         openFile(path);
+}
+
+void MainWindow::onSaveAs()
+{
+    if (m_doc.filePath().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Nothing to save"),
+                                 QStringLiteral("Open a .c2d file first."));
+        return;
+    }
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save Carbide Create file"), {},
+        QStringLiteral("Carbide Create (*.c2d)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
+        path += QStringLiteral(".c2d");
+
+    QString err;
+    if (!m_doc.save(path, &err))
+        QMessageBox::warning(this, QStringLiteral("Save failed"), err);
+    else
+        statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
 }
 
 void MainWindow::openFile(const QString &path)
