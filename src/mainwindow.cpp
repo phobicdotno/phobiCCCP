@@ -27,14 +27,16 @@ MainWindow::MainWindow(QWidget *parent)
     dock->setWidget(m_info);
     addDockWidget(Qt::RightDockWidgetArea, dock);
 
+    // addAction(text, receiver, method, shortcut) — argument order that is
+    // stable across Qt6 minor versions (the (text, shortcut, …) overload is newer).
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
-    fileMenu->addAction(QStringLiteral("&Open…"), QKeySequence::Open,
-                        this, &MainWindow::onOpen);
-    fileMenu->addAction(QStringLiteral("Save &As…"), QKeySequence::SaveAs,
-                        this, &MainWindow::onSaveAs);
+    fileMenu->addAction(QStringLiteral("&Open…"), this, &MainWindow::onOpen,
+                        QKeySequence::Open);
+    fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs,
+                        QKeySequence::SaveAs);
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("E&xit"), QKeySequence::Quit,
-                        qApp, &QApplication::quit);
+    fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
+                        QKeySequence::Quit);
 
     statusBar()->showMessage(QStringLiteral("Open a .c2d file to begin"));
 }
