@@ -85,7 +85,7 @@ bool Document::save(const QString &destPath, QString *error)
 
     // 1) Clone the source container so every structural detail CC expects
     //    (schema, layer, model, toolpaths, params) is inherited verbatim.
-    if (QFileInfo(destPath) != QFileInfo(m_path)) {
+    if (QFileInfo(destPath).absoluteFilePath() != QFileInfo(m_path).absoluteFilePath()) {
         QFile::remove(destPath);
         if (!QFile::copy(m_path, destPath)) {
             if (error) *error = QStringLiteral("Could not copy container to %1").arg(destPath);
