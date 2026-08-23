@@ -16,6 +16,7 @@ public:
 
 private slots:
     void onOpen();
+    void onSaveAs();
 
 private:
     void refreshInfo();
