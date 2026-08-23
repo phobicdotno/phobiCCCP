@@ -16,6 +16,7 @@ add_executable(phobiccc
     src/element.cpp
     src/canvas.cpp
     src/mainwindow.cpp
+    src/post_grbl.cpp
 )
 
 target_link_libraries(phobiccc PRIVATE Qt6::Widgets Qt6::Sql ZLIB::ZLIB)
