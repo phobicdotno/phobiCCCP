@@ -1,5 +1,6 @@
 #include "element.h"
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QPointF>
 #include <QTransform>
 
@@ -78,6 +79,7 @@ QPainterPath Element::buildText(const QJsonObject &obj)
 Element Element::fromJson(const QJsonObject &obj)
 {
     Element e;
+    e.raw = obj;
     e.id = obj.value("id").toString();
     e.geometryType = obj.value("geometryType").toString();
 
@@ -89,6 +91,11 @@ Element Element::fromJson(const QJsonObject &obj)
         e.painterPath = buildPointModel(obj);
     }
     return e;
+}
+
+QByteArray Element::toJson() const
+{
+    return QJsonDocument(raw).toJson(QJsonDocument::Indented);
 }
 
 } // namespace c2d
