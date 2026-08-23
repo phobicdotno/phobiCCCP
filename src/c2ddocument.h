@@ -21,6 +21,13 @@ class Document
 public:
     bool load(const QString &path, QString *error = nullptr);
 
+    // Save by cloning the currently-loaded file and rewriting its element rows
+    // from the in-memory elements (the proven, round-trip-verified recipe:
+    // DELETE elements, re-INSERT zlib(J1 JSON) with sz = uncompressed length,
+    // blank the stale render/g-code blobs so CC regenerates them). Toolpaths,
+    // layer, model and params are preserved. Requires a file previously load()ed.
+    bool save(const QString &destPath, QString *error = nullptr);
+
     QString filePath() const { return m_path; }
     const QHash<QString, QString> &params() const { return m_params; }
     const QVector<Element> &elements() const { return m_elements; }
