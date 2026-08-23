@@ -21,6 +21,11 @@ public:
     QString geometryType;
     Behavior behavior = Path;
     QPainterPath painterPath;   // absolute mm, Y-up
+    QJsonObject raw;            // the original J1 payload, kept for lossless save
+
+    // Serialize back to the J1 JSON payload (currently returns `raw` verbatim;
+    // geometry edits will mutate `raw` before this is called).
+    QByteArray toJson() const;
 
 private:
     static QPainterPath buildPointModel(const QJsonObject &obj);
