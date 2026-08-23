@@ -2,6 +2,7 @@
 #include <QGraphicsScene>
 #include <QGraphicsPathItem>
 #include <QGraphicsRectItem>
+#include <QPainter>
 #include <QPen>
 #include <QWheelEvent>
 
