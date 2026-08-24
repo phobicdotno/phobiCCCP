@@ -4,6 +4,7 @@
 #include <QPointF>
 #include <QTransform>
 #include <QUuid>
+#include <QtMath>
 
 namespace c2d {
 
@@ -11,36 +12,19 @@ static QPointF pt(const QJsonArray &a) {
     return QPointF(a.at(0).toDouble(), a.at(1).toDouble());
 }
 
-static QJsonArray jpt(double x, double y) {
-    return QJsonArray{x, y};
-}
-
-static QJsonArray jpt(QPointF p) {
+static QJsonArray xy(const QPointF &p) {
     return QJsonArray{p.x(), p.y()};
 }
 
-// Shift every [x,y] pair in a points/cp1/cp2 array.
-static QJsonArray shiftedPairs(const QJsonArray &arr, double dx, double dy)
-{
-    QJsonArray out;
-    for (const QJsonValue &v : arr) {
-        const QJsonArray a = v.toArray();
-        out.append(jpt(a.at(0).toDouble() + dx, a.at(1).toDouble() + dy));
-    }
-    return out;
+static QJsonArray xyList(const QVector<QPointF> &pts) {
+    QJsonArray a;
+    for (const QPointF &p : pts)
+        a.append(xy(p));
+    return a;
 }
 
-// Scale every [x,y] pair about `about`.
-static QJsonArray scaledPairs(const QJsonArray &arr, double f, QPointF about)
-{
-    QJsonArray out;
-    for (const QJsonValue &v : arr) {
-        const QJsonArray a = v.toArray();
-        out.append(jpt(about.x() + (a.at(0).toDouble() - about.x()) * f,
-                       about.y() + (a.at(1).toDouble() - about.y()) * f));
-    }
-    return out;
-}
+// The bezier circle constant CC uses (cp offset = kappa * radius).
+static const double kKappa = 0.5522847498307936;
 
 // Point types (per anchor): 0 = first, 1 = line segment, 3 = cubic bezier
 // segment, 4 = closing point. cp1[i]/cp2[i] are the two control points for the
@@ -125,140 +109,116 @@ Element Element::fromJson(const QJsonObject &obj)
     return e;
 }
 
-QByteArray Element::toJson() const
+// Shared boilerplate for the closed-shape factories: keys every CC element
+// carries, with coordinates relative to `center` and position == center.
+static QJsonObject shapeCommon(const QString &geometryType, int behavior,
+                               QPointF center, const QJsonObject &layer)
 {
-    return QJsonDocument(raw).toJson(QJsonDocument::Indented);
+    QJsonObject o;
+    o.insert("behavior", behavior);
+    o.insert("center", xy(center));
+    o.insert("geometryType", geometryType);
+    o.insert("group_id", QJsonArray());
+    o.insert("id", QUuid::createUuid().toString());   // "{...}" braces, CC style
+    o.insert("layer", layer);
+    o.insert("position", xy(center));
+    o.insert("tabs", QJsonArray());
+    return o;
 }
 
-void Element::rebuildPath()
+// Line-segment shapes (rectangle, polygon): cp1[i] = points[i-1], cp2[i] =
+// points[i] (row 0 uses points[0] for both) — exactly what CC writes.
+static void fillLinearRows(QJsonObject &o, const QVector<QPointF> &rows)
 {
-    painterPath = (behavior == Text) ? buildText(raw) : buildPointModel(raw);
+    QVector<QPointF> cp1, cp2;
+    QJsonArray ptype, smooth;
+    const int n = rows.size();
+    for (int i = 0; i < n; ++i) {
+        cp1.append(rows.at(qMax(0, i - 1)));
+        cp2.append(rows.at(i));
+        ptype.append(i == 0 ? 0 : (i == n - 1 ? 4 : 1));
+        smooth.append((i == 0 || i == n - 1) ? 1 : 0);
+    }
+    o.insert("points", xyList(rows));
+    o.insert("cp1", xyList(cp1));
+    o.insert("cp2", xyList(cp2));
+    o.insert("point_type", ptype);
+    o.insert("smooth", smooth);
+}
+
+Element Element::makeCircle(QPointF center, double r, const QJsonObject &layer)
+{
+    QJsonObject o = shapeCommon(QStringLiteral("circle"), 3, center, layer);
+    o.insert("radius", r);
+    const double k = kKappa * r;
+    // Anchors start at (-r,0), CCW through the four quadrant points, then a
+    // (0,0) close row; cp rows follow CC's specimen exactly.
+    o.insert("points", xyList({{-r, 0}, {0, r}, {r, 0}, {0, -r}, {-r, 0}, {0, 0}}));
+    o.insert("cp1",    xyList({{0, 0}, {-r, k}, {k, r}, {r, -k}, {-k, -r}, {0, 0}}));
+    o.insert("cp2",    xyList({{0, 0}, {-k, r}, {r, k}, {k, -r}, {-r, -k}, {0, 0}}));
+    o.insert("point_type", QJsonArray{0, 3, 3, 3, 3, 4});
+    o.insert("smooth",     QJsonArray{1, 1, 1, 1, 1, 1});
+    return fromJson(o);
+}
+
+Element Element::makeRectangle(QPointF center, double w, double h,
+                               const QJsonObject &layer)
+{
+    QJsonObject o = shapeCommon(QStringLiteral("rectangle"), 1, center, layer);
+    o.insert("width", w);
+    o.insert("height", h);
+    o.insert("corner_type", 0);          // square corners
+    o.insert("radius", 6.35);            // CC's default corner radius (unused at type 0)
+    const double x = w / 2.0, y = h / 2.0;
+    // 4 corners CW from top-right, back to start, then the close row.
+    fillLinearRows(o, {{x, y}, {x, -y}, {-x, -y}, {-x, y}, {x, y}, {x, y}});
+    return fromJson(o);
+}
+
+Element Element::makePolygon(QPointF center, double r, int numSides,
+                             const QJsonObject &layer)
+{
+    numSides = qMax(3, numSides);
+    QJsonObject o = shapeCommon(QStringLiteral("regular_polygon"), 2, center, layer);
+    o.insert("radius", r);
+    o.insert("num_sides", numSides);
+    o.insert("rotation", 0);
+    QVector<QPointF> rows;
+    for (int i = 0; i < numSides; ++i) {
+        const double a = 2.0 * M_PI * i / numSides;   // vertex 0 at (r, 0), CCW
+        rows.append(QPointF(r * qCos(a), r * qSin(a)));
+    }
+    rows.append(rows.first());   // line back to start
+    rows.append(rows.first());   // close row
+    fillLinearRows(o, rows);
+    return fromJson(o);
 }
 
 void Element::translate(double dx, double dy)
 {
-    if (behavior == Text) {
+    if (geometryType == QLatin1String("text")) {
         QJsonArray t = raw.value("transform").toArray();
         if (t.size() == 9) {
             t[6] = t.at(6).toDouble() + dx;
             t[7] = t.at(7).toDouble() + dy;
             raw.insert("transform", t);
         }
-    } else if (raw.contains("center")) {
-        // Closed shape: points are center-relative, so only the anchors move.
-        for (const char *k : {"center", "position"}) {
-            const QJsonArray a = raw.value(QLatin1String(k)).toArray();
-            raw.insert(QLatin1String(k),
-                       jpt(a.at(0).toDouble() + dx, a.at(1).toDouble() + dy));
-        }
     } else {
-        // Path: absolute coordinates, position stays [0,0].
-        raw.insert("points", shiftedPairs(raw.value("points").toArray(), dx, dy));
-        raw.insert("cp1",    shiftedPairs(raw.value("cp1").toArray(),    dx, dy));
-        raw.insert("cp2",    shiftedPairs(raw.value("cp2").toArray(),    dx, dy));
-    }
-    rebuildPath();
-}
-
-void Element::scaleBy(double factor)
-{
-    if (factor <= 0)
-        return;
-
-    if (behavior == Text) {
-        // Scale the linear part; translation (elements 6,7) is the anchor.
-        QJsonArray t = raw.value("transform").toArray();
-        if (t.size() == 9) {
-            for (int i : {0, 1, 3, 4})
-                t[i] = t.at(i).toDouble() * factor;
-            raw.insert("transform", t);
+        // absolute = position + point, so shifting position moves everything;
+        // center mirrors position on the closed shapes.
+        for (const char *key : {"position", "center"}) {
+            if (raw.contains(QLatin1String(key))) {
+                QPointF p = pt(raw.value(QLatin1String(key)).toArray());
+                raw.insert(QLatin1String(key), xy(p + QPointF(dx, dy)));
+            }
         }
-    } else if (raw.contains("center")) {
-        // Closed shape: scale the center-relative model about [0,0].
-        raw.insert("points", scaledPairs(raw.value("points").toArray(), factor, {}));
-        raw.insert("cp1",    scaledPairs(raw.value("cp1").toArray(),    factor, {}));
-        raw.insert("cp2",    scaledPairs(raw.value("cp2").toArray(),    factor, {}));
-        for (const char *k : {"radius", "width", "height"})
-            if (raw.contains(QLatin1String(k)))
-                raw.insert(QLatin1String(k), raw.value(QLatin1String(k)).toDouble() * factor);
-    } else {
-        // Path: absolute coordinates, scale about the bounding-box center.
-        const QPointF c = painterPath.boundingRect().center();
-        raw.insert("points", scaledPairs(raw.value("points").toArray(), factor, c));
-        raw.insert("cp1",    scaledPairs(raw.value("cp1").toArray(),    factor, c));
-        raw.insert("cp2",    scaledPairs(raw.value("cp2").toArray(),    factor, c));
     }
-    rebuildPath();
+    *this = fromJson(raw);
 }
 
-// Shared scaffolding for new elements: id, layer, group/tab arrays.
-static QJsonObject newElementShell(const QString &geometryType, int behavior, QPointF center)
+QByteArray Element::toJson() const
 {
-    QJsonObject o;
-    o.insert("behavior", behavior);
-    o.insert("geometryType", geometryType);
-    o.insert("id", QUuid::createUuid().toString());   // "{...}" braces, as CC writes
-    o.insert("group_id", QJsonArray{});
-    o.insert("tabs", QJsonArray{});
-    o.insert("center",   jpt(center));
-    o.insert("position", jpt(center));
-    QJsonObject layer;
-    layer.insert("name", QStringLiteral("DEFAULT"));
-    layer.insert("uuid", QString());
-    layer.insert("red", 0);
-    layer.insert("green", 0);
-    layer.insert("blue", 0);
-    layer.insert("locked", false);
-    layer.insert("visible", true);
-    o.insert("layer", layer);
-    return o;
-}
-
-Element Element::makeCircle(QPointF center, double radius)
-{
-    // Four cubic quadrants, CC's anchor/control layout (see samples): anchors
-    // W,N,E,S back to W, kappa control points per arriving segment.
-    const double r = radius;
-    const double k = 0.5522847498307936 * r;
-
-    QJsonObject o = newElementShell(QStringLiteral("circle"), Circle, center);
-    o.insert("radius", r);
-    o.insert("points", QJsonArray{jpt(-r, 0), jpt(0, r), jpt(r, 0), jpt(0, -r),
-                                  jpt(-r, 0), jpt(0, 0)});
-    o.insert("cp1", QJsonArray{jpt(0, 0), jpt(-r, k), jpt(k, r), jpt(r, -k),
-                               jpt(-k, -r), jpt(0, 0)});
-    o.insert("cp2", QJsonArray{jpt(0, 0), jpt(-k, r), jpt(r, k), jpt(k, -r),
-                               jpt(-r, -k), jpt(0, 0)});
-    o.insert("point_type", QJsonArray{0, 3, 3, 3, 3, 4});
-    o.insert("smooth", QJsonArray{1, 1, 1, 1, 1, 1});
-    return fromJson(o);
-}
-
-Element Element::makeRectangle(QPointF center, double width, double height)
-{
-    // Square-corner rectangle: anchors clockwise from NE, line segments whose
-    // cp1/cp2 mirror the previous/current anchor (as CC writes them).
-    const double w = width / 2.0, h = height / 2.0;
-    const QJsonArray pts{jpt(w, h), jpt(w, -h), jpt(-w, -h), jpt(-w, h),
-                         jpt(w, h), jpt(w, h)};
-
-    QJsonObject o = newElementShell(QStringLiteral("rectangle"), Rectangle, center);
-    o.insert("width", width);
-    o.insert("height", height);
-    o.insert("corner_type", 0);
-    o.insert("radius", 6.35);   // CC's default corner radius; unused for corner_type 0
-    o.insert("points", pts);
-    // Line segments: cp1 mirrors the previous anchor, cp2 the current one.
-    QJsonArray cp1, cp2;
-    for (int i = 0; i < pts.size(); ++i) {
-        cp1.append(pts.at(i == 0 ? 0 : i - 1));
-        cp2.append(pts.at(i));
-    }
-    o.insert("cp1", cp1);
-    o.insert("cp2", cp2);
-    o.insert("point_type", QJsonArray{0, 1, 1, 1, 1, 4});
-    o.insert("smooth", QJsonArray{0, 0, 0, 0, 0, 1});
-    return fromJson(o);
+    return QJsonDocument(raw).toJson(QJsonDocument::Indented);
 }
 
 } // namespace c2d
