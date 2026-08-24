@@ -2,12 +2,14 @@
 #include "toolpathpanel.h"
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QSettings>
 #include <QStatusBar>
 #include <QStringList>
 
@@ -18,23 +20,30 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(QStringLiteral("phobicCC — Carbide Create .c2d (Linux)"));
     resize(1100, 780);
+    setDockNestingEnabled(true);
 
+    // All three surfaces are docks (no central widget), so any of them can be
+    // dragged to another screen, resized, or maximized there.
     m_canvas = new Canvas(this);
-    setCentralWidget(m_canvas);
-    connect(m_canvas, &Canvas::elementMoved, this, &MainWindow::onElementMoved);
+    connect(m_canvas, &Canvas::elementsMoved, this, &MainWindow::onElementsMoved);
+    m_canvasDock = makeDock(QStringLiteral("Canvas"), QStringLiteral("dockCanvas"),
+                            m_canvas, Qt::RightDockWidgetArea);
 
     m_info = new QPlainTextEdit(this);
     m_info->setReadOnly(true);
-    m_info->setMaximumWidth(340);
-    auto *dock = new QDockWidget(QStringLiteral("Document"), this);
-    dock->setWidget(m_info);
-    addDockWidget(Qt::RightDockWidgetArea, dock);
+    m_infoDock = makeDock(QStringLiteral("Document"), QStringLiteral("dockDocument"),
+                          m_info, Qt::RightDockWidgetArea);
 
     m_toolpaths = new ToolpathPanel(this);
-    connect(m_toolpaths, &ToolpathPanel::edited, this, [this] { setDirty(true); });
-    auto *tpDock = new QDockWidget(QStringLiteral("Toolpaths"), this);
-    tpDock->setWidget(m_toolpaths);
-    addDockWidget(Qt::LeftDockWidgetArea, tpDock);
+    connect(m_toolpaths, &ToolpathPanel::aboutToEdit, this, &MainWindow::pushUndo);
+    connect(m_toolpaths, &ToolpathPanel::edited, this, [this] {
+        setDirty(true);
+        refreshInfo();   // toolpath names appear in the sidebar list
+    });
+    m_tpDock = makeDock(QStringLiteral("Toolpaths"), QStringLiteral("dockToolpaths"),
+                        m_toolpaths, Qt::LeftDockWidgetArea);
+
+    resizeDocks({m_tpDock, m_canvasDock, m_infoDock}, {280, 620, 280}, Qt::Horizontal);
 
     // addAction(text, receiver, method, shortcut) — argument order that is
     // stable across Qt6 minor versions (the (text, shortcut, …) overload is newer).
@@ -46,10 +55,15 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs,
                         QKeySequence::SaveAs);
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
+    fileMenu->addAction(QStringLiteral("E&xit"), this, &MainWindow::close,
                         QKeySequence::Quit);
 
     auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
+    editMenu->addAction(QStringLiteral("&Undo"), this, &MainWindow::onUndo,
+                        QKeySequence::Undo);
+    editMenu->addAction(QStringLiteral("&Redo"), this, &MainWindow::onRedo,
+                        QKeySequence::Redo);
+    editMenu->addSeparator();
     editMenu->addAction(QStringLiteral("S&cale Selected…"), this,
                         &MainWindow::onScaleSelected,
                         QKeySequence(QStringLiteral("Ctrl+E")));
@@ -61,11 +75,94 @@ MainWindow::MainWindow(QWidget *parent)
     editMenu->addAction(QStringLiteral("Add &Rectangle…"), this,
                         &MainWindow::onAddRectangle);
 
+    auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
+    viewMenu->addAction(m_canvasDock->toggleViewAction());
+    viewMenu->addAction(m_tpDock->toggleViewAction());
+    viewMenu->addAction(m_infoDock->toggleViewAction());
+    viewMenu->addSeparator();
+    viewMenu->addAction(QStringLiteral("Re-&dock All"), this, [this] {
+        for (QDockWidget *d : {m_canvasDock, m_tpDock, m_infoDock}) {
+            d->setFloating(false);
+            d->show();
+        }
+    });
+    auto *fsAction = viewMenu->addAction(QStringLiteral("&Fullscreen"));
+    fsAction->setCheckable(true);
+    fsAction->setShortcut(QKeySequence::FullScreen);   // F11 on most platforms
+    connect(fsAction, &QAction::toggled, this, [this](bool on) {
+        if (on)
+            showFullScreen();
+        else
+            showNormal();
+    });
+
     statusBar()->showMessage(QStringLiteral("Open a .c2d file to begin"));
+
+    // Restore last session's window geometry (screen placement included) and
+    // dock layout. Qt sanity-checks against currently connected screens.
+    QSettings settings;
+    restoreGeometry(settings.value(QStringLiteral("geometry")).toByteArray());
+    restoreState(settings.value(QStringLiteral("windowState")).toByteArray());
+    fsAction->setChecked(isFullScreen());
+}
+
+QDockWidget *MainWindow::makeDock(const QString &title, const QString &objectName,
+                                  QWidget *widget, Qt::DockWidgetArea area)
+{
+    auto *dock = new QDockWidget(title, this);
+    dock->setObjectName(objectName);   // required for saveState/restoreState
+    dock->setWidget(widget);
+    addDockWidget(area, dock);
+
+    // A floating dock gets a native window frame with minimize/maximize/close
+    // buttons, so it can be maximized or fullscreened on whatever screen it
+    // was dragged to. Docking back resets the flags automatically.
+    connect(dock, &QDockWidget::topLevelChanged, dock, [dock](bool floating) {
+        if (floating) {
+            dock->setWindowFlags(Qt::CustomizeWindowHint | Qt::Window |
+                                 Qt::WindowMinimizeButtonHint |
+                                 Qt::WindowMaximizeButtonHint |
+                                 Qt::WindowCloseButtonHint);
+            dock->show();
+        }
+    });
+    return dock;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!maybeSave()) {
+        event->ignore();
+        return;
+    }
+    QSettings settings;
+    settings.setValue(QStringLiteral("geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("windowState"), saveState());
+    event->accept();
+}
+
+bool MainWindow::maybeSave()
+{
+    if (!m_dirty)
+        return true;
+    const auto ret = QMessageBox::warning(
+        this, QStringLiteral("Unsaved changes"),
+        QStringLiteral("The document has unsaved changes.\nSave them?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (ret == QMessageBox::Cancel)
+        return false;
+    if (ret == QMessageBox::Save) {
+        onSave();
+        return !m_dirty;   // save may have failed or been refused
+    }
+    return true;
 }
 
 void MainWindow::onOpen()
 {
+    if (!maybeSave())
+        return;
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open Carbide Create file"), {},
         QStringLiteral("Carbide Create (*.c2d);;All files (*)"));
@@ -120,6 +217,8 @@ void MainWindow::openFile(const QString &path)
         QMessageBox::warning(this, QStringLiteral("Open failed"), err);
         return;
     }
+    m_undoStack.clear();
+    m_redoStack.clear();
     m_canvas->setDocument(&m_doc);
     m_toolpaths->setDocument(&m_doc);
     refreshInfo();
@@ -127,11 +226,52 @@ void MainWindow::openFile(const QString &path)
     statusBar()->showMessage(path);
 }
 
-void MainWindow::onElementMoved(int index, QPointF delta)
+void MainWindow::pushUndo()
 {
-    if (index < 0 || index >= m_doc.elements().size())
+    m_redoStack.clear();
+    m_undoStack.append({m_doc.elements(), m_doc.toolpaths()});
+    while (m_undoStack.size() > 50)
+        m_undoStack.removeFirst();
+}
+
+void MainWindow::applySnapshot(const Snapshot &snap)
+{
+    m_doc.elements() = snap.elements;
+    m_doc.toolpaths() = snap.toolpaths;
+    m_canvas->refresh();
+    m_toolpaths->reload();
+    refreshInfo();
+    setDirty(true);
+}
+
+void MainWindow::onUndo()
+{
+    if (m_undoStack.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Nothing to undo"), 3000);
         return;
-    m_doc.elements()[index].translate(delta.x(), delta.y());
+    }
+    m_redoStack.append({m_doc.elements(), m_doc.toolpaths()});
+    applySnapshot(m_undoStack.takeLast());
+}
+
+void MainWindow::onRedo()
+{
+    if (m_redoStack.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Nothing to redo"), 3000);
+        return;
+    }
+    m_undoStack.append({m_doc.elements(), m_doc.toolpaths()});
+    applySnapshot(m_redoStack.takeLast());
+}
+
+void MainWindow::onElementsMoved(const QList<int> &indices, const QList<QPointF> &deltas)
+{
+    pushUndo();
+    for (int i = 0; i < indices.size(); ++i) {
+        const int idx = indices.at(i);
+        if (idx >= 0 && idx < m_doc.elements().size())
+            m_doc.elements()[idx].translate(deltas.at(i).x(), deltas.at(i).y());
+    }
     setDirty(true);
 }
 
@@ -157,6 +297,7 @@ void MainWindow::onScaleSelected()
         1.0, 0.01, 100.0, 3, &ok);
     if (!ok || qFuzzyCompare(f, 1.0))
         return;
+    pushUndo();
     for (int i : sel)
         m_doc.elements()[i].scaleBy(f);
     m_canvas->refresh();
@@ -174,6 +315,7 @@ void MainWindow::onAddCircle()
         10.0, 0.01, 10000.0, 2, &ok);
     if (!ok)
         return;
+    pushUndo();
     const QPointF c(m_doc.boardWidth() / 2.0, m_doc.boardHeight() / 2.0);
     m_doc.addElement(Element::makeCircle(c, d / 2.0));
     m_canvas->refresh();
@@ -196,6 +338,7 @@ void MainWindow::onAddRectangle()
         10.0, 0.01, 10000.0, 2, &ok);
     if (!ok)
         return;
+    pushUndo();
     const QPointF c(m_doc.boardWidth() / 2.0, m_doc.boardHeight() / 2.0);
     m_doc.addElement(Element::makeRectangle(c, w, h));
     m_canvas->refresh();
@@ -208,10 +351,13 @@ void MainWindow::onDeleteSelected()
     QList<int> sel;
     if (!requireSelection(&sel))
         return;
-    // Remove back-to-front so earlier indices stay valid.
+    pushUndo();
+    // Remove back-to-front so earlier indices stay valid; removeElement also
+    // strips the uuid from any toolpath that referenced the element.
     for (int i = sel.size() - 1; i >= 0; --i)
         m_doc.removeElement(sel.at(i));
     m_canvas->refresh();
+    m_toolpaths->reload();   // reference lists may have changed
     refreshInfo();
     setDirty(true);
 }

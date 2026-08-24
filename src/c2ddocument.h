@@ -35,9 +35,11 @@ public:
     const QVector<Toolpath> &toolpaths() const { return m_toolpaths; }
 
     // Editing: mutable element access (geometry edits), append, remove.
+    // removeElement also strips the element's uuid from every toolpath's
+    // `elements` reference array - CC expects each reference to resolve.
     QVector<Element> &elements() { return m_elements; }
     void addElement(const Element &e) { m_elements.append(e); }
-    void removeElement(int index) { m_elements.remove(index); }
+    void removeElement(int index);
 
     // Toolpath-parameter editing mutates Toolpath::json in place. The count
     // must not change (params.num_toolpaths mirrors it in the container).

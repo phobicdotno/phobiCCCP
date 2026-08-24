@@ -123,8 +123,12 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
 
     // Commit finished drags: a moved item has a nonzero pos() offset in scene
     // coordinates (mm, Y-up already thanks to the flipped view transform).
-    // elementMoved() is applied to the model synchronously, so the item can be
-    // re-based onto the mutated path at pos 0 (a second drag then starts clean).
+    // The whole gesture is emitted as one signal (one undo step); it is applied
+    // to the model synchronously, so the items can then be re-based onto their
+    // mutated paths at pos 0 (a second drag starts clean).
+    QList<int> indices;
+    QList<QPointF> deltas;
+    QList<QGraphicsItem *> movedItems;
     const QList<QGraphicsItem *> items = m_scene->items();
     for (QGraphicsItem *item : items) {
         if (item->data(0).isNull())
@@ -133,12 +137,18 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
             continue;
         const QPointF d = item->pos();
         if (d.manhattanLength() > 1e-9) {
-            const int idx = item->data(0).toInt();
-            emit elementMoved(idx, d);
-            if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(item)) {
-                pi->setPath(m_doc->elements().at(idx).painterPath);
-                pi->setPos(0, 0);
-            }
+            indices.append(item->data(0).toInt());
+            deltas.append(d);
+            movedItems.append(item);
+        }
+    }
+    if (indices.isEmpty())
+        return;
+    emit elementsMoved(indices, deltas);
+    for (int i = 0; i < movedItems.size(); ++i) {
+        if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(movedItems.at(i))) {
+            pi->setPath(m_doc->elements().at(indices.at(i)).painterPath);
+            pi->setPos(0, 0);
         }
     }
 }

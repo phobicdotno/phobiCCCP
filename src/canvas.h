@@ -21,7 +21,8 @@ public:
     QList<int> selectedElements() const;     // indices into Document::elements()
 
 signals:
-    void elementMoved(int index, QPointF delta);   // delta in mm, Y-up
+    // One drag gesture, all moved items at once (parallel lists, mm, Y-up).
+    void elementsMoved(const QList<int> &indices, const QList<QPointF> &deltas);
 
 protected:
     void wheelEvent(QWheelEvent *event) override;        // scroll to zoom

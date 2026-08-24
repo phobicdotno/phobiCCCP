@@ -1,7 +1,9 @@
 #include "toolpathpanel.h"
 
 #include <QJsonValue>
+#include <QSet>
 #include <QStringList>
+#include <QTreeWidgetItemIterator>
 
 namespace c2d {
 
@@ -61,8 +63,23 @@ void ToolpathPanel::setDocument(Document *doc)
     reload();
 }
 
+// Stable identity of a row across rebuilds: toolpath index + key path.
+static QString itemKey(const QTreeWidgetItem *item)
+{
+    return QStringLiteral("%1/%2")
+        .arg(item->data(0, RoleTpIndex).toInt())
+        .arg(item->data(0, RoleKeyPath).toStringList().join(QLatin1Char('/')));
+}
+
 void ToolpathPanel::reload()
 {
+    // A rebuild (undo, element delete) should not collapse what the user has
+    // expanded - remember expansion by stable key and restore it.
+    QSet<QString> expanded;
+    for (QTreeWidgetItemIterator it(this); *it; ++it)
+        if ((*it)->isExpanded())
+            expanded.insert(itemKey(*it));
+
     m_loading = true;
     clear();
     if (m_doc) {
@@ -73,9 +90,15 @@ void ToolpathPanel::reload()
             top->setText(0, QStringLiteral("%1  [%2]")
                                 .arg(tp.json.value("name").toString(), tp.type));
             top->setFirstColumnSpanned(true);
+            top->setData(0, RoleTpIndex, i);
+            top->setData(0, RoleKeyPath, QStringList());
+            top->setFlags(top->flags() & ~Qt::ItemIsEditable);
             addObjectRows(top, tp.json, i, {});
         }
         resizeColumnToContents(0);
+        for (QTreeWidgetItemIterator it(this); *it; ++it)
+            if (expanded.contains(itemKey(*it)))
+                (*it)->setExpanded(true);
     }
     m_loading = false;
 }
@@ -95,6 +118,8 @@ void ToolpathPanel::addObjectRows(QTreeWidgetItem *parent, const QJsonObject &ob
         if (v.isObject()) {
             auto *group = new QTreeWidgetItem(parent);
             group->setText(0, key);
+            group->setData(0, RoleTpIndex, tpIndex);
+            group->setData(0, RoleKeyPath, path);
             group->setFlags(group->flags() & ~Qt::ItemIsEditable);
             addObjectRows(group, v.toObject(), tpIndex, path);
         } else if (v.isBool() || v.isDouble() || v.isString()) {
@@ -119,18 +144,23 @@ void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
         return;
     if (column == 0) {
         // The key column is not editable content; restore the key name.
-        m_loading = true;
-        item->setText(0, item->data(0, RoleKeyPath).toStringList().last());
-        m_loading = false;
+        const QStringList keyPath = item->data(0, RoleKeyPath).toStringList();
+        if (!keyPath.isEmpty()) {
+            m_loading = true;
+            item->setText(0, keyPath.last());
+            m_loading = false;
+        }
         return;
     }
+
+    if (item->data(0, RoleType).isNull())
+        return;   // group or toolpath row, not a parameter leaf
 
     const int tpIndex = idxV.toInt();
     const QStringList path = item->data(0, RoleKeyPath).toStringList();
     const auto type = QJsonValue::Type(item->data(0, RoleType).toInt());
     const QString text = item->text(1).trimmed();
 
-    Toolpath &tp = m_doc->toolpaths()[tpIndex];
     QJsonValue newValue;
     bool valid = true;
 
@@ -155,20 +185,25 @@ void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
         break;
     }
     default:
-        newValue = text;   // strings verbatim — depths keep their convention
+        newValue = text;   // strings verbatim - depths keep their convention
         break;
     }
 
     m_loading = true;   // suppress recursion from the setText below
     if (!valid) {
         // Revert the cell to the current document value.
-        QJsonValue cur = tp.json.value(path.first());
+        QJsonValue cur = m_doc->toolpaths().at(tpIndex).json.value(path.first());
         for (int i = 1; i < path.size(); ++i)
             cur = cur.toObject().value(path.at(i));
         item->setText(1, valueText(cur));
         m_loading = false;
         return;
     }
+    // Snapshot first, and only then take the mutable reference: a non-const
+    // reference obtained before the undo copy would write into the buffer the
+    // snapshot shares (QVector detaches at operator[], not at the write).
+    emit aboutToEdit();
+    Toolpath &tp = m_doc->toolpaths()[tpIndex];
     setNested(tp.json, path, newValue);
     item->setText(1, valueText(newValue));   // normalize display
     if (path == QStringList{QStringLiteral("name")} && item->parent())

@@ -3,6 +3,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSqlDatabase>
@@ -16,6 +17,26 @@ namespace c2d {
 QByteArray Toolpath::toJson() const
 {
     return QJsonDocument(json).toJson(QJsonDocument::Indented);
+}
+
+void Document::removeElement(int index)
+{
+    if (index < 0 || index >= m_elements.size())
+        return;
+    const QString id = m_elements.at(index).id;
+    m_elements.remove(index);
+
+    // Strip dangling references: CC requires every toolpath elements[].uuid
+    // to resolve to an element row.
+    for (Toolpath &tp : m_toolpaths) {
+        const QJsonArray refs = tp.json.value(QStringLiteral("elements")).toArray();
+        QJsonArray kept;
+        for (const QJsonValue &r : refs)
+            if (r.toObject().value(QStringLiteral("uuid")).toString() != id)
+                kept.append(r);
+        if (kept.size() != refs.size())
+            tp.json.insert(QStringLiteral("elements"), kept);
+    }
 }
 
 bool Document::load(const QString &path, QString *error)

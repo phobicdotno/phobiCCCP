@@ -4,7 +4,7 @@
 
 // Dock content: one top-level row per toolpath ("name  [type]"), children are
 // its editable parameters. Scalars (bool/number/string) edit in place and are
-// written back into Toolpath::json with their original JSON type preserved —
+// written back into Toolpath::json with their original JSON type preserved -
 // depths stay strings (their sign convention is build-dependent, see the
 // format notes), cut_depth stays a number. Nested objects (tool, speeds,
 // *_pocket, finish_speeds) recurse; arrays and structural keys are skipped.
@@ -19,7 +19,8 @@ public:
     void reload();
 
 signals:
-    void edited();   // a parameter was changed (and applied to the document)
+    void aboutToEdit();   // a valid change is about to be applied (undo hook)
+    void edited();        // a parameter was changed (and applied to the document)
 
 private slots:
     void onItemChanged(QTreeWidgetItem *item, int column);

@@ -148,7 +148,7 @@ int main(int argc, char *argv[])
             QPointF(doc.boardWidth() / 2, doc.boardHeight() / 2), 4));
 
         // Toolpath-parameter edit: a nested number and a depth string (which
-        // must stay a string — its sign convention is build-dependent).
+        // must stay a string - its sign convention is build-dependent).
         const int nTp = doc.toolpaths().size();
         check(nTp > 0, "sample has toolpaths");
         {
@@ -183,6 +183,37 @@ int main(int argc, char *argv[])
                   "toolpath depth stays a string");
         }
         QFile::remove(dst);
+
+        // removeElement must strip the element's uuid from toolpath references.
+        {
+            c2d::Document doc3;
+            check(doc3.load(src, &err), "load for removal test");
+            int refTp = -1;
+            QString refUuid;
+            for (int t = 0; t < doc3.toolpaths().size() && refTp < 0; ++t) {
+                const QJsonArray refs =
+                    doc3.toolpaths()[t].json.value("elements").toArray();
+                if (!refs.isEmpty()) {
+                    refTp = t;
+                    refUuid = refs.at(0).toObject().value("uuid").toString();
+                }
+            }
+            check(refTp >= 0, "sample has a referenced element");
+            int elemIdx = -1;
+            for (int i = 0; i < doc3.elements().size(); ++i)
+                if (doc3.elements()[i].id == refUuid) { elemIdx = i; break; }
+            check(elemIdx >= 0, "referenced element resolves");
+
+            const int ne = doc3.elements().size();
+            doc3.removeElement(elemIdx);
+            check(doc3.elements().size() == ne - 1, "element removed");
+            bool dangling = false;
+            for (const c2d::Toolpath &t : doc3.toolpaths())
+                for (const QJsonValue &r : t.json.value("elements").toArray())
+                    if (r.toObject().value("uuid").toString() == refUuid)
+                        dangling = true;
+            check(!dangling, "dangling toolpath reference stripped");
+        }
     } else {
         std::fprintf(stderr, "note: no .c2d passed, Document round trip skipped\n");
     }

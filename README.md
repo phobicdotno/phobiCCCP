@@ -42,14 +42,23 @@ fidelity using the identical Qt calls CC uses.
       (36/36 elements byte-identical, SQLite integrity ok); `src/c2ddocument.cpp`
 - [x] **GRBL post-processor** emitting plaintext `.nc` in CC's own dialect
       (`src/post_grbl.{h,cpp}`) — the Carbide-Motion-free machine path
-- [x] Geometry editing — drag to move (rubber-band or click select,
+- [x] Geometry editing - drag to move (rubber-band or click select,
       middle-button pan), Edit menu scale/add circle/add rectangle/delete;
       every edit mutates `Element::raw` so save round-trips it. Headless
       checks in `tests/test_geometry.cpp` (`-DPHOBICCC_TESTS=ON`)
-- [x] Toolpath-parameter editing — Toolpaths dock lists every toolpath with
+- [x] Toolpath-parameter editing - Toolpaths dock lists every toolpath with
       editable parameters (nested `tool`/`speeds` included); values keep
       their original JSON type, so depth strings stay strings. Saved via
       the same delete-and-reinsert recipe as elements
+- [x] Editing infrastructure - undo/redo (Ctrl+Z / Ctrl+Shift+Z, 50 steps),
+      unsaved-changes prompt on close/open; deleting an element strips its
+      uuid from every toolpath's reference list (CC requires references to
+      resolve)
+- [x] Multi-screen UI - canvas, document info and toolpaths are all dock
+      widgets: drag any of them to another screen, resize freely, maximize
+      (floating docks get native window frames), View menu show/hide +
+      Re-dock All + F11 fullscreen; window and dock layout persist across
+      sessions
 - [ ] CAM: compute cutter paths → feed the GRBL post (Tier 2)
 
 ## Roadmap
