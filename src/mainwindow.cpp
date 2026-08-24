@@ -18,7 +18,7 @@ namespace c2d {
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("phobicCC — Carbide Create .c2d (Linux)"));
+    setWindowTitle(QStringLiteral("phobicCC - Carbide Create .c2d (Linux)"));
     resize(1100, 780);
     setDockNestingEnabled(true);
 
@@ -45,7 +45,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     resizeDocks({m_tpDock, m_canvasDock, m_infoDock}, {280, 620, 280}, Qt::Horizontal);
 
-    // addAction(text, receiver, method, shortcut) — argument order that is
+    // addAction(text, receiver, method, shortcut) - argument order that is
     // stable across Qt6 minor versions (the (text, shortcut, …) overload is newer).
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     fileMenu->addAction(QStringLiteral("&Open…"), this, &MainWindow::onOpen,
@@ -365,7 +365,7 @@ void MainWindow::onDeleteSelected()
 void MainWindow::setDirty(bool dirty)
 {
     m_dirty = dirty;
-    QString title = QStringLiteral("phobicCC — Carbide Create .c2d (Linux)");
+    QString title = QStringLiteral("phobicCC - Carbide Create .c2d (Linux)");
     if (!m_doc.filePath().isEmpty())
         title += QStringLiteral("  [%1]%2").arg(m_doc.filePath(),
                                                 dirty ? QStringLiteral(" *") : QString());
