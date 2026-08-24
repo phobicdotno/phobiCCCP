@@ -72,19 +72,41 @@ static int selftest(const QString &in, const QString &out)
         return 4;
 
     // Parametric edit: regen must change geometry but keep the identity.
+    bool regenOk = false;
     for (const c2d::Element &e : check.elements()) {
         if (e.geometryType == QLatin1String("circle")
             && e.raw.value("center").toArray().at(1).toDouble() == 100.0) {
             const c2d::Element r =
                 c2d::Element::regen(e, {{QStringLiteral("radius"), 30.0}});
-            const bool ok = r.id == e.id
-                            && r.raw.value("radius").toDouble() == 30.0
-                            && r.painterPath.boundingRect().width() > 59.0;
-            qInfo() << "selftest regen:" << (ok ? "OK" : "FAILED");
-            return ok ? 0 : 5;
+            regenOk = r.id == e.id
+                      && r.raw.value("radius").toDouble() == 30.0
+                      && r.painterPath.boundingRect().width() > 59.0;
+            break;
         }
     }
-    return 6;
+    qInfo() << "selftest regen:" << (regenOk ? "OK" : "FAILED");
+    if (!regenOk)
+        return 5;
+
+    // Toolpath edit round-trip: change end_depth (a string in CC's schema),
+    // save in place, reload, verify it stuck and the tool payload survived.
+    if (check.toolpaths().isEmpty()) { qWarning() << "no toolpaths"; return 6; }
+    c2d::Toolpath tp = check.toolpaths().first();
+    QJsonObject j = tp.json;
+    j.insert("end_depth", QStringLiteral("-5.000"));
+    tp.json = j;
+    check.replaceToolpath(tp);
+    if (!check.save(out, &err)) { qWarning() << "tp save failed:" << err; return 7; }
+    c2d::Document check2;
+    if (!check2.load(out, &err)) { qWarning() << "tp reload failed:" << err; return 8; }
+    const c2d::Toolpath *tp2 = check2.toolpathByUuid(tp.uuid);
+    const bool tpOk = tp2
+        && tp2->json.value("end_depth").toString() == QLatin1String("-5.000")
+        && tp2->json.value("tool").toObject().contains("diameter")
+        && tp2->json.value("elements").toArray().size()
+               == tp.json.value("elements").toArray().size();
+    qInfo() << "selftest toolpath edit:" << (tpOk ? "OK" : "FAILED");
+    return tpOk ? 0 : 9;
 }
 
 int main(int argc, char *argv[])
