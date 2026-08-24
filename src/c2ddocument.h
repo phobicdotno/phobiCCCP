@@ -47,6 +47,12 @@ public:
             if (e.id == id) return &e;
         return nullptr;
     }
+    bool replaceElement(const Element &e)
+    {
+        for (Element &x : m_elements)
+            if (x.id == e.id) { x = e; return true; }
+        return false;
+    }
 
     // Layer object for newly created elements: copied from an existing element
     // so new shapes land on the same layer; falls back to CC's DEFAULT layer.
