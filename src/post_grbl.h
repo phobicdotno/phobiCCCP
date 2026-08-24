@@ -17,7 +17,7 @@ struct Op {
     QString text;                 // Comment text
 
     static Op rapid(double x, double y, double z) { return {Rapid, x, y, z, 0, 0, {}}; }
-    static Op feed(double x, double y, double z, double f) { return {Feed, x, y, z, f, 0, {}}; }
+    static Op feedTo(double x, double y, double z, double f) { return {Feed, x, y, z, f, 0, {}}; }
     static Op spindle(int rpm) { Op o; o.kind = Spindle; o.ival = rpm; return o; }
     static Op tool(int n)      { Op o; o.kind = Tool;    o.ival = n;   return o; }
     static Op comment(const QString &t) { Op o; o.kind = Comment; o.text = t; return o; }
