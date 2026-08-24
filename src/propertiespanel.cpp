@@ -68,6 +68,11 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     m_sidesRow = m_sides;
     form->addRow(QStringLiteral("Sides"), m_sides);
 
+    m_rotation = spin(360);
+    m_rotation->setSuffix(QStringLiteral(" °"));
+    m_rotationRow = m_rotation;
+    form->addRow(QStringLiteral("Rotation"), m_rotation);
+
     setSelection({});
 }
 
@@ -92,6 +97,7 @@ void PropertiesPanel::refresh()
     m_radiusRow->setVisible(false);
     m_sizeRow->setVisible(false);
     m_sidesRow->setVisible(false);
+    m_rotationRow->setVisible(false);
 
     if (!have) {
         m_typeLabel->setText(QStringLiteral("no selection"));
@@ -123,8 +129,10 @@ void PropertiesPanel::refresh()
     } else if (e->geometryType == QLatin1String("regular_polygon")) {
         m_radiusRow->setVisible(true);
         m_sidesRow->setVisible(true);
+        m_rotationRow->setVisible(true);
         m_radius->setValue(e->raw.value("radius").toDouble());
         m_sides->setValue(int(e->raw.value("num_sides").toDouble()));
+        m_rotation->setValue(e->raw.value("rotation").toDouble());
     }
     m_loading = false;
 }
@@ -145,6 +153,7 @@ void PropertiesPanel::apply()
         p.insert(QStringLiteral("width"), m_width->value());
         p.insert(QStringLiteral("height"), m_height->value());
         p.insert(QStringLiteral("num_sides"), m_sides->value());
+        p.insert(QStringLiteral("rotation"), m_rotation->value());
         m_canvas->editElement(m_id, p);
     } else {
         const QPointF bc = e->painterPath.boundingRect().center();
