@@ -34,9 +34,9 @@ private:
     bool m_loading = false;       // guard: setValue must not trigger apply
 
     QLabel *m_typeLabel;
-    QDoubleSpinBox *m_x, *m_y, *m_radius, *m_width, *m_height;
+    QDoubleSpinBox *m_x, *m_y, *m_radius, *m_width, *m_height, *m_rotation;
     QSpinBox *m_sides;
-    QWidget *m_radiusRow, *m_sizeRow, *m_sidesRow;
+    QWidget *m_radiusRow, *m_sizeRow, *m_sidesRow, *m_rotationRow;
 };
 
 } // namespace c2d
