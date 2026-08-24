@@ -6,15 +6,14 @@
 
 // Reads a modern (v7/v8 SQLite) Carbide Create .c2d container: opens the
 // database, pulls `params` and the `items` rows, decompresses each element
-// payload and parses it into an Element or a Toolpath.
+// payload and parses it into an Element. Toolpath rows are captured as raw
+// JSON for now (parameter editing is a later tier).
 namespace c2d {
 
 struct Toolpath {
     QString uuid;
     QString type;
-    QJsonObject json;   // full decoded J1 payload; parameter edits mutate this
-
-    QByteArray toJson() const;
+    QJsonObject json;   // full decoded J1 payload
 };
 
 class Document
@@ -22,28 +21,48 @@ class Document
 public:
     bool load(const QString &path, QString *error = nullptr);
 
-    // Save by cloning the currently-loaded file and rewriting its element and
-    // toolpath rows from the in-memory copies (the proven, round-trip-verified
-    // recipe: DELETE, re-INSERT zlib(J1 JSON) with sz = uncompressed length,
-    // blank the stale render/g-code blobs so CC regenerates them). Layer,
-    // model, groups and params are preserved. Requires a file previously load()ed.
+    // Save by cloning the currently-loaded file and rewriting its element rows
+    // from the in-memory elements (the proven, round-trip-verified recipe:
+    // DELETE elements, re-INSERT zlib(J1 JSON) with sz = uncompressed length,
+    // blank the stale render/g-code blobs so CC regenerates them). Toolpaths,
+    // layer, model and params are preserved. Requires a file previously load()ed.
     bool save(const QString &destPath, QString *error = nullptr);
 
     QString filePath() const { return m_path; }
     const QHash<QString, QString> &params() const { return m_params; }
     const QVector<Element> &elements() const { return m_elements; }
+    QVector<Element> &elementsRef() { return m_elements; }   // for editing
     const QVector<Toolpath> &toolpaths() const { return m_toolpaths; }
 
-    // Editing: mutable element access (geometry edits), append, remove.
-    // removeElement also strips the element's uuid from every toolpath's
-    // `elements` reference array - CC expects each reference to resolve.
-    QVector<Element> &elements() { return m_elements; }
     void addElement(const Element &e) { m_elements.append(e); }
-    void removeElement(int index);
+    bool removeElementById(const QString &id)
+    {
+        for (int i = 0; i < m_elements.size(); ++i)
+            if (m_elements.at(i).id == id) { m_elements.removeAt(i); return true; }
+        return false;
+    }
+    Element *elementById(const QString &id)
+    {
+        for (Element &e : m_elements)
+            if (e.id == id) return &e;
+        return nullptr;
+    }
 
-    // Toolpath-parameter editing mutates Toolpath::json in place. The count
-    // must not change (params.num_toolpaths mirrors it in the container).
-    QVector<Toolpath> &toolpaths() { return m_toolpaths; }
+    // Layer object for newly created elements: copied from an existing element
+    // so new shapes land on the same layer; falls back to CC's DEFAULT layer.
+    QJsonObject defaultLayer() const
+    {
+        if (!m_elements.isEmpty()) {
+            const QJsonObject l = m_elements.first().raw.value("layer").toObject();
+            if (!l.isEmpty())
+                return l;
+        }
+        QJsonObject l;
+        l.insert("blue", 0); l.insert("green", 0); l.insert("red", 0);
+        l.insert("locked", false); l.insert("name", QStringLiteral("DEFAULT"));
+        l.insert("uuid", QString()); l.insert("visible", true);
+        return l;
+    }
 
     double boardWidth()  const { return m_params.value("width", "0").toDouble(); }
     double boardHeight() const { return m_params.value("height", "0").toDouble(); }
