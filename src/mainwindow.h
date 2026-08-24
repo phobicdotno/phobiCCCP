@@ -35,6 +35,8 @@ private slots:
     void onDeleteSelected();
     void onUndo();
     void onRedo();
+    void onExportGcode();
+    void onSendToGrbl();
 
 private:
     // One undo step = the full editable state (elements + toolpaths; params
@@ -53,6 +55,7 @@ private:
     bool maybeSave();   // false = user cancelled, abort the pending action
     void pushUndo();
     void applySnapshot(const Snapshot &snap);
+    QString buildGcode();   // CAM over all enabled toolpaths; empty on failure
 
     Canvas *m_canvas;
     QPlainTextEdit *m_info;      // params + item summary sidebar

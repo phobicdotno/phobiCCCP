@@ -1,9 +1,13 @@
 #include "mainwindow.h"
+#include "cam.h"
+#include "machinedialog.h"
+#include "post_grbl.h"
 #include "toolpathpanel.h"
 
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDockWidget>
+#include <QFile>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QMenuBar>
@@ -55,6 +59,10 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs,
                         QKeySequence::SaveAs);
     fileMenu->addSeparator();
+    fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
+                        &MainWindow::onExportGcode,
+                        QKeySequence(QStringLiteral("Ctrl+G")));
+    fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("E&xit"), this, &MainWindow::close,
                         QKeySequence::Quit);
 
@@ -74,6 +82,10 @@ MainWindow::MainWindow(QWidget *parent)
                         &MainWindow::onAddCircle);
     editMenu->addAction(QStringLiteral("Add &Rectangle…"), this,
                         &MainWindow::onAddRectangle);
+
+    auto *machineMenu = menuBar()->addMenu(QStringLiteral("&Machine"));
+    machineMenu->addAction(QStringLiteral("Send to &GRBL…"), this,
+                           &MainWindow::onSendToGrbl);
 
     auto *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
     viewMenu->addAction(m_canvasDock->toggleViewAction());
@@ -360,6 +372,56 @@ void MainWindow::onDeleteSelected()
     m_toolpaths->reload();   // reference lists may have changed
     refreshInfo();
     setDirty(true);
+}
+
+QString MainWindow::buildGcode()
+{
+    if (m_doc.filePath().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("No document"),
+                                 QStringLiteral("Open a .c2d file first."));
+        return {};
+    }
+    const Cam::Result cam = Cam::generate(m_doc);
+    if (cam.ops.isEmpty()) {
+        QMessageBox::information(
+            this, QStringLiteral("Nothing to cut"),
+            QStringLiteral("No supported toolpaths produced any cuts.\n%1")
+                .arg(cam.notes.join(QChar('\n'))));
+        return {};
+    }
+    for (const QString &note : cam.notes)
+        statusBar()->showMessage(note, 5000);
+    return GrblPost(true).generate(cam.ops);
+}
+
+void MainWindow::onExportGcode()
+{
+    const QString gcode = buildGcode();
+    if (gcode.isEmpty())
+        return;
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export G-code"), {},
+        QStringLiteral("G-code (*.nc);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".nc"), Qt::CaseInsensitive))
+        path += QStringLiteral(".nc");
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
+        return;
+    }
+    f.write(gcode.toLatin1());
+    statusBar()->showMessage(QStringLiteral("Exported %1").arg(path), 5000);
+}
+
+void MainWindow::onSendToGrbl()
+{
+    const QString gcode = buildGcode();
+    if (gcode.isEmpty())
+        return;
+    MachineDialog dlg(gcode, this);
+    dlg.exec();
 }
 
 void MainWindow::setDirty(bool dirty)

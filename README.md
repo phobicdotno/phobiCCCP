@@ -30,7 +30,61 @@ this port may use `QtSql` or the C API interchangeably. The practical takeaway:
 geometry - and even those SVG previews - can be regenerated with byte-level
 fidelity using the identical Qt calls CC uses.
 
-## Status - Tier 1 (in progress)
+## Status - Tier 1 (complete)
+
+- [x] Open the modern (v7/v8 SQLite) container: `params` + `items`
+- [x] Decompress element payloads (plain zlib - **not** Qt `qCompress`; see note)
+- [x] Parse all five element types into `QPainterPath` (circle, rectangle,
+      regular_polygon, path, text - text via its pre-flattened `rendered` outlines)
+- [x] Render board + geometry on a pan/zoom canvas (Y-up, mm)
+- [x] List params, element histogram and toolpaths in a side panel
+- [x] **Write/save `.c2d`** - clone-and-rewrite recipe, round-trip verified
+      (36/36 elements byte-identical, SQLite integrity ok); `src/c2ddocument.cpp`
+- [x] **GRBL post-processor** emitting plaintext `.nc` in CC's own dialect
+      (`src/post_grbl.{h,cpp}`) - the Carbide-Motion-free machine path
+- [x] Geometry editing - drag to move (rubber-band or click select,
+      middle-button pan), Edit menu scale/add circle/add rectangle/delete;
+      every edit mutates `Element::raw` so save round-trips it. Headless
+      checks in `tests/test_geometry.cpp` (`-DPHOBICCC_TESTS=ON`)
+- [x] Toolpath-parameter editing - Toolpaths dock lists every toolpath with
+      editable parameters (nested `tool`/`speeds` included); values keep
+      their original JSON type, so depth strings stay strings. Saved via
+      the same delete-and-reinsert recipe as elements
+- [x] Editing infrastructure - undo/redo (Ctrl+Z / Ctrl+Shift+Z, 50 steps),
+      unsaved-changes prompt on close/open; deleting an element strips its
+      uuid from every toolpath's reference list (CC requires references to
+      resolve)
+- [x] Multi-screen UI - canvas, document info and toolpaths are all dock
+      widgets: drag any of them to another screen, resize freely, maximize
+      (floating docks get native window frames), View menu show/hide +
+      Re-dock All + F11 fullscreen; window and dock layout persist across
+      sessions
+## Status - Tier 2 (in progress)
+
+- [x] CAM core (`src/cam.{h,cpp}`, Clipper2 2.0.1 vendored in `third_party/`):
+  contour (inside/outside/on-line via `ofset_dir`, plus `cutout` with
+  `flip_inside_outside` and `cut_depth`/`depth_per_pass`), pocket (inward
+  offset rings by `stepover`, cut inside-out), drilling (pecks by `stepdown`
+  at circle centers). Depth passes follow the build 853 positive-down
+  convention; `stock_to_leave` honoured; retract at a fixed 3 mm
+- [x] File > Export G-code (Ctrl+G): all enabled supported toolpaths through
+  the GRBL post to a plaintext `.nc`
+- [x] Machine > Send to GRBL: USB serial at 115200, one line in flight,
+  ok/error tracking, progress, abort via soft reset (0x18). Protocol logic is
+  the headless-testable `GrblSender`
+- [ ] Holding tabs (a contour/cutout at full depth frees the part; the export
+  warns loudly). Ramped entry, climb-direction control and rest machining are
+  also ignored for now
+- [ ] Live testing against a real Shapeoko (everything above is verified
+  headlessly: 56 checks incl. CAM geometry bounds and sender sequencing)
+| 3D model view (`model_2`) | `QtOpenGLWidgets` | (Tier 3) |
+
+No `QtSql` is bundled, so CC links SQLite directly (matching the `sqlar` usage);
+this port may use `QtSql` or the C API interchangeably. The practical takeaway:
+geometry - and even those SVG previews - can be regenerated with byte-level
+fidelity using the identical Qt calls CC uses.
+
+## Status - Tier 1 (complete)
 
 - [x] Open the modern (v7/v8 SQLite) container: `params` + `items`
 - [x] Decompress element payloads (plain zlib - **not** Qt `qCompress`; see note)
