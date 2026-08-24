@@ -1,6 +1,8 @@
 #include "mainwindow.h"
+#include "gcodeexport.h"
 #include <QApplication>
 #include <QDebug>
+#include <QFile>
 #include <QJsonArray>
 #include <QPalette>
 #include <QStyleFactory>
@@ -60,6 +62,8 @@ static int selftest(const QString &in, const QString &out)
     doc.addElement(c2d::Element::makePolygon({300, 100}, 30, 6, layer));
     doc.addElement(c2d::Element::makePath({{400, 80}, {430, 130}, {460, 80}}, false, layer));
     doc.addElement(c2d::Element::makePath({{500, 80}, {530, 130}, {560, 80}}, true, layer));
+    doc.addElement(c2d::Element::makeText(QStringLiteral("phobicCC"), {600, 80}, 15,
+                                          QStringLiteral("Helvetica"), layer));
 
     if (!doc.save(out, &err)) { qWarning() << "save failed:" << err; return 2; }
 
@@ -68,8 +72,19 @@ static int selftest(const QString &in, const QString &out)
     qInfo() << "selftest: before =" << before
             << "after reload =" << check.elements().size()
             << "toolpaths =" << check.toolpaths().size();
-    if (check.elements().size() != before + 5)
+    if (check.elements().size() != before + 6)
         return 4;
+
+    // Text must round-trip with non-empty rendered glyph contours.
+    bool textOk = false;
+    for (const c2d::Element &e : check.elements())
+        if (e.geometryType == QLatin1String("text"))
+            textOk = !e.painterPath.isEmpty()
+                     && e.raw.value("rendered").toArray().size() > 3
+                     && e.raw.value("text").toString() == QLatin1String("phobicCC");
+    qInfo() << "selftest text:" << (textOk ? "OK" : "FAILED");
+    if (!textOk)
+        return 10;
 
     // Parametric edit: regen must change geometry but keep the identity.
     bool regenOk = false;
@@ -106,7 +121,27 @@ static int selftest(const QString &in, const QString &out)
         && tp2->json.value("elements").toArray().size()
                == tp.json.value("elements").toArray().size();
     qInfo() << "selftest toolpath edit:" << (tpOk ? "OK" : "FAILED");
-    return tpOk ? 0 : 9;
+    if (!tpOk)
+        return 9;
+
+    // G-code export: turn one pocket into a no-offset contour so the exporter
+    // has something it supports, then check for real motion + dialect markers.
+    c2d::Toolpath ct = check2.toolpaths().first();
+    QJsonObject cj = ct.json;
+    cj.insert("type", QStringLiteral("contour"));
+    cj.insert("ofset_dir", 0);
+    ct.json = cj;
+    ct.type = QStringLiteral("contour");
+    check2.replaceToolpath(ct);
+    const c2d::GcodeResult g = c2d::exportGcode(check2);
+    const bool gOk = g.done.size() == 2 && g.skipped.isEmpty()
+        && g.gcode.contains(QLatin1String("G90")) && g.gcode.contains(QLatin1String("G21"))
+        && g.gcode.contains(QLatin1String("M03S")) && g.gcode.contains(QLatin1String("M02"))
+        && g.gcode.count(QLatin1String("G1")) > 50;
+    qInfo() << "selftest gcode:" << (gOk ? "OK" : "FAILED")
+            << "lines =" << g.gcode.count(QChar('\n'))
+            << "skipped =" << g.skipped;
+    return gOk ? 0 : 11;
 }
 
 int main(int argc, char *argv[])
@@ -119,6 +154,26 @@ int main(int argc, char *argv[])
     if (argc == 4 && QByteArray(argv[1]) == "--selftest")
         return selftest(QString::fromLocal8Bit(argv[2]),
                         QString::fromLocal8Bit(argv[3]));
+
+    // --export <in.c2d> <out.nc>: headless g-code export (CLI/scripting).
+    if (argc == 4 && QByteArray(argv[1]) == "--export") {
+        c2d::Document doc;
+        QString err;
+        if (!doc.load(QString::fromLocal8Bit(argv[2]), &err)) {
+            qWarning() << "load failed:" << err;
+            return 1;
+        }
+        const c2d::GcodeResult r = c2d::exportGcode(doc);
+        QFile f(QString::fromLocal8Bit(argv[3]));
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            qWarning() << "write failed:" << f.errorString();
+            return 2;
+        }
+        f.write(r.gcode.toUtf8());
+        qInfo() << "exported:" << r.done << "skipped:" << r.skipped
+                << "lines:" << r.gcode.count(QChar('\n'));
+        return r.done.isEmpty() ? 3 : 0;
+    }
 
     c2d::MainWindow w;
     w.show();
