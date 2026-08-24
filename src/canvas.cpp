@@ -1,6 +1,9 @@
 #include "canvas.h"
 #include <QGraphicsScene>
 #include <QGraphicsPathItem>
+#include <QGraphicsSceneHoverEvent>
+#include <QJsonArray>
+#include <QScrollBar>
 #include <QKeyEvent>
 #include <QLineF>
 #include <QMouseEvent>
@@ -26,18 +29,55 @@ static const QColor kElement(0xd8, 0xdc, 0xe4);
 static const QColor kSelected(0xf2, 0xa5, 0x36);   // amber
 static const QColor kPreview(0x5c, 0xc8, 0x8a);
 
-// Path item that suppresses Qt's default dashed selection rectangle — the
-// selection is shown by swapping the pen instead (applySelectionStyle).
+// Element item with CAD-style state rendering: closed shapes get a faint fill
+// (which also makes their interior clickable), hover brightens the outline,
+// selection turns it amber — no dashed Qt selection rectangle.
 class ElemItem : public QGraphicsPathItem
 {
 public:
-    using QGraphicsPathItem::QGraphicsPathItem;
-    void paint(QPainter *p, const QStyleOptionGraphicsItem *opt, QWidget *w) override
+    ElemItem(const QPainterPath &path, bool closed)
+        : QGraphicsPathItem(path), m_closed(closed)
     {
-        QStyleOptionGraphicsItem o(*opt);
-        o.state &= ~QStyle::State_Selected;
-        QGraphicsPathItem::paint(p, &o, w);
+        setAcceptHoverEvents(true);
     }
+    void paint(QPainter *p, const QStyleOptionGraphicsItem *, QWidget *) override
+    {
+        QPen pen;
+        pen.setCosmetic(true);
+        if (isSelected()) {
+            pen.setColor(kSelected);
+            pen.setWidthF(2.2);
+        } else if (m_hover) {
+            pen.setColor(QColor(0x9f, 0xc8, 0xf2));
+            pen.setWidthF(1.8);
+        } else {
+            pen.setColor(kElement);
+            pen.setWidthF(1.3);
+        }
+        p->setPen(pen);
+        if (m_closed) {
+            QColor fill = isSelected() ? QColor(kSelected) : QColor(Qt::white);
+            fill.setAlpha(isSelected() ? 30 : 14);
+            p->setBrush(fill);
+        } else {
+            p->setBrush(Qt::NoBrush);
+        }
+        p->drawPath(path());
+    }
+    QPainterPath shape() const override
+    {
+        // Closed shapes select from anywhere inside; open paths keep the
+        // stroke-based hit area.
+        return m_closed ? path() : QGraphicsPathItem::shape();
+    }
+
+protected:
+    void hoverEnterEvent(QGraphicsSceneHoverEvent *) override { m_hover = true; update(); }
+    void hoverLeaveEvent(QGraphicsSceneHoverEvent *) override { m_hover = false; update(); }
+
+private:
+    bool m_closed;
+    bool m_hover = false;
 };
 
 // ---- undo commands -------------------------------------------------------
@@ -70,6 +110,18 @@ public:
     void undo() override { for (const Element &e : m_es) m_d->addElement(e); refresh(m_c); }
 private:
     Canvas *m_c; Document *m_d; QVector<Element> m_es;
+};
+
+class EditCmd : public QUndoCommand
+{
+public:
+    EditCmd(Canvas *c, Document *d, const Element &before, const Element &after)
+        : m_c(c), m_d(d), m_before(before), m_after(after)
+    { setText(QStringLiteral("edit %1").arg(before.geometryType)); }
+    void redo() override { m_d->replaceElement(m_after); refresh(m_c); }
+    void undo() override { m_d->replaceElement(m_before); refresh(m_c); }
+private:
+    Canvas *m_c; Document *m_d; Element m_before, m_after;
 };
 
 class MoveCmd : public QUndoCommand
@@ -106,7 +158,43 @@ Canvas::Canvas(QWidget *parent)
     // Flip Y so CC's Y-up space maps to Qt's Y-down scene.
     scale(1.0, -1.0);
     connect(m_scene, &QGraphicsScene::selectionChanged,
-            this, &Canvas::applySelectionStyle);
+            this, &Canvas::onSelectionChanged);
+}
+
+void Canvas::onSelectionChanged()
+{
+    QStringList ids;
+    for (QGraphicsItem *it : m_scene->selectedItems())
+        if (it->data(0).isValid())
+            ids << it->data(0).toString();
+    emit selectionChangedIds(ids);
+    viewport()->update();
+}
+
+void Canvas::emitZoom()
+{
+    emit zoomChanged(qAbs(transform().m11()) * 100.0);
+}
+
+void Canvas::editElement(const QString &id, const QHash<QString, double> &params)
+{
+    if (!m_doc)
+        return;
+    Element *e = m_doc->elementById(id);
+    if (!e)
+        return;
+    const Element after = Element::regen(*e, params);
+    if (after.raw == e->raw)
+        return;
+    m_undo->push(new EditCmd(this, m_doc, *e, after));
+}
+
+void Canvas::moveElementBy(const QString &id, double dx, double dy)
+{
+    if (!m_doc || (qFuzzyIsNull(dx) && qFuzzyIsNull(dy)))
+        return;
+    if (m_doc->elementById(id))
+        m_undo->push(new MoveCmd(this, m_doc, {{id, QPointF(dx, dy)}}));
 }
 
 void Canvas::setDocument(Document *doc)
@@ -168,6 +256,7 @@ void Canvas::zoomFit()
     const double w = m_doc->boardWidth(), h = m_doc->boardHeight();
     if (w > 0 && h > 0)
         fitInView(QRectF(-10, -10, w + 20, h + 20), Qt::KeepAspectRatio);
+    emitZoom();
 }
 
 void Canvas::rebuild()
@@ -182,14 +271,15 @@ void Canvas::rebuild()
     // Margin so the rubber band / fit has somewhere to breathe.
     m_scene->setSceneRect(QRectF(-w * 0.2 - 20, -h * 0.2 - 20, w * 1.4 + 40, h * 1.4 + 40));
 
-    QPen elemPen(kElement);
-    elemPen.setCosmetic(true);   // constant on-screen width regardless of zoom
-    elemPen.setWidthF(1.3);
-
     const bool editable = (m_tool == Select);
     for (const Element &e : m_doc->elements()) {
-        auto *item = new ElemItem(e.painterPath);
-        item->setPen(elemPen);
+        // Open paths are the only unfilled type; a path row of point_type 4
+        // marks a closed one.
+        bool closed = e.geometryType != QLatin1String("path");
+        if (!closed)
+            for (const auto &v : e.raw.value("point_type").toArray())
+                if (v.toInt() == 4) { closed = true; break; }
+        auto *item = new ElemItem(e.painterPath, closed);
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
         item->setData(0, e.id);                       // scene item -> element
@@ -200,22 +290,6 @@ void Canvas::rebuild()
     if (!m_fitted && w > 0 && h > 0) {
         zoomFit();
         m_fitted = true;
-    }
-}
-
-void Canvas::applySelectionStyle()
-{
-    QPen normal(kElement);
-    normal.setCosmetic(true);
-    normal.setWidthF(1.3);
-    QPen sel(kSelected);
-    sel.setCosmetic(true);
-    sel.setWidthF(2.2);
-    for (QGraphicsItem *it : m_scene->items()) {
-        if (!it->data(0).isValid())
-            continue;
-        if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(it))
-            pi->setPen(it->isSelected() ? sel : normal);
     }
 }
 
@@ -320,6 +394,14 @@ void Canvas::finishPath(bool closed)
 
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() == Qt::MiddleButton) {
+        m_panning = true;
+        m_panLast = event->pos();
+        viewport()->setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+
     if (m_tool == DrawPath && m_doc && event->button() == Qt::LeftButton) {
         const QPointF pos = snap(mapToScene(event->pos()));
         // Clicking near the start point closes the path.
@@ -361,6 +443,15 @@ void Canvas::mousePressEvent(QMouseEvent *event)
 
 void Canvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_panning) {
+        const QPoint d = event->pos() - m_panLast;
+        m_panLast = event->pos();
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() - d.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() - d.y());
+        event->accept();
+        return;
+    }
+
     const QPointF cc = mapToScene(event->pos());
     emit cursorMoved(cc);
 
@@ -388,6 +479,13 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
 
 void Canvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_panning && event->button() == Qt::MiddleButton) {
+        m_panning = false;
+        viewport()->setCursor(m_tool == Select ? Qt::ArrowCursor : Qt::CrossCursor);
+        event->accept();
+        return;
+    }
+
     if (m_drawing && m_doc) {
         m_drawing = false;
         const QPointF cur = snap(mapToScene(event->pos()));
@@ -491,6 +589,7 @@ void Canvas::wheelEvent(QWheelEvent *event)
     const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     scale(factor, factor);
+    emitZoom();
 }
 
 } // namespace c2d
