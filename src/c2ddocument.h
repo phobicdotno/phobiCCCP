@@ -54,6 +54,19 @@ public:
         return false;
     }
 
+    Toolpath *toolpathByUuid(const QString &uuid)
+    {
+        for (Toolpath &t : m_toolpaths)
+            if (t.uuid == uuid) return &t;
+        return nullptr;
+    }
+    bool replaceToolpath(const Toolpath &t)
+    {
+        for (Toolpath &x : m_toolpaths)
+            if (x.uuid == t.uuid) { x = t; return true; }
+        return false;
+    }
+
     // Layer object for newly created elements: copied from an existing element
     // so new shapes land on the same layer; falls back to CC's DEFAULT layer.
     QJsonObject defaultLayer() const
