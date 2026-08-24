@@ -2,7 +2,9 @@
 #include <QGraphicsScene>
 #include <QGraphicsPathItem>
 #include <QGraphicsSceneHoverEvent>
+#include <QInputDialog>
 #include <QJsonArray>
+#include <QLineEdit>
 #include <QScrollBar>
 #include <QKeyEvent>
 #include <QLineF>
@@ -209,6 +211,15 @@ void Canvas::moveElementBy(const QString &id, double dx, double dy)
         m_undo->push(new MoveCmd(this, m_doc, {{id, QPointF(dx, dy)}}));
 }
 
+QStringList Canvas::selectedElementIds() const
+{
+    QStringList ids;
+    for (QGraphicsItem *it : m_scene->selectedItems())
+        if (it->data(0).isValid())
+            ids << it->data(0).toString();
+    return ids;
+}
+
 void Canvas::editToolpath(const QString &uuid, const QJsonObject &newJson)
 {
     if (!m_doc)
@@ -315,6 +326,7 @@ void Canvas::setTool(Tool t)
     case DrawRect:    emit statusHint(tr("Rectangle — drag corner to corner")); break;
     case DrawPolygon: emit statusHint(tr("Polygon — press at center, drag to radius")); break;
     case DrawPath:    emit statusHint(tr("Path — click to add points; Enter finishes, click near start closes, Esc cancels")); break;
+    case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
     }
 }
 
@@ -493,6 +505,23 @@ void Canvas::mousePressEvent(QMouseEvent *event)
                 return;
             }
         }
+    }
+
+    if (m_tool == DrawText && m_doc && event->button() == Qt::LeftButton) {
+        const QPointF pos = snap(mapToScene(event->pos()));
+        bool ok = false;
+        const QString text = QInputDialog::getText(
+            this, tr("Add text"), tr("Text:"), QLineEdit::Normal, {}, &ok);
+        if (ok && !text.trimmed().isEmpty()) {
+            const double h = QInputDialog::getDouble(
+                this, tr("Add text"), tr("Height (mm):"), 10.0, 0.5, 500.0, 1, &ok);
+            if (ok)
+                m_undo->push(new AddCmd(this, m_doc,
+                    Element::makeText(text, pos, h, QStringLiteral("Helvetica"),
+                                      m_doc->defaultLayer())));
+        }
+        event->accept();
+        return;
     }
 
     if (m_tool == DrawPath && m_doc && event->button() == Qt::LeftButton) {
