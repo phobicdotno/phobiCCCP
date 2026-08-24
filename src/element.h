@@ -27,12 +27,17 @@ public:
     static Element makeRectangle(QPointF center, double width, double height,
                                  const QJsonObject &layer);
     static Element makePolygon(QPointF center, double radius, int numSides,
-                               const QJsonObject &layer);
+                               const QJsonObject &layer, double rotationDeg = 0);
     // Straight-segment path from clicked vertices (absolute mm coordinates,
     // position [0,0] as CC writes paths). `closed` appends the return-to-start
     // and close rows.
     static Element makePath(const QVector<QPointF> &vertices, bool closed,
                             const QJsonObject &layer);
+    // Text at `pos` (baseline-left, CC mm): glyph outlines are flattened into
+    // CC's `rendered` contour array; font/qtfont/text keys are kept so CC can
+    // re-render if the user edits it there. `heightMm` sets the glyph size.
+    static Element makeText(const QString &text, QPointF pos, double heightMm,
+                            const QString &family, const QJsonObject &layer);
 
     // Move the element by (dx, dy) mm: shifts position/center (or the text
     // transform's translation) in `raw` and rebuilds painterPath.
