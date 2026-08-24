@@ -1,8 +1,10 @@
 #include "mainwindow.h"
+#include "gcodeexport.h"
 #include "propertiespanel.h"
 #include "toolpathpanel.h"
 
 #include <QApplication>
+#include <QFile>
 #include <QFileInfo>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -61,6 +63,18 @@ static QIcon toolIcon(const QString &kind)
         p.setBrush(QColor(0xd8, 0xdc, 0xe4));
         for (const QPointF &v : {QPointF(3, 16), QPointF(8, 6), QPointF(12, 12), QPointF(17, 4)})
             p.drawEllipse(v, 1.6, 1.6);
+    } else if (kind == "text") {
+        QFont f;
+        f.setPixelSize(15);
+        f.setBold(true);
+        p.setFont(f);
+        p.drawText(QRectF(0, 0, 20, 20), Qt::AlignCenter, QStringLiteral("T"));
+    } else if (kind == "gcode") {
+        QFont f;
+        f.setPixelSize(11);
+        f.setBold(true);
+        p.setFont(f);
+        p.drawText(QRectF(0, 0, 20, 20), Qt::AlignCenter, QStringLiteral("G1"));
     } else if (kind == "fit") {
         p.drawRect(QRectF(4, 4, 12, 12));
         p.drawLine(QLineF(8, 10, 12, 10));
@@ -118,6 +132,10 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs,
                         QKeySequence::SaveAs);
     fileMenu->addSeparator();
+    fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
+                        &MainWindow::onExportGcode,
+                        QKeySequence(Qt::CTRL | Qt::Key_G));
+    fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
                         QKeySequence::Quit);
 
@@ -158,6 +176,8 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("Polygon: press at center, drag to radius  (P)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
             QStringLiteral("Path: click points; Enter finishes, click near start closes  (L)"));
+    addTool(QStringLiteral("Text"), QStringLiteral("text"), Canvas::DrawText, Qt::Key_T,
+            QStringLiteral("Text: click to place  (T)"));
 
     // Top bar: options and view/edit actions.
     auto *tb = addToolBar(QStringLiteral("Options"));
@@ -222,6 +242,41 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     statusBar()->showMessage(QStringLiteral("Open a .c2d file to begin"));
+}
+
+void MainWindow::onExportGcode()
+{
+    if (m_doc.filePath().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Export G-code"),
+                                 QStringLiteral("Open a .c2d file first."));
+        return;
+    }
+    const GcodeResult r = exportGcode(m_doc);
+    if (r.done.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Export G-code"),
+            QStringLiteral("No exportable toolpaths.\n\nSupported today: contour "
+                           "(no offset) and drilling.\nSkipped:\n  %1")
+                .arg(r.skipped.join(QStringLiteral("\n  "))));
+        return;
+    }
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export G-code"),
+        QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
+        QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
+        return;
+    }
+    f.write(r.gcode.toUtf8());
+    f.close();
+    QString msg = QStringLiteral("Exported %1 toolpath(s) to %2")
+                      .arg(r.done.size()).arg(path);
+    if (!r.skipped.isEmpty())
+        msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
+    statusBar()->showMessage(msg, 8000);
 }
 
 void MainWindow::updateTitle()
