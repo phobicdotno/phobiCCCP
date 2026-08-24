@@ -1,6 +1,8 @@
 #include "mainwindow.h"
+#include "propertiespanel.h"
 
 #include <QApplication>
+#include <QFileInfo>
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QMenuBar>
@@ -80,12 +82,22 @@ MainWindow::MainWindow(QWidget *parent)
     m_canvas = new Canvas(this);
     setCentralWidget(m_canvas);
 
+    m_props = new PropertiesPanel(m_canvas, this);
+    auto *propsDock = new QDockWidget(QStringLiteral("Properties"), this);
+    propsDock->setWidget(m_props);
+    propsDock->setFeatures(QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::RightDockWidgetArea, propsDock);
+
     m_info = new QPlainTextEdit(this);
     m_info->setReadOnly(true);
     m_info->setMaximumWidth(340);
     auto *dock = new QDockWidget(QStringLiteral("Document"), this);
     dock->setWidget(m_info);
+    dock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, dock);
+
+    connect(m_canvas, &Canvas::selectionChangedIds,
+            m_props, &PropertiesPanel::setSelection);
 
     // addAction(text, receiver, method, shortcut) — argument order that is
     // stable across Qt6 minor versions (the (text, shortcut, …) overload is newer).
@@ -109,15 +121,17 @@ MainWindow::MainWindow(QWidget *parent)
     editMenu->addAction(undoAct);
     editMenu->addAction(redoAct);
 
-    // Vector tools.
-    auto *tb = addToolBar(QStringLiteral("Tools"));
-    tb->setMovable(false);
-    tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    tb->setIconSize(QSize(20, 20));
+    // Vector tools: vertical icon palette on the left, like a real CAD app.
+    auto *palette = new QToolBar(QStringLiteral("Tools"), this);
+    palette->setMovable(false);
+    palette->setOrientation(Qt::Vertical);
+    palette->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    palette->setIconSize(QSize(24, 24));
+    addToolBar(Qt::LeftToolBarArea, palette);
     auto *grp = new QActionGroup(this);
     auto addTool = [&](const QString &name, const QString &icon, Canvas::Tool t,
                        Qt::Key key, const QString &tip) {
-        QAction *a = tb->addAction(toolIcon(icon), name);
+        QAction *a = palette->addAction(toolIcon(icon), name);
         a->setCheckable(true);
         a->setShortcut(key);
         a->setToolTip(tip);
@@ -135,6 +149,12 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("Polygon: press at center, drag to radius  (P)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
             QStringLiteral("Path: click points; Enter finishes, click near start closes  (L)"));
+
+    // Top bar: options and view/edit actions.
+    auto *tb = addToolBar(QStringLiteral("Options"));
+    tb->setMovable(false);
+    tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    tb->setIconSize(QSize(20, 20));
 
     auto *sides = new QSpinBox(tb);
     sides->setRange(3, 64);
@@ -162,7 +182,15 @@ MainWindow::MainWindow(QWidget *parent)
     tb->addAction(undoAct);
     tb->addAction(redoAct);
 
-    // Status bar: transient hints on the left, live mm coordinates on the right.
+    // Status bar: transient hints on the left, zoom + live mm on the right.
+    m_zoomLabel = new QLabel(QStringLiteral("100%"), this);
+    m_zoomLabel->setMinimumWidth(56);
+    m_zoomLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    statusBar()->addPermanentWidget(m_zoomLabel);
+    connect(m_canvas, &Canvas::zoomChanged, this, [this](double pct) {
+        m_zoomLabel->setText(QStringLiteral("%1%").arg(qRound(pct)));
+    });
+
     m_cursorLabel = new QLabel(QStringLiteral("X —    Y —"), this);
     m_cursorLabel->setMinimumWidth(180);
     m_cursorLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -173,7 +201,10 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(m_canvas, &Canvas::documentChanged, this, [this] {
+        m_dirty = true;
+        updateTitle();
         refreshInfo();
+        m_props->refresh();
         statusBar()->showMessage(QStringLiteral("Edited — Ctrl+S to save"));
     });
     connect(m_canvas, &Canvas::statusHint, this, [this](const QString &m) {
@@ -181,6 +212,15 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     statusBar()->showMessage(QStringLiteral("Open a .c2d file to begin"));
+}
+
+void MainWindow::updateTitle()
+{
+    QString t = QStringLiteral("phobicCC");
+    if (!m_doc.filePath().isEmpty())
+        t = QFileInfo(m_doc.filePath()).fileName() + (m_dirty ? QStringLiteral(" *") : QString())
+            + QStringLiteral(" — phobicCC");
+    setWindowTitle(t);
 }
 
 void MainWindow::onOpen()
@@ -199,11 +239,14 @@ void MainWindow::onSave()
         return;
     }
     QString err;
-    if (!m_doc.save(m_doc.filePath(), &err))
+    if (!m_doc.save(m_doc.filePath(), &err)) {
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
-    else
+    } else {
+        m_dirty = false;
+        updateTitle();
         statusBar()->showMessage(
             QStringLiteral("Saved %1").arg(m_doc.filePath()), 5000);
+    }
 }
 
 void MainWindow::onSaveAs()
@@ -222,10 +265,13 @@ void MainWindow::onSaveAs()
         path += QStringLiteral(".c2d");
 
     QString err;
-    if (!m_doc.save(path, &err))
+    if (!m_doc.save(path, &err)) {
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
-    else
+    } else {
+        m_dirty = false;
+        updateTitle();
         statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
+    }
 }
 
 void MainWindow::openFile(const QString &path)
@@ -243,6 +289,9 @@ void MainWindow::openFile(const QString &path)
              << "board:" << m_doc.boardWidth() << "x" << m_doc.boardHeight()
              << "params:" << m_doc.params().size();
     m_canvas->setDocument(&m_doc);
+    m_props->setDocument(&m_doc);
+    m_dirty = false;
+    updateTitle();
     refreshInfo();
     statusBar()->showMessage(path);
 }
