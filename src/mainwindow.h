@@ -3,6 +3,7 @@
 #include "canvas.h"
 #include <QMainWindow>
 
+class QLabel;
 class QPlainTextEdit;
 
 namespace c2d {
@@ -24,6 +25,7 @@ private:
 
     Canvas *m_canvas;
     QPlainTextEdit *m_info;   // params + item summary sidebar
+    QLabel *m_cursorLabel;    // live mm position, right side of status bar
     Document m_doc;
 };
 
