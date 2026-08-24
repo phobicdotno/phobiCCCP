@@ -12,10 +12,64 @@
 #include <QSqlDatabase>
 #include <QActionGroup>
 #include <QLabel>
+#include <QPainter>
+#include <QPolygonF>
 #include <QSpinBox>
 #include <QToolBar>
+#include <QUndoStack>
+#include <QtMath>
 
 namespace c2d {
+
+// Simple flat tool icons drawn at runtime — no resource files needed.
+static QIcon toolIcon(const QString &kind)
+{
+    QPixmap pm(20, 20);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPen pen(QColor(0xd8, 0xdc, 0xe4), 1.6);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    if (kind == "select") {
+        QPolygonF arrow;
+        arrow << QPointF(6, 3) << QPointF(6, 15) << QPointF(9.5, 11.5)
+              << QPointF(12, 16) << QPointF(13.8, 15) << QPointF(11.4, 10.6)
+              << QPointF(15, 10);
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        p.drawPolygon(arrow);
+    } else if (kind == "circle") {
+        p.drawEllipse(QRectF(4, 4, 12, 12));
+    } else if (kind == "rect") {
+        p.drawRect(QRectF(4, 5, 12, 10));
+    } else if (kind == "polygon") {
+        QPolygonF hex;
+        for (int i = 0; i < 6; ++i) {
+            const double a = M_PI / 3 * i - M_PI / 6;
+            hex << QPointF(10 + 6.5 * qCos(a), 10 + 6.5 * qSin(a));
+        }
+        p.drawPolygon(hex);
+    } else if (kind == "path") {
+        QPainterPath pp(QPointF(3, 16));
+        pp.lineTo(8, 6);
+        pp.lineTo(12, 12);
+        pp.lineTo(17, 4);
+        p.drawPath(pp);
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        for (const QPointF &v : {QPointF(3, 16), QPointF(8, 6), QPointF(12, 12), QPointF(17, 4)})
+            p.drawEllipse(v, 1.6, 1.6);
+    } else if (kind == "fit") {
+        p.drawRect(QRectF(4, 4, 12, 12));
+        p.drawLine(QLineF(8, 10, 12, 10));
+        p.drawLine(QLineF(10, 8, 10, 12));
+    } else if (kind == "snap") {
+        for (int x = 4; x <= 16; x += 6)
+            for (int y = 4; y <= 16; y += 6)
+                p.drawPoint(QPointF(x, y));
+        p.drawEllipse(QPointF(10, 10), 3.2, 3.2);
+    }
+    return QIcon(pm);
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
@@ -46,31 +100,77 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
                         QKeySequence::Quit);
 
+    // Edit menu: undo/redo backed by the canvas undo stack.
+    auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
+    QAction *undoAct = m_canvas->undoStack()->createUndoAction(this, QStringLiteral("&Undo"));
+    undoAct->setShortcut(QKeySequence::Undo);
+    QAction *redoAct = m_canvas->undoStack()->createRedoAction(this, QStringLiteral("&Redo"));
+    redoAct->setShortcut(QKeySequence::Redo);
+    editMenu->addAction(undoAct);
+    editMenu->addAction(redoAct);
+
     // Vector tools.
     auto *tb = addToolBar(QStringLiteral("Tools"));
     tb->setMovable(false);
+    tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    tb->setIconSize(QSize(20, 20));
     auto *grp = new QActionGroup(this);
-    auto addTool = [&](const QString &name, Canvas::Tool t, Qt::Key key) {
-        QAction *a = tb->addAction(name);
+    auto addTool = [&](const QString &name, const QString &icon, Canvas::Tool t,
+                       Qt::Key key, const QString &tip) {
+        QAction *a = tb->addAction(toolIcon(icon), name);
         a->setCheckable(true);
         a->setShortcut(key);
+        a->setToolTip(tip);
         grp->addAction(a);
         connect(a, &QAction::triggered, this, [this, t] { m_canvas->setTool(t); });
         return a;
     };
-    addTool(QStringLiteral("Select (V)"),    Canvas::Select,      Qt::Key_V)->setChecked(true);
-    addTool(QStringLiteral("Circle (C)"),    Canvas::DrawCircle,  Qt::Key_C);
-    addTool(QStringLiteral("Rectangle (R)"), Canvas::DrawRect,    Qt::Key_R);
-    addTool(QStringLiteral("Polygon (P)"),   Canvas::DrawPolygon, Qt::Key_P);
+    addTool(QStringLiteral("Select"), QStringLiteral("select"), Canvas::Select, Qt::Key_V,
+            QStringLiteral("Select / move / delete  (V)"))->setChecked(true);
+    addTool(QStringLiteral("Circle"), QStringLiteral("circle"), Canvas::DrawCircle, Qt::Key_C,
+            QStringLiteral("Circle: press at center, drag to radius  (C)"));
+    addTool(QStringLiteral("Rect"), QStringLiteral("rect"), Canvas::DrawRect, Qt::Key_R,
+            QStringLiteral("Rectangle: drag corner to corner  (R)"));
+    addTool(QStringLiteral("Polygon"), QStringLiteral("polygon"), Canvas::DrawPolygon, Qt::Key_P,
+            QStringLiteral("Polygon: press at center, drag to radius  (P)"));
+    addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
+            QStringLiteral("Path: click points; Enter finishes, click near start closes  (L)"));
 
-    tb->addSeparator();
-    tb->addWidget(new QLabel(QStringLiteral(" Sides: ")));
     auto *sides = new QSpinBox(tb);
     sides->setRange(3, 64);
     sides->setValue(6);
+    sides->setPrefix(QStringLiteral("sides "));
+    sides->setToolTip(QStringLiteral("Polygon sides"));
+    tb->addWidget(sides);
     connect(sides, &QSpinBox::valueChanged, this,
             [this](int n) { m_canvas->setPolygonSides(n); });
-    tb->addWidget(sides);
+
+    tb->addSeparator();
+    QAction *snapAct = tb->addAction(toolIcon(QStringLiteral("snap")), QStringLiteral("Snap"));
+    snapAct->setCheckable(true);
+    snapAct->setShortcut(Qt::Key_G);
+    snapAct->setToolTip(QStringLiteral("Snap to grid  (G)"));
+    connect(snapAct, &QAction::toggled, this,
+            [this](bool on) { m_canvas->setSnapEnabled(on); });
+
+    QAction *fitAct = tb->addAction(toolIcon(QStringLiteral("fit")), QStringLiteral("Fit"));
+    fitAct->setShortcut(Qt::Key_F);
+    fitAct->setToolTip(QStringLiteral("Zoom to fit board  (F)"));
+    connect(fitAct, &QAction::triggered, this, [this] { m_canvas->zoomFit(); });
+
+    tb->addSeparator();
+    tb->addAction(undoAct);
+    tb->addAction(redoAct);
+
+    // Status bar: transient hints on the left, live mm coordinates on the right.
+    m_cursorLabel = new QLabel(QStringLiteral("X —    Y —"), this);
+    m_cursorLabel->setMinimumWidth(180);
+    m_cursorLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    statusBar()->addPermanentWidget(m_cursorLabel);
+    connect(m_canvas, &Canvas::cursorMoved, this, [this](QPointF p) {
+        m_cursorLabel->setText(QStringLiteral("X %1    Y %2 mm")
+                                   .arg(p.x(), 0, 'f', 2).arg(p.y(), 0, 'f', 2));
+    });
 
     connect(m_canvas, &Canvas::documentChanged, this, [this] {
         refreshInfo();
