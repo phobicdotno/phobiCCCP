@@ -39,11 +39,12 @@ QString GrblPost::generate(const QVector<Op> &ops) const
     Modal G{QStringLiteral("G"), 0, {}};
 
     QStringList out;
-    auto put = [&](const QString &s) { out << s; };
+    // NB: `emit` is a Qt keyword macro (empty), so the lambda is named `line`.
+    auto line = [&](const QString &s) { out << s; };
 
     // onOpen
-    put(QStringLiteral("G90"));
-    put(m_metric ? QStringLiteral("G21") : QStringLiteral("G20"));
+    line(QStringLiteral("G90"));
+    line(m_metric ? QStringLiteral("G21") : QStringLiteral("G20"));
 
     bool spindleOn = false;
     int lastRpm = -1;
@@ -57,17 +58,17 @@ QString GrblPost::generate(const QVector<Op> &ops) const
             QString t = op.text;
             if (t.length() > 12)
                 t = t.left(9) + QStringLiteral("...");
-            put(QStringLiteral("(") + t + QStringLiteral(")"));
+            line(QStringLiteral("(") + t + QStringLiteral(")"));
             break;
         }
         case Op::Spindle: {
             if (op.ival <= 0) {
-                if (spindleOn) { put(QStringLiteral("M05")); spindleOn = false; }
+                if (spindleOn) { line(QStringLiteral("M05")); spindleOn = false; }
             } else if (!spindleOn || op.ival != lastRpm) {
                 QString ln;
                 if (!spindleOn) ln += QStringLiteral("M03");
                 ln += QStringLiteral("S") + QString::number(op.ival);
-                put(ln);
+                line(ln);
                 spindleOn = true;
                 lastRpm = op.ival;
             }
@@ -76,17 +77,17 @@ QString GrblPost::generate(const QVector<Op> &ops) const
         case Op::Tool: {
             if (op.ival != lastTool) {
                 lastTool = op.ival;
-                if (spindleOn) { put(QStringLiteral("M05")); spindleOn = false; }
+                if (spindleOn) { line(QStringLiteral("M05")); spindleOn = false; }
                 // GRBL post: pause for a manual tool change, tool number in comment.
-                put(QStringLiteral("M0 ;T") + QString::number(op.ival));
+                line(QStringLiteral("M0 ;T") + QString::number(op.ival));
             }
             break;
         }
         case Op::Rapid:
-            put(block({G.fmt(0), X.fmt(scale(op.x)), Y.fmt(scale(op.y)), Z.fmt(scale(op.z))}));
+            line(block({G.fmt(0), X.fmt(scale(op.x)), Y.fmt(scale(op.y)), Z.fmt(scale(op.z))}));
             break;
         case Op::Feed:
-            put(block({G.fmt(1), X.fmt(scale(op.x)), Y.fmt(scale(op.y)),
+            line(block({G.fmt(1), X.fmt(scale(op.x)), Y.fmt(scale(op.y)),
                         Z.fmt(scale(op.z)), F.fmt(scale(op.feed))}));
             break;
         }
@@ -94,8 +95,8 @@ QString GrblPost::generate(const QVector<Op> &ops) const
 
     // onClose
     if (spindleOn)
-        put(QStringLiteral("M05"));
-    put(QStringLiteral("M02"));
+        line(QStringLiteral("M05"));
+    line(QStringLiteral("M02"));
 
     return out.join(QChar('\n')) + QChar('\n');
 }
