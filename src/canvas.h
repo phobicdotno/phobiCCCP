@@ -32,6 +32,8 @@ public:
     // Numeric edits from the properties panel (undoable).
     void editElement(const QString &id, const QHash<QString, double> &params);
     void moveElementBy(const QString &id, double dx, double dy);
+    // Replace a toolpath's JSON payload (undoable; from the toolpath panel).
+    void editToolpath(const QString &uuid, const QJsonObject &newJson);
 
 signals:
     void documentChanged();            // element added / moved / deleted
@@ -42,6 +44,7 @@ signals:
 
 protected:
     void drawBackground(QPainter *painter, const QRectF &rect) override;
+    void drawForeground(QPainter *painter, const QRectF &rect) override;
     void wheelEvent(QWheelEvent *event) override;        // scroll to zoom
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -71,6 +74,12 @@ private:
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+
+    // Resize-handle drag state (single selected circle/rect/polygon).
+    bool resizeHandle(QString *id, QPointF *pos, QString *type) const;
+    bool m_resizing = false;
+    QString m_resizeId, m_resizeType;
+    QPointF m_resizeCenter;
 };
 
 } // namespace c2d
