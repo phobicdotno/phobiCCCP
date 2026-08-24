@@ -1,36 +1,40 @@
 #pragma once
-#include "c2ddocument.h"
-#include <QTreeWidget>
+#include <QWidget>
 
-// Dock content: one top-level row per toolpath ("name  [type]"), children are
-// its editable parameters. Scalars (bool/number/string) edit in place and are
-// written back into Toolpath::json with their original JSON type preserved -
-// depths stay strings (their sign convention is build-dependent, see the
-// format notes), cut_depth stays a number. Nested objects (tool, speeds,
-// *_pocket, finish_speeds) recurse; arrays and structural keys are skipped.
+class QListWidget;
+class QTableWidget;
+
 namespace c2d {
 
-class ToolpathPanel : public QTreeWidget
+class Canvas;
+class Document;
+
+// Toolpath browser + parameter editor. Lists the document's toolpaths; the
+// table flattens the selected toolpath's scalar parameters (top level plus
+// speeds.* and tool.*) into editable key/value rows. Edits keep each value's
+// original JSON type (CC stores depths as strings, rates as numbers) and go
+// through Canvas::editToolpath so they are undoable and saved back in place.
+class ToolpathPanel : public QWidget
 {
     Q_OBJECT
 public:
-    explicit ToolpathPanel(QWidget *parent = nullptr);
-    void setDocument(Document *doc);   // non-const: edits mutate Toolpath::json
-    void reload();
+    explicit ToolpathPanel(Canvas *canvas, QWidget *parent = nullptr);
+    void setDocument(Document *doc);
 
-signals:
-    void aboutToEdit();   // a valid change is about to be applied (undo hook)
-    void edited();        // a parameter was changed (and applied to the document)
-
-private slots:
-    void onItemChanged(QTreeWidgetItem *item, int column);
+public slots:
+    void refresh();               // re-read list + fields from the document
 
 private:
-    void addObjectRows(QTreeWidgetItem *parent, const QJsonObject &obj,
-                       int tpIndex, const QStringList &prefix);
+    void showToolpath(int row);
+    void onCellEdited(int row, int col);
 
+    Canvas *m_canvas;
     Document *m_doc = nullptr;
     bool m_loading = false;
+
+    QListWidget *m_list;
+    QTableWidget *m_table;
+    QString m_uuid;               // toolpath shown in the table
 };
 
 } // namespace c2d
