@@ -16,7 +16,7 @@ class Canvas : public QGraphicsView
 {
     Q_OBJECT
 public:
-    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath };
+    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText };
 
     explicit Canvas(QWidget *parent = nullptr);
     void setDocument(Document *doc);   // non-owning; nullptr clears
@@ -34,6 +34,7 @@ public:
     void moveElementBy(const QString &id, double dx, double dy);
     // Replace a toolpath's JSON payload (undoable; from the toolpath panel).
     void editToolpath(const QString &uuid, const QJsonObject &newJson);
+    QStringList selectedElementIds() const;
 
 signals:
     void documentChanged();            // element added / moved / deleted
