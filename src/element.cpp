@@ -194,6 +194,41 @@ Element Element::makePolygon(QPointF center, double r, int numSides,
     return fromJson(o);
 }
 
+Element Element::makePath(const QVector<QPointF> &vertices, bool closed,
+                          const QJsonObject &layer)
+{
+    // Paths carry no center/radius keys: absolute coords, position [0,0].
+    QJsonObject o;
+    o.insert("behavior", 0);
+    o.insert("geometryType", QStringLiteral("path"));
+    o.insert("group_id", QJsonArray());
+    o.insert("id", QUuid::createUuid().toString());
+    o.insert("layer", layer);
+    o.insert("position", xy(QPointF(0, 0)));
+    o.insert("tabs", QJsonArray());
+
+    QVector<QPointF> rows = vertices;
+    if (closed && !vertices.isEmpty()) {
+        rows.append(vertices.first());   // line back to start
+        rows.append(vertices.first());   // close row
+    }
+    QVector<QPointF> cp1, cp2;
+    QJsonArray ptype, smooth;
+    const int n = rows.size();
+    for (int i = 0; i < n; ++i) {
+        cp1.append(rows.at(qMax(0, i - 1)));
+        cp2.append(rows.at(i));
+        ptype.append(i == 0 ? 0 : (closed && i == n - 1 ? 4 : 1));
+        smooth.append(closed && i == n - 1 ? 1 : 0);
+    }
+    o.insert("points", xyList(rows));
+    o.insert("cp1", xyList(cp1));
+    o.insert("cp2", xyList(cp2));
+    o.insert("point_type", ptype);
+    o.insert("smooth", smooth);
+    return fromJson(o);
+}
+
 void Element::translate(double dx, double dy)
 {
     if (geometryType == QLatin1String("text")) {
