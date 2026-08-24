@@ -3,9 +3,11 @@
 #include "c2ddocument.h"
 
 #include <QHeaderView>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QListWidget>
+#include <QPushButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -99,6 +101,29 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_table->setAlternatingRowColors(true);
     lay->addWidget(m_table);
     connect(m_table, &QTableWidget::cellChanged, this, &ToolpathPanel::onCellEdited);
+
+    // Replace the toolpath's vector list with the canvas selection.
+    auto *assign = new QPushButton(QStringLiteral("Assign selected vectors"), this);
+    assign->setToolTip(QStringLiteral(
+        "Set this toolpath's vectors to the elements selected on the canvas"));
+    lay->addWidget(assign);
+    connect(assign, &QPushButton::clicked, this, [this] {
+        if (!m_doc || m_uuid.isEmpty())
+            return;
+        Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+        const QStringList ids = m_canvas->selectedElementIds();
+        if (!t || ids.isEmpty())
+            return;
+        QJsonArray arr;
+        for (const QString &id : ids) {
+            QJsonObject o;
+            o.insert(QStringLiteral("uuid"), id);
+            arr.append(o);
+        }
+        QJsonObject j = t->json;
+        j.insert(QStringLiteral("elements"), arr);
+        m_canvas->editToolpath(m_uuid, j);
+    });
 }
 
 void ToolpathPanel::setDocument(Document *doc)
@@ -117,8 +142,9 @@ void ToolpathPanel::refresh()
     if (m_doc) {
         int i = 0;
         for (const Toolpath &t : m_doc->toolpaths()) {
-            m_list->addItem(QStringLiteral("%1  [%2]")
-                                .arg(t.json.value("name").toString(), t.type));
+            m_list->addItem(QStringLiteral("%1  [%2] · %3 vectors")
+                                .arg(t.json.value("name").toString(), t.type)
+                                .arg(t.json.value("elements").toArray().size()));
             if (t.uuid == keep)
                 keepRow = i;
             ++i;
