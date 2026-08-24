@@ -5,7 +5,7 @@
 // A GRBL post-processor: turns an ordered list of CAM operations into plain
 // `.nc` g-code, matching the dialect Carbide Create's own "GRBL" post emits
 // (documented in shapeoko-c2d/docs/GCODE-AND-CRYPTO.md). This is the plaintext
-// path - the same kind of program CC hands to Carbide Motion - so its output can
+// path — the same kind of program CC hands to Carbide Motion — so its output can
 // drive a Shapeoko directly over serial with no .egc and no Carbide Motion.
 namespace c2d {
 
