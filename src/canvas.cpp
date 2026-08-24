@@ -124,6 +124,18 @@ private:
     Canvas *m_c; Document *m_d; Element m_before, m_after;
 };
 
+class TpEditCmd : public QUndoCommand
+{
+public:
+    TpEditCmd(Canvas *c, Document *d, const Toolpath &before, const Toolpath &after)
+        : m_c(c), m_d(d), m_before(before), m_after(after)
+    { setText(QStringLiteral("edit toolpath %1").arg(before.json.value("name").toString())); }
+    void redo() override { m_d->replaceToolpath(m_after); refresh(m_c); }
+    void undo() override { m_d->replaceToolpath(m_before); refresh(m_c); }
+private:
+    Canvas *m_c; Document *m_d; Toolpath m_before, m_after;
+};
+
 class MoveCmd : public QUndoCommand
 {
 public:
@@ -195,6 +207,63 @@ void Canvas::moveElementBy(const QString &id, double dx, double dy)
         return;
     if (m_doc->elementById(id))
         m_undo->push(new MoveCmd(this, m_doc, {{id, QPointF(dx, dy)}}));
+}
+
+void Canvas::editToolpath(const QString &uuid, const QJsonObject &newJson)
+{
+    if (!m_doc)
+        return;
+    Toolpath *t = m_doc->toolpathByUuid(uuid);
+    if (!t || t->json == newJson)
+        return;
+    Toolpath after = *t;
+    after.json = newJson;
+    m_undo->push(new TpEditCmd(this, m_doc, *t, after));
+}
+
+// Exactly one selected, parametrically resizable element? Handle sits at the
+// east point (circle/polygon) or the top-right corner (rectangle).
+bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
+{
+    if (!m_doc || m_tool != Select)
+        return false;
+    const auto sel = m_scene->selectedItems();
+    if (sel.size() != 1 || !sel.first()->data(0).isValid())
+        return false;
+    Element *e = const_cast<Document *>(m_doc)->elementById(sel.first()->data(0).toString());
+    if (!e)
+        return false;
+    const QJsonArray c = e->raw.value("center").toArray();
+    if (c.size() != 2)
+        return false;
+    const QPointF center(c.at(0).toDouble(), c.at(1).toDouble());
+    if (e->geometryType == QLatin1String("circle")
+        || e->geometryType == QLatin1String("regular_polygon")) {
+        *pos = center + QPointF(e->raw.value("radius").toDouble(), 0);
+    } else if (e->geometryType == QLatin1String("rectangle")) {
+        *pos = center + QPointF(e->raw.value("width").toDouble() / 2,
+                                e->raw.value("height").toDouble() / 2);
+    } else {
+        return false;
+    }
+    *id = e->id;
+    *type = e->geometryType;
+    return true;
+}
+
+void Canvas::drawForeground(QPainter *p, const QRectF &rect)
+{
+    QGraphicsView::drawForeground(p, rect);
+    QString id, type;
+    QPointF pos;
+    if (!m_resizing && !resizeHandle(&id, &pos, &type))
+        return;
+    if (m_resizing)
+        return;   // handle hidden while dragging; the preview shows the shape
+    const double s = 4.0 / qMax(1e-9, qAbs(transform().m11()));
+    p->setPen(QPen(QColor(0x1a, 0x1a, 0x1a), 0));
+    p->setBrush(kSelected);
+    p->drawRect(QRectF(pos.x() - s, pos.y() - s, 2 * s, 2 * s));
 }
 
 void Canvas::setDocument(Document *doc)
@@ -402,6 +471,30 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    // Resize-handle grab (Select mode, single selection).
+    if (m_tool == Select && event->button() == Qt::LeftButton) {
+        QString id, type;
+        QPointF hpos;
+        if (resizeHandle(&id, &hpos, &type)) {
+            const double tol = 8.0 / qMax(1e-9, qAbs(transform().m11()));
+            if (QLineF(mapToScene(event->pos()), hpos).length() <= tol) {
+                Element *e = m_doc->elementById(id);
+                const QJsonArray c = e->raw.value("center").toArray();
+                m_resizing = true;
+                m_resizeId = id;
+                m_resizeType = type;
+                m_resizeCenter = QPointF(c.at(0).toDouble(), c.at(1).toDouble());
+                QPen pen(kSelected);
+                pen.setCosmetic(true);
+                pen.setStyle(Qt::DashLine);
+                m_preview = m_scene->addPath(QPainterPath(), pen);
+                viewport()->update();
+                event->accept();
+                return;
+            }
+        }
+    }
+
     if (m_tool == DrawPath && m_doc && event->button() == Qt::LeftButton) {
         const QPointF pos = snap(mapToScene(event->pos()));
         // Clicking near the start point closes the path.
@@ -455,6 +548,24 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
     const QPointF cc = mapToScene(event->pos());
     emit cursorMoved(cc);
 
+    if (m_resizing && m_preview && m_doc) {
+        if (Element *e = m_doc->elementById(m_resizeId)) {
+            const QPointF cur = snap(cc);
+            QHash<QString, double> p;
+            if (m_resizeType == QLatin1String("rectangle")) {
+                p.insert("width",  qMax(0.2, 2 * qAbs(cur.x() - m_resizeCenter.x())));
+                p.insert("height", qMax(0.2, 2 * qAbs(cur.y() - m_resizeCenter.y())));
+                emit statusHint(tr("%1 × %2 mm").arg(p["width"], 0, 'f', 2).arg(p["height"], 0, 'f', 2));
+            } else {
+                p.insert("radius", qMax(0.1, QLineF(m_resizeCenter, cur).length()));
+                emit statusHint(tr("r = %1 mm").arg(p["radius"], 0, 'f', 2));
+            }
+            m_preview->setPath(Element::regen(*e, p).painterPath);
+        }
+        event->accept();
+        return;
+    }
+
     if ((m_drawing || (m_tool == DrawPath && !m_pathPts.isEmpty())) && m_preview) {
         const QPointF cur = snap(cc);
         m_preview->setPath(previewPath(cur));
@@ -482,6 +593,22 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_panning && event->button() == Qt::MiddleButton) {
         m_panning = false;
         viewport()->setCursor(m_tool == Select ? Qt::ArrowCursor : Qt::CrossCursor);
+        event->accept();
+        return;
+    }
+
+    if (m_resizing && m_doc) {
+        m_resizing = false;
+        if (m_preview) { m_scene->removeItem(m_preview); delete m_preview; m_preview = nullptr; }
+        const QPointF cur = snap(mapToScene(event->pos()));
+        QHash<QString, double> p;
+        if (m_resizeType == QLatin1String("rectangle")) {
+            p.insert("width",  qMax(0.2, 2 * qAbs(cur.x() - m_resizeCenter.x())));
+            p.insert("height", qMax(0.2, 2 * qAbs(cur.y() - m_resizeCenter.y())));
+        } else {
+            p.insert("radius", qMax(0.1, QLineF(m_resizeCenter, cur).length()));
+        }
+        editElement(m_resizeId, p);
         event->accept();
         return;
     }
