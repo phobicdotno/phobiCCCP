@@ -29,10 +29,16 @@ public:
     void zoomFit();
     void rebuild();                    // re-sync the scene from the document
 
+    // Numeric edits from the properties panel (undoable).
+    void editElement(const QString &id, const QHash<QString, double> &params);
+    void moveElementBy(const QString &id, double dx, double dy);
+
 signals:
     void documentChanged();            // element added / moved / deleted
     void statusHint(const QString &msg);
     void cursorMoved(QPointF ccPos);   // live mm position under the mouse
+    void zoomChanged(double percent);
+    void selectionChangedIds(const QStringList &ids);
 
 protected:
     void drawBackground(QPainter *painter, const QRectF &rect) override;
@@ -49,7 +55,8 @@ private:
     double gridSpacing() const;
     void finishPath(bool closed);
     void cancelDrawing();
-    void applySelectionStyle();
+    void onSelectionChanged();
+    void emitZoom();
 
     QGraphicsScene *m_scene;
     Document *m_doc = nullptr;
@@ -62,6 +69,8 @@ private:
     QVector<QPointF> m_pathPts;             // committed vertices (path tool)
     QGraphicsPathItem *m_preview = nullptr; // live outline while dragging
     bool m_fitted = false;                  // fitInView only on first load
+    bool m_panning = false;                 // middle-mouse pan
+    QPoint m_panLast;                       // viewport coords during pan
 };
 
 } // namespace c2d
