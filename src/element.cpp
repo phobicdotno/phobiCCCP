@@ -229,6 +229,37 @@ Element Element::makePath(const QVector<QPointF> &vertices, bool closed,
     return fromJson(o);
 }
 
+Element Element::regen(const Element &src, const QHash<QString, double> &p)
+{
+    const QJsonObject &r = src.raw;
+    const QJsonArray c = r.value("center").toArray();
+    const double cx = p.value("cx", c.size() == 2 ? c.at(0).toDouble() : 0);
+    const double cy = p.value("cy", c.size() == 2 ? c.at(1).toDouble() : 0);
+    const QJsonObject layer = r.value("layer").toObject();
+
+    Element e;
+    if (src.geometryType == QLatin1String("circle")) {
+        e = makeCircle({cx, cy}, p.value("radius", r.value("radius").toDouble()), layer);
+    } else if (src.geometryType == QLatin1String("rectangle")) {
+        e = makeRectangle({cx, cy},
+                          p.value("width", r.value("width").toDouble()),
+                          p.value("height", r.value("height").toDouble()), layer);
+    } else if (src.geometryType == QLatin1String("regular_polygon")) {
+        e = makePolygon({cx, cy},
+                        p.value("radius", r.value("radius").toDouble()),
+                        int(p.value("num_sides", r.value("num_sides").toDouble())), layer);
+    } else {
+        return src;   // path/text: no parametric regen
+    }
+
+    // Keep the original identity so toolpath references and undo stay stable.
+    QJsonObject o = e.raw;
+    o.insert("id", r.value("id"));
+    o.insert("group_id", r.value("group_id"));
+    o.insert("tabs", r.value("tabs"));
+    return fromJson(o);
+}
+
 void Element::translate(double dx, double dy)
 {
     if (geometryType == QLatin1String("text")) {
