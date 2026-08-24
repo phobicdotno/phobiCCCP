@@ -1,4 +1,5 @@
 #pragma once
+#include <QHash>
 #include <QJsonObject>
 #include <QPainterPath>
 #include <QString>
@@ -36,6 +37,13 @@ public:
     // Move the element by (dx, dy) mm: shifts position/center (or the text
     // transform's translation) in `raw` and rebuilds painterPath.
     void translate(double dx, double dy);
+
+    // Rebuild a closed shape's geometry from edited parameters, keeping its
+    // identity (id, layer, group_id, tabs). Recognized keys: cx, cy, radius,
+    // width, height, num_sides — unknown/irrelevant keys are ignored. Returns
+    // the source unchanged for geometry types without parametric regen
+    // (path, text — reposition those with translate()).
+    static Element regen(const Element &src, const QHash<QString, double> &p);
 
     QString id;
     QString geometryType;
