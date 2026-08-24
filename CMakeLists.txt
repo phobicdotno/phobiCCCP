@@ -18,6 +18,7 @@ add_executable(phobiccc
     src/mainwindow.cpp
     src/propertiespanel.cpp
     src/toolpathpanel.cpp
+    src/gcodeexport.cpp
     src/post_grbl.cpp
 )
 
