@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "propertiespanel.h"
+#include "toolpathpanel.h"
 
 #include <QApplication>
 #include <QFileInfo>
@@ -88,6 +89,12 @@ MainWindow::MainWindow(QWidget *parent)
     propsDock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, propsDock);
 
+    m_tp = new ToolpathPanel(m_canvas, this);
+    auto *tpDock = new QDockWidget(QStringLiteral("Toolpaths"), this);
+    tpDock->setWidget(m_tp);
+    tpDock->setFeatures(QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::RightDockWidgetArea, tpDock);
+
     m_info = new QPlainTextEdit(this);
     m_info->setReadOnly(true);
     m_info->setMaximumWidth(340);
@@ -95,6 +102,8 @@ MainWindow::MainWindow(QWidget *parent)
     dock->setWidget(m_info);
     dock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, dock);
+    tabifyDockWidget(tpDock, dock);   // Toolpaths / Document as tabs
+    tpDock->raise();
 
     connect(m_canvas, &Canvas::selectionChangedIds,
             m_props, &PropertiesPanel::setSelection);
@@ -205,6 +214,7 @@ MainWindow::MainWindow(QWidget *parent)
         updateTitle();
         refreshInfo();
         m_props->refresh();
+        m_tp->refresh();
         statusBar()->showMessage(QStringLiteral("Edited — Ctrl+S to save"));
     });
     connect(m_canvas, &Canvas::statusHint, this, [this](const QString &m) {
@@ -290,6 +300,7 @@ void MainWindow::openFile(const QString &path)
              << "params:" << m_doc.params().size();
     m_canvas->setDocument(&m_doc);
     m_props->setDocument(&m_doc);
+    m_tp->setDocument(&m_doc);
     m_dirty = false;
     updateTitle();
     refreshInfo();
