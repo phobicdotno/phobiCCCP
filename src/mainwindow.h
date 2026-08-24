@@ -22,6 +22,7 @@ private slots:
     void onOpen();
     void onSave();
     void onSaveAs();
+    void onExportGcode();
 
 private:
     void refreshInfo();
