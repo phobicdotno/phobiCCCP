@@ -1,7 +1,9 @@
 #include "element.h"
+#include <QFont>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QPointF>
+#include <QPolygonF>
 #include <QTransform>
 #include <QUuid>
 #include <QtMath>
@@ -176,16 +178,17 @@ Element Element::makeRectangle(QPointF center, double w, double h,
 }
 
 Element Element::makePolygon(QPointF center, double r, int numSides,
-                             const QJsonObject &layer)
+                             const QJsonObject &layer, double rotationDeg)
 {
     numSides = qMax(3, numSides);
     QJsonObject o = shapeCommon(QStringLiteral("regular_polygon"), 2, center, layer);
     o.insert("radius", r);
     o.insert("num_sides", numSides);
-    o.insert("rotation", 0);
+    o.insert("rotation", rotationDeg);
+    const double rot = qDegreesToRadians(rotationDeg);
     QVector<QPointF> rows;
     for (int i = 0; i < numSides; ++i) {
-        const double a = 2.0 * M_PI * i / numSides;   // vertex 0 at (r, 0), CCW
+        const double a = 2.0 * M_PI * i / numSides + rot;   // vertex 0 at rotation, CCW
         rows.append(QPointF(r * qCos(a), r * qSin(a)));
     }
     rows.append(rows.first());   // line back to start
@@ -229,6 +232,54 @@ Element Element::makePath(const QVector<QPointF> &vertices, bool closed,
     return fromJson(o);
 }
 
+Element Element::makeText(const QString &text, QPointF pos, double heightMm,
+                          const QString &family, const QJsonObject &layer)
+{
+    // Render glyph outlines in local Y-up space with the baseline at y = 0,
+    // sized so the ascent equals heightMm, then flatten to CC's contour list.
+    const int px = qMax(4, int(qRound(heightMm * 4)));   // oversample 4x for smooth curves
+    QFont font(family);
+    font.setPixelSize(px);
+    QPainterPath gp;
+    gp.addText(0, 0, font, text);
+    const double scale = heightMm / double(px);
+    QTransform local;
+    local.scale(scale, -scale);          // Qt text is Y-down; CC is Y-up
+    const QPainterPath up = local.map(gp);
+
+    QJsonArray rendered;
+    const auto polys = up.toSubpathPolygons();
+    for (const QPolygonF &poly : polys) {
+        QJsonArray contour;
+        for (const QPointF &v : poly)
+            contour.append(xy(v));
+        rendered.append(contour);
+    }
+
+    QJsonObject o;
+    o.insert("alignment", 0);
+    o.insert("arc_angle_offset", 0);
+    o.insert("arc_center", xy(up.boundingRect().center() + pos));
+    o.insert("arc_enabled", false);
+    o.insert("arc_radius", 25.4);
+    o.insert("arc_text_on_bottom", false);
+    o.insert("font", family);
+    o.insert("font_height", heightMm);
+    o.insert("geometryType", QStringLiteral("text"));
+    o.insert("group_id", QJsonArray());
+    o.insert("id", QUuid::createUuid().toString());
+    o.insert("layer", layer);
+    o.insert("position", xy(QPointF(0, 0)));
+    o.insert("qtfont", font.toString());
+    o.insert("rendered", rendered);
+    o.insert("spacing", 1);
+    o.insert("tabs", QJsonArray());
+    o.insert("text", text);
+    // Row-major 3x3, translation in [6],[7] — places the baseline-left at pos.
+    o.insert("transform", QJsonArray{1, 0, 0, 0, 1, 0, pos.x(), pos.y(), 1});
+    return fromJson(o);
+}
+
 Element Element::regen(const Element &src, const QHash<QString, double> &p)
 {
     const QJsonObject &r = src.raw;
@@ -247,7 +298,8 @@ Element Element::regen(const Element &src, const QHash<QString, double> &p)
     } else if (src.geometryType == QLatin1String("regular_polygon")) {
         e = makePolygon({cx, cy},
                         p.value("radius", r.value("radius").toDouble()),
-                        int(p.value("num_sides", r.value("num_sides").toDouble())), layer);
+                        int(p.value("num_sides", r.value("num_sides").toDouble())), layer,
+                        p.value("rotation", r.value("rotation").toDouble()));
     } else {
         return src;   // path/text: no parametric regen
     }
