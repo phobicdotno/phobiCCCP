@@ -42,7 +42,10 @@ fidelity using the identical Qt calls CC uses.
       (36/36 elements byte-identical, SQLite integrity ok); `src/c2ddocument.cpp`
 - [x] **GRBL post-processor** emitting plaintext `.nc` in CC's own dialect
       (`src/post_grbl.{h,cpp}`) — the Carbide-Motion-free machine path
-- [ ] Geometry editing (move/scale/create) — mutate `Element::raw`, then save
+- [x] Geometry editing — drag to move (rubber-band or click select,
+      middle-button pan), Edit menu scale/add circle/add rectangle/delete;
+      every edit mutates `Element::raw` so save round-trips it. Headless
+      checks in `tests/test_geometry.cpp` (`-DPHOBICCC_TESTS=ON`)
 - [ ] Toolpath-parameter editing (all 7 types are captured as JSON already)
 - [ ] CAM: compute cutter paths → feed the GRBL post (Tier 2)
 

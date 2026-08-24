@@ -33,6 +33,11 @@ public:
     const QVector<Element> &elements() const { return m_elements; }
     const QVector<Toolpath> &toolpaths() const { return m_toolpaths; }
 
+    // Editing: mutable element access (geometry edits), append, remove.
+    QVector<Element> &elements() { return m_elements; }
+    void addElement(const Element &e) { m_elements.append(e); }
+    void removeElement(int index) { m_elements.remove(index); }
+
     double boardWidth()  const { return m_params.value("width", "0").toDouble(); }
     double boardHeight() const { return m_params.value("height", "0").toDouble(); }
     bool displayMm()     const { return m_params.value("display_mm") == "1"; }

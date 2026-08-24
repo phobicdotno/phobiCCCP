@@ -22,3 +22,16 @@ add_executable(phobiccc
 target_link_libraries(phobiccc PRIVATE Qt6::Widgets Qt6::Sql ZLIB::ZLIB)
 
 install(TARGETS phobiccc RUNTIME DESTINATION bin)
+
+# Headless geometry/round-trip checks: -DPHOBICCC_TESTS=ON, then run
+# build/test_geometry [sample.c2d]
+option(PHOBICCC_TESTS "Build the headless test binary" OFF)
+if(PHOBICCC_TESTS)
+    add_executable(test_geometry
+        tests/test_geometry.cpp
+        src/zlibutil.cpp
+        src/c2ddocument.cpp
+        src/element.cpp
+    )
+    target_link_libraries(test_geometry PRIVATE Qt6::Gui Qt6::Sql ZLIB::ZLIB)
+endif()

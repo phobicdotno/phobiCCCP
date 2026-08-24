@@ -16,14 +16,23 @@ public:
 
 private slots:
     void onOpen();
+    void onSave();
     void onSaveAs();
+    void onElementMoved(int index, QPointF delta);
+    void onScaleSelected();
+    void onAddCircle();
+    void onAddRectangle();
+    void onDeleteSelected();
 
 private:
     void refreshInfo();
+    void setDirty(bool dirty);
+    bool requireSelection(QList<int> *indices);
 
     Canvas *m_canvas;
     QPlainTextEdit *m_info;   // params + item summary sidebar
     Document m_doc;
+    bool m_dirty = false;
 };
 
 } // namespace c2d
