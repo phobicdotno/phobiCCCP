@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include <QApplication>
 #include <QDebug>
+#include <QJsonArray>
 #include <QPalette>
 #include <QStyleFactory>
 
@@ -67,7 +68,23 @@ static int selftest(const QString &in, const QString &out)
     qInfo() << "selftest: before =" << before
             << "after reload =" << check.elements().size()
             << "toolpaths =" << check.toolpaths().size();
-    return check.elements().size() == before + 5 ? 0 : 4;
+    if (check.elements().size() != before + 5)
+        return 4;
+
+    // Parametric edit: regen must change geometry but keep the identity.
+    for (const c2d::Element &e : check.elements()) {
+        if (e.geometryType == QLatin1String("circle")
+            && e.raw.value("center").toArray().at(1).toDouble() == 100.0) {
+            const c2d::Element r =
+                c2d::Element::regen(e, {{QStringLiteral("radius"), 30.0}});
+            const bool ok = r.id == e.id
+                            && r.raw.value("radius").toDouble() == 30.0
+                            && r.painterPath.boundingRect().width() > 59.0;
+            qInfo() << "selftest regen:" << (ok ? "OK" : "FAILED");
+            return ok ? 0 : 5;
+        }
+    }
+    return 6;
 }
 
 int main(int argc, char *argv[])
