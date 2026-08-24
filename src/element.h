@@ -2,6 +2,7 @@
 #include <QJsonObject>
 #include <QPainterPath>
 #include <QString>
+#include <QVector>
 
 // A drawing element (items.type = 'element'). Parsed from the decompressed J1
 // JSON payload into a Qt-native QPainterPath in CC's coordinate space
@@ -26,6 +27,11 @@ public:
                                  const QJsonObject &layer);
     static Element makePolygon(QPointF center, double radius, int numSides,
                                const QJsonObject &layer);
+    // Straight-segment path from clicked vertices (absolute mm coordinates,
+    // position [0,0] as CC writes paths). `closed` appends the return-to-start
+    // and close rows.
+    static Element makePath(const QVector<QPointF> &vertices, bool closed,
+                            const QJsonObject &layer);
 
     // Move the element by (dx, dy) mm: shifts position/center (or the text
     // transform's translation) in `raw` and rebuilds painterPath.
