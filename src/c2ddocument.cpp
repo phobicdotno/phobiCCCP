@@ -3,7 +3,6 @@
 
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSqlDatabase>
@@ -13,31 +12,6 @@
 #include <QVariant>
 
 namespace c2d {
-
-QByteArray Toolpath::toJson() const
-{
-    return QJsonDocument(json).toJson(QJsonDocument::Indented);
-}
-
-void Document::removeElement(int index)
-{
-    if (index < 0 || index >= m_elements.size())
-        return;
-    const QString id = m_elements.at(index).id;
-    m_elements.remove(index);
-
-    // Strip dangling references: CC requires every toolpath elements[].uuid
-    // to resolve to an element row.
-    for (Toolpath &tp : m_toolpaths) {
-        const QJsonArray refs = tp.json.value(QStringLiteral("elements")).toArray();
-        QJsonArray kept;
-        for (const QJsonValue &r : refs)
-            if (r.toObject().value(QStringLiteral("uuid")).toString() != id)
-                kept.append(r);
-        if (kept.size() != refs.size())
-            tp.json.insert(QStringLiteral("elements"), kept);
-    }
-}
 
 bool Document::load(const QString &path, QString *error)
 {
@@ -134,10 +108,9 @@ bool Document::save(const QString &destPath, QString *error)
 
         db.transaction();
 
-        // 2) Drop existing element and toolpath rows (layer/model/groups untouched).
+        // 2) Drop existing element rows (toolpaths/layer/model untouched).
         QSqlQuery del(db);
-        if (!del.exec(QStringLiteral(
-                "DELETE FROM items WHERE type IN ('element','toolpath')"))) {
+        if (!del.exec(QStringLiteral("DELETE FROM items WHERE type='element'"))) {
             if (error) *error = del.lastError().text();
             ok = false;
         }
@@ -165,23 +138,20 @@ bool Document::save(const QString &destPath, QString *error)
             }
         }
 
-        // 3b) Re-insert each toolpath the same way (items.name mirrors the type).
+        // 3b) Write edited toolpath parameters back in place. Same uuid, same
+        //     row — only sz/data change, so group membership and ordering keep.
         if (ok) {
-            QSqlQuery ins(db);
-            ins.prepare(QStringLiteral(
-                "INSERT INTO items(uuid,name,type,version,sz,data) "
-                "VALUES(?,?,?,?,?,?)"));
+            QSqlQuery tpq(db);
+            tpq.prepare(QStringLiteral(
+                "UPDATE items SET sz=?, data=? WHERE uuid=? AND type='toolpath'"));
             for (const Toolpath &t : m_toolpaths) {
-                const QByteArray json = t.toJson();
-                const QByteArray comp = zlibDeflate(json);
-                ins.addBindValue(t.uuid);
-                ins.addBindValue(t.type);
-                ins.addBindValue(QStringLiteral("toolpath"));
-                ins.addBindValue(QStringLiteral("J1"));
-                ins.addBindValue(json.size());
-                ins.addBindValue(comp);
-                if (!ins.exec()) {
-                    if (error) *error = ins.lastError().text();
+                const QByteArray json =
+                    QJsonDocument(t.json).toJson(QJsonDocument::Indented);
+                tpq.addBindValue(json.size());
+                tpq.addBindValue(zlibDeflate(json));
+                tpq.addBindValue(t.uuid);
+                if (!tpq.exec()) {
+                    if (error) *error = tpq.lastError().text();
                     ok = false;
                     break;
                 }
