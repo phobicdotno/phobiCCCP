@@ -13,6 +13,11 @@
 
 namespace c2d {
 
+QByteArray Toolpath::toJson() const
+{
+    return QJsonDocument(json).toJson(QJsonDocument::Indented);
+}
+
 bool Document::load(const QString &path, QString *error)
 {
     m_params.clear();
@@ -108,9 +113,10 @@ bool Document::save(const QString &destPath, QString *error)
 
         db.transaction();
 
-        // 2) Drop existing element rows (toolpaths/layer/model untouched).
+        // 2) Drop existing element and toolpath rows (layer/model/groups untouched).
         QSqlQuery del(db);
-        if (!del.exec(QStringLiteral("DELETE FROM items WHERE type='element'"))) {
+        if (!del.exec(QStringLiteral(
+                "DELETE FROM items WHERE type IN ('element','toolpath')"))) {
             if (error) *error = del.lastError().text();
             ok = false;
         }
@@ -127,6 +133,29 @@ bool Document::save(const QString &destPath, QString *error)
                 ins.addBindValue(e.id);
                 ins.addBindValue(e.geometryType);       // items.name mirrors the type
                 ins.addBindValue(QStringLiteral("element"));
+                ins.addBindValue(QStringLiteral("J1"));
+                ins.addBindValue(json.size());
+                ins.addBindValue(comp);
+                if (!ins.exec()) {
+                    if (error) *error = ins.lastError().text();
+                    ok = false;
+                    break;
+                }
+            }
+        }
+
+        // 3b) Re-insert each toolpath the same way (items.name mirrors the type).
+        if (ok) {
+            QSqlQuery ins(db);
+            ins.prepare(QStringLiteral(
+                "INSERT INTO items(uuid,name,type,version,sz,data) "
+                "VALUES(?,?,?,?,?,?)"));
+            for (const Toolpath &t : m_toolpaths) {
+                const QByteArray json = t.toJson();
+                const QByteArray comp = zlibDeflate(json);
+                ins.addBindValue(t.uuid);
+                ins.addBindValue(t.type);
+                ins.addBindValue(QStringLiteral("toolpath"));
                 ins.addBindValue(QStringLiteral("J1"));
                 ins.addBindValue(json.size());
                 ins.addBindValue(comp);

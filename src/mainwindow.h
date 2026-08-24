@@ -7,6 +7,8 @@ class QPlainTextEdit;
 
 namespace c2d {
 
+class ToolpathPanel;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -30,7 +32,8 @@ private:
     bool requireSelection(QList<int> *indices);
 
     Canvas *m_canvas;
-    QPlainTextEdit *m_info;   // params + item summary sidebar
+    QPlainTextEdit *m_info;      // params + item summary sidebar
+    ToolpathPanel *m_toolpaths;  // editable toolpath parameters
     Document m_doc;
     bool m_dirty = false;
 };

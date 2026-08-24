@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "toolpathpanel.h"
 
 #include <QApplication>
 #include <QDockWidget>
@@ -28,6 +29,12 @@ MainWindow::MainWindow(QWidget *parent)
     auto *dock = new QDockWidget(QStringLiteral("Document"), this);
     dock->setWidget(m_info);
     addDockWidget(Qt::RightDockWidgetArea, dock);
+
+    m_toolpaths = new ToolpathPanel(this);
+    connect(m_toolpaths, &ToolpathPanel::edited, this, [this] { setDirty(true); });
+    auto *tpDock = new QDockWidget(QStringLiteral("Toolpaths"), this);
+    tpDock->setWidget(m_toolpaths);
+    addDockWidget(Qt::LeftDockWidgetArea, tpDock);
 
     // addAction(text, receiver, method, shortcut) — argument order that is
     // stable across Qt6 minor versions (the (text, shortcut, …) overload is newer).
@@ -114,6 +121,7 @@ void MainWindow::openFile(const QString &path)
         return;
     }
     m_canvas->setDocument(&m_doc);
+    m_toolpaths->setDocument(&m_doc);
     refreshInfo();
     setDirty(false);
     statusBar()->showMessage(path);

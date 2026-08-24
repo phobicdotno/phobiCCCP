@@ -16,6 +16,7 @@ add_executable(phobiccc
     src/element.cpp
     src/canvas.cpp
     src/mainwindow.cpp
+    src/toolpathpanel.cpp
     src/post_grbl.cpp
 )
 

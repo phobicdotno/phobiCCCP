@@ -46,7 +46,10 @@ fidelity using the identical Qt calls CC uses.
       middle-button pan), Edit menu scale/add circle/add rectangle/delete;
       every edit mutates `Element::raw` so save round-trips it. Headless
       checks in `tests/test_geometry.cpp` (`-DPHOBICCC_TESTS=ON`)
-- [ ] Toolpath-parameter editing (all 7 types are captured as JSON already)
+- [x] Toolpath-parameter editing — Toolpaths dock lists every toolpath with
+      editable parameters (nested `tool`/`speeds` included); values keep
+      their original JSON type, so depth strings stay strings. Saved via
+      the same delete-and-reinsert recipe as elements
 - [ ] CAM: compute cutter paths → feed the GRBL post (Tier 2)
 
 ## Roadmap

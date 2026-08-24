@@ -147,6 +147,18 @@ int main(int argc, char *argv[])
         doc.addElement(c2d::Element::makeCircle(
             QPointF(doc.boardWidth() / 2, doc.boardHeight() / 2), 4));
 
+        // Toolpath-parameter edit: a nested number and a depth string (which
+        // must stay a string — its sign convention is build-dependent).
+        const int nTp = doc.toolpaths().size();
+        check(nTp > 0, "sample has toolpaths");
+        {
+            c2d::Toolpath &tp = doc.toolpaths()[0];
+            QJsonObject speeds = tp.json.value("speeds").toObject();
+            speeds.insert("feedrate", 1234);
+            tp.json.insert("speeds", speeds);
+            tp.json.insert("end_depth", QStringLiteral("9.999"));
+        }
+
         const QString dst = QDir::temp().filePath(QStringLiteral("phobiccc_test.c2d"));
         QFile::remove(dst);
         check(doc.save(dst, &err), "save edited c2d");
@@ -160,6 +172,16 @@ int main(int argc, char *argv[])
         check(approx(bb1.center().x(), bb0.center().x() + 5, 1e-3) &&
               approx(bb1.center().y(), bb0.center().y() + 5, 1e-3),
               "translation survives round trip");
+
+        check(doc2.toolpaths().size() == nTp, "toolpath count preserved");
+        {
+            const QJsonObject &tj = doc2.toolpaths()[0].json;
+            check(tj.value("speeds").toObject().value("feedrate").toDouble() == 1234,
+                  "toolpath feedrate survives round trip");
+            const QJsonValue depth = tj.value("end_depth");
+            check(depth.isString() && depth.toString() == QLatin1String("9.999"),
+                  "toolpath depth stays a string");
+        }
         QFile::remove(dst);
     } else {
         std::fprintf(stderr, "note: no .c2d passed, Document round trip skipped\n");
