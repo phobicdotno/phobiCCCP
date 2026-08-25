@@ -18,16 +18,21 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     void openFile(const QString &path);
 
+protected:
+    void closeEvent(QCloseEvent *event) override;
+
 private slots:
     void onOpen();
     void onSave();
     void onSaveAs();
     void onExportGcode();
+    void onSendToGrbl();
 
 private:
     void refreshInfo();
-
     void updateTitle();
+    bool maybeSave();       // false = user cancelled, abort the pending action
+    QString buildGcode();   // export dialog plumbing shared by file/serial paths
 
     Canvas *m_canvas;
     QPlainTextEdit *m_info;      // params + item summary sidebar

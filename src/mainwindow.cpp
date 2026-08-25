@@ -1,9 +1,11 @@
 #include "mainwindow.h"
 #include "gcodeexport.h"
+#include "machinedialog.h"
 #include "propertiespanel.h"
 #include "toolpathpanel.h"
 
 #include <QApplication>
+#include <QCloseEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QDockWidget>
@@ -136,7 +138,8 @@ MainWindow::MainWindow(QWidget *parent)
                         &MainWindow::onExportGcode,
                         QKeySequence(Qt::CTRL | Qt::Key_G));
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
+    // Exit routes through close() so the unsaved-changes guard always runs.
+    fileMenu->addAction(QStringLiteral("E&xit"), this, &MainWindow::close,
                         QKeySequence::Quit);
 
     // Edit menu: undo/redo backed by the canvas undo stack.
@@ -147,6 +150,11 @@ MainWindow::MainWindow(QWidget *parent)
     redoAct->setShortcut(QKeySequence::Redo);
     editMenu->addAction(undoAct);
     editMenu->addAction(redoAct);
+
+    // Machine menu: stream the generated program over USB serial.
+    auto *machineMenu = menuBar()->addMenu(QStringLiteral("&Machine"));
+    machineMenu->addAction(QStringLiteral("Send to &GRBL…"), this,
+                           &MainWindow::onSendToGrbl);
 
     // Vector tools: vertical icon palette on the left, like a real CAD app.
     auto *palette = new QToolBar(QStringLiteral("Tools"), this);
@@ -244,21 +252,38 @@ MainWindow::MainWindow(QWidget *parent)
     statusBar()->showMessage(QStringLiteral("Open a .c2d file to begin"));
 }
 
-void MainWindow::onExportGcode()
+QString MainWindow::buildGcode()
 {
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code"),
                                  QStringLiteral("Open a .c2d file first."));
-        return;
+        return {};
     }
     const GcodeResult r = exportGcode(m_doc);
     if (r.done.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code"),
-            QStringLiteral("No exportable toolpaths.\n\nSupported today: contour "
-                           "(no offset) and drilling.\nSkipped:\n  %1")
+            QStringLiteral("No exportable toolpaths.\n\nSupported: contour, "
+                           "cutout, pocket and drilling.\nSkipped:\n  %1")
                 .arg(r.skipped.join(QStringLiteral("\n  "))));
-        return;
+        return {};
     }
+    // Warnings (e.g. holding tabs not generated) need an explicit dismissal:
+    // the part coming loose mid-cut is not a status-bar-grade message.
+    if (!r.warnings.isEmpty())
+        QMessageBox::warning(this, QStringLiteral("G-code warnings"),
+                             r.warnings.join(QStringLiteral("\n")));
+    QString msg = QStringLiteral("Generated %1 toolpath(s)").arg(r.done.size());
+    if (!r.skipped.isEmpty())
+        msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
+    statusBar()->showMessage(msg, 8000);
+    return r.gcode;
+}
+
+void MainWindow::onExportGcode()
+{
+    const QString gcode = buildGcode();
+    if (gcode.isEmpty())
+        return;
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export G-code"),
         QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
@@ -270,13 +295,44 @@ void MainWindow::onExportGcode()
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
     }
-    f.write(r.gcode.toUtf8());
+    f.write(gcode.toUtf8());
     f.close();
-    QString msg = QStringLiteral("Exported %1 toolpath(s) to %2")
-                      .arg(r.done.size()).arg(path);
-    if (!r.skipped.isEmpty())
-        msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
-    statusBar()->showMessage(msg, 8000);
+    statusBar()->showMessage(QStringLiteral("Exported %1").arg(path), 8000);
+}
+
+void MainWindow::onSendToGrbl()
+{
+    const QString gcode = buildGcode();
+    if (gcode.isEmpty())
+        return;
+    MachineDialog dlg(gcode, this);
+    dlg.exec();
+}
+
+bool MainWindow::maybeSave()
+{
+    if (!m_dirty)
+        return true;
+    const auto ret = QMessageBox::warning(
+        this, QStringLiteral("Unsaved changes"),
+        QStringLiteral("The document has unsaved changes.\nSave them?"),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (ret == QMessageBox::Cancel)
+        return false;
+    if (ret == QMessageBox::Save) {
+        onSave();
+        return !m_dirty;   // save may have failed or been refused
+    }
+    return true;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (maybeSave())
+        event->accept();
+    else
+        event->ignore();
 }
 
 void MainWindow::updateTitle()
@@ -290,6 +346,8 @@ void MainWindow::updateTitle()
 
 void MainWindow::onOpen()
 {
+    if (!maybeSave())
+        return;
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open Carbide Create file"), {},
         QStringLiteral("Carbide Create (*.c2d);;All files (*)"));

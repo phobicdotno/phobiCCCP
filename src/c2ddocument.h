@@ -1,6 +1,7 @@
 #pragma once
 #include "element.h"
 #include <QHash>
+#include <QJsonArray>
 #include <QString>
 #include <QVector>
 
@@ -35,10 +36,25 @@ public:
     const QVector<Toolpath> &toolpaths() const { return m_toolpaths; }
 
     void addElement(const Element &e) { m_elements.append(e); }
+    void addToolpath(const Toolpath &t) { m_toolpaths.append(t); }
     bool removeElementById(const QString &id)
     {
         for (int i = 0; i < m_elements.size(); ++i)
-            if (m_elements.at(i).id == id) { m_elements.removeAt(i); return true; }
+            if (m_elements.at(i).id == id) {
+                m_elements.removeAt(i);
+                // Strip the reference from every toolpath: CC requires each
+                // elements[].uuid to resolve to an element row.
+                for (Toolpath &t : m_toolpaths) {
+                    const QJsonArray refs = t.json.value("elements").toArray();
+                    QJsonArray kept;
+                    for (const QJsonValue &r : refs)
+                        if (r.toObject().value("uuid").toString() != id)
+                            kept.append(r);
+                    if (kept.size() != refs.size())
+                        t.json.insert(QStringLiteral("elements"), kept);
+                }
+                return true;
+            }
         return false;
     }
     Element *elementById(const QString &id)

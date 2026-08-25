@@ -6,8 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Sql)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Sql SerialPort)
 find_package(ZLIB REQUIRED)
+
+# Vendored Clipper2 (polygon clipping/offsetting), release 2.0.1.
+add_library(clipper2 STATIC
+    third_party/clipper2/src/clipper.engine.cpp
+    third_party/clipper2/src/clipper.offset.cpp
+    third_party/clipper2/src/clipper.rectclip.cpp
+    third_party/clipper2/src/clipper.triangulation.cpp
+)
+target_include_directories(clipper2 PUBLIC third_party/clipper2/include)
 
 add_executable(phobiccc
     src/main.cpp
@@ -20,8 +29,28 @@ add_executable(phobiccc
     src/toolpathpanel.cpp
     src/gcodeexport.cpp
     src/post_grbl.cpp
+    src/grblsender.cpp
+    src/machinedialog.cpp
 )
 
-target_link_libraries(phobiccc PRIVATE Qt6::Widgets Qt6::Sql ZLIB::ZLIB)
+target_link_libraries(phobiccc PRIVATE Qt6::Widgets Qt6::Sql Qt6::SerialPort
+                                       ZLIB::ZLIB clipper2)
 
 install(TARGETS phobiccc RUNTIME DESTINATION bin)
+
+# Headless CAM/protocol checks: -DPHOBICCC_TESTS=ON, then run
+# build/test_geometry [sample.c2d]
+option(PHOBICCC_TESTS "Build the headless test binary" OFF)
+if(PHOBICCC_TESTS)
+    add_executable(test_geometry
+        tests/test_geometry.cpp
+        src/zlibutil.cpp
+        src/c2ddocument.cpp
+        src/element.cpp
+        src/gcodeexport.cpp
+        src/post_grbl.cpp
+        src/grblsender.cpp
+    )
+    target_link_libraries(test_geometry PRIVATE Qt6::Gui Qt6::Sql
+                                                ZLIB::ZLIB clipper2)
+endif()

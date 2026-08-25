@@ -4,10 +4,18 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QPainterPathStroker>
 #include <QPolygonF>
 
+#include <clipper2/clipper.h>
+
+#include <cmath>
+
 namespace c2d {
+
+using namespace Clipper2Lib;
+
+// Clipper2 works in int64; 1000 units per mm keeps 1 um resolution.
+static constexpr double kScale = 1000.0;
 
 // Depth values are strings whose sign convention flipped between CC builds
 // (843 stores "-19.126", 853 stores "19.126" for the same cut). Machine Z is
@@ -34,50 +42,44 @@ static void closeLoop(QPolygonF &poly)
         poly.append(poly.first());
 }
 
-// Geometric offsetting with Qt path booleans: stroking the region boundary
-// with width 2·delta gives a band from -delta..+delta around it; subtracting
-// the band insets the region, uniting it outsets. Round joins approximate the
-// true tool-radius offset.
-static QPainterPath offsetBand(const QPainterPath &region, double delta)
+// Referenced closed vectors as a normalized Clipper2 region. EvenOdd matches
+// Qt's default OddEvenFill, so holes (reversed subpaths) survive.
+static Paths64 regionOf(const QVector<const Element *> &elems)
 {
-    QPainterPathStroker st;
-    st.setWidth(2 * delta);
-    st.setJoinStyle(Qt::RoundJoin);
-    st.setCapStyle(Qt::RoundCap);
-    return st.createStroke(region);
-}
-
-static QList<QPolygonF> insetRings(const QPainterPath &region, double delta)
-{
-    QList<QPolygonF> out;
-    const QPainterPath inner =
-        region.subtracted(offsetBand(region, delta)).simplified();
-    for (QPolygonF p : inner.toSubpathPolygons())
-        if (p.size() > 2)
-            out.append(p);
-    return out;
-}
-
-static QList<QPolygonF> outsetRings(const QPainterPath &region, double delta)
-{
-    QList<QPolygonF> out;
-    const QPainterPath outer =
-        region.united(offsetBand(region, delta)).simplified();
-    for (QPolygonF p : outer.toSubpathPolygons())
-        if (p.size() > 2)
-            out.append(p);
-    return out;
-}
-
-// Union of the referenced closed vectors as a filled region.
-static QPainterPath regionOf(const QVector<const Element *> &elems)
-{
-    QPainterPath r;
+    Paths64 raw;
     for (const Element *e : elems) {
-        QPainterPath p = e->painterPath;
-        r = r.isEmpty() ? p : r.united(p);
+        for (const QPolygonF &poly : e->painterPath.toSubpathPolygons()) {
+            Path64 p;
+            p.reserve(size_t(poly.size()));
+            for (const QPointF &pt : poly)
+                p.push_back(Point64(llround(pt.x() * kScale),
+                                    llround(pt.y() * kScale)));
+            if (p.size() >= 3)
+                raw.push_back(p);
+        }
     }
-    return r.simplified();
+    return Union(raw, FillRule::EvenOdd);
+}
+
+// Robust polygon offset: delta > 0 outsets, < 0 insets; empty when the
+// region vanishes.
+static QList<QPolygonF> offsetRings(const Paths64 &region, double deltaMm)
+{
+    QList<QPolygonF> out;
+    if (region.empty())
+        return out;
+    const Paths64 shifted =
+        InflatePaths(region, deltaMm * kScale, JoinType::Round,
+                     EndType::Polygon, 2.0, kScale * 0.01);
+    for (const Path64 &ring : shifted) {
+        QPolygonF p;
+        p.reserve(int(ring.size()));
+        for (const Point64 &pt : ring)
+            p.append(QPointF(double(pt.x) / kScale, double(pt.y) / kScale));
+        if (p.size() > 2)
+            out.append(p);
+    }
+    return out;
 }
 
 GcodeResult exportGcode(Document &doc)
@@ -94,9 +96,10 @@ GcodeResult exportGcode(Document &doc)
         const QString name = j.value("name").toString();
 
         const bool contour = (t.type == QLatin1String("contour"));
+        const bool cutout = (t.type == QLatin1String("cutout"));
         const bool pocket = (t.type == QLatin1String("pocket_toolpath"));
         const bool drilling = (t.type == QLatin1String("drilling_toolpath"));
-        if (!contour && !pocket && !drilling) {
+        if (!contour && !cutout && !pocket && !drilling) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -108,8 +111,14 @@ GcodeResult exportGcode(Document &doc)
         const int rpm = int(speeds.value("rpm").toDouble(10000));
         const int toolNo = int(j.value("tool").toObject().value("number").toDouble(0));
         const double zTop = depthToZ(j.value("start_depth"));
-        const double zBot = depthToZ(j.value("end_depth"));
-        const double stepdown = qMax(0.05, j.value("stepdown").toDouble(1.0));
+        // cutout stores its depth as bare numbers, not the start/end strings.
+        const double zBot = cutout && j.contains(QStringLiteral("cut_depth"))
+            ? -qAbs(j.value("cut_depth").toDouble())
+            : depthToZ(j.value("end_depth"));
+        double stepdown = j.value("stepdown").toDouble(1.0);
+        if (cutout && j.contains(QStringLiteral("depth_per_pass")))
+            stepdown = j.value("depth_per_pass").toDouble(stepdown);
+        stepdown = qMax(0.05, stepdown);
 
         const QVector<const Element *> elems = referenced(doc, j);
         if (elems.isEmpty()) {
@@ -124,33 +133,37 @@ GcodeResult exportGcode(Document &doc)
         ops.append(Op::comment(name));
         ops.append(Op::spindle(rpm));
 
-        if (contour || pocket) {
+        if (contour || cutout || pocket) {
             const double toolR =
                 j.value("tool").toObject().value("diameter").toDouble(6) / 2.0;
             const double stepover = qMax(0.1, j.value("stepover").toDouble(toolR));
-            const int dir = j.value("ofset_dir").toInt(0);
+            const double stl = j.value("stock_to_leave").toDouble(0);
+            // contour: ofset_dir -1 inside / 0 follow / 1 outside.
+            // cutout has no ofset_dir: outside unless flipped.
+            int dir = j.value("ofset_dir").toInt(0);
+            if (cutout)
+                dir = j.value("flip_inside_outside").toBool(false) ? -1 : 1;
 
             // Collect the loops to cut (identical at every depth pass).
             QList<QPolygonF> rings;
-            if (contour && dir == 0) {
+            if ((contour || cutout) && dir == 0) {
                 // Follow each vector as-is: closed subpaths already end at
                 // their start point; open polylines are engraved open.
                 for (const Element *e : elems)
                     for (const QPolygonF &p : e->painterPath.toSubpathPolygons())
                         if (p.size() >= 2)
                             rings.append(p);
-            } else if (contour) {
-                const QPainterPath region = regionOf(elems);
-                rings = dir > 0 ? outsetRings(region, toolR)
-                                : insetRings(region, toolR);
+            } else if (contour || cutout) {
+                rings = offsetRings(regionOf(elems),
+                                    dir > 0 ? toolR + stl : -(toolR + stl));
                 for (QPolygonF &p : rings)
                     closeLoop(p);
             } else { // pocket: inset by tool radius, then step inward until dry
-                const QPainterPath region = regionOf(elems);
+                const Paths64 region = regionOf(elems);
                 QList<QList<QPolygonF>> shells;
-                double delta = toolR;
+                double delta = toolR + stl;
                 while (shells.size() < 500) {
-                    const QList<QPolygonF> s = insetRings(region, delta);
+                    const QList<QPolygonF> s = offsetRings(region, -delta);
                     if (s.isEmpty())
                         break;
                     shells.append(s);
@@ -169,6 +182,15 @@ GcodeResult exportGcode(Document &doc)
                 ops.removeLast();   // comment
                 continue;
             }
+
+            // Holding tabs are not generated yet: warn when the toolpath
+            // expects them, because the part comes loose at full depth.
+            if ((contour || cutout) && !j.value("ignore_tabs").toBool(false)
+                && j.value("tab_height").toDouble() > 0)
+                res.warnings << QStringLiteral(
+                                    "%1: holding tabs NOT generated; the part "
+                                    "will come loose at full depth")
+                                    .arg(name);
 
             double z = zTop;
             bool more = true;
