@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QTimer>
@@ -424,6 +425,170 @@ int main(int argc, char *argv[])
             qInfo().noquote() << (ok ? "JOG_TEST_OK" : "JOG_TEST_INCONCLUSIVE");
             grbl.disconnectPort();
             QCoreApplication::exit(ok ? 0 : 2);
+        });
+        return app.exec();
+    }
+
+    // --grbl-aircut <port> <template.c2d> [lift_mm]: the first full-program
+    // hardware stream, as a rehearsal. Builds a compact two-pocket demo from
+    // the template's container (elements replaced, extra toolpaths disabled),
+    // exports real g-code, applies the air-cut transform (spindle stripped,
+    // every Z lifted), then: home -> jog to a known clear spot -> zero there
+    // -> stream. The whole program spans <90 mm XY and rides 7-13 mm ABOVE
+    // work zero, which itself sits 30 mm below the homed Z top — safe air
+    // everywhere on any Shapeoko. Spindle is never started.
+    if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--grbl-aircut") {
+        const QString port = QString::fromLocal8Bit(argv[2]);
+        const QString tmpl = QString::fromLocal8Bit(argv[3]);
+        const double lift = argc == 5 ? QByteArray(argv[4]).toDouble() : 10.0;
+
+        c2d::Document doc;
+        QString err;
+        if (!doc.load(tmpl, &err)) { qWarning() << "load failed:" << err; return 1; }
+        if (doc.toolpaths().isEmpty()) { qWarning() << "template has no toolpaths"; return 1; }
+        while (!doc.elements().isEmpty())
+            doc.removeElementById(doc.elements().first().id);
+        const QJsonObject layer = doc.defaultLayer();
+        doc.addElement(c2d::Element::makeCircle({20, 20}, 8, layer));
+        doc.addElement(c2d::Element::makeRectangle({60, 25}, 30, 20, layer));
+        {
+            const QVector<c2d::Toolpath> tps = doc.toolpaths();
+            for (int i = 0; i < tps.size(); ++i) {
+                c2d::Toolpath t = tps.at(i);
+                QJsonObject j = t.json;
+                if (i == 0) {
+                    j.insert("name", QStringLiteral("aircut_demo"));
+                    j.insert("end_depth", QStringLiteral("-3.0"));
+                    QJsonArray refs;
+                    for (const c2d::Element &e : doc.elements())
+                        refs.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
+                    j.insert("elements", refs);
+                    j.insert("enabled", true);
+                } else {
+                    j.insert("enabled", false);
+                }
+                t.json = j;
+                doc.replaceToolpath(t);
+            }
+        }
+        const c2d::GcodeResult r = c2d::exportGcode(doc);
+        if (r.done.isEmpty()) { qWarning() << "nothing exported:" << r.skipped; return 1; }
+        QStringList lines = c2d::airCutTransform(
+            r.gcode.split(QChar('\n'), Qt::SkipEmptyParts), lift);
+        for (int i = lines.size() - 1; i >= 0; --i)   // headless: no M0 pauses
+            if (lines.at(i).startsWith(QLatin1String("M0 ")))
+                lines.removeAt(i);
+        qInfo().noquote() << QStringLiteral("program: %1 lines, Z lift %2 mm, spindle stripped")
+                                 .arg(lines.size()).arg(lift);
+        qInfo().noquote() << c2d::statsSummary(c2d::computeStats(r.ops));
+
+        c2d::GrblStreamer grbl;
+        // One line in flight at a time: burst writes through usbip have been
+        // seen to stall the link; an air rehearsal doesn't need throughput.
+        grbl.setConservative(true);
+        // Phases: 0 boot, 1 homing, 2 jog Z-30, 3 jog X-100 Y-100, 4 zero,
+        // 5 streaming. Transitions on repeated Idle status after a dwell.
+        int phase = 0;
+        int idleStreak = 0;
+        int lastPct = -1;
+        QElapsedTimer phaseTimer;
+        phaseTimer.start();
+        QString lastState;
+        double mpx = 0, mpy = 0, mpz = 0;
+        auto advance = [&](int p, const QString &msg) {
+            phase = p;
+            idleStreak = 0;
+            phaseTimer.restart();
+            qInfo().noquote() << msg;
+        };
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine, &app,
+                         [](const QString &l) {
+            if (l != QLatin1String("ok"))
+                qInfo().noquote() << "RX:" << l;
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred, &app,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::progressChanged, &app,
+                         [&](int a, int t) {
+            const int pct = t > 0 ? a * 100 / t : 0;
+            if (pct / 10 != lastPct / 10) {
+                lastPct = pct;
+                qInfo().noquote() << QStringLiteral("progress %1%% (%2/%3)  MPos %4,%5,%6")
+                                         .arg(pct).arg(a).arg(t)
+                                         .arg(mpx, 0, 'f', 1).arg(mpy, 0, 'f', 1)
+                                         .arg(mpz, 0, 'f', 1);
+            }
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, &app,
+                         [&](bool okStream) {
+            qInfo().noquote() << QStringLiteral("final MPos %1,%2,%3")
+                                     .arg(mpx, 0, 'f', 3).arg(mpy, 0, 'f', 3)
+                                     .arg(mpz, 0, 'f', 3);
+            qInfo().noquote() << (okStream ? "AIRCUT_OK" : "AIRCUT_FAILED");
+            grbl.disconnectPort();
+            QCoreApplication::exit(okStream ? 0 : 2);
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport, &app,
+                         [&](const QString &stt, double x, double y, double z) {
+            mpx = x; mpy = y; mpz = z;
+            if (stt != lastState) {
+                lastState = stt;
+                qInfo().noquote() << QStringLiteral("STATE: %1  MPos %2,%3,%4")
+                                         .arg(stt).arg(x, 0, 'f', 2)
+                                         .arg(y, 0, 'f', 2).arg(z, 0, 'f', 2);
+            }
+            idleStreak = (stt == QLatin1String("Idle")) ? idleStreak + 1 : 0;
+            switch (phase) {
+            case 1:   // homing: reports pause during $H; Idle again = done
+                if (phaseTimer.elapsed() > 5000 && idleStreak >= 3) {
+                    advance(2, QStringLiteral("homed — jog Z-30 for headroom"));
+                    grbl.sendCommand(QStringLiteral("$J=G91 Z-30 F500"));
+                }
+                break;
+            case 2:
+                if (phaseTimer.elapsed() > 1500 && idleStreak >= 3) {
+                    advance(3, QStringLiteral("jog X-100 Y-100 into the work area"));
+                    grbl.sendCommand(QStringLiteral("$J=G91 X-100 Y-100 F2000"));
+                }
+                break;
+            case 3:
+                if (phaseTimer.elapsed() > 1500 && idleStreak >= 3) {
+                    advance(4, QStringLiteral("zeroing work coordinates here"));
+                    grbl.sendCommand(QStringLiteral("G10 L20 P1 X0 Y0 Z0"));
+                    QTimer::singleShot(800, &grbl, [&] {
+                        advance(5, QStringLiteral("== streaming air-cut program =="));
+                        grbl.startStream(lines);
+                    });
+                }
+                break;
+            default:
+                break;
+            }
+        });
+        if (!grbl.connectPort(port))
+            return 1;
+        qInfo().noquote() << "connected — unlock, then home";
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$X")); });
+        QTimer::singleShot(3000, &grbl, [&] {
+            advance(1, QStringLiteral("homing ($H)…"));
+            grbl.sendCommand(QStringLiteral("$H"));
+        });
+        // Ack-stall watchdog: if GRBL goes silent mid-stream, abort loudly
+        // instead of hanging forever.
+        auto *stallTimer = new QTimer(&app);
+        stallTimer->setInterval(2000);
+        QObject::connect(stallTimer, &QTimer::timeout, &app, [&] {
+            if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000) {
+                qWarning().noquote() << "STALL: no ack for 10 s — aborting";
+                grbl.stopStream();
+                QCoreApplication::exit(4);
+            }
+        });
+        stallTimer->start();
+        QTimer::singleShot(15 * 60 * 1000, &app, [&] {
+            qWarning() << "timeout — soft reset";
+            grbl.stopStream();
+            QCoreApplication::exit(3);
         });
         return app.exec();
     }
