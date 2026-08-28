@@ -242,6 +242,48 @@ int main(int argc, char *argv[])
         return app.exec();
     }
 
+    // --grbl-jog-z1 <port>: the first authorized MOTION test — unlock ($X)
+    // and jog Z UP by exactly 1 mm at a gentle F200 via the same $J= command
+    // the Machine panel's jog button emits. Verifies motion end-to-end by
+    // watching MPos change. Spindle untouched.
+    if (argc == 3 && QByteArray(argv[1]) == "--grbl-jog-z1") {
+        c2d::GrblStreamer grbl;
+        double firstZ = 0, lastZ = 0;
+        bool haveFirst = false;
+        QString lastState;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport,
+                         [&](const QString &st, double, double, double z) {
+            if (!haveFirst) { firstZ = z; haveFirst = true; }
+            lastZ = z;
+            if (st != lastState) {
+                lastState = st;
+                qInfo().noquote() << "STATE:" << st << " Z =" << z;
+            }
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        qInfo().noquote() << "connected — unlocking, then jog Z+1 @ F200";
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$X")); });
+        QTimer::singleShot(3500, &grbl, [&] {
+            grbl.sendCommand(QStringLiteral("$J=G91 Z1 F200"));
+        });
+        QTimer::singleShot(9000, &app, [&] {
+            const double dz = lastZ - firstZ;
+            qInfo().noquote() << QStringLiteral("Z start %1  end %2  moved %3 mm")
+                                     .arg(firstZ, 0, 'f', 3).arg(lastZ, 0, 'f', 3)
+                                     .arg(dz, 0, 'f', 3);
+            const bool ok = qAbs(dz - 1.0) < 0.05;
+            qInfo().noquote() << (ok ? "JOG_TEST_OK" : "JOG_TEST_INCONCLUSIVE");
+            grbl.disconnectPort();
+            QCoreApplication::exit(ok ? 0 : 2);
+        });
+        return app.exec();
+    }
+
     // --export <in.c2d> <out.nc>: headless g-code export (CLI/scripting).
     if (argc == 4 && QByteArray(argv[1]) == "--export") {
         c2d::Document doc;
