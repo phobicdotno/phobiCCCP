@@ -320,6 +320,12 @@ void MainWindow::refreshPreview()
     statusBar()->showMessage(msg, 6000);
 }
 
+void MainWindow::showToolpathPreview()
+{
+    m_previewAct->setChecked(true);
+    refreshPreview();
+}
+
 void MainWindow::updateTitle()
 {
     QString t = QStringLiteral("phobicCC");
