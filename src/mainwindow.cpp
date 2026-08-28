@@ -215,6 +215,21 @@ MainWindow::MainWindow(QWidget *parent)
     fitAct->setToolTip(QStringLiteral("Zoom to fit board  (F)"));
     connect(fitAct, &QAction::triggered, this, [this] { m_canvas->zoomFit(); });
 
+    m_previewAct = tb->addAction(toolIcon(QStringLiteral("gcode")),
+                                 QStringLiteral("Preview"));
+    m_previewAct->setCheckable(true);
+    m_previewAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_P));
+    m_previewAct->setToolTip(QStringLiteral(
+        "Show the generated toolpath on the canvas — rapids dashed, cuts "
+        "colored shallow→deep  (Ctrl+P)"));
+    connect(m_previewAct, &QAction::toggled, this, [this](bool on) {
+        if (!on) {
+            m_canvas->clearToolpathPreview();
+            return;
+        }
+        refreshPreview();
+    });
+
     tb->addSeparator();
     tb->addAction(undoAct);
     tb->addAction(redoAct);
@@ -243,6 +258,8 @@ MainWindow::MainWindow(QWidget *parent)
         refreshInfo();
         m_props->refresh();
         m_tp->refresh();
+        if (m_previewAct->isChecked())
+            refreshPreview();
         statusBar()->showMessage(QStringLiteral("Edited — Ctrl+S to save"));
     });
     connect(m_canvas, &Canvas::statusHint, this, [this](const QString &m) {
@@ -285,6 +302,20 @@ void MainWindow::onExportGcode()
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
     statusBar()->showMessage(msg, 8000);
+}
+
+void MainWindow::refreshPreview()
+{
+    if (m_doc.filePath().isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Open a .c2d file first"));
+        return;
+    }
+    const GcodeResult r = exportGcode(m_doc);
+    m_canvas->setToolpathPreview(r.ops);
+    QString msg = QStringLiteral("Preview: %1 toolpath(s)").arg(r.done.size());
+    if (!r.skipped.isEmpty())
+        msg += QStringLiteral(" — skipped: %1").arg(r.skipped.join(QStringLiteral(", ")));
+    statusBar()->showMessage(msg, 6000);
 }
 
 void MainWindow::updateTitle()
