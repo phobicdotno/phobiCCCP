@@ -5,6 +5,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QJsonArray>
+#include <QRegularExpression>
 #include <QTimer>
 #include <functional>
 #include <QPalette>
@@ -193,7 +194,34 @@ static int selftest(const QString &in, const QString &out)
         && g2.gcode.size() > g.gcode.size();
     qInfo() << "selftest keyhole/texture/vcarve:" << (g2Ok ? "OK" : "FAILED")
             << "done =" << g2.done << "skipped =" << g2.skipped;
-    return g2Ok ? 0 : 12;
+    if (!g2Ok)
+        return 12;
+
+    // Air-cut transform + job stats: spindle lines must vanish, the deepest Z
+    // must rise by exactly the lift, and the stats must see real cutting.
+    const c2d::JobStats st = c2d::computeStats(g2.ops);
+    const QStringList plain = g2.gcode.split(QChar('\n'), Qt::SkipEmptyParts);
+    const QStringList aired = c2d::airCutTransform(plain, 10.0);
+    auto minZof = [](const QStringList &ls) {
+        static const QRegularExpression re(QStringLiteral("Z(-?[0-9]+\\.?[0-9]*)"));
+        double mn = 1e18;
+        for (const QString &l : ls) {
+            if (l.startsWith(QChar('(')))
+                continue;
+            auto it = re.globalMatch(l);
+            while (it.hasNext())
+                mn = qMin(mn, it.next().captured(1).toDouble());
+        }
+        return mn;
+    };
+    const double dz = minZof(aired) - minZof(plain);
+    const bool airOk = aired.filter(QStringLiteral("M03")).isEmpty()
+        && aired.filter(QStringLiteral("M05")).isEmpty()
+        && qAbs(dz - 10.0) < 1e-3
+        && st.hasBounds && st.cutLen > 100 && st.timeSec > 10;
+    qInfo() << "selftest aircut/stats:" << (airOk ? "OK" : "FAILED")
+            << "dz =" << dz << "cut mm =" << st.cutLen << "est s =" << st.timeSec;
+    return airOk ? 0 : 13;
 }
 
 int main(int argc, char *argv[])
