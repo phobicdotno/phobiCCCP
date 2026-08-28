@@ -578,14 +578,200 @@ int main(int argc, char *argv[])
         auto *stallTimer = new QTimer(&app);
         stallTimer->setInterval(2000);
         QObject::connect(stallTimer, &QTimer::timeout, &app, [&] {
-            if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000) {
-                qWarning().noquote() << "STALL: no ack for 10 s — aborting";
+            // A giant arc's ok only arrives once the WHOLE arc has squeezed
+            // through the 15-block planner — minutes for a metre-scale G2. A
+            // late ack is a stall only when the machine isn't moving either.
+            if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000
+                && lastState != QLatin1String("Run")
+                && lastState != QLatin1String("Hold")) {
+                qWarning().noquote() << "STALL: no ack for 10 s while idle — aborting";
                 grbl.stopStream();
                 QCoreApplication::exit(4);
             }
         });
         stallTimer->start();
         QTimer::singleShot(15 * 60 * 1000, &app, [&] {
+            qWarning() << "timeout — soft reset";
+            grbl.stopStream();
+            QCoreApplication::exit(3);
+        });
+        return app.exec();
+    }
+
+    // --grbl-circle <port> [feed]: sweep the largest circle that fits the
+    // machine's actual travel. Homes, reads $130/$131 (X/Y max travel) from
+    // the controller itself, zeroes at the home pull-off, then runs one full
+    // G2 circle (two half arcs) centered in the envelope with a 15 mm rail
+    // margin. Z never moves — the whole sweep happens at the homed Z top.
+    if ((argc == 3 || argc == 4) && QByteArray(argv[1]) == "--grbl-circle") {
+        const QString port = QString::fromLocal8Bit(argv[2]);
+        const double feed = argc == 4 ? QByteArray(argv[3]).toDouble() : 3000.0;
+        const double kMargin = 15.0;
+
+        c2d::GrblStreamer grbl;
+        grbl.setConservative(true);
+        int phase = 0;
+        int idleStreak = 0;
+        QElapsedTimer phaseTimer;
+        phaseTimer.start();
+        QString lastState;
+        double mpx = 0, mpy = 0, mpz = 0;
+        double travelX = 0, travelY = 0;
+        double zeroMx = 0, zeroMy = 0;   // MPos where work zero was set
+        auto advance = [&](int p, const QString &msg) {
+            phase = p;
+            idleStreak = 0;
+            phaseTimer.restart();
+            qInfo().noquote() << msg;
+        };
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine, &app,
+                         [&](const QString &l) {
+            if (l == QLatin1String("ok"))
+                return;
+            qInfo().noquote() << "RX:" << l;
+            if (l.startsWith(QLatin1String("$130=")))
+                travelX = l.mid(5).toDouble();
+            else if (l.startsWith(QLatin1String("$131=")))
+                travelY = l.mid(5).toDouble();
+            else if (l.startsWith(QLatin1String("Grbl ")) && phase >= 3) {
+                qWarning().noquote() << "controller RESET mid-program — aborting";
+                grbl.stopStream();
+                grbl.disconnectPort();
+                QCoreApplication::exit(6);
+            }
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred, &app,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, &app,
+                         [&](bool okStream) {
+            if (!okStream) {
+                qInfo().noquote() << "CIRCLE_FAILED";
+                grbl.disconnectPort();
+                QCoreApplication::exit(2);
+                return;
+            }
+            // Acks mean queued, not done — disconnecting now would toggle DTR
+            // and reset the controller mid-sweep. Wait for Idle instead.
+            advance(6, QStringLiteral("program buffered — sweeping…"));
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport, &app,
+                         [&](const QString &stt, double x, double y, double z) {
+            mpx = x; mpy = y; mpz = z;
+            if (stt != lastState) {
+                lastState = stt;
+                qInfo().noquote() << QStringLiteral("STATE: %1  MPos %2,%3,%4")
+                                         .arg(stt).arg(x, 0, 'f', 2)
+                                         .arg(y, 0, 'f', 2).arg(z, 0, 'f', 2);
+            }
+            idleStreak = (stt == QLatin1String("Idle")) ? idleStreak + 1 : 0;
+            switch (phase) {
+            case 1:   // homing done -> ask the controller for its travel
+                if (phaseTimer.elapsed() > 5000 && idleStreak >= 3) {
+                    advance(2, QStringLiteral("homed — reading $$ settings"));
+                    grbl.sendCommand(QStringLiteral("$$"));
+                }
+                break;
+            case 2:
+                if (phaseTimer.elapsed() > 2500) {
+                    if (travelX < 100 || travelY < 100) {
+                        qWarning().noquote()
+                            << QStringLiteral("could not read travel ($130=%1 $131=%2)")
+                                   .arg(travelX).arg(travelY);
+                        grbl.disconnectPort();
+                        QCoreApplication::exit(5);
+                        return;
+                    }
+                    zeroMx = mpx;
+                    zeroMy = mpy;
+                    advance(3, QStringLiteral("travel %1 x %2 mm — zeroing at pull-off")
+                                   .arg(travelX).arg(travelY));
+                    grbl.sendCommand(QStringLiteral("G10 L20 P1 X0 Y0 Z0"));
+                    QTimer::singleShot(800, &grbl, [&] {
+                        // Envelope in work coords: MPos in [-travel, 0] and
+                        // work = MPos - zeroM, so center and radius are:
+                        const double cx = -travelX / 2.0 - zeroMx;
+                        const double cy = -travelY / 2.0 - zeroMy;
+                        const double r =
+                            qMin(travelX, travelY) / 2.0 - kMargin;
+                        qInfo().noquote()
+                            << QStringLiteral("circle: center %1,%2  radius %3 mm "
+                                              "(diameter %4) at F%5")
+                                   .arg(cx, 0, 'f', 1).arg(cy, 0, 'f', 1)
+                                   .arg(r, 0, 'f', 1).arg(2 * r, 0, 'f', 1)
+                                   .arg(feed, 0, 'f', 0);
+                        auto n3 = [](double v) {
+                            return QString::number(v, 'f', 3);
+                        };
+                        // Eight 45° arcs, not two half-circles: the controller
+                        // was seen hard-resetting when a second metre-scale G2
+                        // arrived while the planner was saturated. Smaller
+                        // tangent-continuous arcs keep the sweep one smooth
+                        // circle with a steady ack cadence.
+                        QStringList lines;
+                        lines << QStringLiteral("G90") << QStringLiteral("G21")
+                              << QStringLiteral("G0X%1Y%2")
+                                     .arg(n3(cx + r), n3(cy));
+                        for (int k = 1; k <= 8; ++k) {
+                            const double a0 = -(k - 1) * M_PI / 4.0;
+                            const double a1 = -k * M_PI / 4.0;
+                            const double sx = cx + r * qCos(a0);
+                            const double sy = cy + r * qSin(a0);
+                            const double ex = cx + r * qCos(a1);
+                            const double ey = cy + r * qSin(a1);
+                            QString ln = QStringLiteral("G2X%1Y%2I%3J%4")
+                                             .arg(n3(ex), n3(ey),
+                                                  n3(cx - sx), n3(cy - sy));
+                            if (k == 1)
+                                ln += QStringLiteral("F%1").arg(n3(feed));
+                            lines << ln;
+                        }
+                        lines << QStringLiteral("G0X%1Y%2").arg(n3(cx), n3(cy))
+                              << QStringLiteral("M02");
+                        advance(5, QStringLiteral("== sweeping the circle =="));
+                        grbl.startStream(lines);
+                    });
+                }
+                break;
+            case 6:   // motion drain: Idle again = the sweep is done
+                if (phaseTimer.elapsed() > 2000 && idleStreak >= 3) {
+                    phase = 7;
+                    qInfo().noquote() << QStringLiteral("final MPos %1,%2,%3")
+                                             .arg(mpx, 0, 'f', 3)
+                                             .arg(mpy, 0, 'f', 3)
+                                             .arg(mpz, 0, 'f', 3);
+                    qInfo().noquote() << "CIRCLE_OK";
+                    grbl.disconnectPort();
+                    QCoreApplication::exit(0);
+                }
+                break;
+            default:
+                break;
+            }
+        });
+        if (!grbl.connectPort(port))
+            return 1;
+        qInfo().noquote() << "connected — unlock, then home";
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$X")); });
+        QTimer::singleShot(3000, &grbl, [&] {
+            advance(1, QStringLiteral("homing ($H)…"));
+            grbl.sendCommand(QStringLiteral("$H"));
+        });
+        auto *stallTimer = new QTimer(&app);
+        stallTimer->setInterval(2000);
+        QObject::connect(stallTimer, &QTimer::timeout, &app, [&] {
+            // A giant arc's ok only arrives once the WHOLE arc has squeezed
+            // through the 15-block planner — minutes for a metre-scale G2. A
+            // late ack is a stall only when the machine isn't moving either.
+            if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000
+                && lastState != QLatin1String("Run")
+                && lastState != QLatin1String("Hold")) {
+                qWarning().noquote() << "STALL: no ack for 10 s while idle — aborting";
+                grbl.stopStream();
+                QCoreApplication::exit(4);
+            }
+        });
+        stallTimer->start();
+        QTimer::singleShot(10 * 60 * 1000, &app, [&] {
             qWarning() << "timeout — soft reset";
             grbl.stopStream();
             QCoreApplication::exit(3);
