@@ -221,7 +221,46 @@ static int selftest(const QString &in, const QString &out)
         && st.hasBounds && st.cutLen > 100 && st.timeSec > 10;
     qInfo() << "selftest aircut/stats:" << (airOk ? "OK" : "FAILED")
             << "dz =" << dz << "cut mm =" << st.cutLen << "est s =" << st.timeSec;
-    return airOk ? 0 : 13;
+    if (!airOk)
+        return 13;
+
+    // Arc fitting: an outside contour around the stage-1 rectangle gets
+    // round-joined corners from the offsetter; the fitter must emit them as a
+    // few G2/G3 arcs, not 1 mm G1 chatter.
+    QString rectId;
+    for (const c2d::Element &e : check2.elements())
+        if (e.geometryType == QLatin1String("rectangle"))
+            rectId = e.id;
+    c2d::Toolpath rp = base;
+    QJsonObject ro = rp.json;
+    ro.insert("type", QStringLiteral("contour"));
+    ro.insert("ofset_dir", 1);
+    ro.insert("uuid", QStringLiteral("{fab-rect-outside}"));
+    ro.insert("name", QStringLiteral("rp"));
+    ro.insert("end_depth", QStringLiteral("-2.0"));
+    ro.insert("elements", QJsonArray{QJsonObject{{QStringLiteral("uuid"), rectId}}});
+    rp.json = ro;
+    rp.type = QStringLiteral("contour");
+    rp.uuid = ro.value("uuid").toString();
+    check2.addToolpath(rp);
+    const c2d::GcodeResult g4 = c2d::exportGcode(check2);
+    int nArc = 0, nFeed = 0;
+    bool inSection = false;
+    for (const c2d::Op &op : g4.ops) {
+        if (op.kind == c2d::Op::Comment) {
+            inSection = (op.text == QLatin1String("rp"));
+            continue;
+        }
+        if (!inSection)
+            continue;
+        if (op.kind == c2d::Op::Arc)  ++nArc;
+        if (op.kind == c2d::Op::Feed) ++nFeed;
+    }
+    const bool fitOk = !rectId.isEmpty() && g4.done.contains(QStringLiteral("rp"))
+        && nArc >= 4 && nFeed < nArc * 8;
+    qInfo() << "selftest arcfit:" << (fitOk ? "OK" : "FAILED")
+            << "arcs =" << nArc << "feeds =" << nFeed;
+    return fitOk ? 0 : 14;
 }
 
 int main(int argc, char *argv[])
