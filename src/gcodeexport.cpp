@@ -10,6 +10,11 @@
 #include <QtMath>
 #include <algorithm>
 
+#ifdef HAVE_CLIPPER2
+#include <clipper2/clipper.h>
+namespace C2 = Clipper2Lib;
+#endif
+
 namespace c2d {
 
 // Depth values are strings whose sign convention flipped between CC builds
@@ -31,16 +36,120 @@ static QVector<const Element *> referenced(Document &doc, const QJsonObject &tp)
     return out;
 }
 
-static void closeLoop(QPolygonF &poly)
+[[maybe_unused]] static void closeLoop(QPolygonF &poly)
 {
     if (poly.size() > 2 && poly.first() != poly.last())
         poly.append(poly.first());
 }
 
-// Geometric offsetting with Qt path booleans: stroking the region boundary
-// with width 2·delta gives a band from -delta..+delta around it; subtracting
-// the band insets the region, uniting it outsets. Round joins approximate the
-// true tool-radius offset.
+#ifdef HAVE_CLIPPER2
+// ---- exact geometry backend (Clipper2) ----------------------------------
+static const double kScale = 1000.0;   // integer µm
+
+static C2::Path64 toPath64(const QPolygonF &poly)
+{
+    C2::Path64 p;
+    const int n = poly.isClosed() ? poly.size() - 1 : poly.size();
+    p.reserve(size_t(n));
+    for (int i = 0; i < n; ++i)
+        p.push_back(C2::Point64(qRound64(poly.at(i).x() * kScale),
+                                qRound64(poly.at(i).y() * kScale)));
+    return p;
+}
+
+static QPolygonF fromPath64(const C2::Path64 &p)
+{
+    QPolygonF out;
+    out.reserve(int(p.size()) + 1);
+    for (const C2::Point64 &pt : p)
+        out.append(QPointF(pt.x / kScale, pt.y / kScale));
+    if (out.size() > 2)
+        out.append(out.first());
+    return out;
+}
+
+static C2::Paths64 pathsOfRegion(const QPainterPath &region)
+{
+    C2::Paths64 ps;
+    for (const QPolygonF &poly : region.toSubpathPolygons())
+        if (poly.size() > 2)
+            ps.push_back(toPath64(poly));
+    return ps;
+}
+
+// Union of the referenced closed vectors as a filled region (even-odd, so
+// nested vectors become holes/islands exactly as CC treats them).
+static QPainterPath regionOf(const QVector<const Element *> &elems)
+{
+    C2::Paths64 subj;
+    for (const Element *e : elems)
+        for (const QPolygonF &poly : e->painterPath.toSubpathPolygons())
+            if (poly.size() > 2)
+                subj.push_back(toPath64(poly));
+    const C2::Paths64 u = C2::Union(subj, C2::FillRule::EvenOdd);
+    QPainterPath r;
+    r.setFillRule(Qt::OddEvenFill);
+    for (const C2::Path64 &p : u)
+        r.addPolygon(fromPath64(p));
+    return r;
+}
+
+static QList<QPolygonF> ringsFromPaths(const C2::Paths64 &paths)
+{
+    QList<QPolygonF> out;
+    for (const C2::Path64 &p : paths)
+        if (p.size() > 2)
+            out.append(fromPath64(p));
+    return out;
+}
+
+static QList<QPolygonF> insetRings(const QPainterPath &region, double delta)
+{
+    return ringsFromPaths(C2::InflatePaths(pathsOfRegion(region), -delta * kScale,
+                                           C2::JoinType::Round, C2::EndType::Polygon,
+                                           2.0, 10.0));
+}
+
+static QList<QPolygonF> outsetRings(const QPainterPath &region, double delta)
+{
+    return ringsFromPaths(C2::InflatePaths(pathsOfRegion(region), delta * kScale,
+                                           C2::JoinType::Round, C2::EndType::Polygon,
+                                           2.0, 10.0));
+}
+
+// Connected components via Clipper2's polytree: each top-level polygon plus
+// its immediate holes is one machinable pocket; islands nested inside holes
+// start new components.
+static void collectComponents(const C2::PolyPath64 &node, QList<QPainterPath> &out)
+{
+    QPainterPath comp;
+    comp.setFillRule(Qt::OddEvenFill);
+    comp.addPolygon(fromPath64(node.Polygon()));
+    for (const auto &hole : node) {
+        comp.addPolygon(fromPath64(hole->Polygon()));
+        for (const auto &nested : *hole)
+            collectComponents(*nested, out);
+    }
+    out.append(comp);
+}
+
+static QList<QPainterPath> components(const QPainterPath &region)
+{
+    C2::Clipper64 c;
+    c.AddSubject(pathsOfRegion(region));
+    C2::PolyTree64 tree;
+    c.Execute(C2::ClipType::Union, C2::FillRule::EvenOdd, tree);
+    QList<QPainterPath> out;
+    for (const auto &child : tree)
+        collectComponents(*child, out);
+    return out;
+}
+
+#else
+// ---- approximate geometry backend (Qt path booleans) ---------------------
+// Stroking the region boundary with width 2·delta gives a band from
+// -delta..+delta around it; subtracting the band insets the region, uniting
+// it outsets. Round joins approximate the true tool-radius offset.
 static QPainterPath offsetBand(const QPainterPath &region, double delta)
 {
     QPainterPathStroker st;
@@ -122,6 +231,7 @@ static QList<QPainterPath> components(const QPainterPath &region)
     }
     return comp.values();
 }
+#endif // HAVE_CLIPPER2
 
 // Circular-ring detection: every vertex equidistant from the vertex centroid,
 // letting the ring go out as two G2/G3 half arcs instead of line segments.
@@ -650,6 +760,7 @@ GcodeResult exportGcode(Document &doc)
     }
 
     res.gcode = GrblPost(true).generate(ops);
+    res.ops = ops;
     return res;
 }
 
