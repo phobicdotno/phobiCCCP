@@ -19,6 +19,7 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     void openFile(const QString &path);
+    void showToolpathPreview();   // enable the overlay (used by --shot)
 
 private slots:
     void onOpen();
