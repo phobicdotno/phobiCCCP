@@ -297,8 +297,10 @@ void MainWindow::onExportGcode()
     }
     f.write(r.gcode.toUtf8());
     f.close();
-    QString msg = QStringLiteral("Exported %1 toolpath(s) to %2")
-                      .arg(r.done.size()).arg(path);
+    QString msg = QStringLiteral("Exported %1 toolpath(s) to %2   [%3]")
+                      .arg(r.done.size()).arg(path)
+                      .arg(statsSummary(computeStats(r.ops))
+                               .replace(QChar('\n'), QStringLiteral("  ·  ")));
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
     statusBar()->showMessage(msg, 8000);
