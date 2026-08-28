@@ -3,12 +3,15 @@
 #include "c2ddocument.h"
 
 #include <QHeaderView>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QUuid>
 #include <QVBoxLayout>
 
 namespace c2d {
@@ -124,6 +127,119 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
         j.insert(QStringLiteral("elements"), arr);
         m_canvas->editToolpath(m_uuid, j);
     });
+
+    // V-carve inlay: generate the mirrored male from the selected female.
+    auto *inlay = new QPushButton(QStringLiteral("Create inlay male"), this);
+    inlay->setToolTip(QStringLiteral(
+        "From the selected advanced v-carve (the female): place a mirrored copy\n"
+        "of its design beside it inside a border, and add a v-carve of the\n"
+        "inverse region with the depths shifted by the glue gap. Carve it in a\n"
+        "second piece, flip it over into the female, glue, then plane flush."));
+    lay->addWidget(inlay);
+    connect(inlay, &QPushButton::clicked, this, [this] { createInlayMale(); });
+}
+
+void ToolpathPanel::createInlayMale()
+{
+    if (!m_doc || m_uuid.isEmpty())
+        return;
+    Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+    if (!t || t->type != QLatin1String("advanced_vcarve_toolpath")) {
+        QMessageBox::information(this, QStringLiteral("Inlay male"),
+            QStringLiteral("Select an advanced v-carve toolpath first — the male "
+                           "is generated from the female's design."));
+        return;
+    }
+    QVector<const Element *> els;
+    for (const QJsonValue &v : t->json.value("elements").toArray())
+        if (const Element *e = m_doc->elementById(v.toObject().value("uuid").toString()))
+            els.append(e);
+    if (els.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Inlay male"),
+                                 QStringLiteral("The toolpath references no vectors."));
+        return;
+    }
+    bool ok = false;
+    const double gap = QInputDialog::getDouble(
+        this, QStringLiteral("Inlay male"),
+        QStringLiteral("Glue gap (mm): both male depths are shifted down by\n"
+                       "this much, so the assembled male sits proud by the gap\n"
+                       "(glue space below, planed flush after glue-up)"),
+        0.5, 0.0, 5.0, 2, &ok);
+    if (!ok)
+        return;
+    const double margin = QInputDialog::getDouble(
+        this, QStringLiteral("Inlay male"),
+        QStringLiteral("Border margin around the mirrored design (mm)"),
+        10.0, 2.0, 100.0, 1, &ok);
+    if (!ok)
+        return;
+
+    QRectF bb;
+    for (const Element *e : els)
+        bb = bb.united(e->painterPath.boundingRect());
+    const double cx = bb.center().x();
+    const double dx = bb.width() + 2 * margin + 20.0;   // male sits to the right
+    const QJsonObject layer = m_doc->defaultLayer();
+
+    QVector<Element> newEls;
+    QJsonArray refs;
+    const Element border = Element::makeRectangle(
+        QPointF(cx + dx, bb.center().y()),
+        bb.width() + 2 * margin, bb.height() + 2 * margin, layer);
+    newEls.append(border);
+    refs.append(QJsonObject{{QStringLiteral("uuid"), border.id}});
+    // Mirror every subpath about the design's vertical centerline, then shift
+    // beside the original. Border + mirrored design under even-odd fill = the
+    // inverse region: the male carves the field, leaving the design standing.
+    for (const Element *e : els) {
+        const QList<QPolygonF> polys = e->painterPath.toSubpathPolygons();
+        for (const QPolygonF &p : polys) {
+            const bool closed = p.size() > 3 && p.first() == p.last();
+            const int n = closed ? int(p.size()) - 1 : int(p.size());
+            if (n < 2)
+                continue;
+            QVector<QPointF> pts;
+            pts.reserve(n);
+            for (int i = n - 1; i >= 0; --i)   // reversed: mirroring flips winding
+                pts.append(QPointF(2 * cx - p.at(i).x() + dx, p.at(i).y()));
+            const Element pe = Element::makePath(pts, closed, layer);
+            newEls.append(pe);
+            refs.append(QJsonObject{{QStringLiteral("uuid"), pe.id}});
+        }
+    }
+
+    Toolpath male = *t;
+    QJsonObject j = male.json;
+    j.insert(QStringLiteral("uuid"), QUuid::createUuid().toString());
+    j.insert(QStringLiteral("name"),
+             j.value("name").toString() + QStringLiteral(" (inlay male)"));
+    j.insert(QStringLiteral("elements"), refs);
+    auto num = [](const QJsonValue &v) {
+        return v.isString() ? v.toString().toDouble() : v.toDouble();
+    };
+    // Preserve the file's depth sign convention and value type (string/number).
+    const double sign = num(j.value("end_depth")) < 0 ? -1.0 : 1.0;
+    auto setDepth = [&](const char *key, double absVal) {
+        const QJsonValue orig = j.value(QLatin1String(key));
+        if (orig.isString())
+            j.insert(QLatin1String(key), QString::number(sign * absVal, 'f', 3));
+        else
+            j.insert(QLatin1String(key), sign * absVal);
+    };
+    setDepth("start_depth", qAbs(num(j.value("start_depth"))) + gap);
+    setDepth("end_depth", qAbs(num(j.value("end_depth"))) + gap);
+    male.json = j;
+    male.uuid = j.value("uuid").toString();
+    m_canvas->insertGenerated(newEls, male);
+    QMessageBox::information(this, QStringLiteral("Inlay male"),
+        QStringLiteral("Generated \"%1\": mirrored design in a %2 mm border, "
+                       "depths shifted %3 mm.\n\nCarve it in the second piece, "
+                       "flip that piece face-down into the female, glue, then "
+                       "plane the ~%3 mm proud surface flush.")
+            .arg(j.value("name").toString())
+            .arg(margin, 0, 'f', 1)
+            .arg(gap, 0, 'f', 2));
 }
 
 void ToolpathPanel::setDocument(Document *doc)
