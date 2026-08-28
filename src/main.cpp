@@ -4,6 +4,7 @@
 #include <QDebug>
 #include <QFile>
 #include <QJsonArray>
+#include <functional>
 #include <QPalette>
 #include <QStyleFactory>
 
@@ -142,7 +143,55 @@ static int selftest(const QString &in, const QString &out)
     qInfo() << "selftest gcode:" << (gOk ? "OK" : "FAILED")
             << "lines =" << g.gcode.count(QChar('\n'))
             << "skipped =" << g.skipped;
-    return gOk ? 0 : 11;
+    if (!gOk)
+        return 11;
+
+    // Fabricate the three newly supported types from the pocket payload and
+    // make sure each produces motion.
+    const c2d::Toolpath base = check2.toolpaths().first();
+    auto fab = [&](const char *type, std::function<void(QJsonObject &)> tweak) {
+        c2d::Toolpath x = base;
+        QJsonObject o = x.json;
+        o.insert("type", QLatin1String(type));
+        o.insert("uuid", QStringLiteral("{fab-%1}").arg(QLatin1String(type)));
+        tweak(o);
+        x.json = o;
+        x.type = QLatin1String(type);
+        x.uuid = o.value("uuid").toString();
+        check2.addToolpath(x);
+    };
+    fab("keyhole_toolpath", [](QJsonObject &o) {
+        o.insert("name", QStringLiteral("kh"));
+        o.insert("angle", 90);
+        o.insert("length", 12.7);
+        o.insert("end_depth", QStringLiteral("-2.5"));
+    });
+    fab("texture_toolpath", [](QJsonObject &o) {
+        o.insert("name", QStringLiteral("tx"));
+        o.insert("angle", 30);
+        o.insert("min_length", 5);
+        o.insert("max_length", 12);
+        o.insert("min_depth", QStringLiteral("-0.5"));
+        o.insert("max_depth", QStringLiteral("-1.5"));
+        o.insert("stepover", 2.0);
+    });
+    fab("advanced_vcarve_toolpath", [](QJsonObject &o) {
+        o.insert("name", QStringLiteral("vc"));
+        o.insert("end_depth", QStringLiteral("-3.0"));
+        o.insert("stepover", 0.5);
+        QJsonObject tool = o.value("tool").toObject();
+        tool.insert("angle", 60);
+        tool.insert("type", 2);
+        o.insert("tool", tool);
+    });
+    const c2d::GcodeResult g2 = c2d::exportGcode(check2);
+    const bool g2Ok = g2.done.contains(QStringLiteral("kh"))
+        && g2.done.contains(QStringLiteral("tx"))
+        && g2.done.contains(QStringLiteral("vc"))
+        && g2.gcode.size() > g.gcode.size();
+    qInfo() << "selftest keyhole/texture/vcarve:" << (g2Ok ? "OK" : "FAILED")
+            << "done =" << g2.done << "skipped =" << g2.skipped;
+    return g2Ok ? 0 : 12;
 }
 
 int main(int argc, char *argv[])
