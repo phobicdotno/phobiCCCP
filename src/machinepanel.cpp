@@ -3,7 +3,9 @@
 #include "gcodeexport.h"
 #include "grblstreamer.h"
 
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -78,6 +80,24 @@ MachinePanel::MachinePanel(QWidget *parent)
     jogRow->addLayout(side);
     lay->addLayout(jogRow);
 
+    // Air-cut rehearsal: stream the program with all spindle commands stripped
+    // and every Z lifted, so the machine traces the job above the stock.
+    auto *airRow = new QHBoxLayout;
+    m_airCut = new QCheckBox(QStringLiteral("Air cut"), this);
+    m_airCut->setToolTip(QStringLiteral(
+        "Rehearse: spindle commands removed, every Z raised by the lift amount"));
+    m_airLift = new QDoubleSpinBox(this);
+    m_airLift->setRange(0.0, 100.0);
+    m_airLift->setDecimals(1);
+    m_airLift->setValue(10.0);
+    m_airLift->setSuffix(QStringLiteral(" mm lift"));
+    m_airLift->setEnabled(false);
+    connect(m_airCut, &QCheckBox::toggled, m_airLift, &QWidget::setEnabled);
+    airRow->addWidget(m_airCut);
+    airRow->addWidget(m_airLift);
+    airRow->addStretch(1);
+    lay->addLayout(airRow);
+
     // Program controls.
     auto *runRow = new QHBoxLayout;
     m_runBtn = new QPushButton(QStringLiteral("▶ Run"), this);
@@ -95,6 +115,22 @@ MachinePanel::MachinePanel(QWidget *parent)
         else      { m_grbl->resumeStream(); m_pauseBtn->setText(QStringLiteral("⏸ Hold")); }
     });
     connect(m_stopBtn, &QPushButton::clicked, m_grbl, &GrblStreamer::stopStream);
+
+    // GRBL realtime feed override — takes effect mid-program, no queue flush.
+    auto *ovRow = new QHBoxLayout;
+    ovRow->addWidget(new QLabel(QStringLiteral("feed ovr"), this));
+    auto ovBtn = [&](const QString &t, char code) {
+        auto *b = new QPushButton(t, this);
+        b->setFixedWidth(52);
+        ovRow->addWidget(b);
+        connect(b, &QPushButton::clicked, this,
+                [this, code] { m_grbl->sendRealtime(code); });
+    };
+    ovBtn(QStringLiteral("−10%"), char(0x92));
+    ovBtn(QStringLiteral("100%"), char(0x90));
+    ovBtn(QStringLiteral("+10%"), char(0x91));
+    ovRow->addStretch(1);
+    lay->addLayout(ovRow);
 
     m_progress = new QProgressBar(this);
     m_progress->setTextVisible(true);
@@ -193,12 +229,36 @@ void MachinePanel::runProgram()
         return;
     }
     QStringList lines = r.gcode.split(QChar('\n'), Qt::SkipEmptyParts);
+    const bool air = m_airCut->isChecked();
+    if (air)
+        lines = airCutTransform(lines, m_airLift->value());
+
+    // Confirmation gate: extents + time estimate, and an unmissable note about
+    // whether this run will spin the spindle.
+    QString q = QStringLiteral("%1 toolpath(s), %2 lines\n%3")
+                    .arg(r.done.size()).arg(lines.size())
+                    .arg(statsSummary(computeStats(r.ops)));
+    if (air)
+        q += QStringLiteral("\n\nAIR CUT: spindle stripped, all Z +%1 mm")
+                 .arg(m_airLift->value(), 0, 'f', 1);
+    else
+        q += QStringLiteral("\n\nLIVE RUN: the spindle WILL start.");
+    q += QStringLiteral("\n\nStream to the machine?");
+    if (QMessageBox::question(this, QStringLiteral("Run program"), q,
+                              QMessageBox::Yes | QMessageBox::No,
+                              QMessageBox::No) != QMessageBox::Yes)
+        return;
+
     // `M0` pauses GRBL until cycle-start — surface tool changes in the console.
     const int npause = int(lines.filter(QStringLiteral("M0 ;")).size());
     if (npause > 0)
         m_console->appendPlainText(
             QStringLiteral("note: %1 tool-change pause(s); press Resume after each")
                 .arg(npause));
+    if (air)
+        m_console->appendPlainText(
+            QStringLiteral("air cut: spindle off, Z lifted %1 mm")
+                .arg(m_airLift->value(), 0, 'f', 1));
     m_grbl->startStream(lines);
 }
 
