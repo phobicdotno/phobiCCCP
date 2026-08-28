@@ -9,7 +9,8 @@ Linux, built on the reverse-engineered format documentation in
 
 **Files**
 - Opens modern (v7/v8, SQLite container) `.c2d` files natively
-- Saves them back so Carbide Create 8 still opens them (round-trip verified)
+- Saves them back so Carbide Create 8 still opens them (round-trip verified);
+  toolpath edits and newly created toolpaths are written into the container
 - All 5 element types render: circle, rectangle, regular polygon, path, text
 
 **Vector editing**
@@ -22,45 +23,66 @@ Linux, built on the reverse-engineered format documentation in
 - New elements are written in CC's exact JSON schema (key-verified against
   CC-853 specimens), so toolpaths and CC itself accept them
 
-**CAM**
+**CAM — all 7 Carbide Create toolpath types export**
 - Toolpaths panel: edit any toolpath parameter (depths, feeds, stepover,
   tool…) and assign the canvas selection as a toolpath's vectors; edits are
   saved back into the `.c2d` in place
 - **G-code export** (File → Export G-code, Ctrl+G, or
   `phobiccc --export in.c2d out.nc`) in Carbide Create's own GRBL dialect:
-  - pocket: connected-component inset rings (tool radius + stepover),
-    innermost-first, stay-down linking, plunge-once-per-pocket-per-depth
-  - contour: no-offset / inside / outside
-  - cutout: outside (or flipped) at `cut_depth + break_through`
-  - drilling: peck cycles
-  - circular moves come out as true G2/G3 arcs; jobs are ordered
-    nearest-neighbor to minimize rapids
-- Not yet: advanced v-carve (needs a medial-axis transform), keyhole,
-  texture, tabs, ramping
+  - pocket: connected-component inset rings, innermost-first, stay-down
+    linking, alternating pass direction (no track-back), plunge-once-per-depth
+  - contour: no-offset / inside / outside; cutout: `cut_depth +
+    break_through`, auto-tabs, ramp entries
+  - drilling: peck cycles; keyhole: plunge + slide + return; texture:
+    deterministic random hatch strokes
+  - **advanced v-carve: true medial-axis carving** (segment Voronoi) — the
+    V-bit rides the skeleton with continuously varying depth, runs out into
+    sharp corners, and clears flat bottoms where it maxes out
+  - **v-carve inlay**: one click generates the mirrored male (inverse region
+    in a border, depths shifted by the glue gap) from the female toolpath
+  - exact offsetting via Clipper2; circular rings become true G2/G3 arcs and
+    all other curves are greedily arc/line-fitted (0.01 mm tolerance), so the
+    GRBL planner never starves on 1 mm segment chatter
+  - jobs ordered nearest-neighbor to minimize rapids
+- **On-canvas toolpath preview** (Ctrl+P): rapids dashed, cuts colored by
+  depth, plunge markers
+- Export/run shows job stats: extents, cut/rapid length, time estimate
 
 **Machine control (Machine dock)**
-- Connects to a GRBL controller over serial (115200)
+- Connects to a GRBL controller over serial (115200) — hardware-verified
+  against a Shapeoko 5 Pro (GRBL 1.1h)
 - Jog pad (`$J=` jogging), work-zero (G10 L20), Home, Unlock
 - Streams the document's generated g-code with GRBL's character-counting
   protocol, live status (`?` polling), feed-hold / resume / soft-reset,
-  progress bar and console
+  realtime feed-override buttons, progress bar and console
+- **Air-cut mode**: rehearse any program with all spindle commands stripped
+  and every Z lifted by a chosen amount; every run shows a stats +
+  spindle-warning confirmation first
 
 ## Building (Ubuntu / Debian)
 
 ```sh
 sudo apt install build-essential cmake qt6-base-dev qt6-base-dev-tools \
-     libqt6sql6-sqlite qt6-serialport-dev zlib1g-dev libgl1-mesa-dev
+     libqt6sql6-sqlite qt6-serialport-dev zlib1g-dev libgl1-mesa-dev \
+     libboost-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ./build/phobiccc yourfile.c2d
 ```
+
+Clipper2 is fetched at configure time (disable with
+`-DPHOBICC_WITH_CLIPPER2=OFF`). `libboost-dev` provides the header-only
+Boost.Polygon Voronoi builder for the medial-axis v-carve; without it the
+build falls back to depth-graded ring approximation.
 
 ## CLI
 
 ```sh
 phobiccc file.c2d                      # open the GUI on a file
 phobiccc --export file.c2d out.nc      # headless g-code export
-phobiccc --selftest in.c2d out.c2d     # create/save/reload/export self-check
+phobiccc --selftest in.c2d out.c2d     # 10-stage create/save/export self-check
+phobiccc --shot file.c2d out.png [preview]  # render the GUI to a PNG
+phobiccc --grbl-check /dev/ttyACM0     # safe GRBL handshake (no motion)
 ```
 
 ## Format notes
@@ -73,6 +95,6 @@ is itself a Qt6 QtWidgets app, which is why the format is full of Qt idioms
 specimens and tools live in the
 [shapeoko-c2d](https://github.com/phobicdotno/shapeoko-c2d) repo.
 
-Safety: g-code generated here uses Qt-path-boolean offsetting (round joins) —
-dimensionally close but not identical to CC's offsetting. Preview the `.nc`
-(e.g. ncviewer.com) and air-cut before trusting a new program.
+Safety: this is an independent implementation — offsets, depths and orderings
+are close to CC's but not identical. Preview the `.nc` (e.g. ncviewer.com)
+and use the Machine dock's air-cut mode before trusting a new program.
