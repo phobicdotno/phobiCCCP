@@ -264,6 +264,136 @@ static bool asCircle(const QPolygonF &poly, QPointF *center, double *radius, boo
     return true;
 }
 
+// ---- Polyline compression: greedy longest-run line/arc fitting ------------
+// Clipper's round joins and text outlines arrive as dense runs of short
+// segments; GRBL's planner starves on those at high feed. Fit maximal
+// collinear runs to single G1s and maximal circular runs to G2/G3, keeping
+// every original vertex within `tol` of the emitted path.
+
+struct FitSeg {
+    int end;        // index into the polyline this segment ends at
+    bool arc;
+    QPointF c;      // arc center (absolute)
+    bool cw;        // G2 vs G3
+};
+
+static bool circumcenter(const QPointF &A, const QPointF &B, const QPointF &C, QPointF *o)
+{
+    const double d = 2 * (A.x() * (B.y() - C.y()) + B.x() * (C.y() - A.y())
+                          + C.x() * (A.y() - B.y()));
+    if (qAbs(d) < 1e-9)
+        return false;
+    const double a2 = A.x() * A.x() + A.y() * A.y();
+    const double b2 = B.x() * B.x() + B.y() * B.y();
+    const double c2 = C.x() * C.x() + C.y() * C.y();
+    o->setX((a2 * (B.y() - C.y()) + b2 * (C.y() - A.y()) + c2 * (A.y() - B.y())) / d);
+    o->setY((a2 * (C.x() - B.x()) + b2 * (A.x() - C.x()) + c2 * (B.x() - A.x())) / d);
+    return true;
+}
+
+// pts[i..j] on one straight segment i->j within tol, projections monotonic.
+static bool lineSpanOk(const QPolygonF &pts, int i, int j, double tol)
+{
+    const QPointF d = pts.at(j) - pts.at(i);
+    const double len2 = d.x() * d.x() + d.y() * d.y();
+    if (len2 < 1e-12)
+        return false;
+    double tPrev = 0;
+    for (int k = i + 1; k < j; ++k) {
+        const QPointF v = pts.at(k) - pts.at(i);
+        const double t = (v.x() * d.x() + v.y() * d.y()) / len2;
+        if (t <= tPrev || t >= 1.0)
+            return false;
+        if (qAbs(v.x() * d.y() - v.y() * d.x()) / qSqrt(len2) > tol)
+            return false;
+        tPrev = t;
+    }
+    return true;
+}
+
+// pts[i..j] on one circular arc within tol. The center is re-projected onto
+// the chord's perpendicular bisector so the start and end radii match exactly
+// (GRBL rejects arcs whose I/J radius disagrees with the endpoint radius).
+static bool arcSpanOk(const QPolygonF &pts, int i, int j, double tol,
+                      QPointF *center, bool *cwOut)
+{
+    if (j - i < 4)
+        return false;
+    QPointF c0;
+    if (!circumcenter(pts.at(i), pts.at((i + j) / 2), pts.at(j), &c0))
+        return false;
+    const QPointF chord = pts.at(j) - pts.at(i);
+    const double clen = qSqrt(chord.x() * chord.x() + chord.y() * chord.y());
+    if (clen < 1e-6)
+        return false;
+    const QPointF mid((pts.at(i).x() + pts.at(j).x()) / 2,
+                      (pts.at(i).y() + pts.at(j).y()) / 2);
+    const QPointF perp(-chord.y() / clen, chord.x() / clen);
+    const double h = (c0.x() - mid.x()) * perp.x() + (c0.y() - mid.y()) * perp.y();
+    const QPointF c(mid.x() + perp.x() * h, mid.y() + perp.y() * h);
+    const double r = QLineF(c, pts.at(i)).length();
+    if (r < 0.2 || r > 5000.0)
+        return false;
+    double aPrev = qAtan2(pts.at(i).y() - c.y(), pts.at(i).x() - c.x());
+    double total = 0;
+    int dir = 0;
+    for (int k = i + 1; k <= j; ++k) {
+        if (qAbs(QLineF(c, pts.at(k)).length() - r) > tol)
+            return false;
+        const double a = qAtan2(pts.at(k).y() - c.y(), pts.at(k).x() - c.x());
+        double da = a - aPrev;
+        while (da > M_PI)  da -= 2 * M_PI;
+        while (da < -M_PI) da += 2 * M_PI;
+        if (qAbs(da) < 1e-12)
+            return false;
+        const int s = da > 0 ? 1 : -1;
+        if (dir == 0)
+            dir = s;
+        else if (s != dir)
+            return false;
+        total += da;
+        aPrev = a;
+    }
+    if (qAbs(total) > 2 * M_PI - 0.2)   // near-full circles stay with asCircle
+        return false;
+    *center = c;
+    *cwOut = dir < 0;
+    return true;
+}
+
+static QVector<FitSeg> fitPolyline(const QPolygonF &pts, double tol)
+{
+    QVector<FitSeg> out;
+    const int n = pts.size();
+    int i = 0;
+    while (i < n - 1) {
+        int lineEnd = i + 1;
+        for (int j = i + 2; j < n && lineSpanOk(pts, i, j, tol); ++j)
+            lineEnd = j;
+        int arcEnd = -1;
+        QPointF c;
+        bool cw = false;
+        for (int j = i + 4; j < n; ++j) {
+            QPointF cj;
+            bool cwj;
+            if (!arcSpanOk(pts, i, j, tol, &cj, &cwj))
+                break;
+            arcEnd = j;
+            c = cj;
+            cw = cwj;
+        }
+        FitSeg seg;
+        if (arcEnd > lineEnd) {
+            seg = {arcEnd, true, c, cw};
+        } else {
+            seg = {lineEnd, false, QPointF(), false};
+        }
+        out.append(seg);
+        i = seg.end;
+    }
+    return out;
+}
+
 static double perimeter(const QPolygonF &poly)
 {
     double len = 0;
@@ -353,6 +483,24 @@ public:
         }
     }
 
+    // Follow the polyline from its first vertex (== current XY) with greedy
+    // line/arc fitting: long collinear runs collapse to one G1, circular runs
+    // to G2/G3, within 0.01 mm of every original vertex.
+    void followFitted(const QPolygonF &poly, double z)
+    {
+        const QVector<FitSeg> segs = fitPolyline(poly, 0.01);
+        for (const FitSeg &s : segs) {
+            const QPointF &e = poly.at(s.end);
+            if (s.arc)
+                m_ops.append(Op::arcTo(e.x(), e.y(), z,
+                                       s.c.x() - m_x, s.c.y() - m_y, s.cw, m_feed));
+            else
+                m_ops.append(Op::feedTo(e.x(), e.y(), z, m_feed));
+            m_x = e.x();
+            m_y = e.y();
+        }
+    }
+
     // Follow one closed/open ring at depth z; arcs for circles; tab lifts when
     // z is below tabTop and tabWidth > 0.
     void followRing(const QPolygonF &poly, double z, const CutParams &cp)
@@ -372,7 +520,7 @@ public:
                 m_y = s.y();
                 return;
             }
-            followSpan(poly, 1, poly.size() - 1, z);
+            followFitted(poly, z);
             return;
         }
 
