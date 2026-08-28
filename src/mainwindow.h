@@ -8,6 +8,7 @@ class QPlainTextEdit;
 
 namespace c2d {
 
+class MachinePanel;
 class PropertiesPanel;
 class ToolpathPanel;
 
@@ -18,21 +19,16 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     void openFile(const QString &path);
 
-protected:
-    void closeEvent(QCloseEvent *event) override;
-
 private slots:
     void onOpen();
     void onSave();
     void onSaveAs();
     void onExportGcode();
-    void onSendToGrbl();
 
 private:
     void refreshInfo();
+
     void updateTitle();
-    bool maybeSave();       // false = user cancelled, abort the pending action
-    QString buildGcode();   // export dialog plumbing shared by file/serial paths
 
     Canvas *m_canvas;
     QPlainTextEdit *m_info;      // params + item summary sidebar
@@ -40,6 +36,7 @@ private:
     QLabel *m_zoomLabel;         // zoom percentage
     PropertiesPanel *m_props;    // numeric editor for the selection
     ToolpathPanel *m_tp;         // toolpath list + parameter editor
+    MachinePanel *m_machine;     // GRBL serial control + streaming
     bool m_dirty = false;
     Document m_doc;
 };
