@@ -38,6 +38,13 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
         return false;
     }
     connect(m_port, &QSerialPort::readyRead, this, &GrblStreamer::onReadyRead);
+    connect(m_port, &QSerialPort::errorOccurred, this,
+            [this](QSerialPort::SerialPortError e) {
+        if (e != QSerialPort::NoError)
+            emit errorOccurred(QStringLiteral("serial port error %1 (%2)")
+                                   .arg(int(e), 0)
+                                   .arg(m_port ? m_port->errorString() : QString()));
+    });
     m_rx.clear();
     m_statusTimer->start();
     emit connected(portName);
@@ -89,8 +96,12 @@ void GrblStreamer::startStream(const QStringList &lines)
     m_queue.clear();
     for (const QString &l : lines) {
         const QString s = l.trimmed();
-        if (!s.isEmpty())
-            m_queue << s;
+        // ( )-comment lines are never queued: Carbide's GRBL 1.1h build does
+        // not ack them (verified live — the ack stream stops dead at the
+        // first one, stalling char-counting). They're for humans anyway.
+        if (s.isEmpty() || s.startsWith(QChar('(')))
+            continue;
+        m_queue << s;
     }
     m_nextIndex = 0;
     m_ackedCount = 0;
@@ -98,6 +109,7 @@ void GrblStreamer::startStream(const QStringList &lines)
     m_inflightBytes = 0;
     m_hadError = false;
     m_streaming = !m_queue.isEmpty();
+    m_ackClock.start();
     emit progressChanged(0, m_queue.size());
     pump();
 }
@@ -131,14 +143,23 @@ void GrblStreamer::stopStream()
 void GrblStreamer::pump()
 {
     while (m_streaming && m_nextIndex < m_queue.size()) {
+        if (m_conservative && !m_inflightSizes.isEmpty())
+            break;
         const QByteArray data = m_queue.at(m_nextIndex).toLatin1() + '\n';
         if (m_inflightBytes + data.size() > RX_BUFFER)
             break;
         m_port->write(data);
+        if (m_conservative)
+            emit consoleLine(QStringLiteral(">> %1").arg(m_queue.at(m_nextIndex)));
         m_inflightSizes.append(data.size());
         m_inflightBytes += data.size();
         ++m_nextIndex;
     }
+}
+
+qint64 GrblStreamer::msSinceAck() const
+{
+    return m_ackClock.isValid() ? m_ackClock.elapsed() : 0;
 }
 
 void GrblStreamer::onReadyRead()
@@ -181,6 +202,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
     if ((ok || err) && m_streaming && !m_inflightSizes.isEmpty()) {
         m_inflightBytes -= m_inflightSizes.takeFirst();
         ++m_ackedCount;
+        m_ackClock.restart();
         if (err) {
             m_hadError = true;
             emit errorOccurred(QString::fromLatin1(line));
