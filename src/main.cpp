@@ -406,6 +406,27 @@ int main(int argc, char *argv[])
         return app.exec();
     }
 
+    // --shot <in.c2d> <out.png>: open the full GUI, render one frame to a PNG
+    // and exit — headless visual smoke test of the whole window (offscreen ok).
+    if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--shot") {
+        c2d::MainWindow w;
+        w.resize(1680, 980);
+        w.show();
+        w.openFile(QString::fromLocal8Bit(argv[2]));
+        if (argc == 5 && QByteArray(argv[4]) == "preview")
+            w.showToolpathPreview();
+        const QString out = QString::fromLocal8Bit(argv[3]);
+        int rc = 1;
+        QTimer::singleShot(1500, &w, [&] {
+            rc = w.grab().save(out) ? 0 : 1;
+            qInfo().noquote() << (rc == 0 ? QStringLiteral("SHOT_OK %1").arg(out)
+                                          : QStringLiteral("SHOT_FAILED"));
+            QCoreApplication::exit(rc);
+        });
+        app.exec();
+        return rc;
+    }
+
     // --export <in.c2d> <out.nc>: headless g-code export (CLI/scripting).
     if (argc == 4 && QByteArray(argv[1]) == "--export") {
         c2d::Document doc;
