@@ -1,6 +1,8 @@
 #include "mainwindow.h"
 #include "gcodeexport.h"
 #include "grblstreamer.h"
+#include "vcarve.h"
+#include <QSet>
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
@@ -260,7 +262,60 @@ static int selftest(const QString &in, const QString &out)
         && nArc >= 4 && nFeed < nArc * 8;
     qInfo() << "selftest arcfit:" << (fitOk ? "OK" : "FAILED")
             << "arcs =" << nArc << "feeds =" << nFeed;
-    return fitOk ? 0 : 14;
+    if (!fitOk)
+        return 14;
+
+    // Medial-axis v-carve over the text element: chains must ride at many
+    // distinct depths (clearance varies along a glyph) and stay inside the
+    // glyph bounds. On builds without the Voronoi backend the ring fallback
+    // still passes the depth-variety check, just with fewer levels.
+    QString textId;
+    QRectF textBB;
+    for (const c2d::Element &e : check2.elements())
+        if (e.geometryType == QLatin1String("text")) {
+            textId = e.id;
+            textBB = e.painterPath.boundingRect().adjusted(-2, -2, 2, 2);
+        }
+    c2d::Toolpath vt = base;
+    QJsonObject vo = vt.json;
+    vo.insert("type", QStringLiteral("advanced_vcarve_toolpath"));
+    vo.insert("uuid", QStringLiteral("{fab-text-vcarve}"));
+    vo.insert("name", QStringLiteral("vtx"));
+    vo.insert("end_depth", QStringLiteral("-6.0"));
+    vo.insert("elements", QJsonArray{QJsonObject{{QStringLiteral("uuid"), textId}}});
+    QJsonObject vtool = vo.value("tool").toObject();
+    vtool.insert("angle", 60);
+    vtool.insert("type", 2);
+    vo.insert("tool", vtool);
+    vt.json = vo;
+    vt.type = QStringLiteral("advanced_vcarve_toolpath");
+    vt.uuid = vo.value("uuid").toString();
+    check2.addToolpath(vt);
+    const c2d::GcodeResult g5 = c2d::exportGcode(check2);
+    QSet<int> zLevels;
+    int nOut = 0, nMoves = 0;
+    inSection = false;
+    for (const c2d::Op &op : g5.ops) {
+        if (op.kind == c2d::Op::Comment) {
+            inSection = (op.text == QLatin1String("vtx"));
+            continue;
+        }
+        if (!inSection || op.kind == c2d::Op::Spindle || op.kind == c2d::Op::Tool)
+            continue;
+        ++nMoves;
+        if (!qIsFinite(op.x) || !qIsFinite(op.y) || !qIsFinite(op.z)
+            || (op.z < 1.0 && !textBB.contains(QPointF(op.x, op.y))))
+            ++nOut;
+        if (op.kind == c2d::Op::Feed && op.z < -1e-6)
+            zLevels.insert(int(op.z * 100));   // 0.01 mm buckets
+    }
+    const bool vOk = !textId.isEmpty() && g5.done.contains(QStringLiteral("vtx"))
+        && nMoves > 50 && nOut == 0 && zLevels.size() >= 5;
+    qInfo() << "selftest medial vcarve:" << (vOk ? "OK" : "FAILED")
+            << "moves =" << nMoves << "zLevels =" << zLevels.size()
+            << "outOfBounds =" << nOut
+            << "medial =" << c2d::medialAxisAvailable();
+    return vOk ? 0 : 15;
 }
 
 int main(int argc, char *argv[])
