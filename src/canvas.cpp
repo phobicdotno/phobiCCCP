@@ -368,9 +368,114 @@ void Canvas::rebuild()
         item->setFlag(QGraphicsItem::ItemIsMovable, editable);
     }
 
+    if (!m_previewOps.isEmpty())
+        renderPreviewOps();
+
     if (!m_fitted && w > 0 && h > 0) {
         zoomFit();
         m_fitted = true;
+    }
+}
+
+void Canvas::setToolpathPreview(const QVector<Op> &ops)
+{
+    m_previewOps = ops;
+    rebuild();
+}
+
+void Canvas::clearToolpathPreview()
+{
+    m_previewOps.clear();
+    rebuild();
+}
+
+// Draw the generated machine motion over the vectors: rapids as dashed gray,
+// cutting moves colored shallow-yellow → deep-red by Z, arcs sampled to
+// segments. Overlay items are unselectable and sit above the elements.
+void Canvas::renderPreviewOps()
+{
+    double zMin = 0;
+    for (const Op &op : m_previewOps)
+        if ((op.kind == Op::Feed || op.kind == Op::Arc) && op.z < zMin)
+            zMin = op.z;
+    const int NB = 8;
+    auto bucketOf = [&](double z) {
+        if (zMin >= -1e-9)
+            return 0;
+        return qBound(0, int((z / zMin) * NB), NB - 1);
+    };
+    QVector<QPainterPath> cut(NB);
+    QPainterPath rapids;
+
+    double x = 0, y = 0;
+    bool have = false;
+    for (const Op &op : m_previewOps) {
+        switch (op.kind) {
+        case Op::Rapid:
+            if (have && (op.x != x || op.y != y)) {
+                rapids.moveTo(x, y);
+                rapids.lineTo(op.x, op.y);
+            }
+            x = op.x; y = op.y; have = true;
+            break;
+        case Op::Feed: {
+            const int b = bucketOf(op.z);
+            if (have) {
+                if (op.x == x && op.y == y) {
+                    // pure plunge: mark with a tiny diamond
+                    cut[b].moveTo(x - 0.4, y);
+                    cut[b].lineTo(x, y + 0.4);
+                    cut[b].lineTo(x + 0.4, y);
+                    cut[b].lineTo(x, y - 0.4);
+                    cut[b].closeSubpath();
+                } else {
+                    cut[b].moveTo(x, y);
+                    cut[b].lineTo(op.x, op.y);
+                }
+            }
+            x = op.x; y = op.y; have = true;
+            break;
+        }
+        case Op::Arc: {
+            const int b = bucketOf(op.z);
+            const double cx = x + op.ci, cy = y + op.cj;
+            const double r = QLineF(QPointF(cx, cy), QPointF(x, y)).length();
+            double a0 = qAtan2(y - cy, x - cx);
+            double a1 = qAtan2(op.y - cy, op.x - cx);
+            // G2 = clockwise in Y-up space = decreasing angle.
+            if (op.cw) { while (a1 >= a0 - 1e-12) a1 -= 2 * M_PI; }
+            else       { while (a1 <= a0 + 1e-12) a1 += 2 * M_PI; }
+            const int steps = qMax(8, int(qAbs(a1 - a0) / (M_PI / 36)));
+            cut[b].moveTo(x, y);
+            for (int i = 1; i <= steps; ++i) {
+                const double a = a0 + (a1 - a0) * i / steps;
+                cut[b].lineTo(cx + r * qCos(a), cy + r * qSin(a));
+            }
+            x = op.x; y = op.y; have = true;
+            break;
+        }
+        default:
+            break;
+        }
+    }
+
+    QPen rapidPen(QColor(0x8a, 0x94, 0xa6, 140));
+    rapidPen.setCosmetic(true);
+    rapidPen.setStyle(Qt::DashLine);
+    auto *ri = m_scene->addPath(rapids, rapidPen);
+    ri->setZValue(5);
+
+    for (int b = 0; b < NB; ++b) {
+        if (cut.at(b).isEmpty())
+            continue;
+        const double f = NB > 1 ? double(b) / (NB - 1) : 0;
+        QColor col = QColor::fromHsvF(0.14 * (1.0 - f), 0.9, 1.0);   // yellow→red
+        col.setAlpha(200);
+        QPen pen(col);
+        pen.setCosmetic(true);
+        pen.setWidthF(1.4);
+        auto *it = m_scene->addPath(cut.at(b), pen);
+        it->setZValue(6);
     }
 }
 
