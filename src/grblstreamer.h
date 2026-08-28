@@ -32,6 +32,7 @@ public slots:
     void resumeStream();                        // '~' cycle start
     void stopStream();                          // abort: soft reset (ctrl-X)
     void requestStatus();                       // '?' realtime report
+    void sendRealtime(char c);                  // override bytes (0x90-0x97 &c.)
 
 signals:
     void connected(const QString &port);
