@@ -1,6 +1,7 @@
 #include "gcodeexport.h"
 #include "c2ddocument.h"
 #include "post_grbl.h"
+#include "vcarve.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -451,6 +452,14 @@ public:
         m_y = p.y();
     }
 
+    // One feed move with an explicit Z — v-carve chains vary depth per vertex.
+    void feedAt(const QPointF &p, double z, double f)
+    {
+        m_ops.append(Op::feedTo(p.x(), p.y(), z, f));
+        m_x = p.x();
+        m_y = p.y();
+    }
+
     // Descend along the ring at rampAngle instead of a straight plunge,
     // walking the loop (multiple laps if needed) until z is reached.
     void rampDescend(const QPolygonF &ring, double zFrom, double zTo, double angleDeg)
@@ -807,14 +816,13 @@ GcodeResult exportGcode(Document &doc)
                 }
             }
         } else if (vcarve) {
-            // V-carve as depth-graded inset rings: a V-bit centered δ inside
-            // the boundary touches it at depth δ / tan(halfAngle).
             const double bitAngle = tool.value("angle").toDouble(60);
             const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 179.0) / 2));
             const double stepover = qMax(0.05, j.value("stepover").toDouble(0.2));
             const QPainterPath region = regionOf(elems);
-            if (j.value("pocket_enabled").toBool(false))
-                res.skipped << QStringLiteral("%1 (flat pocket pass not emitted)").arg(name);
+            // Max clearance the bit can reach before bottoming out at zBot;
+            // anything wider needs a flat clearing pass at full depth.
+            const double dMax = qMax(0.0, (cp.zTop - cp.zBot) * halfTan);
             // Carve one component (letter/shape) completely before the next.
             QList<QPainterPath> comps = components(region);
             std::sort(comps.begin(), comps.end(),
@@ -825,22 +833,84 @@ GcodeResult exportGcode(Document &doc)
                       });
             const CutParams flat;   // single full-depth lap per ring
             for (const QPainterPath &comp : comps) {
-                double delta = stepover;
-                int guard = 0;
-                while (guard++ < 2000) {
-                    const QList<QPolygonF> rings = insetRings(comp, delta);
-                    if (rings.isEmpty())
-                        break;
-                    const double z = qMax(cp.zBot, -delta / halfTan);
-                    for (const QPolygonF &ring : rings) {
-                        em.rapidTo(ring.first());
-                        em.plungeTo(ring.first(), z);
-                        em.followRing(ring, z, flat);
+                bool medialDone = false;
+                if (medialAxisAvailable()) {
+                    // True v-carve: ride the medial axis, the bit tip sinking
+                    // to clearance/tan(halfAngle) so the cone kisses both
+                    // walls — sharp corners come from the spurs, where the
+                    // clearance (and the bit) runs out to zero.
+                    QVector<QVector<VPoint>> pend =
+                        medialAxis(comp.toSubpathPolygons());
+                    medialDone = !pend.isEmpty();
+                    auto zOf = [&](const VPoint &p) {
+                        return qMax(cp.zBot, cp.zTop - p.d / halfTan);
+                    };
+                    QPointF cur = em.pos();
+                    while (!pend.isEmpty()) {
+                        int best = 0;
+                        bool rev = false;
+                        double bd = 1e18;
+                        for (int i = 0; i < pend.size(); ++i) {
+                            const VPoint &f0 = pend.at(i).first();
+                            const VPoint &l0 = pend.at(i).last();
+                            const double d0 = QLineF(cur, QPointF(f0.x, f0.y)).length();
+                            const double d1 = QLineF(cur, QPointF(l0.x, l0.y)).length();
+                            if (d0 < bd) { bd = d0; best = i; rev = false; }
+                            if (d1 < bd) { bd = d1; best = i; rev = true; }
+                        }
+                        QVector<VPoint> ch = pend.takeAt(best);
+                        if (rev)
+                            std::reverse(ch.begin(), ch.end());
+                        const QPointF s(ch.first().x, ch.first().y);
+                        em.rapidTo(s);
+                        em.plungeTo(s, zOf(ch.first()));
+                        for (int k = 1; k < ch.size(); ++k)
+                            em.feedAt(QPointF(ch.at(k).x, ch.at(k).y),
+                                      zOf(ch.at(k)), feed);
                         em.retract();
+                        cur = em.pos();
                     }
-                    if (z <= cp.zBot + 1e-9)
-                        break;   // walls at full depth; deeper rings would flat-bottom
-                    delta += stepover;
+                    // Flat-bottom clearing where the shape is wider than the
+                    // bit's reach at full depth.
+                    if (medialDone && dMax > 1e-9) {
+                        double delta = dMax;
+                        int guard = 0;
+                        while (guard++ < 2000) {
+                            const QList<QPolygonF> rings = insetRings(comp, delta);
+                            if (rings.isEmpty())
+                                break;
+                            for (const QPolygonF &ring : rings) {
+                                em.rapidTo(ring.first());
+                                em.plungeTo(ring.first(), cp.zBot);
+                                em.followRing(ring, cp.zBot, flat);
+                                em.retract();
+                            }
+                            delta += stepover;
+                        }
+                    }
+                }
+                if (!medialDone) {
+                    // Fallback (no Voronoi backend): depth-graded inset rings.
+                    if (j.value("pocket_enabled").toBool(false))
+                        res.skipped << QStringLiteral("%1 (flat pocket pass not emitted)")
+                                           .arg(name);
+                    double delta = stepover;
+                    int guard = 0;
+                    while (guard++ < 2000) {
+                        const QList<QPolygonF> rings = insetRings(comp, delta);
+                        if (rings.isEmpty())
+                            break;
+                        const double z = qMax(cp.zBot, cp.zTop - delta / halfTan);
+                        for (const QPolygonF &ring : rings) {
+                            em.rapidTo(ring.first());
+                            em.plungeTo(ring.first(), z);
+                            em.followRing(ring, z, flat);
+                            em.retract();
+                        }
+                        if (z <= cp.zBot + 1e-9)
+                            break;   // walls at full depth
+                        delta += stepover;
+                    }
                 }
                 lastPos = em.pos();
             }
