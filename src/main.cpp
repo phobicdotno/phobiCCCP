@@ -315,7 +315,29 @@ static int selftest(const QString &in, const QString &out)
             << "moves =" << nMoves << "zLevels =" << zLevels.size()
             << "outOfBounds =" << nOut
             << "medial =" << c2d::medialAxisAvailable();
-    return vOk ? 0 : 15;
+    if (!vOk)
+        return 15;
+
+    // New-toolpath persistence: the fabricated toolpaths have no container
+    // row yet — save must INSERT them, and a reload must bring them all back
+    // (the inlay-male generator depends on this).
+    const QString out2 = out + QStringLiteral(".tp.c2d");
+    if (!check2.save(out2, &err)) {
+        qWarning() << "tp-insert save failed:" << err;
+        return 16;
+    }
+    c2d::Document check3;
+    if (!check3.load(out2, &err)) {
+        qWarning() << "tp-insert reload failed:" << err;
+        return 16;
+    }
+    const c2d::Toolpath *vtx2 = check3.toolpathByUuid(QStringLiteral("{fab-text-vcarve}"));
+    const bool insOk = check3.toolpaths().size() == check2.toolpaths().size()
+        && vtx2
+        && vtx2->json.value("end_depth").toString() == QLatin1String("-6.0");
+    qInfo() << "selftest toolpath insert:" << (insOk ? "OK" : "FAILED")
+            << "toolpaths =" << check3.toolpaths().size();
+    return insOk ? 0 : 16;
 }
 
 int main(int argc, char *argv[])
