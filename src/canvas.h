@@ -1,5 +1,6 @@
 #pragma once
 #include "c2ddocument.h"
+#include "post_grbl.h"
 #include <QGraphicsView>
 
 class QGraphicsPathItem;
@@ -36,6 +37,11 @@ public:
     void editToolpath(const QString &uuid, const QJsonObject &newJson);
     QStringList selectedElementIds() const;
 
+    // On-canvas g-code preview: rapids dashed, cuts colored by depth.
+    void setToolpathPreview(const QVector<Op> &ops);
+    void clearToolpathPreview();
+    bool hasToolpathPreview() const { return !m_previewOps.isEmpty(); }
+
 signals:
     void documentChanged();            // element added / moved / deleted
     void statusHint(const QString &msg);
@@ -61,6 +67,7 @@ private:
     void cancelDrawing();
     void onSelectionChanged();
     void emitZoom();
+    void renderPreviewOps();
 
     QGraphicsScene *m_scene;
     Document *m_doc = nullptr;
@@ -75,6 +82,8 @@ private:
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+
+    QVector<Op> m_previewOps;               // g-code overlay (empty = off)
 
     // Resize-handle drag state (single selected circle/rect/polygon).
     bool resizeHandle(QString *id, QPointF *pos, QString *type) const;
