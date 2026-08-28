@@ -3,6 +3,7 @@
 #include "canvas.h"
 #include <QMainWindow>
 
+class QAction;
 class QLabel;
 class QPlainTextEdit;
 
@@ -24,6 +25,7 @@ private slots:
     void onSave();
     void onSaveAs();
     void onExportGcode();
+    void refreshPreview();
 
 private:
     void refreshInfo();
@@ -37,6 +39,7 @@ private:
     PropertiesPanel *m_props;    // numeric editor for the selection
     ToolpathPanel *m_tp;         // toolpath list + parameter editor
     MachinePanel *m_machine;     // GRBL serial control + streaming
+    QAction *m_previewAct;       // toolpath overlay toggle
     bool m_dirty = false;
     Document m_doc;
 };
