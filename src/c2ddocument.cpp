@@ -138,22 +138,40 @@ bool Document::save(const QString &destPath, QString *error)
             }
         }
 
-        // 3b) Write edited toolpath parameters back in place. Same uuid, same
-        //     row — only sz/data change, so group membership and ordering keep.
+        // 3b) Write edited toolpath parameters back in place (same uuid, same
+        //     row — only sz/data change, so group membership and ordering
+        //     keep). Toolpaths created in-memory (e.g. a generated inlay male)
+        //     have no row yet and are INSERTed like elements.
         if (ok) {
             QSqlQuery tpq(db);
             tpq.prepare(QStringLiteral(
                 "UPDATE items SET sz=?, data=? WHERE uuid=? AND type='toolpath'"));
+            QSqlQuery tpins(db);
+            tpins.prepare(QStringLiteral(
+                "INSERT INTO items(uuid,name,type,version,sz,data) "
+                "VALUES(?,?,'toolpath','J1',?,?)"));
             for (const Toolpath &t : m_toolpaths) {
                 const QByteArray json =
                     QJsonDocument(t.json).toJson(QJsonDocument::Indented);
+                const QByteArray comp = zlibDeflate(json);
                 tpq.addBindValue(json.size());
-                tpq.addBindValue(zlibDeflate(json));
+                tpq.addBindValue(comp);
                 tpq.addBindValue(t.uuid);
                 if (!tpq.exec()) {
                     if (error) *error = tpq.lastError().text();
                     ok = false;
                     break;
+                }
+                if (tpq.numRowsAffected() == 0) {
+                    tpins.addBindValue(t.uuid);
+                    tpins.addBindValue(t.json.value("name").toString());
+                    tpins.addBindValue(json.size());
+                    tpins.addBindValue(comp);
+                    if (!tpins.exec()) {
+                        if (error) *error = tpins.lastError().text();
+                        ok = false;
+                        break;
+                    }
                 }
             }
         }
