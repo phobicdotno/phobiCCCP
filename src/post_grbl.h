@@ -1,5 +1,6 @@
 #pragma once
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 // A GRBL post-processor: turns an ordered list of CAM operations into plain
@@ -26,6 +27,23 @@ struct Op {
     static Op tool(int n)      { Op o; o.kind = Tool;    o.ival = n;   return o; }
     static Op comment(const QString &t) { Op o; o.kind = Comment; o.text = t; return o; }
 };
+
+// Aggregate statistics over an op list: work extents, cut/rapid distance and a
+// feed-rate time estimate — surfaced before a program is streamed to the
+// machine so the operator can sanity-check envelope and duration.
+struct JobStats {
+    double cutLen = 0, rapidLen = 0;   // mm
+    double timeSec = 0;                // rapids assumed 5000 mm/min, no accel model
+    double minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
+    bool hasBounds = false;
+};
+JobStats computeStats(const QVector<Op> &ops);
+QString statsSummary(const JobStats &s);   // two lines: extents / lengths + time
+
+// Dry-run rehearsal transform: every Z word lifted by `lift` mm (a constant
+// shift keeps modal Z words consistent) and all spindle lines dropped, so a
+// program can be traced in the air above the stock.
+QStringList airCutTransform(const QStringList &lines, double lift);
 
 class GrblPost
 {
