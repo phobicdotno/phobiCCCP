@@ -90,6 +90,25 @@ QString GrblPost::generate(const QVector<Op> &ops) const
             line(block({G.fmt(1), X.fmt(scale(op.x)), Y.fmt(scale(op.y)),
                         Z.fmt(scale(op.z)), F.fmt(scale(op.feed))}));
             break;
+        case Op::Arc: {
+            // I/J are relative center offsets and must always be emitted; the
+            // endpoint X/Y must also always be present (a modal-suppressed X/Y
+            // on an arc would leave the target ambiguous), so bypass the modal
+            // memory for them but keep it updated.
+            const int cd = m_metric ? 3 : 4;
+            QString ln = G.fmt(op.cw ? 2 : 3)
+                + QStringLiteral("X") + QString::number(scale(op.x), 'f', cd)
+                + QStringLiteral("Y") + QString::number(scale(op.y), 'f', cd);
+            X.last = QString::number(scale(op.x), 'f', cd);
+            Y.last = QString::number(scale(op.y), 'f', cd);
+            const QString zw = Z.fmt(scale(op.z));
+            ln += zw;
+            ln += QStringLiteral("I") + QString::number(scale(op.ci), 'f', cd)
+                + QStringLiteral("J") + QString::number(scale(op.cj), 'f', cd)
+                + F.fmt(scale(op.feed));
+            line(ln);
+            break;
+        }
         }
     }
 
