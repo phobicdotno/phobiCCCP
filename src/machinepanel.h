@@ -1,7 +1,9 @@
 #pragma once
 #include <QWidget>
 
+class QCheckBox;
 class QComboBox;
+class QDoubleSpinBox;
 class QLabel;
 class QPlainTextEdit;
 class QProgressBar;
@@ -32,6 +34,8 @@ private:
 
     QComboBox *m_ports;
     QComboBox *m_step;
+    QCheckBox *m_airCut;         // rehearse: spindle stripped, Z lifted
+    QDoubleSpinBox *m_airLift;   // air-cut Z lift (mm)
     QPushButton *m_connectBtn;
     QPushButton *m_runBtn, *m_pauseBtn, *m_stopBtn;
     QLabel *m_status;
