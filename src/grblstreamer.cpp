@@ -76,6 +76,12 @@ void GrblStreamer::requestStatus()
         m_port->write("?", 1);
 }
 
+void GrblStreamer::sendRealtime(char c)
+{
+    if (isConnected())
+        m_port->write(&c, 1);
+}
+
 void GrblStreamer::startStream(const QStringList &lines)
 {
     if (!isConnected() || m_streaming)
