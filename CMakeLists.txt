@@ -37,6 +37,7 @@ add_executable(phobiccc
     src/propertiespanel.cpp
     src/toolpathpanel.cpp
     src/gcodeexport.cpp
+    src/vcarve.cpp
     src/post_grbl.cpp
     src/grblstreamer.cpp
     src/machinepanel.cpp
@@ -46,6 +47,17 @@ target_link_libraries(phobiccc PRIVATE Qt6::Widgets Qt6::Sql Qt6::SerialPort ZLI
 if(PHOBICC_WITH_CLIPPER2)
     target_link_libraries(phobiccc PRIVATE Clipper2)
     target_compile_definitions(phobiccc PRIVATE HAVE_CLIPPER2)
+endif()
+
+# True medial-axis v-carve needs the (header-only) Boost.Polygon Voronoi
+# builder; without it the exporter falls back to depth-graded inset rings.
+find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
+if(BOOST_VORONOI_INC)
+    target_include_directories(phobiccc PRIVATE ${BOOST_VORONOI_INC})
+    target_compile_definitions(phobiccc PRIVATE HAVE_BOOST_VORONOI)
+    message(STATUS "Boost.Polygon Voronoi found: medial-axis v-carve enabled")
+else()
+    message(STATUS "Boost.Polygon Voronoi NOT found: v-carve uses ring fallback")
 endif()
 
 install(TARGETS phobiccc RUNTIME DESTINATION bin)
