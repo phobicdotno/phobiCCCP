@@ -232,6 +232,17 @@ void Canvas::editToolpath(const QString &uuid, const QJsonObject &newJson)
     m_undo->push(new TpEditCmd(this, m_doc, *t, after));
 }
 
+void Canvas::insertGenerated(const QVector<Element> &els, const Toolpath &tp)
+{
+    if (!m_doc)
+        return;
+    for (const Element &e : els)
+        m_doc->addElement(e);
+    m_doc->addToolpath(tp);
+    rebuild();
+    emit documentChanged();
+}
+
 // Exactly one selected, parametrically resizable element? Handle sits at the
 // east point (circle/polygon) or the top-right corner (rectangle).
 bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
