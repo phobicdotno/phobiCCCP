@@ -1,9 +1,11 @@
 #include "mainwindow.h"
 #include "gcodeexport.h"
+#include "grblstreamer.h"
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
 #include <QJsonArray>
+#include <QTimer>
 #include <functional>
 #include <QPalette>
 #include <QStyleFactory>
@@ -204,6 +206,41 @@ int main(int argc, char *argv[])
     if (argc == 4 && QByteArray(argv[1]) == "--selftest")
         return selftest(QString::fromLocal8Bit(argv[2]),
                         QString::fromLocal8Bit(argv[3]));
+
+    // --grbl-check <port>: SAFE hardware handshake through the real streamer —
+    // opens the port, reports the banner and live status, asks for $I build
+    // info, disconnects. Sends NO motion, unlock, homing or spindle commands.
+    if (argc == 3 && QByteArray(argv[1]) == "--grbl-check") {
+        c2d::GrblStreamer grbl;
+        bool sawStatus = false, sawOk = false;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [&](const QString &l) {
+            qInfo().noquote() << "RX:" << l;
+            if (l == QLatin1String("ok"))
+                sawOk = true;
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport,
+                         [&](const QString &st, double x, double y, double z) {
+            if (!sawStatus)
+                qInfo().noquote() << QStringLiteral("STATUS: %1  MPos X%2 Y%3 Z%4")
+                                         .arg(st).arg(x).arg(y).arg(z);
+            sawStatus = true;
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        qInfo().noquote() << "connected to" << argv[2];
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$I")); });
+        int rc = 1;
+        QTimer::singleShot(5000, &app, [&] {
+            rc = (sawStatus && sawOk) ? 0 : 1;
+            qInfo().noquote() << (rc == 0 ? "GRBL_CHECK_OK" : "GRBL_CHECK_FAILED");
+            grbl.disconnectPort();
+            QCoreApplication::exit(rc);
+        });
+        return app.exec();
+    }
 
     // --export <in.c2d> <out.nc>: headless g-code export (CLI/scripting).
     if (argc == 4 && QByteArray(argv[1]) == "--export") {
