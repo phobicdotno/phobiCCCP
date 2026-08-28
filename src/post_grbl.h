@@ -10,14 +10,18 @@
 namespace c2d {
 
 struct Op {
-    enum Kind { Rapid, Feed, Spindle, Tool, Comment } kind;
-    double x = 0, y = 0, z = 0;   // Rapid/Feed target (mm)
-    double feed = 0;              // Feed rate (mm/min) for Feed
+    enum Kind { Rapid, Feed, Arc, Spindle, Tool, Comment } kind;
+    double x = 0, y = 0, z = 0;   // Rapid/Feed/Arc target (mm)
+    double feed = 0;              // Feed rate (mm/min) for Feed/Arc
     int ival = 0;                 // Spindle rpm, or Tool number
     QString text;                 // Comment text
+    double ci = 0, cj = 0;        // Arc: center offset from start (I, J)
+    bool cw = false;              // Arc: G2 (clockwise) vs G3
 
-    static Op rapid(double x, double y, double z) { return {Rapid, x, y, z, 0, 0, {}}; }
-    static Op feedTo(double x, double y, double z, double f) { return {Feed, x, y, z, f, 0, {}}; }
+    static Op rapid(double x, double y, double z) { return {Rapid, x, y, z, 0, 0, {}, 0, 0, false}; }
+    static Op feedTo(double x, double y, double z, double f) { return {Feed, x, y, z, f, 0, {}, 0, 0, false}; }
+    static Op arcTo(double x, double y, double z, double i, double j, bool cw, double f)
+    { return {Arc, x, y, z, f, 0, {}, i, j, cw}; }
     static Op spindle(int rpm) { Op o; o.kind = Spindle; o.ival = rpm; return o; }
     static Op tool(int n)      { Op o; o.kind = Tool;    o.ival = n;   return o; }
     static Op comment(const QString &t) { Op o; o.kind = Comment; o.text = t; return o; }
