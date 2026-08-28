@@ -35,6 +35,9 @@ public:
     void moveElementBy(const QString &id, double dx, double dy);
     // Replace a toolpath's JSON payload (undoable; from the toolpath panel).
     void editToolpath(const QString &uuid, const QJsonObject &newJson);
+    // Insert generated elements plus a new toolpath in one shot (inlay male
+    // generator). Not undoable — delete the pieces manually to revert.
+    void insertGenerated(const QVector<Element> &els, const Toolpath &tp);
     QStringList selectedElementIds() const;
 
     // On-canvas g-code preview: rapids dashed, cuts colored by depth.
