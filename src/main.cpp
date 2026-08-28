@@ -134,14 +134,11 @@ static int selftest(const QString &in, const QString &out)
     ct.type = QStringLiteral("contour");
     check2.replaceToolpath(ct);
     const c2d::GcodeResult g = c2d::exportGcode(check2);
-    // The exporter covers contour/cutout/pocket/drilling; other types (vcarve,
-    // keyhole, texture) may legitimately be skipped depending on the input.
-    // The post is fully modal, so "G1" appears once per plunge and subsequent
-    // feeds are bare axis lines - judge motion volume by line count instead.
-    const bool gOk = g.done.size() >= 2
+    const bool gOk = g.done.size() == 2 && g.skipped.isEmpty()
         && g.gcode.contains(QLatin1String("G90")) && g.gcode.contains(QLatin1String("G21"))
         && g.gcode.contains(QLatin1String("M03S")) && g.gcode.contains(QLatin1String("M02"))
-        && g.gcode.contains(QLatin1String("G1")) && g.gcode.count(QChar('\n')) > 100;
+        && g.gcode.count(QLatin1String("G1")) > 50
+        && (g.gcode.contains(QLatin1String("G2X")) || g.gcode.contains(QLatin1String("G3X")));
     qInfo() << "selftest gcode:" << (gOk ? "OK" : "FAILED")
             << "lines =" << g.gcode.count(QChar('\n'))
             << "skipped =" << g.skipped;
