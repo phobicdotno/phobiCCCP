@@ -1,5 +1,7 @@
 #include "post_grbl.h"
+#include <QRegularExpression>
 #include <QStringList>
+#include <cmath>
 
 namespace c2d {
 
@@ -28,6 +30,110 @@ QString block(std::initializer_list<QString> words) {
     return parts.join(QString());
 }
 } // namespace
+
+JobStats computeStats(const QVector<Op> &ops)
+{
+    JobStats s;
+    const double kRapidFeed = 5000.0;   // mm/min, conservative for a Shapeoko
+    const double kTau = 6.283185307179586;
+    double px = 0, py = 0, pz = 0;
+    bool have = false;
+    auto grow = [&s](double x, double y, double z) {
+        if (!s.hasBounds) {
+            s.minX = s.maxX = x;
+            s.minY = s.maxY = y;
+            s.minZ = s.maxZ = z;
+            s.hasBounds = true;
+            return;
+        }
+        s.minX = qMin(s.minX, x); s.maxX = qMax(s.maxX, x);
+        s.minY = qMin(s.minY, y); s.maxY = qMax(s.maxY, y);
+        s.minZ = qMin(s.minZ, z); s.maxZ = qMax(s.maxZ, z);
+    };
+    for (const Op &op : ops) {
+        if (op.kind != Op::Rapid && op.kind != Op::Feed && op.kind != Op::Arc)
+            continue;
+        grow(op.x, op.y, op.z);
+        if (have) {
+            double len = 0;
+            if (op.kind == Op::Arc) {
+                const double cx = px + op.ci, cy = py + op.cj;
+                const double r = std::hypot(op.ci, op.cj);
+                const double a0 = std::atan2(py - cy, px - cx);
+                const double a1 = std::atan2(op.y - cy, op.x - cx);
+                double sweep = op.cw ? a0 - a1 : a1 - a0;
+                while (sweep <= 1e-9) sweep += kTau;   // coincident endpoints = full circle
+                while (sweep > kTau)  sweep -= kTau;
+                len = std::hypot(r * sweep, op.z - pz);
+                // Sample the arc so a ring's full extents (not just its
+                // endpoints) enter the bounds.
+                for (int i = 1; i < 8; ++i) {
+                    const double a = a0 + (op.cw ? -sweep : sweep) * i / 8.0;
+                    grow(cx + r * std::cos(a), cy + r * std::sin(a), op.z);
+                }
+            } else {
+                len = std::hypot(std::hypot(op.x - px, op.y - py), op.z - pz);
+            }
+            if (op.kind == Op::Rapid) {
+                s.rapidLen += len;
+                s.timeSec += len / kRapidFeed * 60.0;
+            } else {
+                s.cutLen += len;
+                if (op.feed > 0)
+                    s.timeSec += len / op.feed * 60.0;
+            }
+        }
+        px = op.x; py = op.y; pz = op.z;
+        have = true;
+    }
+    return s;
+}
+
+QString statsSummary(const JobStats &s)
+{
+    if (!s.hasBounds)
+        return QStringLiteral("empty program");
+    const int t = int(s.timeSec + 0.5);
+    return QStringLiteral("X %1..%2  Y %3..%4  Z %5..%6 mm\n"
+                          "cut %7 mm + rapid %8 mm, est. %9:%10 min")
+        .arg(s.minX, 0, 'f', 1).arg(s.maxX, 0, 'f', 1)
+        .arg(s.minY, 0, 'f', 1).arg(s.maxY, 0, 'f', 1)
+        .arg(s.minZ, 0, 'f', 1).arg(s.maxZ, 0, 'f', 1)
+        .arg(s.cutLen, 0, 'f', 0).arg(s.rapidLen, 0, 'f', 0)
+        .arg(t / 60).arg(t % 60, 2, 10, QChar('0'));
+}
+
+QStringList airCutTransform(const QStringList &lines, double lift)
+{
+    static const QRegularExpression zWord(QStringLiteral("Z(-?[0-9]+\\.?[0-9]*)"));
+    QStringList out;
+    for (const QString &raw : lines) {
+        const QString l = raw.trimmed();
+        // Drop spindle control: M03/M04 starts, bare S rpm changes, M05 stops.
+        // (`M0 ;T` tool-change pauses survive — they contain no motion.)
+        if (l.startsWith(QLatin1String("M03")) || l.startsWith(QLatin1String("M04"))
+            || l == QLatin1String("M05")
+            || (l.size() > 1 && l.at(0) == QChar('S') && l.at(1).isDigit()))
+            continue;
+        if (l.startsWith(QChar('(')) || l.startsWith(QChar(';'))) {
+            out << raw;   // comments untouched — a name could contain "Z1"
+            continue;
+        }
+        QString shifted;
+        int pos = 0;
+        auto it = zWord.globalMatch(raw);
+        while (it.hasNext()) {
+            const QRegularExpressionMatch m = it.next();
+            shifted += raw.mid(pos, m.capturedStart() - pos);
+            shifted += QStringLiteral("Z")
+                + QString::number(m.captured(1).toDouble() + lift, 'f', 3);
+            pos = m.capturedEnd();
+        }
+        shifted += raw.mid(pos);
+        out << shifted;
+    }
+    return out;
+}
 
 QString GrblPost::generate(const QVector<Op> &ops) const
 {
