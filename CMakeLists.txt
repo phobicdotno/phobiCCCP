@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobicCC LANGUAGES CXX)
+project(phobicCC VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -60,4 +60,29 @@ else()
     message(STATUS "Boost.Polygon Voronoi NOT found: v-carve uses ring fallback")
 endif()
 
-install(TARGETS phobiccc RUNTIME DESTINATION bin)
+include(GNUInstallDirs)
+install(TARGETS phobiccc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# Desktop integration: app-menu launcher, icon and .c2d file association, so
+# `cmake --install` gives a start-menu entry and double-click-to-open, not just
+# a binary. Works for both system (/usr/local) and user (~/.local) prefixes.
+configure_file(desktop/phobiccc.desktop.in
+               ${CMAKE_CURRENT_BINARY_DIR}/phobiccc.desktop @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phobiccc.desktop
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES desktop/phobiccc.svg
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
+install(FILES desktop/phobiccc-c2d.xml
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
+
+# Refresh the desktop/mime/icon caches after a real (non-packaging) install.
+install(CODE [[
+    if(NOT DEFINED ENV{DESTDIR} OR "$ENV{DESTDIR}" STREQUAL "")
+        set(_share "${CMAKE_INSTALL_PREFIX}/share")
+        execute_process(COMMAND update-mime-database "${_share}/mime" RESULT_VARIABLE _r ERROR_QUIET)
+        execute_process(COMMAND update-desktop-database "${_share}/applications" ERROR_QUIET)
+        execute_process(COMMAND gtk-update-icon-cache -f -t "${_share}/icons/hicolor" ERROR_QUIET)
+        execute_process(COMMAND xdg-mime default phobiccc.desktop application/x-carbide-create ERROR_QUIET)
+        message(STATUS "Desktop integration refreshed under ${_share}")
+    endif()
+]])

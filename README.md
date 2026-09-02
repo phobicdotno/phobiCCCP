@@ -70,6 +70,17 @@ cmake --build build -j$(nproc)
 ./build/phobiccc yourfile.c2d
 ```
 
+Install (binary + start-menu launcher + icon + `.c2d` file association):
+
+```sh
+sudo cmake --install build                                  # system-wide, /usr/local
+cmake --install build --prefix ~/.local                     # or per-user, no root
+```
+
+After that **phobicCC** shows up in the application menu (search "phobic")
+and `.c2d` files open with it on double-click. For the Machine dock you also
+need serial access: `sudo usermod -aG dialout $USER`, then log out and in.
+
 Clipper2 is fetched at configure time (disable with
 `-DPHOBICC_WITH_CLIPPER2=OFF`). `libboost-dev` provides the header-only
 Boost.Polygon Voronoi builder for the medial-axis v-carve; without it the
