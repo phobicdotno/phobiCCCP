@@ -46,6 +46,7 @@ public:
     bool hasToolpathPreview() const { return !m_previewOps.isEmpty(); }
 
 signals:
+    void toolChanged(Canvas::Tool t);  // active tool switched (setTool)
     void documentChanged();            // element added / moved / deleted
     void statusHint(const QString &msg);
     void cursorMoved(QPointF ccPos);   // live mm position under the mouse

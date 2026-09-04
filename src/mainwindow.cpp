@@ -198,11 +198,20 @@ MainWindow::MainWindow(QWidget *parent)
     sides->setValue(6);
     sides->setPrefix(QStringLiteral("sides "));
     sides->setToolTip(QStringLiteral("Polygon sides"));
-    tb->addWidget(sides);
+    QAction *sidesAct = tb->addWidget(sides);
     connect(sides, &QSpinBox::valueChanged, this,
             [this](int n) { m_canvas->setPolygonSides(n); });
+    QAction *sidesSep = tb->addSeparator();
 
-    tb->addSeparator();
+    // The side count only means something while drawing polygons, so show it
+    // (and its separator) only when the Polygon tool is active.
+    auto showSides = [sidesAct, sidesSep](Canvas::Tool t) {
+        const bool on = (t == Canvas::DrawPolygon);
+        sidesAct->setVisible(on);
+        sidesSep->setVisible(on);
+    };
+    showSides(m_canvas->tool());
+    connect(m_canvas, &Canvas::toolChanged, this, showSides);
     QAction *snapAct = tb->addAction(toolIcon(QStringLiteral("snap")), QStringLiteral("Snap"));
     snapAct->setCheckable(true);
     snapAct->setShortcut(Qt::Key_G);

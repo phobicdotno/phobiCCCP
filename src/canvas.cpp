@@ -339,6 +339,7 @@ void Canvas::setTool(Tool t)
     case DrawPath:    emit statusHint(tr("Path — click to add points; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
     }
+    emit toolChanged(t);
 }
 
 void Canvas::zoomFit()
