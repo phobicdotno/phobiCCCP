@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.1.6 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,7 @@ add_executable(phobicccp
     src/post_grbl.cpp
     src/grblstreamer.cpp
     src/machinepanel.cpp
+    src/isopreview.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE Qt6::Widgets Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)

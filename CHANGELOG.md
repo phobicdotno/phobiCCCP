@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.2.0 (build 8) — 2026-09-04
+- Machine dock rewritten: work + machine position display (WCO tracking),
+  jog speeds and press-and-hold continuous jogging with jog-cancel, keyboard
+  jogging, Zero X/Y/Z/XY/all, go-to X0Y0, editable port with USB description.
+- BitSetter tool-length probing: configurable button position (machine
+  coords), safe Z, fast/slow feeds, tool-change spot; reference tool taken
+  when zeroing Z; later measurements apply `G43.1` offsets, re-applied after
+  reset/unlock; settings persisted.
+- Automatic tool-change flow while streaming: `M0 ;T<n>` parks the machine,
+  prompts, measures the new tool, applies the offset, continues. Ad-hoc
+  commands, macros and the program stream no longer confuse each other's acks.
+- Isometric animated 3D preview tab of the machining route with live machine
+  position.
+- CLI: `--grbl-probe`, `--grbl-run` (headless tool-change flow) and
+  `tools/grblsim.py`, a GRBL 1.1h simulator on a pty for testing without a
+  machine.
+
 ## v0.1.6 (build 7) — 2026-09-04
 - G-code export: fixed a 0.12 mm undersize on every offset toolpath. Element
   curves were flattened at Qt's default tolerance (a Ø6.6 circle became a

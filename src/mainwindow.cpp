@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "gcodeexport.h"
+#include "isopreview.h"
 #include "machinepanel.h"
 #include "propertiespanel.h"
 #include "toolpathpanel.h"
@@ -119,16 +120,33 @@ MainWindow::MainWindow(QWidget *parent)
     addDockWidget(Qt::RightDockWidgetArea, dock);
     m_machine = new MachinePanel(this);
     auto *mcDock = new QDockWidget(QStringLiteral("Machine"), this);
+    m_mcDock = mcDock;
     mcDock->setWidget(m_machine);
     mcDock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, mcDock);
 
-    tabifyDockWidget(tpDock, dock);     // Toolpaths / Document / Machine tabs
+    m_iso = new IsoPreview(this);
+    m_isoDock = new QDockWidget(QStringLiteral("Preview"), this);
+    m_isoDock->setWidget(m_iso);
+    m_isoDock->setFeatures(QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::RightDockWidgetArea, m_isoDock);
+
+    tabifyDockWidget(tpDock, dock);     // Toolpaths / Document / Machine / Preview tabs
     tabifyDockWidget(dock, mcDock);
+    tabifyDockWidget(mcDock, m_isoDock);
     tpDock->raise();
+    // The 3D preview is only rebuilt while its tab is showing; catch up when
+    // it is raised after edits happened behind it.
+    connect(m_isoDock, &QDockWidget::visibilityChanged, this, [this](bool v) {
+        if (v && m_isoStale)
+            refreshIso();
+    });
 
     connect(m_canvas, &Canvas::selectionChangedIds,
             m_props, &PropertiesPanel::setSelection);
+    // Real machine work position → orange crosshair in the 3D preview.
+    connect(m_machine, &MachinePanel::livePosition,
+            m_iso, &IsoPreview::setLivePosition);
 
     // addAction(text, receiver, method, shortcut) — argument order that is
     // stable across Qt6 minor versions (the (text, shortcut, …) overload is newer).
@@ -269,6 +287,8 @@ MainWindow::MainWindow(QWidget *parent)
         m_tp->refresh();
         if (m_previewAct->isChecked())
             refreshPreview();
+        else
+            markIsoStale();
         statusBar()->showMessage(QStringLiteral("Edited — Ctrl+S to save"));
     });
     connect(m_canvas, &Canvas::statusHint, this, [this](const QString &m) {
@@ -323,16 +343,44 @@ void MainWindow::refreshPreview()
     }
     const GcodeResult r = exportGcode(m_doc);
     m_canvas->setToolpathPreview(r.ops);
+    m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
+                  m_doc.params().value("thickness").toDouble());
+    m_isoStale = false;
     QString msg = QStringLiteral("Preview: %1 toolpath(s)").arg(r.done.size());
     if (!r.skipped.isEmpty())
         msg += QStringLiteral(" — skipped: %1").arg(r.skipped.join(QStringLiteral(", ")));
     statusBar()->showMessage(msg, 6000);
 }
 
+void MainWindow::showMachinePanel()
+{
+    if (m_mcDock)
+        m_mcDock->raise();
+}
+
 void MainWindow::showToolpathPreview()
 {
     m_previewAct->setChecked(true);
     refreshPreview();
+    m_isoDock->raise();   // --shot … preview: capture the 3D tab too
+}
+
+void MainWindow::refreshIso()
+{
+    m_isoStale = false;
+    if (m_doc.filePath().isEmpty())
+        return;
+    const GcodeResult r = exportGcode(m_doc);
+    m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
+                  m_doc.params().value("thickness").toDouble());
+}
+
+void MainWindow::markIsoStale()
+{
+    if (m_isoDock->isVisible())
+        refreshIso();
+    else
+        m_isoStale = true;
 }
 
 void MainWindow::updateTitle()
@@ -416,6 +464,10 @@ void MainWindow::openFile(const QString &path)
     m_dirty = false;
     updateTitle();
     refreshInfo();
+    if (m_previewAct->isChecked())
+        refreshPreview();
+    else
+        markIsoStale();
     statusBar()->showMessage(path);
 }
 

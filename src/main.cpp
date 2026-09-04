@@ -387,6 +387,104 @@ int main(int argc, char *argv[])
         return app.exec();
     }
 
+    // --grbl-probe <port> <bsX> <bsY> [safeZ]: BitSetter measurement through the
+    // real streamer macro: park at safe Z, go to the button (MACHINE coords),
+    // fast + slow G38.2, report the contact Z. Exit 0 on a triggered probe.
+    if ((argc == 5 || argc == 6) && QByteArray(argv[1]) == "--grbl-probe") {
+        c2d::GrblStreamer grbl;
+        c2d::BitSetterConfig cfg;
+        cfg.enabled = true;
+        cfg.x = QByteArray(argv[3]).toDouble();
+        cfg.y = QByteArray(argv[4]).toDouble();
+        if (argc == 6)
+            cfg.safeZ = QByteArray(argv[5]).toDouble();
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::probeResult,
+                         [](double x, double y, double z, bool ok) {
+            qInfo().noquote() << QStringLiteral("PRB: X%1 Y%2 Z%3 %4")
+                                     .arg(x).arg(y).arg(z).arg(ok ? "contact" : "MISS");
+        });
+        int rc = 1;
+        QObject::connect(&grbl, &c2d::GrblStreamer::macroFinished, [&](bool ok) {
+            rc = (ok && grbl.lastProbeOk()) ? 0 : 1;
+            qInfo().noquote() << (rc == 0
+                ? QStringLiteral("PROBE_OK contactZ=%1").arg(grbl.lastProbeZ(), 0, 'f', 3)
+                : QStringLiteral("PROBE_FAILED"));
+            QTimer::singleShot(500, &app, [&] { grbl.disconnectPort(); QCoreApplication::exit(rc); });
+        });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        QTimer::singleShot(1500, &grbl, [&] { grbl.measureTool(cfg, true, grbl.status().mx, grbl.status().my); });
+        QTimer::singleShot(120000, &app, [&] { qInfo() << "PROBE_TIMEOUT"; QCoreApplication::exit(2); });
+        return app.exec();
+    }
+
+    // --grbl-run <port> <file.nc> [bsX bsY]: stream a program with the full
+    // tool-change flow: park at each `M0 ;T<n>`, (optionally) measure on the
+    // BitSetter, apply the G43.1 offset relative to the first measurement,
+    // continue. No operator prompt — meant for the simulator.
+    if ((argc == 4 || argc == 6) && QByteArray(argv[1]) == "--grbl-run") {
+        QFile f(QString::fromLocal8Bit(argv[3]));
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            qWarning() << "cannot read" << argv[3];
+            return 1;
+        }
+        const QStringList lines = QString::fromLatin1(f.readAll()).split(QChar('\n'), Qt::SkipEmptyParts);
+        c2d::GrblStreamer grbl;
+        c2d::BitSetterConfig cfg;
+        cfg.enabled = (argc == 6);
+        if (cfg.enabled) {
+            cfg.x = QByteArray(argv[4]).toDouble();
+            cfg.y = QByteArray(argv[5]).toDouble();
+        }
+        bool haveRef = false;
+        double refZ = 0;
+        int changes = 0;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { if (!l.startsWith(QLatin1String("ok"))) qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::toolChangeRequested, [&](int t) {
+            ++changes;
+            qInfo().noquote() << QStringLiteral("TOOLCHANGE T%1 parked (acked so far ok)").arg(t);
+            if (cfg.enabled)
+                grbl.measureTool(cfg, false);
+            else
+                QTimer::singleShot(300, &grbl, [&] { grbl.continueAfterToolChange(); });
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::macroFinished, [&](bool ok) {
+            if (!ok || !grbl.lastProbeOk()) {
+                qInfo() << "RUN_FAILED (probe)";
+                QCoreApplication::exit(1);
+                return;
+            }
+            if (!haveRef) {
+                haveRef = true;
+                refZ = grbl.lastProbeZ();
+                grbl.applyToolLengthOffset(0);
+                qInfo().noquote() << QStringLiteral("REF contactZ=%1").arg(refZ, 0, 'f', 3);
+            } else {
+                const double tlo = grbl.lastProbeZ() - refZ;
+                grbl.applyToolLengthOffset(tlo);
+                qInfo().noquote() << QStringLiteral("TLO %1 (contactZ=%2)").arg(tlo, 0, 'f', 3).arg(grbl.lastProbeZ(), 0, 'f', 3);
+            }
+            grbl.continueAfterToolChange();
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            qInfo().noquote() << (ok ? QStringLiteral("RUN_OK toolchanges=%1 tlo=%2").arg(changes).arg(grbl.toolLengthOffset(), 0, 'f', 3)
+                                     : QStringLiteral("RUN_FAILED"));
+            QTimer::singleShot(300, &app, [&, ok] { grbl.disconnectPort(); QCoreApplication::exit(ok ? 0 : 1); });
+        });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        QTimer::singleShot(1500, &grbl, [&] { grbl.startStream(lines); });
+        QTimer::singleShot(15 * 60 * 1000, &app, [&] { qInfo() << "RUN_TIMEOUT"; QCoreApplication::exit(2); });
+        return app.exec();
+    }
+
     // --grbl-jog-z1 <port>: the first authorized MOTION test — unlock ($X)
     // and jog Z UP by exactly 1 mm at a gentle F200 via the same $J= command
     // the Machine panel's jog button emits. Verifies motion end-to-end by
@@ -788,6 +886,8 @@ int main(int argc, char *argv[])
         w.openFile(QString::fromLocal8Bit(argv[2]));
         if (argc == 5 && QByteArray(argv[4]) == "preview")
             w.showToolpathPreview();
+        if (argc == 5 && QByteArray(argv[4]) == "machine")
+            w.showMachinePanel();
         const QString out = QString::fromLocal8Bit(argv[3]);
         int rc = 1;
         QTimer::singleShot(1500, &w, [&] {

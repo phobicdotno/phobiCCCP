@@ -4,11 +4,13 @@
 #include <QMainWindow>
 
 class QAction;
+class QDockWidget;
 class QLabel;
 class QPlainTextEdit;
 
 namespace c2d {
 
+class IsoPreview;
 class MachinePanel;
 class PropertiesPanel;
 class ToolpathPanel;
@@ -20,6 +22,7 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     void openFile(const QString &path);
     void showToolpathPreview();   // enable the overlay (used by --shot)
+    void showMachinePanel();      // raise the Machine tab (used by --shot)
 
 private slots:
     void onOpen();
@@ -30,6 +33,8 @@ private slots:
 
 private:
     void refreshInfo();
+    void refreshIso();        // rebuild the 3D preview from the current document
+    void markIsoStale();      // refresh now if the Preview tab is visible, else defer
 
     void updateTitle();
 
@@ -40,6 +45,10 @@ private:
     PropertiesPanel *m_props;    // numeric editor for the selection
     ToolpathPanel *m_tp;         // toolpath list + parameter editor
     MachinePanel *m_machine;     // GRBL serial control + streaming
+    QDockWidget *m_mcDock = nullptr;
+    IsoPreview *m_iso;           // isometric animated route preview
+    QDockWidget *m_isoDock;
+    bool m_isoStale = false;
     QAction *m_previewAct;       // toolpath overlay toggle
     bool m_dirty = false;
     Document m_doc;

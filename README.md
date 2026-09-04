@@ -52,14 +52,38 @@ Linux, built on the reverse-engineered format documentation in
 
 **Machine control (Machine dock)**
 - Connects to a GRBL controller over serial (115200) — hardware-verified
-  against a Shapeoko 5 Pro (GRBL 1.1h)
-- Jog pad (`$J=` jogging), work-zero (G10 L20), Home, Unlock
-- Streams the document's generated g-code with GRBL's character-counting
-  protocol, live status (`?` polling), feed-hold / resume / soft-reset,
-  realtime feed-override buttons, progress bar and console
+  against a Shapeoko 5 Pro (GRBL 1.1h). Ports are listed with their USB
+  description; a device path can also be typed by hand.
+- Live status: state, **work** and **machine** position side by side
+  (WCO tracked from the status reports), feed / spindle, tool-length offset,
+  probe-pin indicator.
+- **Jog**: step sizes 0.1 / 1 / 10 / 100 mm and speeds slow / medium / fast /
+  rapid. Click = one step, **press and hold = continuous** jog cancelled on
+  release (`$J=` + jog-cancel 0x85). Arrow keys jog X/Y and PgUp/PgDn jog Z
+  the same way while the panel has focus.
+- **Work zero**: Zero X / Y / Z / XY / all (`G10 L20`), "→ X0 Y0" (raise to
+  safe Z, then rapid to work zero), Home, Unlock.
+- **BitSetter** (tool-length probe): configure the button's *machine*
+  coordinates ("use current" while parked over it), safe Z, fast/slow probe
+  feeds and a tool-change spot. *Measure tool* goes there, probes twice
+  (`G38.2`, fast then slow), and comes back. The first measurement after
+  *Zero Z* is the **reference tool**; every later measurement applies the
+  length difference as a `G43.1` offset, so a new tool cuts to the same Z0
+  without re-zeroing. The offset survives resets and unlocks (re-applied
+  automatically) and the reference is remembered between sessions.
+- **Streaming with tool changes**: every `M0 ;T<n>` the post emits parks
+  the machine (spindle off, safe Z, tool-change spot), prompts for the tool,
+  measures it on the BitSetter, applies the offset and continues — no manual
+  Resume needed. Character-counting protocol, feed-hold / resume / soft-reset,
+  realtime feed override, progress bar and console.
 - **Air-cut mode**: rehearse any program with all spindle commands stripped
   and every Z lifted by a chosen amount; every run shows a stats +
-  spindle-warning confirmation first
+  spindle-warning confirmation first.
+
+**Isometric preview** (Preview tab): the generated route drawn in 3D over the
+stock — rapids dashed, cuts coloured by depth — with orbit / zoom, and an
+animated tool marker with play / pause / speed and a position slider. The
+machine's live work position is drawn on it while connected.
 
 ## Building (Ubuntu / Debian)
 
@@ -96,6 +120,9 @@ phobicccp --export file.c2d out.nc      # headless g-code export
 phobicccp --selftest in.c2d out.c2d     # 10-stage create/save/export self-check
 phobicccp --shot file.c2d out.png [preview]  # render the GUI to a PNG
 phobicccp --grbl-check /dev/ttyACM0     # safe GRBL handshake (no motion)
+phobicccp --grbl-probe /dev/ttyACM0 -20 -20 [safeZ]   # BitSetter measurement (machine XY)
+phobicccp --grbl-run /dev/ttyACM0 job.nc [bsX bsY]    # stream with automatic tool changes
+python3 tools/grblsim.py                 # GRBL 1.1h simulator on a pty for testing
 ```
 
 ## Format notes
