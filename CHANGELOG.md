@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.2 (build 3) — 2026-09-04
+- Project renamed to **phobiCCCP — Phobic Carbide Create Clone Project**
+  (GitHub repo `phobicdotno/phobiCCCP`, was `phobicCC-linux`). Binary,
+  launcher and CMake target stay `phobiccc`.
+
 ## v0.1.1 (build 2) — 2026-09-04
 - Toolbar: the polygon "sides" spinner is now only shown while the Polygon
   tool (P) is active, instead of permanently. Canvas gained a `toolChanged`

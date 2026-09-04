@@ -1,9 +1,10 @@
-# phobicCC
+# phobiCCCP — Phobic Carbide Create Clone Project
 
 A Linux/Qt6 CAD/CAM application for Carbide Create `.c2d` files and GRBL
 machines (Shapeoko) — a Carbide-Create-and-Carbide-Motion-free workflow on
 Linux, built on the reverse-engineered format documentation in
 [shapeoko-c2d](https://github.com/phobicdotno/shapeoko-c2d).
+The binary and launcher are still called `phobiccc`.
 
 ## What it does
 
