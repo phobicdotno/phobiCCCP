@@ -437,6 +437,7 @@ public:
         : m_ops(ops), m_safeZ(safeZ), m_feed(feed), m_plunge(plunge) {}
 
     QPointF pos() const { return QPointF(m_x, m_y); }
+    void setFeeds(double feed, double plunge) { m_feed = feed; m_plunge = plunge; }
 
     void rapidTo(const QPointF &p)
     {
@@ -663,6 +664,69 @@ QList<Job> orderJobs(QList<Job> jobs, QPointF from)
     return out;
 }
 
+static QRectF jobBounds(const Job &j)
+{
+    QRectF r;
+    for (const QPolygonF &p : j.rings)
+        r |= p.boundingRect();
+    return r;
+}
+
+// A ring job held back so it can be interleaved with the jobs of neighbouring
+// toolpaths that use the same tool (e.g. counterbore + through-hole).
+struct Deferred {
+    Job job;
+    CutParams cp;
+    int tp = 0;          // toolpath sequence number (document order)
+    QString name;
+    double feed = 0, plunge = 0;
+    int rpm = 0;
+};
+
+// Nearest-neighbor over all deferred jobs, with one rule: a job may not run
+// while an earlier toolpath still has an overlapping job pending. So at a
+// given hole the counterbore always precedes the through-hole, a pocket
+// precedes the cutout around it — but all work at one site finishes before
+// the spindle travels to the next.
+static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
+{
+    QList<Deferred> out;
+    while (!jobs.isEmpty()) {
+        int best = 0;
+        double bestD = QLineF(from, jobs.first().job.start()).length();
+        for (int i = 1; i < jobs.size(); ++i) {
+            const double d = QLineF(from, jobs.at(i).job.start()).length();
+            if (d < bestD) {
+                bestD = d;
+                best = i;
+            }
+        }
+        for (bool again = true; again;) {
+            again = false;
+            const QRectF b = jobBounds(jobs.at(best).job);
+            int pick = -1;
+            double pickD = 0;
+            for (int i = 0; i < jobs.size(); ++i) {
+                if (jobs.at(i).tp >= jobs.at(best).tp
+                    || !jobBounds(jobs.at(i).job).intersects(b))
+                    continue;
+                const double d = QLineF(from, jobs.at(i).job.start()).length();
+                if (pick < 0 || d < pickD) {
+                    pick = i;
+                    pickD = d;
+                }
+            }
+            if (pick >= 0) {
+                best = pick;
+                again = true;
+            }
+        }
+        from = jobs.at(best).job.start();
+        out.append(jobs.takeAt(best));
+    }
+    return out;
+}
+
 } // namespace
 
 GcodeResult exportGcode(Document &doc)
@@ -673,11 +737,52 @@ GcodeResult exportGcode(Document &doc)
     QPointF lastPos(0, 0);
 
     int lastTool = -1;
+    int tpIndex = 0;
+
+    // Ring-type toolpaths (pocket / contour / cutout) are not emitted one by
+    // one: consecutive ones sharing a tool are pooled and emitted together,
+    // ordered by orderDeferred(), so each site is finished before moving on.
+    QList<Deferred> pending;
+    int pendingTool = -1;
+    auto flush = [&]() {
+        if (pending.isEmpty())
+            return;
+        QVector<Op> body;
+        Emitter em(body, safeZ, 0, 0);
+        int curTp = -1, curRpm = -1;
+        QStringList names;
+        for (const Deferred &d : orderDeferred(pending, lastPos)) {
+            if (d.tp != curTp) {
+                body.append(Op::comment(d.name));
+                if (d.rpm != curRpm) {
+                    body.append(Op::spindle(d.rpm));
+                    curRpm = d.rpm;
+                }
+                em.setFeeds(d.feed, d.plunge);
+                curTp = d.tp;
+                if (!names.contains(d.name))
+                    names << d.name;
+            }
+            em.runJob(d.job, d.cp);
+            lastPos = em.pos();
+        }
+        if (pendingTool != lastTool) {
+            ops.append(Op::tool(pendingTool));
+            lastTool = pendingTool;
+        }
+        ops.append(body);
+        ops.append(Op::spindle(0));
+        res.done << names;
+        pending.clear();
+        pendingTool = -1;
+    };
+
     for (const Toolpath &t : doc.toolpaths()) {
         const QJsonObject j = t.json;
         if (!j.value("enabled").toBool(true))
             continue;
         const QString name = j.value("name").toString();
+        const int myIndex = tpIndex++;
 
         const bool contour = (t.type == QLatin1String("contour"));
         const bool pocket = (t.type == QLatin1String("pocket_toolpath"));
@@ -956,16 +1061,19 @@ GcodeResult exportGcode(Document &doc)
         }
 
         if (!jobs.isEmpty()) {
-            for (const Job &job : orderJobs(jobs, lastPos)) {
-                em.runJob(job, cp);
-                lastPos = em.pos();
-            }
+            if (pendingTool != toolNo)
+                flush();                      // different tool: close the pool
+            pendingTool = toolNo;
+            for (const Job &job : jobs)
+                pending.append({job, cp, myIndex, name, feed, plunge, rpm});
+            continue;
         }
 
         if (body.isEmpty()) {
             res.skipped << QStringLiteral("%1 (empty)").arg(name);
             continue;
         }
+        flush();   // direct-emission toolpath: keep document order around it
         if (toolNo != lastTool) {
             ops.append(Op::tool(toolNo));
             lastTool = toolNo;
@@ -976,6 +1084,7 @@ GcodeResult exportGcode(Document &doc)
         ops.append(Op::spindle(0));
         res.done << name;
     }
+    flush();
 
     res.gcode = GrblPost(true).generate(ops);
     res.ops = ops;

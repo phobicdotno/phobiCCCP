@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.5 (build 6) — 2026-09-04
+- G-code export: consecutive toolpaths that use the same tool (pocket /
+  contour / cutout) are now pooled and ordered per site, so e.g. a hole's
+  counterbore and through-hole are both finished before the spindle travels
+  to the next hole, instead of running each toolpath's full tour separately.
+  An earlier toolpath's job always runs before a later one that overlaps it,
+  so document order is preserved wherever it matters (pocket before the
+  cutout around it). One tool change and one spindle start per pool.
+
 ## v0.1.4 (build 5) — 2026-09-04
 - Rename completed everywhere: binary/CMake target `phobicccp`, launcher
   `phobicccp.desktop`, icon `phobicccp`, MIME file `phobicccp-c2d.xml`,

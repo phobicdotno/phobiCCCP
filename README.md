@@ -43,7 +43,9 @@ Linux, built on the reverse-engineered format documentation in
   - exact offsetting via Clipper2; circular rings become true G2/G3 arcs and
     all other curves are greedily arc/line-fitted (0.01 mm tolerance), so the
     GRBL planner never starves on 1 mm segment chatter
-  - jobs ordered nearest-neighbor to minimize rapids
+  - jobs ordered nearest-neighbor to minimize rapids; consecutive same-tool
+    toolpaths are interleaved per site (counterbore + through-hole at one
+    hole, then the next), keeping document order wherever jobs overlap
 - **On-canvas toolpath preview** (Ctrl+P): rapids dashed, cuts colored by
   depth, plunge markers
 - Export/run shows job stats: extents, cut/rapid length, time estimate
