@@ -43,6 +43,22 @@ static QVector<const Element *> referenced(Document &doc, const QJsonObject &tp)
         poly.append(poly.first());
 }
 
+// Flatten curves to polygons at `tol` mm. Qt flattens beziers at a fixed
+// 0.5 path-unit threshold, which in millimetres turns a Ø6.6 circle into a
+// ~16-gon; offsetting those chords instead of the arc shrinks a ring by
+// delta*(1/cos(pi/n)-1) — 0.06 mm at a 3 mm tool radius. Flatten in a scaled
+// space instead so the chord error is negligible against the 0.01 mm arc-fit
+// tolerance used downstream.
+static QList<QPolygonF> finePolygons(const QPainterPath &path, double tol = 0.005)
+{
+    const double k = 0.5 / tol;
+    QList<QPolygonF> out = path.toSubpathPolygons(QTransform::fromScale(k, k));
+    for (QPolygonF &poly : out)
+        for (QPointF &pt : poly)
+            pt /= k;
+    return out;
+}
+
 #ifdef HAVE_CLIPPER2
 // ---- exact geometry backend (Clipper2) ----------------------------------
 static const double kScale = 1000.0;   // integer µm
@@ -80,11 +96,11 @@ static C2::Paths64 pathsOfRegion(const QPainterPath &region)
 
 // Union of the referenced closed vectors as a filled region (even-odd, so
 // nested vectors become holes/islands exactly as CC treats them).
-static QPainterPath regionOf(const QVector<const Element *> &elems)
+static QPainterPath regionOf(const QVector<const Element *> &elems, double tol = 0.005)
 {
     C2::Paths64 subj;
     for (const Element *e : elems)
-        for (const QPolygonF &poly : e->painterPath.toSubpathPolygons())
+        for (const QPolygonF &poly : finePolygons(e->painterPath, tol))
             if (poly.size() > 2)
                 subj.push_back(toPath64(poly));
     const C2::Paths64 u = C2::Union(subj, C2::FillRule::EvenOdd);
@@ -187,14 +203,22 @@ static QList<QPolygonF> outsetRings(const QPainterPath &region, double delta)
 }
 
 // Union of the referenced closed vectors as a filled region.
-static QPainterPath regionOf(const QVector<const Element *> &elems)
+static QPainterPath regionOf(const QVector<const Element *> &elems, double = 0.005)
 {
+    // Qt's path booleans flatten curves at a fixed 0.5 path-unit tolerance.
+    // In millimetres that turns a Ø6.6 circle into a ~16-gon, and insetting
+    // the chords instead of the arc shrinks every ring by delta*(1/cos(pi/n)-1)
+    // — 0.06 mm at a 3 mm tool radius. Do the booleans in 0.01 mm units so
+    // the flattening error is 0.005 mm, then map back.
+    const double k = 100.0;
+    const QTransform up = QTransform::fromScale(k, k);
+    const QTransform down = QTransform::fromScale(1.0 / k, 1.0 / k);
     QPainterPath r;
     for (const Element *e : elems) {
-        QPainterPath p = e->painterPath;
+        const QPainterPath p = up.map(e->painterPath);
         r = r.isEmpty() ? p : r.united(p);
     }
-    return r.simplified();
+    return down.map(r.simplified());
 }
 
 // Split a (simplified) region into connected components: each outer boundary
@@ -924,7 +948,11 @@ GcodeResult exportGcode(Document &doc)
             const double bitAngle = tool.value("angle").toDouble(60);
             const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 179.0) / 2));
             const double stepover = qMax(0.05, j.value("stepover").toDouble(0.2));
-            const QPainterPath region = regionOf(elems);
+            // Coarse flattening on purpose: the medial axis of an n-gon is n
+            // spokes, so a finely flattened circle only multiplies redundant
+            // carve passes (3x on the baseplate). Offsetting toolpaths use the
+            // fine default instead.
+            const QPainterPath region = regionOf(elems, 0.5);
             // Max clearance the bit can reach before bottoming out at zBot;
             // anything wider needs a flat clearing pass at full depth.
             const double dMax = qMax(0.0, (cp.zTop - cp.zBot) * halfTan);
@@ -1021,7 +1049,7 @@ GcodeResult exportGcode(Document &doc)
             }
         } else if (contour && j.value("ofset_dir").toInt(0) == 0) {
             for (const Element *e : elems)
-                for (const QPolygonF &p : e->painterPath.toSubpathPolygons())
+                for (const QPolygonF &p : finePolygons(e->painterPath))
                     if (p.size() >= 2) {
                         Job job;
                         job.rings.append(p);

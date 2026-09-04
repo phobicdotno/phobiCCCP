@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.6 (build 7) — 2026-09-04
+- G-code export: fixed a 0.12 mm undersize on every offset toolpath. Element
+  curves were flattened at Qt's default tolerance (a Ø6.6 circle became a
+  ~16-gon) before Clipper offset them, so rings shrank by 0.06 mm at a 3 mm
+  tool radius. Curves are now flattened at 0.005 mm; the baseplate holes come
+  out Ø6.60 / Ø12.70 instead of Ø6.48 / Ø12.58. V-carve keeps the coarse
+  input on purpose (its medial axis grows one spoke per polygon vertex).
+
 ## v0.1.5 (build 6) — 2026-09-04
 - G-code export: consecutive toolpaths that use the same tool (pocket /
   contour / cutout) are now pooled and ordered per site, so e.g. a hole's
