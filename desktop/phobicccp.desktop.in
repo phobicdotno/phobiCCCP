@@ -1,11 +1,11 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=phobicCC
+Name=phobiCCCP
 GenericName=CNC CAD/CAM
 Comment=Carbide Create .c2d editor, G-code generator and GRBL sender for Shapeoko
-Exec=@CMAKE_INSTALL_FULL_BINDIR@/phobiccc %f
-Icon=phobiccc
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/phobicccp %f
+Icon=phobicccp
 Terminal=false
 Categories=Graphics;Engineering;
 MimeType=application/x-carbide-create;

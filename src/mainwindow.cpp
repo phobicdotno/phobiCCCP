@@ -92,7 +92,7 @@ static QIcon toolIcon(const QString &kind)
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
-    setWindowTitle(QStringLiteral("phobicCC — Carbide Create .c2d (Linux)"));
+    setWindowTitle(QStringLiteral("phobiCCCP — Carbide Create .c2d (Linux)"));
     resize(1100, 780);
 
     m_canvas = new Canvas(this);
@@ -156,13 +156,13 @@ MainWindow::MainWindow(QWidget *parent)
     editMenu->addAction(undoAct);
     editMenu->addAction(redoAct);
 
-    // Vector tools: vertical icon palette on the left, like a real CAD app.
+    // Vector tools: horizontal icon row above the canvas (deliberately not
+    // Carbide Create's left-hand column).
     auto *palette = new QToolBar(QStringLiteral("Tools"), this);
     palette->setMovable(false);
-    palette->setOrientation(Qt::Vertical);
     palette->setToolButtonStyle(Qt::ToolButtonIconOnly);
     palette->setIconSize(QSize(24, 24));
-    addToolBar(Qt::LeftToolBarArea, palette);
+    addToolBar(Qt::TopToolBarArea, palette);
     auto *grp = new QActionGroup(this);
     auto addTool = [&](const QString &name, const QString &icon, Canvas::Tool t,
                        Qt::Key key, const QString &tip) {
@@ -337,10 +337,10 @@ void MainWindow::showToolpathPreview()
 
 void MainWindow::updateTitle()
 {
-    QString t = QStringLiteral("phobicCC");
+    QString t = QStringLiteral("phobiCCCP");
     if (!m_doc.filePath().isEmpty())
         t = QFileInfo(m_doc.filePath()).fileName() + (m_dirty ? QStringLiteral(" *") : QString())
-            + QStringLiteral(" — phobicCC");
+            + QStringLiteral(" — phobiCCCP");
     setWindowTitle(t);
 }
 

@@ -3,6 +3,6 @@
   <mime-type type="application/x-carbide-create">
     <comment>Carbide Create design</comment>
     <glob pattern="*.c2d"/>
-    <icon name="phobiccc"/>
+    <icon name="phobicccp"/>
   </mime-type>
 </mime-info>

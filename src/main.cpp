@@ -69,7 +69,7 @@ static int selftest(const QString &in, const QString &out)
     doc.addElement(c2d::Element::makePolygon({300, 100}, 30, 6, layer));
     doc.addElement(c2d::Element::makePath({{400, 80}, {430, 130}, {460, 80}}, false, layer));
     doc.addElement(c2d::Element::makePath({{500, 80}, {530, 130}, {560, 80}}, true, layer));
-    doc.addElement(c2d::Element::makeText(QStringLiteral("phobicCC"), {600, 80}, 15,
+    doc.addElement(c2d::Element::makeText(QStringLiteral("phobiCCCP"), {600, 80}, 15,
                                           QStringLiteral("Helvetica"), layer));
 
     if (!doc.save(out, &err)) { qWarning() << "save failed:" << err; return 2; }
@@ -88,7 +88,7 @@ static int selftest(const QString &in, const QString &out)
         if (e.geometryType == QLatin1String("text"))
             textOk = !e.painterPath.isEmpty()
                      && e.raw.value("rendered").toArray().size() > 3
-                     && e.raw.value("text").toString() == QLatin1String("phobicCC");
+                     && e.raw.value("text").toString() == QLatin1String("phobiCCCP");
     qInfo() << "selftest text:" << (textOk ? "OK" : "FAILED");
     if (!textOk)
         return 10;
@@ -344,7 +344,7 @@ static int selftest(const QString &in, const QString &out)
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-    QCoreApplication::setApplicationName(QStringLiteral("phobicCC"));
+    QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
     QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));
     applyDarkTheme(app);
 

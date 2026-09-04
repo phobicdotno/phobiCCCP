@@ -4,7 +4,6 @@ A Linux/Qt6 CAD/CAM application for Carbide Create `.c2d` files and GRBL
 machines (Shapeoko) — a Carbide-Create-and-Carbide-Motion-free workflow on
 Linux, built on the reverse-engineered format documentation in
 [shapeoko-c2d](https://github.com/phobicdotno/shapeoko-c2d).
-The binary and launcher are still called `phobiccc`.
 
 ## What it does
 
@@ -29,7 +28,7 @@ The binary and launcher are still called `phobiccc`.
   tool…) and assign the canvas selection as a toolpath's vectors; edits are
   saved back into the `.c2d` in place
 - **G-code export** (File → Export G-code, Ctrl+G, or
-  `phobiccc --export in.c2d out.nc`) in Carbide Create's own GRBL dialect:
+  `phobicccp --export in.c2d out.nc`) in Carbide Create's own GRBL dialect:
   - pocket: connected-component inset rings, innermost-first, stay-down
     linking, alternating pass direction (no track-back), plunge-once-per-depth
   - contour: no-offset / inside / outside; cutout: `cut_depth +
@@ -68,7 +67,7 @@ sudo apt install build-essential cmake qt6-base-dev qt6-base-dev-tools \
      libboost-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
-./build/phobiccc yourfile.c2d
+./build/phobicccp yourfile.c2d
 ```
 
 Install (binary + start-menu launcher + icon + `.c2d` file association):
@@ -78,23 +77,23 @@ sudo cmake --install build                                  # system-wide, /usr/
 cmake --install build --prefix ~/.local                     # or per-user, no root
 ```
 
-After that **phobicCC** shows up in the application menu (search "phobic")
+After that **phobiCCCP** shows up in the application menu (search "phobic")
 and `.c2d` files open with it on double-click. For the Machine dock you also
 need serial access: `sudo usermod -aG dialout $USER`, then log out and in.
 
 Clipper2 is fetched at configure time (disable with
-`-DPHOBICC_WITH_CLIPPER2=OFF`). `libboost-dev` provides the header-only
+`-DPHOBICCCP_WITH_CLIPPER2=OFF`). `libboost-dev` provides the header-only
 Boost.Polygon Voronoi builder for the medial-axis v-carve; without it the
 build falls back to depth-graded ring approximation.
 
 ## CLI
 
 ```sh
-phobiccc file.c2d                      # open the GUI on a file
-phobiccc --export file.c2d out.nc      # headless g-code export
-phobiccc --selftest in.c2d out.c2d     # 10-stage create/save/export self-check
-phobiccc --shot file.c2d out.png [preview]  # render the GUI to a PNG
-phobiccc --grbl-check /dev/ttyACM0     # safe GRBL handshake (no motion)
+phobicccp file.c2d                      # open the GUI on a file
+phobicccp --export file.c2d out.nc      # headless g-code export
+phobicccp --selftest in.c2d out.c2d     # 10-stage create/save/export self-check
+phobicccp --shot file.c2d out.png [preview]  # render the GUI to a PNG
+phobicccp --grbl-check /dev/ttyACM0     # safe GRBL handshake (no motion)
 ```
 
 ## Format notes

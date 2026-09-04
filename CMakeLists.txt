@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobicCC VERSION 0.1.2 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -12,8 +12,8 @@ find_package(ZLIB REQUIRED)
 # Exact polygon offsetting for CAM (pockets, contour offsets, v-carve rings).
 # ON: fetch Clipper2 (Boost-1.0 license) at configure time; OFF: fall back to
 # the approximate Qt path-boolean offsetting.
-option(PHOBICC_WITH_CLIPPER2 "Use Clipper2 for exact toolpath offsetting" ON)
-if(PHOBICC_WITH_CLIPPER2)
+option(PHOBICCCP_WITH_CLIPPER2 "Use Clipper2 for exact toolpath offsetting" ON)
+if(PHOBICCCP_WITH_CLIPPER2)
     include(FetchContent)
     FetchContent_Declare(clipper2
         GIT_REPOSITORY https://github.com/AngusJohnson/Clipper2.git
@@ -27,7 +27,7 @@ if(PHOBICC_WITH_CLIPPER2)
     FetchContent_MakeAvailable(clipper2)
 endif()
 
-add_executable(phobiccc
+add_executable(phobicccp
     src/main.cpp
     src/zlibutil.cpp
     src/c2ddocument.cpp
@@ -43,36 +43,36 @@ add_executable(phobiccc
     src/machinepanel.cpp
 )
 
-target_link_libraries(phobiccc PRIVATE Qt6::Widgets Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
-if(PHOBICC_WITH_CLIPPER2)
-    target_link_libraries(phobiccc PRIVATE Clipper2)
-    target_compile_definitions(phobiccc PRIVATE HAVE_CLIPPER2)
+target_link_libraries(phobicccp PRIVATE Qt6::Widgets Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
+if(PHOBICCCP_WITH_CLIPPER2)
+    target_link_libraries(phobicccp PRIVATE Clipper2)
+    target_compile_definitions(phobicccp PRIVATE HAVE_CLIPPER2)
 endif()
 
 # True medial-axis v-carve needs the (header-only) Boost.Polygon Voronoi
 # builder; without it the exporter falls back to depth-graded inset rings.
 find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
 if(BOOST_VORONOI_INC)
-    target_include_directories(phobiccc PRIVATE ${BOOST_VORONOI_INC})
-    target_compile_definitions(phobiccc PRIVATE HAVE_BOOST_VORONOI)
+    target_include_directories(phobicccp PRIVATE ${BOOST_VORONOI_INC})
+    target_compile_definitions(phobicccp PRIVATE HAVE_BOOST_VORONOI)
     message(STATUS "Boost.Polygon Voronoi found: medial-axis v-carve enabled")
 else()
     message(STATUS "Boost.Polygon Voronoi NOT found: v-carve uses ring fallback")
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS phobiccc RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS phobicccp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # Desktop integration: app-menu launcher, icon and .c2d file association, so
 # `cmake --install` gives a start-menu entry and double-click-to-open, not just
 # a binary. Works for both system (/usr/local) and user (~/.local) prefixes.
-configure_file(desktop/phobiccc.desktop.in
-               ${CMAKE_CURRENT_BINARY_DIR}/phobiccc.desktop @ONLY)
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phobiccc.desktop
+configure_file(desktop/phobicccp.desktop.in
+               ${CMAKE_CURRENT_BINARY_DIR}/phobicccp.desktop @ONLY)
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/phobicccp.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
-install(FILES desktop/phobiccc.svg
+install(FILES desktop/phobicccp.svg
         DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps)
-install(FILES desktop/phobiccc-c2d.xml
+install(FILES desktop/phobicccp-c2d.xml
         DESTINATION ${CMAKE_INSTALL_DATADIR}/mime/packages)
 
 # Refresh the desktop/mime/icon caches after a real (non-packaging) install.
@@ -82,7 +82,7 @@ install(CODE [[
         execute_process(COMMAND update-mime-database "${_share}/mime" RESULT_VARIABLE _r ERROR_QUIET)
         execute_process(COMMAND update-desktop-database "${_share}/applications" ERROR_QUIET)
         execute_process(COMMAND gtk-update-icon-cache -f -t "${_share}/icons/hicolor" ERROR_QUIET)
-        execute_process(COMMAND xdg-mime default phobiccc.desktop application/x-carbide-create ERROR_QUIET)
+        execute_process(COMMAND xdg-mime default phobicccp.desktop application/x-carbide-create ERROR_QUIET)
         message(STATUS "Desktop integration refreshed under ${_share}")
     endif()
 ]])

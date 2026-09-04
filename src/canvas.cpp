@@ -7,6 +7,7 @@
 #include <QLineEdit>
 #include <QScrollBar>
 #include <QKeyEvent>
+#include <QResizeEvent>
 #include <QLineF>
 #include <QMouseEvent>
 #include <QPainter>
@@ -383,7 +384,20 @@ void Canvas::rebuild()
     if (!m_previewOps.isEmpty())
         renderPreviewOps();
 
-    if (!m_fitted && w > 0 && h > 0) {
+    // First-load fit. Only trust the viewport once it has been laid out;
+    // otherwise fitInView() scales to a placeholder size (0% zoom). The
+    // resizeEvent below picks it up when the real geometry arrives.
+    if (!m_fitted && w > 0 && h > 0 && isVisible() && viewport()->width() > 100) {
+        zoomFit();
+        m_fitted = true;
+    }
+}
+
+void Canvas::resizeEvent(QResizeEvent *event)
+{
+    QGraphicsView::resizeEvent(event);
+    if (!m_fitted && m_doc && m_doc->boardWidth() > 0 && m_doc->boardHeight() > 0
+        && viewport()->width() > 100) {
         zoomFit();
         m_fitted = true;
     }

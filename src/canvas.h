@@ -54,6 +54,7 @@ signals:
     void selectionChangedIds(const QStringList &ids);
 
 protected:
+    void resizeEvent(QResizeEvent *event) override;
     void drawBackground(QPainter *painter, const QRectF &rect) override;
     void drawForeground(QPainter *painter, const QRectF &rect) override;
     void wheelEvent(QWheelEvent *event) override;        // scroll to zoom
