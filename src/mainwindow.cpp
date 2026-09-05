@@ -17,7 +17,9 @@
 #include <QFileInfo>
 #include <QDockWidget>
 #include <QFileDialog>
+#include <QMenu>
 #include <QMenuBar>
+#include <QSettings>
 #include <QTimer>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -33,6 +35,8 @@
 #include <QToolBar>
 #include <QUndoStack>
 #include <QtMath>
+
+#include <algorithm>
 
 namespace c2d {
 
@@ -205,6 +209,9 @@ MainWindow::MainWindow(QWidget *parent)
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     fileMenu->addAction(QStringLiteral("&Open…"), this, &MainWindow::onOpen,
                         QKeySequence::Open);
+    m_recentMenu = fileMenu->addMenu(QStringLiteral("Open &Recent"));
+    m_recentMenu->setToolTipsVisible(true);   // full path, since names repeat
+    rebuildRecentMenu();
     fileMenu->addAction(QStringLiteral("&Save"), this, &MainWindow::onSave,
                         QKeySequence::Save);
     fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs,
@@ -614,6 +621,7 @@ void MainWindow::openFile(const QString &path)
     m_machine->setDocument(&m_doc);
     m_model->setDocument(&m_doc);
     m_dirty = false;
+    rememberRecent(path);
     updateTitle();
     refreshInfo();
     if (m_previewAct->isChecked())
@@ -621,6 +629,61 @@ void MainWindow::openFile(const QString &path)
     else
         markIsoStale();
     statusBar()->showMessage(path);
+}
+
+// ---- recent files ---------------------------------------------------------
+
+static const int kMaxRecent = 5;
+
+void MainWindow::rememberRecent(const QString &path)
+{
+    const QString abs = QFileInfo(path).absoluteFilePath();
+    QSettings st;
+    QStringList recent = st.value(QStringLiteral("recentFiles")).toStringList();
+    recent.removeAll(abs);
+    recent.prepend(abs);
+    while (recent.size() > kMaxRecent)
+        recent.removeLast();
+    st.setValue(QStringLiteral("recentFiles"), recent);
+    rebuildRecentMenu();
+}
+
+void MainWindow::rebuildRecentMenu()
+{
+    if (!m_recentMenu)
+        return;
+    m_recentMenu->clear();
+
+    QSettings st;
+    QStringList recent = st.value(QStringLiteral("recentFiles")).toStringList();
+    // Files that have been moved or deleted are dropped rather than offered.
+    const qsizetype had = recent.size();
+    recent.erase(std::remove_if(recent.begin(), recent.end(),
+                                [](const QString &p) { return !QFile::exists(p); }),
+                 recent.end());
+    if (recent.size() != had)
+        st.setValue(QStringLiteral("recentFiles"), recent);
+
+    if (recent.isEmpty()) {
+        QAction *none = m_recentMenu->addAction(QStringLiteral("(nothing yet)"));
+        none->setEnabled(false);
+        return;
+    }
+    int n = 0;
+    for (const QString &p : std::as_const(recent)) {
+        // &1..&5 so the list is reachable from the keyboard; the full path is
+        // the tooltip, since several projects often share a file name.
+        QAction *a = m_recentMenu->addAction(
+            QStringLiteral("&%1  %2").arg(++n).arg(QFileInfo(p).fileName()));
+        a->setToolTip(p);
+        a->setStatusTip(p);
+        connect(a, &QAction::triggered, this, [this, p] { openFile(p); });
+    }
+    m_recentMenu->addSeparator();
+    m_recentMenu->addAction(QStringLiteral("&Clear list"), this, [this] {
+        QSettings().remove(QStringLiteral("recentFiles"));
+        rebuildRecentMenu();
+    });
 }
 
 void MainWindow::refreshInfo()

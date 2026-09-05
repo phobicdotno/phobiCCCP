@@ -14,6 +14,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QSettings>
 #include <QImageReader>
 #include <QLabel>
 #include <QLineEdit>
@@ -334,11 +335,30 @@ ModelPanel::ModelPanel(QWidget *parent)
     m_list->setHorizontalHeaderLabels({QStringLiteral("On"), QStringLiteral("Name"),
                                        QStringLiteral("Kind"), QStringLiteral("Height"),
                                        QStringLiteral("Combine")});
-    m_list->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
-    m_list->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_list->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_list->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_list->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    // Interactive rather than Stretch/ResizeToContents: those modes freeze the
+    // dividers, so a long component name could not be widened by hand.
+    m_list->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    m_list->horizontalHeader()->setStretchLastSection(true);
+    m_list->horizontalHeader()->setSectionsMovable(true);
+    m_list->horizontalHeader()->setMinimumSectionSize(28);
+    m_list->setColumnWidth(0, 32);
+    m_list->setColumnWidth(1, 140);
+    m_list->setColumnWidth(2, 84);
+    m_list->setColumnWidth(3, 62);
+    {   // remember hand-dragged column widths across sessions
+        QSettings st;
+        const QByteArray hs = st.value(QStringLiteral("model/listHeader")).toByteArray();
+        if (!hs.isEmpty())
+            m_list->horizontalHeader()->restoreState(hs);
+        auto save = [this] {
+            QSettings().setValue(QStringLiteral("model/listHeader"),
+                                 m_list->horizontalHeader()->saveState());
+        };
+        connect(m_list->horizontalHeader(), &QHeaderView::sectionResized, this,
+                [save](int, int, int) { save(); });
+        connect(m_list->horizontalHeader(), &QHeaderView::sectionMoved, this,
+                [save](int, int, int) { save(); });
+    }
     m_list->verticalHeader()->setVisible(false);
     m_list->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);

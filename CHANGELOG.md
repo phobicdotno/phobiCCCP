@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.7 (build 20) — 2026-09-05
+- Toolpath list and parameter table columns can be dragged to any width and
+  reordered. They were pinned with `Stretch` / `ResizeToContents`, which locks
+  the dividers outright, so the "vectors" column was clipped and long parameter
+  names such as `enable_finish_allowance` were truncated with no way to widen
+  them. Widths and order are remembered between sessions.
+- Model component table columns are draggable and remembered the same way; they
+  had the identical pinned-header defect.
+- File > Open Recent lists the last five documents opened, most recent first,
+  with Alt+1..5 to reach them from the keyboard and the full path as a tooltip.
+  Files that have since been moved or deleted drop off the list, and Clear list
+  empties it.
+
 ## v0.4.4 (build 19) — 2026-09-05
 - Selecting an item no longer un-maximises the window and removes its maximise
   button. The panels demanded so much height that the window's minimum grew

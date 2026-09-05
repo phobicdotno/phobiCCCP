@@ -6,6 +6,7 @@
 
 class QAction;
 class QDockWidget;
+class QMenu;
 class QLabel;
 class QPlainTextEdit;
 
@@ -43,6 +44,13 @@ private:
     void markIsoStale();      // refresh now if the Preview tab is visible, else defer
 
     void updateTitle();
+
+    // File > Open Recent: the last five documents opened, most recent first,
+    // kept in QSettings so the list survives a restart.
+    void rememberRecent(const QString &path);
+    void rebuildRecentMenu();
+
+    QMenu *m_recentMenu = nullptr;
 
     Canvas *m_canvas;
     QPlainTextEdit *m_info;      // params + item summary sidebar

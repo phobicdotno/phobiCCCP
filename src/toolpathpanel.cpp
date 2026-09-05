@@ -14,6 +14,7 @@
 #include <QJsonValue>
 #include <QLabel>
 #include <QMenu>
+#include <QSettings>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
@@ -161,10 +162,16 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     m_list->setEditTriggers(QAbstractItemView::DoubleClicked
                             | QAbstractItemView::EditKeyPressed);
+    // Interactive, not Stretch/ResizeToContents: those two modes lock the
+    // dividers, so the columns could not be dragged and "vectors" was clipped.
     m_list->header()->setStretchLastSection(false);
-    m_list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_list->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_list->header()->setSectionResizeMode(QHeaderView::Interactive);
+    m_list->header()->setSectionsMovable(true);
+    m_list->header()->setMinimumSectionSize(28);
+    m_list->setColumnWidth(0, 168);
+    m_list->setColumnWidth(1, 84);
+    m_list->setColumnWidth(2, 52);
+    m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_list->setMaximumHeight(150);
     m_list->setMinimumHeight(60);
     m_list->setToolTip(QStringLiteral(
@@ -197,10 +204,38 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_table = new QTableWidget(0, 2, this);
     m_table->setHorizontalHeaderLabels({QStringLiteral("parameter"), QStringLiteral("value")});
     m_table->horizontalHeader()->setStretchLastSection(true);
+    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
+    m_table->horizontalHeader()->setMinimumSectionSize(40);
+    m_table->setColumnWidth(0, 150);
     m_table->verticalHeader()->setVisible(false);
     m_table->setAlternatingRowColors(true);
     lay->addWidget(m_table);
     connect(m_table, &QTableWidget::cellChanged, this, &ToolpathPanel::onCellEdited);
+
+    // Column widths are a per-user preference: restore them and save whatever
+    // is dragged, so the layout survives restarts.
+    {
+        QSettings s;
+        s.beginGroup(QStringLiteral("toolpaths"));
+        const QByteArray listState = s.value(QStringLiteral("listHeader")).toByteArray();
+        if (!listState.isEmpty())
+            m_list->header()->restoreState(listState);
+        const QByteArray tableState = s.value(QStringLiteral("tableHeader")).toByteArray();
+        if (!tableState.isEmpty())
+            m_table->horizontalHeader()->restoreState(tableState);
+    }
+    auto saveHeaders = [this] {
+        QSettings s;
+        s.beginGroup(QStringLiteral("toolpaths"));
+        s.setValue(QStringLiteral("listHeader"), m_list->header()->saveState());
+        s.setValue(QStringLiteral("tableHeader"), m_table->horizontalHeader()->saveState());
+    };
+    connect(m_list->header(), &QHeaderView::sectionResized, this,
+            [saveHeaders](int, int, int) { saveHeaders(); });
+    connect(m_list->header(), &QHeaderView::sectionMoved, this,
+            [saveHeaders](int, int, int) { saveHeaders(); });
+    connect(m_table->horizontalHeader(), &QHeaderView::sectionResized, this,
+            [saveHeaders](int, int, int) { saveHeaders(); });
 
     // Replace the toolpath's vector list with the canvas selection.
     auto *assign = new QPushButton(QStringLiteral("Assign selected vectors"), this);
