@@ -2,6 +2,8 @@
 #include "gcodeexport.h"
 #include "isopreview.h"
 #include "machinepanel.h"
+#include "tiling.h"
+#include <QInputDialog>
 #include "propertiespanel.h"
 #include "simpanel.h"
 #include "toolpathpanel.h"
@@ -178,6 +180,8 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
                         &MainWindow::onExportGcode,
                         QKeySequence(Qt::CTRL | Qt::Key_G));
+    fileMenu->addAction(QStringLiteral("Export G-code (&tiled)…"), this,
+                        &MainWindow::onExportGcodeTiled);
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
                         QKeySequence::Quit);
@@ -331,6 +335,24 @@ void MainWindow::onExportGcode()
                 .arg(r.skipped.join(QStringLiteral("\n  "))));
         return;
     }
+    // A document with tiling switched on whose job is taller than one tile is
+    // meant to be cut in pieces: offer the tiled export.
+    const double tileH = m_doc.params().value("tile_height", "0").toDouble();
+    if (m_doc.params().value("tiling_enabled") == QLatin1String("1") && tileH > 0
+        && tileCount(r.ops, tileH) > 1) {
+        const auto ans = QMessageBox::question(
+            this, QStringLiteral("Export G-code"),
+            QStringLiteral("Tiling is enabled in this document and the job needs %1 "
+                           "tiles of %2 mm.\n\nExport one program per tile?")
+                .arg(tileCount(r.ops, tileH)).arg(tileH),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Yes);
+        if (ans == QMessageBox::Cancel)
+            return;
+        if (ans == QMessageBox::Yes) {
+            onExportGcodeTiled();
+            return;
+        }
+    }
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export G-code"),
         QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
@@ -351,6 +373,46 @@ void MainWindow::onExportGcode()
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
     statusBar()->showMessage(msg, 8000);
+}
+
+void MainWindow::onExportGcodeTiled()
+{
+    if (m_doc.filePath().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Export G-code (tiled)"),
+                                 QStringLiteral("Open a .c2d file first."));
+        return;
+    }
+    const double docTile = m_doc.params().value("tile_height", "508.0").toDouble();
+    bool ok = false;
+    const double tileH = QInputDialog::getDouble(
+        this, QStringLiteral("Export G-code (tiled)"),
+        QStringLiteral("Tile height (mm): the Y extent one program may use.\n"
+                       "Tile k holds the cuts with Y in [k·h, (k+1)·h), shifted down\n"
+                       "by k·h — slide the stock forward by h between tiles."),
+        docTile > 0 ? docTile : 508.0, 10.0, 10000.0, 1, &ok);
+    if (!ok)
+        return;
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export tiled G-code — base name (_tile1.nc, _tile2.nc, … are added)"),
+        QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
+        QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    for (const char *suffix : {".nc", ".gcode"})
+        if (path.endsWith(QLatin1String(suffix), Qt::CaseInsensitive))
+            path.chop(int(qstrlen(suffix)));
+    const TiledExport r = exportTiled(m_doc, path, tileH);
+    if (!r.error.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Export failed"),
+            QStringLiteral("%1\nSkipped: %2").arg(r.error, r.skipped.join(QStringLiteral(", "))));
+        return;
+    }
+    QString msg = QStringLiteral("Exported %1 toolpath(s) as %2 tile(s) of %3 mm: %4")
+                      .arg(r.done.size()).arg(r.files.size()).arg(tileH)
+                      .arg(r.files.join(QStringLiteral(", ")));
+    if (!r.skipped.isEmpty())
+        msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
+    statusBar()->showMessage(msg, 10000);
 }
 
 void MainWindow::refreshPreview()

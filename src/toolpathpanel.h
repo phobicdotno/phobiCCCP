@@ -28,6 +28,7 @@ private:
     void showToolpath(int row);
     void onCellEdited(int row, int col);
     void createInlayMale();       // mirrored male from the selected v-carve
+    void pickTool();              // tool library -> selected toolpath's tool/speeds
 
     Canvas *m_canvas;
     Document *m_doc = nullptr;

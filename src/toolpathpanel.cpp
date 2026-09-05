@@ -1,6 +1,8 @@
 #include "toolpathpanel.h"
 #include "canvas.h"
 #include "c2ddocument.h"
+#include "toollibrary.h"
+#include "toollibrarydialog.h"
 
 #include <QHeaderView>
 #include <QInputDialog>
@@ -128,6 +130,14 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
         m_canvas->editToolpath(m_uuid, j);
     });
 
+    // Tool library: pick a cutter + material, write tool/speeds/stepdown.
+    auto *toolBtn = new QPushButton(QStringLiteral("Tool library…"), this);
+    toolBtn->setToolTip(QStringLiteral(
+        "Choose a Carbide 3D cutter and a material: writes the tool definition,\n"
+        "feed / plunge / rpm and depth per pass + stepover into this toolpath."));
+    lay->addWidget(toolBtn);
+    connect(toolBtn, &QPushButton::clicked, this, [this] { pickTool(); });
+
     // V-carve inlay: generate the mirrored male from the selected female.
     auto *inlay = new QPushButton(QStringLiteral("Create inlay male"), this);
     inlay->setToolTip(QStringLiteral(
@@ -137,6 +147,38 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
         "second piece, flip it over into the female, glue, then plane flush."));
     lay->addWidget(inlay);
     connect(inlay, &QPushButton::clicked, this, [this] { createInlayMale(); });
+}
+
+void ToolpathPanel::pickTool()
+{
+    if (!m_doc || m_uuid.isEmpty())
+        return;
+    Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+    if (!t)
+        return;
+    ToolLibrary lib;
+    QString err;
+    if (!lib.loadDefault(&err)) {
+        QMessageBox::warning(this, QStringLiteral("Tool library"), err);
+        return;
+    }
+    QString mat = lib.materialIdForCC(m_doc->params().value("material"));
+    if (mat.isEmpty())
+        mat = QStringLiteral("softwood");
+    const int cur = int(t->json.value("tool").toObject().value("number").toDouble());
+    ToolLibraryDialog dlg(lib, mat, cur, this);
+    if (dlg.exec() != QDialog::Accepted || !dlg.selectedTool())
+        return;
+    const ToolFeeds f = dlg.selectedFeeds();
+    if (!f.valid()) {
+        QMessageBox::information(this, QStringLiteral("Tool library"),
+            QStringLiteral("%1 has no feeds and speeds for %2.")
+                .arg(dlg.selectedTool()->name, lib.materialName(dlg.selectedMaterialId())));
+        return;
+    }
+    QJsonObject j = t->json;
+    ToolLibrary::applyToToolpath(j, *dlg.selectedTool(), f);
+    m_canvas->editToolpath(m_uuid, j);
 }
 
 void ToolpathPanel::createInlayMale()

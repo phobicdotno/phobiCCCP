@@ -8,6 +8,7 @@
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include "../src/gcodeexport.h"
+#include "../src/toollibrary.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -250,6 +251,49 @@ int main(int argc, char *argv[])
         check(inner, "pocket has inner rings");
     }
 
+    // --- pocket rest machining: only what the 12.7 tool left in the corners --
+    {
+        Rig full;
+        full.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        full.addToolpath("pocket_toolpath", {{"stepover", 3.0}});
+        const double fullLen = c2d::computeStats(c2d::exportGcode(full.doc).ops).cutLen;
+
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"enable_rest", true},
+                                          {"rest_diameter", 12.7}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "rest pocket exports");
+        const double restLen = c2d::computeStats(g.ops).cutLen;
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        std::fprintf(stderr, "rest pocket: bbox %.3f..%.3f x %.3f..%.3f, cut %.1f mm "
+                             "(full pocket %.1f mm)\n",
+                     bb.left(), bb.right(), bb.top(), bb.bottom(), restLen, fullLen);
+        // The rest rings sit in the four corners: the bbox reaches the corners
+        // of the tool-radius inset, while the whole middle is untouched.
+        check(bb.left() < 10 + 3.175 + 0.3 && bb.right() > 50 - 3.175 - 0.3 &&
+              bb.top() < 10 + 3.175 + 0.3 && bb.bottom() > 30 - 3.175 - 0.3,
+              "rest reaches all four corners");
+        check(bb.left() >= 10 + 3.175 - 0.05 && bb.right() <= 50 - 3.175 + 0.05,
+              "rest stays inside the pocket");
+        bool middle = false;
+        for (const CutPoint &p : cutPoints(g.gcode))
+            if (p.x > 20 && p.x < 40 && p.y > 15 && p.y < 25)
+                middle = true;
+        check(!middle, "rest leaves the cleared middle alone");
+        check(approx(minZ, -2.0, 1e-3), "rest reaches end depth");
+        check(restLen < fullLen * 0.35, "rest cuts far less than a full pocket");
+
+        // rest_diameter not larger than the tool: a normal full pocket.
+        Rig same;
+        same.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        same.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"enable_rest", true},
+                                             {"rest_diameter", 6.35}});
+        const double sameLen = c2d::computeStats(c2d::exportGcode(same.doc).ops).cutLen;
+        check(approx(sameLen, fullLen, 1e-6), "rest with same-size tool = full pocket");
+    }
+
     // --- drilling: pecks at the circle center ------------------------------
     {
         Rig r;
@@ -264,6 +308,62 @@ int main(int argc, char *argv[])
               approx(bb.top(), 15, 1e-3), "drill at center");
         check(approx(minZ, -3.0, 1e-3), "drill reaches depth");
         check(g.gcode.count(QLatin1String("G1")) == 3, "drill pecks");
+    }
+
+    // --- tool library: embedded catalogue applies CC's key names -----------
+    {
+        c2d::ToolLibrary lib;
+        QString err;
+        check(lib.loadDefault(&err), "tool library loads from the embedded resource");
+        check(lib.tools().size() >= 12 && lib.materials().size() == 6, "library content");
+        const c2d::LibraryTool *t102 = lib.byNumber(102);
+        check(t102 && approx(t102->diameter, 3.175) && t102->ccType() == 0, "#102 present");
+        check(lib.byNumber(301) && lib.byNumber(301)->ccType() == 2
+                  && approx(lib.byNumber(301)->angle, 90),
+              "#301 is a 90 degree V-bit");
+        check(lib.byNumber(202) && lib.byNumber(202)->ccType() == 1, "#202 is a ball");
+        check(lib.materialIdForCC(QStringLiteral("Softwood")) == QLatin1String("softwood")
+                  && lib.materialIdForCC(QStringLiteral("Aluminum")) == QLatin1String("aluminium"),
+              "CC material names map");
+        // Every tool has feeds for every material.
+        for (const c2d::LibraryTool &t : lib.tools())
+            for (const c2d::LibraryMaterial &m : lib.materials())
+                check(t.feedsFor(m.id) && t.feedsFor(m.id)->valid()
+                          && t.feedsFor(m.id)->stepdown > 0 && t.feedsFor(m.id)->stepoverPct > 0,
+                      "feeds complete");
+
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1}, {"stepover", 3.0}});
+        c2d::Toolpath tp = r.doc.toolpaths().first();
+        QJsonObject j = tp.json;
+        const c2d::ToolFeeds f = *t102->feedsFor(QStringLiteral("hardwood"));
+        c2d::ToolLibrary::applyToToolpath(j, *t102, f);
+        const QJsonObject tool = j.value("tool").toObject();
+        const QJsonObject speeds = j.value("speeds").toObject();
+        check(tool.value("number").toInt() == 102 && approx(tool.value("diameter").toDouble(), 3.175)
+                  && tool.value("flutes").toInt() == 2 && tool.value("type").toInt() == 0
+                  && tool.value("name").toString().startsWith(QStringLiteral("#102"))
+                  && tool.value("read_only").isBool() && tool.contains("plungerate")
+                  && tool.contains("slot_feedrate") && tool.contains("vendor"),
+              "tool object uses CC keys");
+        check(approx(speeds.value("feedrate").toDouble(), f.feed)
+                  && approx(speeds.value("plungerate").toDouble(), f.plunge)
+                  && approx(speeds.value("rpm").toDouble(), f.rpm),
+              "speeds object written");
+        check(approx(j.value("stepdown").toDouble(), f.stepdown)
+                  && approx(j.value("stepover").toDouble(), 3.175 * f.stepoverPct / 100.0)
+                  && j.value("end_depth").isString(),
+              "stepdown/stepover written, depth strings untouched");
+        tp.json = j;
+        r.doc.replaceToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        check(approx(bb.right(), 50 + 1.5875, 0.05), "exporter picks up the new tool diameter");
+        check(g.gcode.contains(QStringLiteral("M03S%1").arg(int(f.rpm)))
+                  && g.gcode.contains(QStringLiteral("F%1").arg(f.feed, 0, 'f', 1)),
+              "exporter picks up the new speeds");
     }
 
     // --- unsupported type is skipped ----------------------------------------
