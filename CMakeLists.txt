@@ -42,6 +42,7 @@ add_library(phobicccp_core STATIC
     src/vectorops.cpp
     src/importers.cpp
     src/toollibrary.cpp
+    src/toolpathfactory.cpp
     src/tiling.cpp
     data/tools.qrc
     src/backgroundimage.cpp

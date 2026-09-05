@@ -6,14 +6,22 @@
 
 // Reads a modern (v7/v8 SQLite) Carbide Create .c2d container: opens the
 // database, pulls `params` and the `items` rows, decompresses each element
-// payload and parses it into an Element. Toolpath rows are captured as raw
-// JSON for now (parameter editing is a later tier).
+// payload and parses it into an Element. Toolpath rows are kept as decoded
+// JSON payloads in row order (= Carbide Create's machining order); any
+// `type` is accepted, including phobiCCCP's own `engrave_toolpath`.
 namespace c2d {
 
 struct Toolpath {
     QString uuid;
     QString type;
     QJsonObject json;   // full decoded J1 payload
+};
+
+// A toolpath_group row: a pure folder (name/enabled/expanded); membership
+// lives on each toolpath's `toolpath_group` key.
+struct ToolpathGroup {
+    QString uuid;
+    QJsonObject json;
 };
 
 class Document
@@ -24,8 +32,10 @@ public:
     // Save by cloning the currently-loaded file and rewriting its element rows
     // from the in-memory elements (the proven, round-trip-verified recipe:
     // DELETE elements, re-INSERT zlib(J1 JSON) with sz = uncompressed length,
-    // blank the stale render/g-code blobs so CC regenerates them). Toolpaths,
-    // layer, model and params are preserved. Requires a file previously load()ed.
+    // blank the stale render/g-code blobs so CC regenerates them). Toolpath
+    // rows are rewritten the same way, in vector order, so deletions, moves
+    // and new toolpaths persist; layer, model and params are preserved
+    // (params.num_toolpaths is kept in sync). Requires a file previously load()ed.
     bool save(const QString &destPath, QString *error = nullptr);
 
     QString filePath() const { return m_path; }
@@ -54,7 +64,50 @@ public:
         return false;
     }
 
-    void addToolpath(const Toolpath &t) { m_toolpaths.append(t); }   // in-memory only
+    // Toolpath lifecycle. The vector order IS the machining order and is
+    // what save() writes back. All of these are in-memory only until save().
+    void addToolpath(const Toolpath &t) { m_toolpaths.append(t); }
+    void insertToolpath(int index, const Toolpath &t)
+    {
+        m_toolpaths.insert(qBound(0, index, int(m_toolpaths.size())), t);
+    }
+    bool removeToolpath(const QString &uuid)
+    {
+        for (int i = 0; i < m_toolpaths.size(); ++i)
+            if (m_toolpaths.at(i).uuid == uuid) { m_toolpaths.removeAt(i); return true; }
+        return false;
+    }
+    int toolpathIndex(const QString &uuid) const
+    {
+        for (int i = 0; i < m_toolpaths.size(); ++i)
+            if (m_toolpaths.at(i).uuid == uuid) return i;
+        return -1;
+    }
+    // Move the toolpath so it sits at `index` afterwards (clamped).
+    bool moveToolpath(const QString &uuid, int index)
+    {
+        const int from = toolpathIndex(uuid);
+        if (from < 0)
+            return false;
+        const int to = qBound(0, index, int(m_toolpaths.size()) - 1);
+        if (to != from)
+            m_toolpaths.move(from, to);
+        return true;
+    }
+    const QVector<ToolpathGroup> &toolpathGroups() const { return m_groups; }
+    // Group uuid for a new toolpath: the file's first group row, else the
+    // group of an existing toolpath, else empty (CC's "no group").
+    QString defaultToolpathGroup() const
+    {
+        if (!m_groups.isEmpty())
+            return m_groups.first().uuid;
+        for (const Toolpath &t : m_toolpaths) {
+            const QString g = t.json.value("toolpath_group").toString();
+            if (!g.isEmpty())
+                return g;
+        }
+        return QString();
+    }
     Toolpath *toolpathByUuid(const QString &uuid)
     {
         for (Toolpath &t : m_toolpaths)
@@ -93,6 +146,7 @@ private:
     QHash<QString, QString> m_params;
     QVector<Element> m_elements;
     QVector<Toolpath> m_toolpaths;
+    QVector<ToolpathGroup> m_groups;
 };
 
 } // namespace c2d
