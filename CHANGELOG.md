@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+- `tests/test_integration.cpp` (CTest `integration`): cross-feature checks that
+  the per-module tests cannot catch — a relief built by the modeller reaches
+  the 3D toolpaths through the real provider and the simulated cut follows it;
+  the same document saved, closed and reloaded still machines the same relief;
+  an imported SVG welded with a boolean pockets correctly.
+- Verified that saving preserves Carbide Create's binary MODEL row, the
+  document params and every item row (only the SVG previews and the encrypted
+  g-code are blanked, which CC regenerates).
+
 ## v0.4.0 (build 15) — 2026-09-05
 Carbide Create parity wave 2 — toolpath lifecycle, engraving, 3D modelling and 3D machining:
 - 3D modelling (Carbide Create Pro's "Model" tab): new right-side "Model"

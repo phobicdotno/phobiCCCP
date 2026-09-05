@@ -90,6 +90,10 @@ endif()
 # Tests: `ctest --test-dir build`. Geometry/CAM checks are plain asserts;
 # the GRBL simulator and the machine flow test need python3.
 enable_testing()
+add_executable(test_integration tests/test_integration.cpp)
+target_link_libraries(test_integration PRIVATE phobicccp_core)
+add_test(NAME integration COMMAND test_integration)
+
 add_executable(test_geometry tests/test_geometry.cpp)
 target_link_libraries(test_geometry PRIVATE phobicccp_core)
 add_test(NAME geometry COMMAND test_geometry)
