@@ -1,5 +1,6 @@
 #pragma once
 #include "c2ddocument.h"
+#include "backgroundimage.h"
 #include "canvas.h"
 #include <QMainWindow>
 
@@ -52,6 +53,7 @@ private:
     QAction *m_previewAct;       // toolpath overlay toggle
     bool m_dirty = false;
     Document m_doc;
+    BackgroundImage m_bg;        // tracing background (params + sqlar/background.png)
 };
 
 } // namespace c2d

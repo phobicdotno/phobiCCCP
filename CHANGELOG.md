@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+- Background images (Carbide Create compatible): File → Background image →
+  Set… / Clear / Adjust… places a picture under the grid at millimetre scale
+  (X/Y, width with aspect kept, rotation, opacity, lock). Stored the way CC
+  stores it — `params.background_*` plus `sqlar/background.png` — so the same
+  file shows the picture in Carbide Create.
+- Trace image (File → Trace image…, Ctrl+Shift+T): threshold/invert, blur,
+  despeckle (min area mm²), target width, Douglas–Peucker simplify and
+  corner-preserving Bézier smoothing with a live preview; inserts closed
+  path elements (outer outlines and holes separately) as one undoable step.
+  Pure Qt contour tracing; a 2000×2000 px picture traces in well under a
+  second.
+- New `trace` CTest (tests/test_trace.cpp): circle/ring contour areas and
+  bounds, simplification, smoothing schema, background round-trip.
+
 ## v0.2.4 (build 12) — 2026-09-05
 - CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
   display: the offscreen Qt platform is selected automatically when no

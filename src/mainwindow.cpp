@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "backgrounddialog.h"
 #include "gcodeexport.h"
 #include "isopreview.h"
 #include "machinepanel.h"
@@ -98,6 +99,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_canvas = new Canvas(this);
     setCentralWidget(m_canvas);
+    m_canvas->setBackgroundImage(&m_bg);
 
     m_props = new PropertiesPanel(m_canvas, this);
     auto *propsDock = new QDockWidget(QStringLiteral("Properties"), this);
@@ -161,6 +163,8 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
                         &MainWindow::onExportGcode,
                         QKeySequence(Qt::CTRL | Qt::Key_G));
+    fileMenu->addSeparator();
+    installImageMenus(fileMenu, this, m_canvas, &m_doc, &m_bg);   // backgrounddialog.cpp
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
                         QKeySequence::Quit);
@@ -411,6 +415,7 @@ void MainWindow::onSave()
     if (!m_doc.save(m_doc.filePath(), &err)) {
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
     } else {
+        m_bg.saveTo(m_doc.filePath());
         m_dirty = false;
         updateTitle();
         statusBar()->showMessage(
@@ -437,6 +442,7 @@ void MainWindow::onSaveAs()
     if (!m_doc.save(path, &err)) {
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
     } else {
+        m_bg.saveTo(path);
         m_dirty = false;
         updateTitle();
         statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
@@ -457,6 +463,7 @@ void MainWindow::openFile(const QString &path)
              << "toolpaths:" << m_doc.toolpaths().size()
              << "board:" << m_doc.boardWidth() << "x" << m_doc.boardHeight()
              << "params:" << m_doc.params().size();
+    m_bg.loadFrom(path);
     m_canvas->setDocument(&m_doc);
     m_props->setDocument(&m_doc);
     m_tp->setDocument(&m_doc);
