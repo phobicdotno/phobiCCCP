@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+- 3D modelling (Carbide Create Pro's "Model" tab): new right-side "Model"
+  tab after Simulation. Relief components are composited in list order into
+  the document's HeightModel (src/heightmodel.h: z ≤ 0 from the stock top,
+  peak at 0, baseZ = −relief height, untouched cells NoModel) and served to
+  the 3D toolpaths through `heightModelFor(doc)` (`installModelProvider()`,
+  lazy rebuild when components or vectors change).
+- Components from vectors: the selected closed vectors become a relief with a
+  Flat, Round (circular cross-section), Angle (slope in degrees, capped at the
+  height), Smooth (S-curve) or Dome (parabolic) profile; height, base height,
+  combine mode Add / Subtract / Merge (max) / Multiply (fade), enable, rename,
+  reorder. Profiles are a function of the exact Euclidean distance to the
+  outline (Felzenszwalb two-pass transform on the rasterised mask), so a round
+  profile is right for any shape, text included.
+- Image heightmaps: PNG/JPG → luma (white high, black low; invert, Gaussian
+  blur, amplitude, base), placed like the background image (one pixel =
+  1/96 in at natural size, or a width in mm), and textures: an image tiled at
+  a chosen tile width over the selected vectors (or the whole model) with an
+  add/subtract amplitude.
+- STL import (binary and ASCII, auto-detected): triangles rasterised from
+  above into a z-buffer at the model resolution (vertices stamped too, so tiny
+  triangles never leave holes); dialog for file units (mm / inch), fit to a
+  width, position and model height (0 = the mesh's own scaled height).
+- Model tab: component table (on, name, kind, height, combine) with
+  add/remove/reorder, per-kind property editor, resolution selector (Auto keeps
+  the grid at ≤ 4 M cells and ≥ 0.1 mm; Fine/Normal/Coarse/Draft), shaded relief
+  view (light from the upper left, floor-to-peak tint, wheel zoom, drag pan,
+  cursor X/Y/Z readout with height above the floor), debounced automatic
+  rebuild on a worker thread with progress and cancel, plus a manual Rebuild.
+- Persistence: the components (parameters, referenced vector uuids) are stored
+  in the .c2d as `sqlar/phobi_model3d.json`, embedded image/STL bytes as
+  `sqlar/phobi_model3d/<component id>` (raw rows, like background.png); the
+  grid is recomputed on load. Carbide Create's own binary `MODEL` item is left
+  untouched (its sample layout is undocumented), so CC still opens the file.
+- `--shot <file.c2d> out.png model` raises the Model tab and composites
+  synchronously before the grab; `tests/test_model3d.cpp` (CTest `model3d`):
+  distance transform, round/angle/flat profiles, subtract/merge/base height,
+  image gradient + invert + blur, texture tiling, STL pyramid (ASCII + binary,
+  inch units, fit to width), auto resolution, render, persistence round trip,
+  provider registration.
+
 ## v0.3.1 (build 14) — 2026-09-05
 Fixes from an independent code review of the machine-control work:
 - Zero X/Y/Z/all sent a G10 line without coordinates (never zeroed). Fixed.
@@ -20,7 +61,6 @@ Fixes from an independent code review of the machine-control work:
 - Disconnecting mid tool-change no longer leaves a prompt armed for the next
   connection; a lost key release or focus change now cancels hold-to-jog.
 - A program ending in a tool marker no longer reports "finished" while parked.
-
 ## v0.3.0 (build 13) — 2026-09-05
 Carbide Create parity wave 1 — six features merged from parallel branches:
 - Material-removal simulation (Carbide Create's "3D Simulation"): new

@@ -3,6 +3,7 @@
 #include "gcodeexport.h"
 #include "isopreview.h"
 #include "machinepanel.h"
+#include "modelpanel.h"
 #include "tiling.h"
 #include <QInputDialog>
 #include "propertiespanel.h"
@@ -158,10 +159,17 @@ MainWindow::MainWindow(QWidget *parent)
     m_simDock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, m_simDock);
 
-    tabifyDockWidget(tpDock, dock);     // Toolpaths / Document / Machine / Preview / Simulation tabs
+    m_model = new ModelPanel(this);
+    m_modelDock = new QDockWidget(QStringLiteral("Model"), this);
+    m_modelDock->setWidget(m_model);
+    m_modelDock->setFeatures(QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::RightDockWidgetArea, m_modelDock);
+
+    tabifyDockWidget(tpDock, dock);     // Toolpaths / Document / Machine / Preview / Simulation / Model tabs
     tabifyDockWidget(dock, mcDock);
     tabifyDockWidget(mcDock, m_isoDock);
     tabifyDockWidget(m_isoDock, m_simDock);
+    tabifyDockWidget(m_simDock, m_modelDock);
     tpDock->raise();
     // The 3D preview (and the simulation's program) is only rebuilt while one
     // of those tabs is showing; catch up when raised after edits behind it.
@@ -173,6 +181,20 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_canvas, &Canvas::selectionChangedIds,
             m_props, &PropertiesPanel::setSelection);
+    connect(m_canvas, &Canvas::selectionChangedIds,
+            m_model, &ModelPanel::setSelection);
+    // Component edits dirty the document (they are saved into the .c2d) and
+    // change what the 3D toolpaths cut.
+    connect(m_model, &ModelPanel::modelChanged, this, [this] {
+        m_dirty = true;
+        updateTitle();
+    });
+    connect(m_model, &ModelPanel::modelRebuilt, this, [this] {
+        if (m_previewAct->isChecked())
+            refreshPreview();
+        else
+            markIsoStale();
+    });
     // Real machine work position → orange crosshair in the 3D preview.
     connect(m_machine, &MachinePanel::livePosition,
             m_iso, &IsoPreview::setLivePosition);
@@ -327,6 +349,7 @@ MainWindow::MainWindow(QWidget *parent)
         refreshInfo();
         m_props->refresh();
         m_tp->refresh();
+        m_model->documentChanged();
         if (m_previewAct->isChecked())
             refreshPreview();
         else
@@ -487,6 +510,12 @@ void MainWindow::showSimulation()
     m_sim->simulateBlocking();   // --shot … simulation: result is in the grab
 }
 
+void MainWindow::showModel()
+{
+    m_modelDock->raise();
+    m_model->rebuildBlocking();   // --shot … model: the relief is in the grab
+}
+
 void MainWindow::markIsoStale()
 {
     if (m_isoDock->isVisible() || m_simDock->isVisible())
@@ -524,6 +553,7 @@ void MainWindow::onSave()
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
     } else {
         m_bg.saveTo(m_doc.filePath());
+        m_model->saveTo(m_doc.filePath());
         m_dirty = false;
         updateTitle();
         statusBar()->showMessage(
@@ -551,6 +581,7 @@ void MainWindow::onSaveAs()
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
     } else {
         m_bg.saveTo(path);
+        m_model->saveTo(path);
         m_dirty = false;
         updateTitle();
         statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
@@ -576,6 +607,7 @@ void MainWindow::openFile(const QString &path)
     m_props->setDocument(&m_doc);
     m_tp->setDocument(&m_doc);
     m_machine->setDocument(&m_doc);
+    m_model->setDocument(&m_doc);
     m_dirty = false;
     updateTitle();
     refreshInfo();
