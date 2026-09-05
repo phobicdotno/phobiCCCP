@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.2 (build 10) — 2026-09-05
+- G-code export honours `stock_to_leave`: contours offset by tool radius +
+  stock (inside or outside), pockets inset their walls by tool radius + stock.
+  Cutouts never leave stock.
+- Geometry test updated for arc output and for every Carbide Create toolpath
+  type now being supported; all 24 checks and all three CTest tests pass.
+
 ## v0.2.1 (build 9) — 2026-09-05
 - V-carve: medial-axis spurs at flattening vertices are pruned (a vertex where
   the boundary turns < 20° is a curve, not a corner), so circles carve as one

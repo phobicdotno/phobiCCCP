@@ -1056,8 +1056,11 @@ GcodeResult exportGcode(Document &doc)
             const QPainterPath region = regionOf(elems);
             const bool inside = contour ? j.value("ofset_dir").toInt(0) < 0
                                         : j.value("flip_inside_outside").toBool(false);
-            const QList<QPolygonF> rings = inside ? insetRings(region, toolR)
-                                                  : outsetRings(region, toolR);
+            // stock_to_leave keeps the cut that much further from the vector
+            // on the material side (cutouts never leave stock).
+            const double leave = contour ? qMax(0.0, j.value("stock_to_leave").toDouble(0)) : 0.0;
+            const QList<QPolygonF> rings = inside ? insetRings(region, toolR + leave)
+                                                  : outsetRings(region, toolR + leave);
             for (const QPolygonF &p : rings) {
                 Job job;
                 job.rings.append(p);
@@ -1069,7 +1072,7 @@ GcodeResult exportGcode(Document &doc)
             for (const QPainterPath &comp : components(regionOf(elems))) {
                 Job job;
                 QList<QList<QPolygonF>> shells;
-                double delta = toolR;
+                double delta = toolR + qMax(0.0, j.value("stock_to_leave").toDouble(0));
                 while (shells.size() < 500) {
                     const QList<QPolygonF> s = insetRings(comp, delta);
                     if (s.isEmpty())

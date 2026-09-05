@@ -270,7 +270,7 @@ int main(int argc, char *argv[])
     {
         Rig r;
         r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
-        r.addToolpath("texture_toolpath", {});
+        r.addToolpath("bogus_toolpath", {});
         const c2d::GcodeResult g = c2d::exportGcode(r.doc);
         check(g.done.isEmpty() && g.skipped.size() == 1, "unsupported skipped");
     }
@@ -294,7 +294,7 @@ int main(int argc, char *argv[])
         check(doc.load(QString::fromLocal8Bit(argv[1]), &err), "load sample");
         const c2d::GcodeResult g = c2d::exportGcode(doc);
         check(!g.done.isEmpty(), "sample exports toolpaths");
-        check(!g.skipped.isEmpty(), "sample notes unsupported types");
+        check(g.skipped.isEmpty(), "sample exports every toolpath type");
         check(g.gcode.startsWith(QLatin1String("G90")) &&
               g.gcode.trimmed().endsWith(QLatin1String("M02")),
               "sample program framing");
