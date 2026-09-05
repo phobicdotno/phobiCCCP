@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QLineEdit>
 #include <QScrollBar>
+#include <QSet>
 #include <QKeyEvent>
 #include <QResizeEvent>
 #include <QLineF>
@@ -176,6 +177,13 @@ Canvas::Canvas(QWidget *parent)
             this, &Canvas::onSelectionChanged);
 }
 
+Canvas::~Canvas()
+{
+    // The scene deletes its items after the view is half torn down; a selected
+    // item's destructor would fire selectionChanged into viewport()->update().
+    disconnect(m_scene, &QGraphicsScene::selectionChanged, this, &Canvas::onSelectionChanged);
+}
+
 void Canvas::onSelectionChanged()
 {
     QStringList ids;
@@ -219,6 +227,14 @@ QStringList Canvas::selectedElementIds() const
         if (it->data(0).isValid())
             ids << it->data(0).toString();
     return ids;
+}
+
+void Canvas::selectIds(const QStringList &ids)
+{
+    const QSet<QString> want(ids.begin(), ids.end());
+    for (QGraphicsItem *it : m_scene->items())
+        if (it->data(0).isValid())
+            it->setSelected(want.contains(it->data(0).toString()));
 }
 
 void Canvas::editToolpath(const QString &uuid, const QJsonObject &newJson)

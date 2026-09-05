@@ -20,6 +20,7 @@ public:
     enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText };
 
     explicit Canvas(QWidget *parent = nullptr);
+    ~Canvas() override;
     void setDocument(Document *doc);   // non-owning; nullptr clears
     void setTool(Tool t);
     Tool tool() const { return m_tool; }
@@ -39,6 +40,8 @@ public:
     // generator). Not undoable — delete the pieces manually to revert.
     void insertGenerated(const QVector<Element> &els, const Toolpath &tp);
     QStringList selectedElementIds() const;
+    Document *document() const { return m_doc; }
+    void selectIds(const QStringList &ids);   // replace the selection (vector ops)
 
     // On-canvas g-code preview: rapids dashed, cuts colored by depth.
     void setToolpathPreview(const QVector<Op> &ops);
