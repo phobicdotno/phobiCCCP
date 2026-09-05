@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.3.1 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,7 @@ add_library(phobicccp_core STATIC
     src/c2ddocument.cpp
     src/element.cpp
     src/gcodeexport.cpp
+    src/cam3d.cpp
     src/vcarve.cpp
     src/post_grbl.cpp
     src/grblstreamer.cpp
@@ -114,6 +115,9 @@ add_test(NAME paths COMMAND test_paths)
 add_executable(test_model3d tests/test_model3d.cpp)
 target_link_libraries(test_model3d PRIVATE phobicccp_core)
 add_test(NAME model3d COMMAND test_model3d)
+add_executable(test_cam3d tests/test_cam3d.cpp)
+target_link_libraries(test_cam3d PRIVATE phobicccp_core)
+add_test(NAME cam3d COMMAND test_cam3d)
 # Canvas interaction test (pen tool, node editor) drives the real widget with
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)

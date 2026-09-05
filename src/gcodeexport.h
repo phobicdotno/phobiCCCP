@@ -1,6 +1,7 @@
 #pragma once
 #include "post_grbl.h"
 #include <QHash>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -42,5 +43,9 @@ struct ToolGeom {
 // Tool table built from the toolpaths' embedded tool objects (`tool` and, for
 // v-carves, `tool_pocket`). First definition of a number wins.
 QHash<int, ToolGeom> toolGeometry(const Document &doc);
+
+// One embedded tool object (CC keys: number, diameter, type, angle,
+// corner_radius) as cutting geometry.
+ToolGeom toolGeomFromJson(const QJsonObject &tool);
 
 } // namespace c2d

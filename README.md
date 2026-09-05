@@ -39,7 +39,16 @@ Linux, built on the reverse-engineered format documentation in
 - New elements are written in CC's exact JSON schema (key-verified against
   CC-853 specimens), so toolpaths and CC itself accept them
 
-**CAM — all 7 Carbide Create toolpath types export**
+**CAM — every Carbide Create toolpath type, plus engraving and 3D**
+- **Create, duplicate, rename, enable, reorder and delete toolpaths** (the
+  Toolpaths panel's New menu covers all seven CC types plus Engrave)
+- **Engrave**: outline, hatch fill (spacing, angle, crosshatch) or both
+- **3D modelling** (Model tab): components from vectors (flat / round / angle
+  / dome / smooth), images as heightmaps, tiled textures, STL import; the
+  relief is stored in the .c2d and drives the 3D toolpaths
+- **3D roughing and finishing**: Z-level clearing and raster finishing on the
+  tool-compensated surface (ball, flat, V), boundary vectors, stepover in mm
+  or %, raster angle, zigzag/climb/conventional, optional cross pass
 - **Tool library** with Carbide 3D's cutters and per-material speeds & feeds
   (Toolpaths → Tool library…; values that are guesses are flagged as such)
 - **Rest machining** for pockets (`enable_rest` / `rest_diameter`)
