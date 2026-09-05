@@ -274,6 +274,13 @@ void Canvas::convertToPaths(const QStringList &ids)
     }
     if (before.isEmpty())
         return;
+    if (after.isEmpty()) {
+        // Element::toPaths drops degenerate contours, so a text of spaces (or
+        // a font that renders nothing) yields none: replacing here would
+        // delete the element and put nothing in its place.
+        emit statusHint(tr("nothing to convert: the selection has no outline"));
+        return;
+    }
     if (before.size() == 1 && after.size() == 1) {
         m_undo->push(new EditCmd(this, m_doc, before.first(), after.first()));
     } else {
@@ -1035,7 +1042,6 @@ void Canvas::mousePressEvent(QMouseEvent *event)
             m_grab = what;
             m_grabBreak = event->modifiers() & (Qt::AltModifier | Qt::ShiftModifier);
             if (Element *e = m_doc->elementById(m_editId))
-                m_editBefore = *e;
             viewport()->update();
             event->accept();
             return;
@@ -1044,7 +1050,10 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         viewport()->update();
     }
 
-    if (m_tool != Select && m_tool != DrawPath && m_doc
+    // NodeEdit selects and edits; it never starts a new shape, so it must not
+    // reach the drawing branch (which would swallow the click before the
+    // scene sees it, leaving nothing selectable with the tool).
+    if (m_tool != Select && m_tool != DrawPath && m_tool != NodeEdit && m_doc
         && event->button() == Qt::LeftButton) {
         m_drawing = true;
         m_anchor = snap(mapToScene(event->pos()));

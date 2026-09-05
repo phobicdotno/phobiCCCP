@@ -122,7 +122,6 @@ private:
     int m_selSub = -1, m_selNode = -1;
     NodeGrab m_grab = GrabNone;
     bool m_grabBreak = false;               // Alt/Shift held when the handle was grabbed
-    Element m_editBefore;
 
     QVector<Op> m_previewOps;               // g-code overlay (empty = off)
     const BackgroundImage *m_bg = nullptr;  // background picture (backgroundimage.h)

@@ -78,6 +78,7 @@ void BackgroundImage::setImage(const QImage &img)
 
 void BackgroundImage::clear()
 {
+    userChanged = true;
     image = QImage();
     pngData.clear();
     visible = false;
@@ -95,6 +96,8 @@ void BackgroundImage::clear()
 bool BackgroundImage::loadFrom(const QString &c2dPath, QString *error)
 {
     clear();
+    userChanged = false;        // loading is not a user edit
+    fileHadRow = false;
     if (!QFileInfo::exists(c2dPath)) {
         if (error) *error = QStringLiteral("File not found: %1").arg(c2dPath);
         return false;
@@ -130,6 +133,7 @@ bool BackgroundImage::loadFrom(const QString &c2dPath, QString *error)
         QSqlQuery s(db);
         s.exec(QStringLiteral("SELECT sz, data FROM sqlar WHERE name='background.png'"));
         if (s.next()) {
+            fileHadRow = true;
             const int sz = s.value(0).toInt();
             QByteArray blob = s.value(1).toByteArray();
             if (sz > blob.size() && !blob.isEmpty())
@@ -155,6 +159,11 @@ bool BackgroundImage::loadFrom(const QString &c2dPath, QString *error)
 
 bool BackgroundImage::saveTo(const QString &c2dPath, QString *error) const
 {
+    // Nothing of ours to store. Writing anyway would either replace a
+    // background we failed to decode with an empty blob, or add an empty
+    // background row (and its params) to every document that never had one.
+    if (image.isNull() && !userChanged)
+        return true;
     const QString conn = QStringLiteral("c2dbgw_%1").arg(QUuid::createUuid().toString());
     bool ok = true;
     {

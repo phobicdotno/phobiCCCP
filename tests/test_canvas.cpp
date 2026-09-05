@@ -217,6 +217,40 @@ int main(int argc, char *argv[])
     check(doc.elementById(text.id)->geometryType == QLatin1String("text") && doc.elements().size() == 5,
           "text conversion undoes");
 
+    // --- the node tool selects by clicking -------------------------------------------
+    // Regression: NodeEdit fell through into the shape-drawing branch, which
+    // accepted the press before the scene saw it, so nothing could be picked
+    // with the tool unless it was selected with another one first.
+    {
+        canvas.setTool(c2d::Canvas::Select);
+        const c2d::Element target =
+            c2d::Element::makeRectangle({420, 420}, 60, 40, doc.defaultLayer());
+        doc.addElement(target);
+        canvas.rebuild();
+        canvas.selectElements({});                 // nothing selected
+        canvas.setTool(c2d::Canvas::NodeEdit);
+        click(&canvas, {420, 420});                // click the shape itself
+        check(canvas.selectedElementIds() == QStringList{target.id},
+              "node tool selects an element by clicking it");
+        const int elems = doc.elements().size();
+        click(&canvas, {480, 480});                // empty space: deselect, draw nothing
+        check(doc.elements().size() == elems,
+              "node tool never starts a new shape");
+    }
+
+    // --- converting something with no outline leaves it alone -------------------------
+    {
+        const c2d::Element blank =
+            c2d::Element::makeText(QStringLiteral("   "), {500, 500}, 10,
+                                   QStringLiteral("DejaVu Sans"), doc.defaultLayer());
+        doc.addElement(blank);
+        canvas.rebuild();
+        const int before = doc.elements().size();
+        canvas.convertToPaths({blank.id});
+        check(doc.elements().size() == before && doc.elementById(blank.id) != nullptr,
+              "convert to path does not delete an element with no outline");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

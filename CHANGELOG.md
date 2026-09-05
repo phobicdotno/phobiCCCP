@@ -1,6 +1,22 @@
 # Changelog
 
 ## Unreleased
+- Node edit tool: clicking a shape now selects it. The tool fell through into
+  the shape-drawing branch, which swallowed the click before the canvas saw
+  it, so nothing could be picked unless it had been selected with another tool
+  first.
+- Convert to path no longer deletes an element whose outline is empty (a text
+  of spaces, or a font that renders nothing).
+- Background images: saving never overwrites a background the loader could not
+  decode, and a document that never had one no longer gains an empty
+  background row and its parameters.
+- DXF import: a spline carrying fit-point X codes with no matching Y codes is
+  dropped instead of crashing the import.
+- Simulation: editing the program while a simulation runs cancels it, so a
+  result computed for the previous program is no longer shown as current.
+- Tiled export: each tile keeps only the toolpath blocks it actually cuts, so
+  a tile no longer changes tools and starts the spindle for work that happens
+  in another tile; a tile with nothing to cut comes out empty.
 - `tests/test_integration.cpp` (CTest `integration`): cross-feature checks that
   the per-module tests cannot catch — a relief built by the modeller reaches
   the 3D toolpaths through the real provider and the simulated cut follows it;

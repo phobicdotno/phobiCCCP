@@ -881,6 +881,8 @@ void splineToPath(QPainterPath &out, const Entity &e, const QTransform &xf, doub
         QVector<QPointF> f;
         for (int i = 0; i < qMin(fx.size(), fy.size()); ++i)
             f.append(xf.map(QPointF(fx.at(i), fy.at(i))));
+        if (f.size() < 2)
+            return;              // fit-point X and Y codes did not pair up
         QPainterPath p;
         p.moveTo(f.first());
         const int m = f.size();

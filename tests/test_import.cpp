@@ -267,6 +267,20 @@ int main(int argc, char **argv)
     {
         c2d::ImportResult r = c2d::importSvgData("<html/>", opts(0, 0), QStringLiteral("x"));
         check(!r.ok, "non-svg root rejected");
+        // A SPLINE carrying fit-point X codes with no matching Y codes:
+        // malformed but readable. It must be dropped, not dereferenced.
+        {
+            const QByteArray dxf =
+                "0\nSECTION\n2\nENTITIES\n"
+                "0\nSPLINE\n8\n0\n70\n8\n71\n3\n74\n3\n"
+                "11\n0.0\n11\n10.0\n11\n20.0\n"
+                "0\nLINE\n8\n0\n10\n0.0\n20\n0.0\n11\n5.0\n21\n5.0\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult bad = c2d::importDxfData(dxf, opts(0, 0),
+                                                             QStringLiteral("halfspline"));
+            check(bad.ok, "dxf: half a fit-point spline still imports the rest");
+            check(bad.elements.size() == 1, "dxf: the unusable spline is dropped, the line kept");
+        }
         r = c2d::importDxfData("garbage\n", opts(0, 0), QStringLiteral("x"));
         check(!r.ok, "non-dxf rejected");
         r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg'/>", opts(0, 0));

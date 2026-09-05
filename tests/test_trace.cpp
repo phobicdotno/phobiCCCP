@@ -293,6 +293,67 @@ int main(int argc, char *argv[])
         check(back.saveTo(path, &err), "bg: save cleared");
         c2d::BackgroundImage gone;
         check(gone.loadFrom(path) && gone.isNull(), "bg: cleared round trip");
+
+        // A background we could not decode must survive a save. Otherwise the
+        // first Ctrl+S after opening such a file destroys the user's picture.
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        QStringLiteral("bad"));
+            db.setDatabaseName(path);
+            check(db.open(), "bg: reopen to plant an undecodable row");
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("INSERT OR REPLACE INTO sqlar VALUES"
+                                  "('background.png',33188,'2026-01-01 00:00:00',8,x'6E6F7461706E6721')"));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("bad"));
+
+        c2d::BackgroundImage broken;
+        check(!broken.loadFrom(path, &err) && broken.isNull(),
+              "bg: an undecodable background reports failure");
+        check(broken.saveTo(path, &err), "bg: saving after a failed load succeeds");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        QStringLiteral("chk"));
+            db.setDatabaseName(path);
+            check(db.open(), "bg: reopen to inspect");
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("SELECT length(data) FROM sqlar WHERE name='background.png'"));
+            check(q.next() && q.value(0).toInt() == 8,
+                  "bg: the undecodable row is left untouched");
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("chk"));
+
+        // A document that never had a background gains no background row.
+        const QString clean = dir.filePath(QStringLiteral("clean.c2d"));
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        QStringLiteral("mk2"));
+            db.setDatabaseName(clean);
+            check(db.open(), "bg: create a document with no background");
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("CREATE TABLE params(key TEXT PRIMARY KEY, value TEXT)"));
+            q.exec(QStringLiteral("CREATE TABLE sqlar(name TEXT PRIMARY KEY, mode INT, "
+                                  "mtime INT, sz INT, data BLOB)"));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("mk2"));
+        c2d::BackgroundImage fresh;
+        check(fresh.loadFrom(clean, &err), "bg: document with no background loads");
+        check(fresh.saveTo(clean, &err), "bg: saving it succeeds");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        QStringLiteral("chk2"));
+            db.setDatabaseName(clean);
+            check(db.open(), "bg: reopen the clean document");
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("SELECT count(*) FROM sqlar WHERE name='background.png'"));
+            check(q.next() && q.value(0).toInt() == 0,
+                  "bg: no empty background row is created");
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("chk2"));
     }
 
     std::printf("test_trace: %d checks passed\n", g_checks);

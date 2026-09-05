@@ -90,6 +90,46 @@ struct TileState {
     int motions = 0;
 };
 
+// Comments, tool changes and spindle commands are mirrored into every tile as
+// they are seen, because a tile's own cuts may come later. Afterwards, keep
+// only the blocks that actually cut here: a block runs from one toolpath's
+// preamble (its comment / tool change / spindle start) to the next, and is
+// dropped whole when it contains no feed or arc — otherwise a tile would
+// change tools and spin the spindle up for a toolpath it never machines.
+static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
+{
+    auto isPreamble = [](const Op &o) {
+        return o.kind == Op::Comment || o.kind == Op::Tool || o.kind == Op::Spindle;
+    };
+    QVector<Op> out, block;
+    bool blockCuts = false, inPreamble = false;
+    auto flush = [&] {
+        if (blockCuts)
+            out += block;
+        block.clear();
+        blockCuts = false;
+    };
+    for (const Op &o : ops) {
+        // A spindle stop closes the block that just cut; it never opens one.
+        const bool stop = (o.kind == Op::Spindle && o.ival <= 0);
+        if (isPreamble(o) && !stop) {
+            if (!inPreamble) {      // first preamble op after content: new block
+                flush();
+                inPreamble = true;
+            }
+        } else {
+            // Content, or the spindle stop that closes this block: either way
+            // the next tool change / comment starts a new block.
+            inPreamble = false;
+            if (o.kind == Op::Feed || o.kind == Op::Arc)
+                blockCuts = true;
+        }
+        block.append(o);
+    }
+    flush();
+    return out;
+}
+
 } // namespace
 
 int tileCount(const QVector<Op> &ops, double tileHeight)
@@ -207,9 +247,21 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
     out.reserve(n);
     for (int k = 0; k < n; ++k) {
         TileState &t = tiles[k];
-        if (t.havePos && t.pos.z < safeZ - 1e-9)
-            t.ops.append(Op::rapid(t.pos.x, t.pos.y - k * tileHeight, safeZ));
-        out.append(t.ops);
+        // Comments, tool changes and spindle commands were mirrored into every
+        // tile as they were seen. A tile that ended up with no motion at all
+        // would otherwise be a program that changes tools and spins up the
+        // spindle without cutting anything; and a tile that does cut must not
+        // carry the tool changes of toolpaths that missed it entirely.
+        if (t.motions == 0) {
+            out.append(QVector<Op>());
+            continue;
+        }
+        QVector<Op> kept = dropUncutBlocks(t.ops);
+        // Retract last, so the closing rapid is not what keeps a dead block
+        // alive (and is still emitted for the blocks we did keep).
+        if (!kept.isEmpty() && t.havePos && t.pos.z < safeZ - 1e-9)
+            kept.append(Op::rapid(t.pos.x, t.pos.y - k * tileHeight, safeZ));
+        out.append(kept);
     }
     return out;
 }

@@ -131,6 +131,47 @@ int main(int argc, char *argv[])
     const QVector<QVector<c2d::Op>> tiles = c2d::tileOps(ops, tileH, safeZ);
     check(tiles.size() == 3, "tileOps returns three tiles");
 
+    // A toolpath whose cuts all land in one tile must not leave its tool
+    // change and spindle start behind in the tiles it never reaches.
+    {
+        QVector<c2d::Op> j;
+        j.append(c2d::Op::tool(201));
+        j.append(c2d::Op::comment(QStringLiteral("low")));
+        j.append(c2d::Op::spindle(10000));
+        j.append(c2d::Op::rapid(10, 5, 5));
+        j.append(c2d::Op::feedTo(10, 5, -1, 400));
+        j.append(c2d::Op::feedTo(60, 5, -1, 400));      // wholly inside tile 0
+        j.append(c2d::Op::spindle(0));
+        j.append(c2d::Op::tool(102));
+        j.append(c2d::Op::comment(QStringLiteral("high")));
+        j.append(c2d::Op::spindle(12000));
+        j.append(c2d::Op::rapid(10, 250, 5));
+        j.append(c2d::Op::feedTo(10, 250, -1, 400));
+        j.append(c2d::Op::feedTo(60, 250, -1, 400));    // wholly inside tile 2
+        j.append(c2d::Op::spindle(0));
+        const QVector<QVector<c2d::Op>> t = c2d::tileOps(j, 100.0, 5.0);
+        check(t.size() == 3, "two-toolpath job tiles into three");
+        auto toolsIn = [](const QVector<c2d::Op> &ops) {
+            QVector<int> n;
+            for (const c2d::Op &o : ops)
+                if (o.kind == c2d::Op::Tool)
+                    n.append(o.ival);
+            return n;
+        };
+        auto cuts = [](const QVector<c2d::Op> &ops) {
+            int n = 0;
+            for (const c2d::Op &o : ops)
+                if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc)
+                    ++n;
+            return n;
+        };
+        check(cuts(t.at(0)) > 0 && cuts(t.at(2)) > 0, "both tiles cut");
+        check(toolsIn(t.at(0)) == QVector<int>{201}, "tile 0 changes to its own tool only");
+        check(toolsIn(t.at(2)) == QVector<int>{102}, "tile 2 changes to its own tool only");
+        check(cuts(t.at(1)) == 0 && toolsIn(t.at(1)).isEmpty(),
+              "the middle tile cuts nothing and changes no tool");
+    }
+
     double total = 0;
     for (int k = 0; k < tiles.size(); ++k) {
         double lo, hi;

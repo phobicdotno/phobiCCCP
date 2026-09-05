@@ -252,6 +252,10 @@ SimPanel::SimPanel(QWidget *parent)
 void SimPanel::setJob(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
                       double stockW, double stockH, double stockT)
 {
+    // A run already in flight is computing the previous program: stop it, or
+    // its result would land as if it were current.
+    if (isRunning())
+        cancel();
     m_ops = ops;
     m_tools = tools;
     m_w = stockW; m_h = stockH; m_t = qMax(0.0, stockT);
