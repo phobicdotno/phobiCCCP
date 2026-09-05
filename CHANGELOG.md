@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+- Path tool draws splines pen-style: click = corner node, click-drag pulls out
+  symmetric tangent handles, live curve preview, Enter finishes open, clicking
+  the start closes. Written in Carbide Create's path schema (cp1 = previous
+  out-handle, cp2 = own in-handle per anchor, point_type 1/3 per segment,
+  duplicate-start + close rows), so CC renders the same curve.
+- Node edit tool (N, palette icon): anchors as squares (diamonds for smooth
+  nodes) and handles as circles on tangent lines; drag anchors/handles
+  (Alt/Shift-drag breaks handle symmetry), double-click a segment to insert a
+  node (de Casteljau split, curve preserved), Delete removes the selected node,
+  right-click a node for Corner / Smooth / Symmetric / straight lines. Works on
+  open and closed paths; every drag/insert/delete/kind change is one undo step.
+  Editing a node of a rectangle/circle/polygon converts it to a path.
+- Right-click → Convert to path (Select or Nodes tool, also a Properties
+  button): rectangles/circles/polygons become one editable path keeping their
+  id; text becomes one closed path per glyph contour.
+- Text along arcs: `arc_enabled` / `arc_radius` / `arc_center` /
+  `arc_angle_offset` / `arc_text_on_bottom` are honoured when text is
+  (re)rendered — glyphs placed along the circle with the baseline on the arc,
+  centred on the top (or the bottom, upright, extending inwards) turned by the
+  offset angle. The `rendered` outlines stored in the element are the arc
+  layout, so toolpaths cut what is shown. Text without `rendered` is laid out
+  on load.
+- Properties panel for text: string, font family, height, bold/italic, arc
+  on/off, arc radius, angle offset, text on bottom — all undoable and
+  rewriting `font` / `qtfont` / `rendered` like CC.
+- `font_height` now scales the font so its ascent equals the value (matches
+  CC's Helvetica specimen: cap height = 0.93 × font_height).
+- Selection survives document rebuilds (property edits no longer blank the
+  Properties panel).
+- Tests: `test_paths` (bezier JSON round trip, node insert/delete, node kinds,
+  arc text centring/span/side/offset, conversions) and `test_canvas` (pen and
+  node tools driven with synthetic events, undo steps) wired into CTest;
+  `--shot` honours `PHOBICCCP_SHOT_SELECT=<geometryType>` and
+  `PHOBICCCP_SHOT_TOOL=nodes` for headless screenshots.
+
 ## v0.2.4 (build 12) — 2026-09-05
 - CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
   display: the offscreen Qt platform is selected automatically when no

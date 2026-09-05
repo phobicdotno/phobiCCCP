@@ -65,6 +65,20 @@ static QIcon toolIcon(const QString &kind)
         p.setBrush(QColor(0xd8, 0xdc, 0xe4));
         for (const QPointF &v : {QPointF(3, 16), QPointF(8, 6), QPointF(12, 12), QPointF(17, 4)})
             p.drawEllipse(v, 1.6, 1.6);
+    } else if (kind == "nodes") {
+        // Node editor: a curve with an anchor square and a tangent handle.
+        QPainterPath pp(QPointF(3, 16));
+        pp.cubicTo(QPointF(6, 4), QPointF(14, 4), QPointF(17, 16));
+        p.drawPath(pp);
+        QPen thin(QColor(0x9f, 0xc8, 0xf2), 1.0);
+        p.setPen(thin);
+        p.drawLine(QLineF(5, 10, 15, 10));
+        p.setBrush(QColor(0x9f, 0xc8, 0xf2));
+        p.drawEllipse(QPointF(5, 10), 1.7, 1.7);
+        p.drawEllipse(QPointF(15, 10), 1.7, 1.7);
+        p.setPen(pen);
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        p.drawRect(QRectF(8, 8, 4, 4));
     } else if (kind == "text") {
         QFont f;
         f.setPixelSize(15);
@@ -201,7 +215,9 @@ MainWindow::MainWindow(QWidget *parent)
     addTool(QStringLiteral("Polygon"), QStringLiteral("polygon"), Canvas::DrawPolygon, Qt::Key_P,
             QStringLiteral("Polygon: press at center, drag to radius  (P)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
-            QStringLiteral("Path: click points; Enter finishes, click near start closes  (L)"));
+            QStringLiteral("Path: click = corner, click-drag = curve; Enter finishes, click near start closes  (L)"));
+    addTool(QStringLiteral("Nodes"), QStringLiteral("nodes"), Canvas::NodeEdit, Qt::Key_N,
+            QStringLiteral("Edit nodes: drag anchors/handles, double-click to insert, Del to remove, right-click for Corner/Smooth/Symmetric  (N)"));
     addTool(QStringLiteral("Text"), QStringLiteral("text"), Canvas::DrawText, Qt::Key_T,
             QStringLiteral("Text: click to place  (T)"));
 
