@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.4.1 (build 16) — 2026-09-05
 - Node edit tool: clicking a shape now selects it. The tool fell through into
   the shape-drawing branch, which swallowed the click before the canvas saw
   it, so nothing could be picked unless it had been selected with another tool
