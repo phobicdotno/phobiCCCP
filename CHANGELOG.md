@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+- Opening a truncated or corrupt file now says so instead of showing an empty
+  design: SQLite opens a zero-byte file as a valid empty database, so the
+  loader checks that the container really holds a Carbide Create document.
+  The background loader reports an unreadable container too.
+- `tests/test_robustness.cpp` (CTest `robustness`): damaged documents (missing
+  or emptied tables, null / corrupt / mis-sized payloads, five truncation
+  points) and malformed vector imports (unterminated SVG, NaN and 1e400
+  coordinates, a DXF claiming 999999999 vertices, a block that inserts
+  itself) must fail cleanly or salvage what they can — never crash, hang or
+  allocate on a bad file's word. Imported geometry is checked to be finite.
+
 ## v0.4.2 (build 17) — 2026-09-05
 - Node edit: fixed a redraw that was accidentally made conditional while
   removing dead state in v0.4.1.

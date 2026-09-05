@@ -90,6 +90,11 @@ endif()
 # Tests: `ctest --test-dir build`. Geometry/CAM checks are plain asserts;
 # the GRBL simulator and the machine flow test need python3.
 enable_testing()
+add_executable(test_robustness tests/test_robustness.cpp)
+target_link_libraries(test_robustness PRIVATE phobicccp_core Qt6::Sql)
+add_test(NAME robustness COMMAND test_robustness
+         "$ENV{HOME}/Documents/c2d-samples/CarbideCreateAllPossibilities.c2d")
+
 add_executable(test_integration tests/test_integration.cpp)
 target_link_libraries(test_integration PRIVATE phobicccp_core)
 add_test(NAME integration COMMAND test_integration)

@@ -131,8 +131,11 @@ bool BackgroundImage::loadFrom(const QString &c2dPath, QString *error)
         opacity = qBound(0.0, opacity, 1.0);
 
         QSqlQuery s(db);
-        s.exec(QStringLiteral("SELECT sz, data FROM sqlar WHERE name='background.png'"));
-        if (s.next()) {
+        if (!s.exec(QStringLiteral("SELECT sz, data FROM sqlar WHERE name='background.png'"))) {
+            // No sqlar table: the file is not a readable .c2d container.
+            if (error) *error = s.lastError().text();
+            ok = false;
+        } else if (s.next()) {
             fileHadRow = true;
             const int sz = s.value(0).toInt();
             QByteArray blob = s.value(1).toByteArray();

@@ -28,6 +28,7 @@ bool Document::load(const QString &path, QString *error)
 
     // Unique connection name so multiple documents can be open at once.
     const QString conn = QStringLiteral("c2d_%1").arg(QUuid::createUuid().toString());
+    bool notAContainer = false;
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
         db.setDatabaseName(path);
@@ -38,8 +39,31 @@ bool Document::load(const QString &path, QString *error)
             return false;
         }
 
-        // params
+        // SQLite opens an empty or truncated file as a valid, empty database,
+        // so "it opened" proves nothing. A .c2d always carries `items` and
+        // `params`; without them this is not one, and loading it silently as a
+        // blank design would look like the drawing had been lost.
+        bool haveItems = false, haveParams = false;
         {
+            QSqlQuery q(db);
+            if (q.exec(QStringLiteral("SELECT name FROM sqlite_master WHERE type='table'"))) {
+                while (q.next()) {
+                    const QString t = q.value(0).toString();
+                    haveItems = haveItems || t == QLatin1String("items");
+                    haveParams = haveParams || t == QLatin1String("params");
+                }
+            }
+        }
+        if (!haveItems || !haveParams) {
+            if (error)
+                *error = QStringLiteral("Not a Carbide Create file (no %1 table): %2")
+                             .arg(haveItems ? QStringLiteral("params") : QStringLiteral("items"),
+                                  path);
+            notAContainer = true;
+        }
+
+        // params
+        if (!notAContainer) {
             QSqlQuery q(db);
             q.exec(QStringLiteral("SELECT key, value FROM params"));
             while (q.next())
@@ -81,6 +105,8 @@ bool Document::load(const QString &path, QString *error)
         db.close();
     }
     QSqlDatabase::removeDatabase(conn);
+    if (notAContainer)
+        return false;
     return true;
 }
 
