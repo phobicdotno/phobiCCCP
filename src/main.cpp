@@ -141,7 +141,7 @@ static int selftest(const QString &in, const QString &out)
     ct.type = QStringLiteral("contour");
     check2.replaceToolpath(ct);
     const c2d::GcodeResult g = c2d::exportGcode(check2);
-    const bool gOk = g.done.size() == 2 && g.skipped.isEmpty()
+    const bool gOk = g.done.size() == check2.toolpaths().size() && g.skipped.isEmpty()
         && g.gcode.contains(QLatin1String("G90")) && g.gcode.contains(QLatin1String("G21"))
         && g.gcode.contains(QLatin1String("M03S")) && g.gcode.contains(QLatin1String("M02"))
         && g.gcode.count(QLatin1String("G1")) > 50

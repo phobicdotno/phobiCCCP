@@ -948,11 +948,7 @@ GcodeResult exportGcode(Document &doc)
             const double bitAngle = tool.value("angle").toDouble(60);
             const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 179.0) / 2));
             const double stepover = qMax(0.05, j.value("stepover").toDouble(0.2));
-            // Coarse flattening on purpose: the medial axis of an n-gon is n
-            // spokes, so a finely flattened circle only multiplies redundant
-            // carve passes (3x on the baseplate). Offsetting toolpaths use the
-            // fine default instead.
-            const QPainterPath region = regionOf(elems, 0.5);
+            const QPainterPath region = regionOf(elems);   // fine; spurs are pruned in medialAxis()
             // Max clearance the bit can reach before bottoming out at zBot;
             // anything wider needs a flat clearing pass at full depth.
             const double dMax = qMax(0.0, (cp.zTop - cp.zBot) * halfTan);

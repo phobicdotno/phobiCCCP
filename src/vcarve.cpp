@@ -230,8 +230,6 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
     if (edges.isEmpty())
         return {};
 
-    // Chain the edge soup into polylines: start walks at junctions and tips
-    // (degree != 2), then sweep up any remaining pure loops.
     QVector<QVector<int>> adj(nodes.size());
     for (int i = 0; i < edges.size(); ++i) {
         adj[edges.at(i).first].append(i);
@@ -244,6 +242,93 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
             clearance[n] = distToBoundary(nodes.at(n), mmSegs);
         return clearance[n];
     };
+
+    // Prune flattening spurs. Every polygon vertex sends a Voronoi branch into
+    // the region; at a real corner that branch is the spur the bit rides into
+    // the point, but on a flattened curve (a circle is a 60-gon here) it is
+    // noise — the cone cut from the neighbouring axis already covers it — and
+    // a circle would otherwise be carved as sixty spokes. A vertex counts as
+    // "curve" when the boundary turns less than kMaxSmoothTurn there.
+    {
+        const double kMaxSmoothTurn = qDegreesToRadians(20.0);
+        struct BVert { QPointF p; double turn; };
+        QVector<BVert> bverts;
+        for (const QPolygonF &ringIn : rings) {
+            QPolygonF ring = ringIn;
+            if (ring.size() < 3)
+                continue;
+            if (ring.first() == ring.last())
+                ring.removeLast();
+            const int n = ring.size();
+            for (int i = 0; i < n; ++i) {
+                const QPointF a = ring.at((i + n - 1) % n), b = ring.at(i), c = ring.at((i + 1) % n);
+                const QPointF u = b - a, v = c - b;
+                const double lu = std::hypot(u.x(), u.y()), lv = std::hypot(v.x(), v.y());
+                if (lu < 1e-9 || lv < 1e-9)
+                    continue;
+                const double cosT = qBound(-1.0, (u.x() * v.x() + u.y() * v.y()) / (lu * lv), 1.0);
+                bverts.append({b, std::acos(cosT)});
+            }
+        }
+        auto smoothVertexAt = [&](const QPointF &p) {
+            // A tip sits on a boundary vertex (its clearance is ~0); find it.
+            for (const BVert &bv : bverts)
+                if (qAbs(bv.p.x() - p.x()) < 0.02 && qAbs(bv.p.y() - p.y()) < 0.02)
+                    return bv.turn < kMaxSmoothTurn ? 1 : 0;
+            return -1;                       // not on a vertex
+        };
+        QVector<bool> alive(edges.size(), true);
+        auto degree = [&](int n) {
+            int d = 0;
+            for (int e : adj.at(n)) d += alive[e] ? 1 : 0;
+            return d;
+        };
+        auto aliveEdge = [&](int n) {
+            for (int e : adj.at(n)) if (alive[e]) return e;
+            return -1;
+        };
+        for (int n = 0; n < nodes.size(); ++n) {
+            if (degree(n) != 1 || smoothVertexAt(nodes.at(n)) != 1)
+                continue;
+            // Walk the spur inward until the axis proper (a junction) or a
+            // node that is itself a real corner.
+            int cur = n;
+            while (degree(cur) == 1) {
+                const int e = aliveEdge(cur);
+                alive[e] = false;
+                const int next = edges.at(e).first == cur ? edges.at(e).second : edges.at(e).first;
+                if (degree(next) != 1 || smoothVertexAt(nodes.at(next)) == 0)
+                    break;
+                cur = next;
+            }
+        }
+        QVector<QPair<int, int>> kept;
+        for (int e = 0; e < edges.size(); ++e)
+            if (alive[e])
+                kept.append(edges.at(e));
+        if (kept.isEmpty()) {
+            // Everything was spur (a circle, an ellipse): the axis collapses to
+            // its deepest point — one plunge there carves the whole cone.
+            int best = 0;
+            for (int i = 1; i < nodes.size(); ++i)
+                if (dOf(i) > dOf(best))
+                    best = i;
+            const VPoint v{nodes.at(best).x(), nodes.at(best).y(), dOf(best)};
+            return {{v, v}};
+        }
+        if (kept.size() != edges.size()) {
+            edges = kept;
+            adj = QVector<QVector<int>>(nodes.size());
+            for (int i = 0; i < edges.size(); ++i) {
+                adj[edges.at(i).first].append(i);
+                adj[edges.at(i).second].append(i);
+            }
+            used = QVector<bool>(edges.size(), false);
+        }
+    }
+
+    // Chain the edge soup into polylines: start walks at junctions and tips
+    // (degree != 2), then sweep up any remaining pure loops.
     QVector<QVector<VPoint>> chains;
     auto walk = [&](int startNode, int startEdge) {
         QVector<VPoint> ch;

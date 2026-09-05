@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.2.0 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,38 +27,57 @@ if(PHOBICCCP_WITH_CLIPPER2)
     FetchContent_MakeAvailable(clipper2)
 endif()
 
-add_executable(phobicccp
-    src/main.cpp
+# Everything that is not a widget: file format, CAM, post, GRBL streaming.
+# Shared by the app and the headless tests.
+add_library(phobicccp_core STATIC
     src/zlibutil.cpp
     src/c2ddocument.cpp
     src/element.cpp
-    src/canvas.cpp
-    src/mainwindow.cpp
-    src/propertiespanel.cpp
-    src/toolpathpanel.cpp
     src/gcodeexport.cpp
     src/vcarve.cpp
     src/post_grbl.cpp
     src/grblstreamer.cpp
+)
+target_include_directories(phobicccp_core PUBLIC src)
+target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
+
+add_executable(phobicccp
+    src/main.cpp
+    src/canvas.cpp
+    src/mainwindow.cpp
+    src/propertiespanel.cpp
+    src/toolpathpanel.cpp
     src/machinepanel.cpp
     src/isopreview.cpp
 )
 
-target_link_libraries(phobicccp PRIVATE Qt6::Widgets Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
+target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets)
 if(PHOBICCCP_WITH_CLIPPER2)
-    target_link_libraries(phobicccp PRIVATE Clipper2)
-    target_compile_definitions(phobicccp PRIVATE HAVE_CLIPPER2)
+    target_link_libraries(phobicccp_core PUBLIC Clipper2)
+    target_compile_definitions(phobicccp_core PUBLIC HAVE_CLIPPER2)
 endif()
 
 # True medial-axis v-carve needs the (header-only) Boost.Polygon Voronoi
 # builder; without it the exporter falls back to depth-graded inset rings.
 find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
 if(BOOST_VORONOI_INC)
-    target_include_directories(phobicccp PRIVATE ${BOOST_VORONOI_INC})
-    target_compile_definitions(phobicccp PRIVATE HAVE_BOOST_VORONOI)
+    target_include_directories(phobicccp_core PRIVATE ${BOOST_VORONOI_INC})
+    target_compile_definitions(phobicccp_core PUBLIC HAVE_BOOST_VORONOI)
     message(STATUS "Boost.Polygon Voronoi found: medial-axis v-carve enabled")
 else()
     message(STATUS "Boost.Polygon Voronoi NOT found: v-carve uses ring fallback")
+endif()
+
+# Tests: `ctest --test-dir build`. Geometry/CAM checks are plain asserts;
+# the GRBL simulator and the machine flow test need python3.
+enable_testing()
+add_executable(test_geometry tests/test_geometry.cpp)
+target_link_libraries(test_geometry PRIVATE phobicccp_core)
+add_test(NAME geometry COMMAND test_geometry)
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME grblsim COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/grblsim_selftest.py)
+    add_test(NAME machine_flow COMMAND ${CMAKE_SOURCE_DIR}/tools/flowtest.sh $<TARGET_FILE:phobicccp>)
 endif()
 
 include(GNUInstallDirs)

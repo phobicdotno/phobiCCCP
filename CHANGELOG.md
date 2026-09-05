@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.2.1 (build 9) — 2026-09-05
+- V-carve: medial-axis spurs at flattening vertices are pruned (a vertex where
+  the boundary turns < 20° is a curve, not a corner), so circles carve as one
+  plunge and curved letters no longer get one spoke per polygon vertex. The
+  v-carve now uses the same fine curve flattening as the other toolpaths.
+  All-types specimen: v-carve motion 16702 → 6592 mm, same coverage.
+- Removed the dead pre-streamer machine dialog (`machinedialog.*`,
+  `grblsender.*`).
+- Build split into a `phobicccp_core` library + app; `tests/test_geometry.cpp`
+  is built again (`test_geometry`) and wired into CTest together with the
+  simulator self-test and the machine flow test: `ctest --test-dir build`.
+- Self-test's g-code stage checks every toolpath in the file instead of a
+  hard-coded count, so it also passes on the all-types specimen.
+
 ## v0.2.0 (build 8) — 2026-09-04
 - Machine dock rewritten: work + machine position display (WCO tracking),
   jog speeds and press-and-hold continuous jogging with jog-cancel, keyboard

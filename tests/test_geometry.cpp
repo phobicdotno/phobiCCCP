@@ -1,5 +1,5 @@
 // Headless checks for the CAM engine (Clipper2 offsetting in gcodeexport),
-// the GRBL streaming protocol, and - when a sample .c2d path is passed as
+// and - when a sample .c2d path is passed as
 // argv[1] - a full-document export. Complements the app's --selftest, which
 // covers the element factories and document round trip.
 //
@@ -8,7 +8,6 @@
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include "../src/gcodeexport.h"
-#include "../src/grblsender.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -65,8 +64,10 @@ static QVector<CutPoint> cutPoints(const QString &gcode)
             continue;   // comments
         if (line.startsWith(QLatin1String("G0")))
             modalG = 0;
-        else if (line.startsWith(QLatin1String("G1")))
-            modalG = 1;
+        else if (line.startsWith(QLatin1String("G1")) || line.startsWith(QLatin1String("G2"))
+                 || line.startsWith(QLatin1String("G3")))
+            modalG = 1;    // arcs: the endpoint is on the cut (extremes of a
+                           // rounded offset lie on the straight runs anyway)
         else if (line.startsWith(QChar('G')) || line.startsWith(QChar('M')) ||
                  line.startsWith(QChar('S')) || line.startsWith(QChar(';')))
             continue;   // other G/M/S words: no motion
@@ -152,6 +153,10 @@ int main(int argc, char *argv[])
         check(g.done.size() == 1 && g.skipped.isEmpty(), "contour exports");
         double minZ;
         const QRectF bb = cutBounds(g.gcode, &minZ);
+        std::fprintf(stderr, "contour outside: bbox %.3f..%.3f x %.3f..%.3f\n",
+                     bb.left(), bb.right(), bb.top(), bb.bottom());
+        if (qgetenv("TEST_DUMP") == "1")
+            std::fprintf(stderr, "%s\n", g.gcode.toUtf8().constData());
         check(approx(bb.left(), 10 - 3.175, 0.05) &&
               approx(bb.right(), 50 + 3.175, 0.05) &&
               approx(bb.top(), 10 - 3.175, 0.05) &&
@@ -210,14 +215,17 @@ int main(int argc, char *argv[])
         check(approx(minZ, -5.0, 1e-3), "cutout uses cut_depth");
     }
 
-    // --- cutout with tabs expected warns ------------------------------------
+    // --- cutout with tabs: the last pass lifts to tab height ---------------
     {
         Rig r;
         r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
         r.addToolpath("cutout", {{"cut_depth", 5.0}, {"tab_height", 3.0},
                                  {"ignore_tabs", false}});
         const c2d::GcodeResult g = c2d::exportGcode(r.doc);
-        check(g.warnings.size() == 1, "tab warning raised");
+        double minZ;
+        cutBounds(g.gcode, &minZ);
+        check(g.done.size() == 1 && approx(minZ, -5.0, 1e-3), "cutout with tabs exports");
+        check(g.gcode.contains(QLatin1String("Z-2.000")), "tabs lift to cut_depth - tab_height");
     }
 
     // --- pocket: stays inside, has inner rings -----------------------------
@@ -277,23 +285,6 @@ int main(int argc, char *argv[])
         double minZ;
         cutBounds(g.gcode, &minZ);
         check(approx(minZ, -2.0, 1e-3), "negative-down depth normalized");
-    }
-
-    // --- GrblSender: one line in flight, ok/error sequencing ----------------
-    {
-        QList<QByteArray> wrote;
-        c2d::GrblSender sender([&wrote](const QByteArray &b) { wrote.append(b); });
-        sender.start({QStringLiteral("G90"), QStringLiteral("G21"),
-                      QStringLiteral("M02")});
-        check(wrote.size() == 1 && wrote.at(0) == "G90\n", "sender first line");
-        sender.onData("ok\r\n");
-        check(wrote.size() == 2 && wrote.at(1) == "G21\n", "sender advances on ok");
-        sender.onData("error:5\r\n");
-        check(wrote.size() == 3 && sender.errors() == 1, "sender advances on error");
-        sender.onData("Grbl 1.1h ['$' for help]\r\n");   // banner is not an ack
-        check(wrote.size() == 3, "sender ignores banners");
-        sender.onData("ok\r\n");
-        check(sender.finished() && sender.acked() == 3, "sender finishes");
     }
 
     // --- full-document export over the sample (argv[1]) ---------------------
