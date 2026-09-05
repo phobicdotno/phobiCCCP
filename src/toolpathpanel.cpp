@@ -13,7 +13,9 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLabel>
+#include <QFont>
 #include <QMenu>
+#include <QSet>
 #include <QSettings>
 #include <QMessageBox>
 #include <QPushButton>
@@ -182,6 +184,10 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     connect(m_list, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *, QTreeWidgetItem *) { onCurrentChanged(); });
     connect(m_list, &QTreeWidget::itemChanged, this, &ToolpathPanel::onItemChanged);
+    // Reverse lookup: picking a shape on the canvas bolds the toolpaths that
+    // machine it.
+    connect(m_canvas, &Canvas::selectionChangedIds, this,
+            [this](const QStringList &ids) { markUsage(ids); });
     connect(m_list, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &p) {
         if (!m_list->itemAt(p) || m_uuid.isEmpty())
             return;
@@ -535,9 +541,14 @@ void ToolpathPanel::refresh()
                                                                        : Qt::Unchecked);
             it->setText(1, toolpathLabel(t.type));
             it->setToolTip(1, t.type);
-            it->setText(2, QString::number(t.json.value("elements").toArray().size()));
+            const QJsonArray refs = t.json.value("elements").toArray();
+            it->setText(2, QString::number(refs.size()));
             it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
             it->setData(0, Qt::UserRole, t.uuid);
+            QStringList vids;
+            for (const QJsonValue &v : refs)
+                vids << v.toObject().value("uuid").toString();
+            it->setToolTip(2, describeVectors(vids));
             it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsEditable
                          | Qt::ItemIsUserCheckable);
             if (t.uuid == keep)
@@ -553,6 +564,7 @@ void ToolpathPanel::refresh()
         showToolpath(QString());
     // setCurrentItem on an unchanged current item does not signal; re-sync.
     onCurrentChanged();
+    markUsage(m_selectedElements);
 }
 
 void ToolpathPanel::onCurrentChanged()
@@ -560,7 +572,87 @@ void ToolpathPanel::onCurrentChanged()
     if (m_loading)
         return;
     const QTreeWidgetItem *it = m_list->currentItem();
-    showToolpath(it ? it->data(0, Qt::UserRole).toString() : QString());
+    const QString uuid = it ? it->data(0, Qt::UserRole).toString() : QString();
+    showToolpath(uuid);
+    // Light up the shapes this toolpath machines.
+    m_canvas->setVectorHighlight(vectorIdsOf(uuid));
+}
+
+// ---- which toolpath cuts which shape --------------------------------------
+
+QStringList ToolpathPanel::vectorIdsOf(const QString &uuid) const
+{
+    QStringList ids;
+    if (!m_doc || uuid.isEmpty())
+        return ids;
+    const Toolpath *t = m_doc->toolpathByUuid(uuid);
+    if (!t)
+        return ids;
+    for (const QJsonValue &v : t->json.value("elements").toArray()) {
+        const QString id = v.toObject().value("uuid").toString();
+        if (!id.isEmpty())
+            ids << id;
+    }
+    return ids;
+}
+
+// A human summary of a vector list: "2 x circle, 1 x rectangle". Ids that no
+// longer resolve are counted as missing, which is worth seeing — it means the
+// toolpath refers to a shape that has since been deleted.
+QString ToolpathPanel::describeVectors(const QStringList &ids) const
+{
+    if (ids.isEmpty())
+        return QStringLiteral("No vectors assigned — select shapes on the canvas "
+                              "and press \"Assign selected vectors\".");
+    QStringList order;
+    QHash<QString, int> hist;
+    int missing = 0;
+    for (const QString &id : ids) {
+        const Element *e = m_doc ? m_doc->elementById(id) : nullptr;
+        if (!e) {
+            ++missing;
+            continue;
+        }
+        QString k = e->geometryType;
+        if (k.isEmpty())
+            k = QStringLiteral("shape");
+        if (!hist.contains(k))
+            order << k;
+        hist[k]++;
+    }
+    QStringList parts;
+    for (const QString &k : std::as_const(order))
+        parts << (hist.value(k) == 1 ? k : QStringLiteral("%1 x %2").arg(hist.value(k)).arg(k));
+    if (missing > 0)
+        parts << QStringLiteral("%1 missing").arg(missing);
+    return QStringLiteral("Cuts: ") + parts.join(QStringLiteral(", "))
+           + QStringLiteral("\nSelect this row to outline them on the canvas.");
+}
+
+// Reverse lookup: bold every row whose vectors include something the user has
+// selected on the canvas, so clicking a shape shows what will machine it.
+void ToolpathPanel::markUsage(const QStringList &selectedElementIds)
+{
+    m_selectedElements = selectedElementIds;
+    const QSet<QString> sel(selectedElementIds.begin(), selectedElementIds.end());
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *it = m_list->topLevelItem(i);
+        const QStringList ids = vectorIdsOf(it->data(0, Qt::UserRole).toString());
+        bool used = false;
+        for (const QString &id : ids)
+            if (sel.contains(id)) {
+                used = true;
+                break;
+            }
+        QFont f = it->font(0);
+        if (f.bold() != used) {
+            f.setBold(used);
+            for (int c = 0; c < 3; ++c)
+                it->setFont(c, f);
+        }
+        it->setToolTip(0, used ? QStringLiteral("Machines the selected shape.")
+                               : QString());
+    }
 }
 
 void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)

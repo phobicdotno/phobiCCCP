@@ -44,6 +44,15 @@ private:
     void createInlayMale();       // mirrored male from the selected v-carve
     void pickTool();              // tool library -> selected toolpath's tool/speeds
     void updateButtons();
+    // "which shapes does this toolpath cut?" and its reverse. The first paints
+    // an amber halo on the canvas and describes the vectors in the list's
+    // tooltip; the second bolds every row that machines the current canvas
+    // selection, so a shape can be traced back to its toolpaths.
+    QStringList vectorIdsOf(const QString &uuid) const;
+    QString describeVectors(const QStringList &ids) const;
+    void markUsage(const QStringList &selectedElementIds);
+
+    QStringList m_selectedElements;   // last canvas selection, for markUsage
 
     Canvas *m_canvas;
     Document *m_doc = nullptr;

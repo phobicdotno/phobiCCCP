@@ -393,6 +393,28 @@ bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
 void Canvas::drawForeground(QPainter *p, const QRectF &rect)
 {
     QGraphicsView::drawForeground(p, rect);
+
+    // Toolpath -> shapes. Drawn first, and before every early return below, so
+    // the halo stays visible whatever tool is active. A wide translucent pass
+    // makes it readable over dark stock, a thin solid pass keeps the outline
+    // crisp; both cosmetic, so the halo does not thicken as you zoom in.
+    if (!m_highlightIds.isEmpty()) {
+        p->save();
+        p->setBrush(Qt::NoBrush);
+        for (int pass = 0; pass < 2; ++pass) {
+            QPen hp(pass == 0 ? QColor(0xff, 0xa5, 0x2a, 0x60)
+                              : QColor(0xff, 0xa5, 0x2a));
+            hp.setCosmetic(true);
+            hp.setWidth(pass == 0 ? 9 : 2);
+            hp.setJoinStyle(Qt::RoundJoin);
+            hp.setCapStyle(Qt::RoundCap);
+            p->setPen(hp);
+            for (const QString &id : m_highlightIds)
+                if (const QGraphicsPathItem *it = itemFor(id))
+                    p->drawPath(it->mapToScene(it->path()));
+        }
+        p->restore();
+    }
     if (m_tool == NodeEdit && !m_model.isEmpty()) {
         drawNodes(p);
         return;
@@ -727,6 +749,14 @@ void Canvas::resizeEvent(QResizeEvent *event)
         zoomFit();
         m_fitted = true;
     }
+}
+
+void Canvas::setVectorHighlight(const QStringList &ids)
+{
+    if (m_highlightIds == ids)
+        return;
+    m_highlightIds = ids;
+    viewport()->update();
 }
 
 void Canvas::setToolpathPreview(const QVector<Op> &ops)

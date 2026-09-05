@@ -52,6 +52,11 @@ public:
     void selectIds(const QStringList &ids);   // replace the selection (vector ops)
     void selectElements(const QStringList &ids);
 
+    // Amber halo over the vectors a toolpath machines, so selecting a row in
+    // the toolpath list answers "which shapes does this one cut?".
+    void setVectorHighlight(const QStringList &ids);
+    void clearVectorHighlight() { setVectorHighlight({}); }
+
     // On-canvas g-code preview: rapids dashed, cuts colored by depth.
     void setToolpathPreview(const QVector<Op> &ops);
     void clearToolpathPreview();
@@ -107,6 +112,7 @@ private:
     bool m_drawing = false;
     QPointF m_anchor;                       // scene coords (CC mm)
     QGraphicsPathItem *m_preview = nullptr; // live outline while dragging
+    QStringList m_highlightIds;             // vectors of the selected toolpath
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan

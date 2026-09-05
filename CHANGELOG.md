@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.10 (build 21) — 2026-09-05
+- Selecting a toolpath now outlines the shapes it machines on the canvas, in
+  the same amber as the selected row. The vectors column only ever said how
+  many shapes a toolpath referenced, never which ones.
+- The vectors count carries a tooltip naming them — "Cuts: 2 x circle,
+  1 x rectangle" — and reports any reference whose shape has since been
+  deleted as missing, which was previously invisible until export.
+- Selecting a shape on the canvas bolds every toolpath row that machines it,
+  so a shape can be traced back to its toolpaths as well as the other way
+  round.
+
 ## v0.4.7 (build 20) — 2026-09-05
 - Toolpath list and parameter table columns can be dragged to any width and
   reordered. They were pinned with `Stretch` / `ResizeToContents`, which locks
