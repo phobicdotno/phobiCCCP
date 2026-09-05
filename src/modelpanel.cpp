@@ -744,8 +744,12 @@ void ModelPanel::removeSelected()
     if (row < 0) return;
     m_store.model.components.removeAt(row);
     refreshList();
-    if (!m_store.model.components.isEmpty())
-        m_list->selectRow(std::min(row, int(m_store.model.components.size()) - 1));
+    if (!m_store.model.components.isEmpty()) {
+        // Bind the result to a value: std::min returns a reference, and the
+        // size expression is a temporary.
+        const int next = std::min(row, int(m_store.model.components.size()) - 1);
+        m_list->selectRow(next);
+    }
     refreshProps();
     touch();
 }

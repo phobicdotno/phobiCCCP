@@ -294,7 +294,7 @@ QList<QPolygonF> levelContours(const Field &F, double level, QVector<int> &edgeS
     }
     const int nSeg = segA.size();
     QList<QPolygonF> out;
-    if (nSeg == 0)
+    if (nSeg <= 0)   // <= : also proves nSeg > 0 below, for the allocation
         return out;
 
     // Two segment slots per edge crossing.
