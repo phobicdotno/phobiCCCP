@@ -1041,7 +1041,6 @@ void Canvas::mousePressEvent(QMouseEvent *event)
             m_selNode = node;
             m_grab = what;
             m_grabBreak = event->modifiers() & (Qt::AltModifier | Qt::ShiftModifier);
-            if (Element *e = m_doc->elementById(m_editId))
             viewport()->update();
             event->accept();
             return;

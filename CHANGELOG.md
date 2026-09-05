@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.4.2 (build 17) — 2026-09-05
+- Node edit: fixed a redraw that was accidentally made conditional while
+  removing dead state in v0.4.1.
+- Build is warning-clean again under -Wall -Wextra.
+
 ## v0.4.1 (build 16) — 2026-09-05
 - Node edit tool: clicking a shape now selects it. The tool fell through into
   the shape-drawing branch, which swallowed the click before the canvas saw
