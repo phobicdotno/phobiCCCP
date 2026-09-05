@@ -3,6 +3,7 @@
 #include "isopreview.h"
 #include "machinepanel.h"
 #include "propertiespanel.h"
+#include "simpanel.h"
 #include "toolpathpanel.h"
 
 #include <QApplication>
@@ -131,16 +132,24 @@ MainWindow::MainWindow(QWidget *parent)
     m_isoDock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, m_isoDock);
 
-    tabifyDockWidget(tpDock, dock);     // Toolpaths / Document / Machine / Preview tabs
+    m_sim = new SimPanel(this);
+    m_simDock = new QDockWidget(QStringLiteral("Simulation"), this);
+    m_simDock->setWidget(m_sim);
+    m_simDock->setFeatures(QDockWidget::DockWidgetMovable);
+    addDockWidget(Qt::RightDockWidgetArea, m_simDock);
+
+    tabifyDockWidget(tpDock, dock);     // Toolpaths / Document / Machine / Preview / Simulation tabs
     tabifyDockWidget(dock, mcDock);
     tabifyDockWidget(mcDock, m_isoDock);
+    tabifyDockWidget(m_isoDock, m_simDock);
     tpDock->raise();
-    // The 3D preview is only rebuilt while its tab is showing; catch up when
-    // it is raised after edits happened behind it.
-    connect(m_isoDock, &QDockWidget::visibilityChanged, this, [this](bool v) {
-        if (v && m_isoStale)
-            refreshIso();
-    });
+    // The 3D preview (and the simulation's program) is only rebuilt while one
+    // of those tabs is showing; catch up when raised after edits behind it.
+    for (QDockWidget *d : {m_isoDock, m_simDock})
+        connect(d, &QDockWidget::visibilityChanged, this, [this](bool v) {
+            if (v && m_isoStale)
+                refreshIso();
+        });
 
     connect(m_canvas, &Canvas::selectionChangedIds,
             m_props, &PropertiesPanel::setSelection);
@@ -345,6 +354,8 @@ void MainWindow::refreshPreview()
     m_canvas->setToolpathPreview(r.ops);
     m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
+    m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
+                  m_doc.params().value("thickness").toDouble());
     m_isoStale = false;
     QString msg = QStringLiteral("Preview: %1 toolpath(s)").arg(r.done.size());
     if (!r.skipped.isEmpty())
@@ -373,11 +384,21 @@ void MainWindow::refreshIso()
     const GcodeResult r = exportGcode(m_doc);
     m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
+    m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
+                  m_doc.params().value("thickness").toDouble());
+}
+
+void MainWindow::showSimulation()
+{
+    if (m_isoStale)
+        refreshIso();
+    m_simDock->raise();
+    m_sim->simulateBlocking();   // --shot … simulation: result is in the grab
 }
 
 void MainWindow::markIsoStale()
 {
-    if (m_isoDock->isVisible())
+    if (m_isoDock->isVisible() || m_simDock->isVisible())
         refreshIso();
     else
         m_isoStale = true;

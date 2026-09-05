@@ -13,6 +13,7 @@ namespace c2d {
 class IsoPreview;
 class MachinePanel;
 class PropertiesPanel;
+class SimPanel;
 class ToolpathPanel;
 
 class MainWindow : public QMainWindow
@@ -23,6 +24,7 @@ public:
     void openFile(const QString &path);
     void showToolpathPreview();   // enable the overlay (used by --shot)
     void showMachinePanel();      // raise the Machine tab (used by --shot)
+    void showSimulation();        // raise the Simulation tab + run it synchronously (used by --shot)
 
 private slots:
     void onOpen();
@@ -48,6 +50,8 @@ private:
     QDockWidget *m_mcDock = nullptr;
     IsoPreview *m_iso;           // isometric animated route preview
     QDockWidget *m_isoDock;
+    SimPanel *m_sim;             // material-removal simulation (heightmap)
+    QDockWidget *m_simDock;
     bool m_isoStale = false;
     QAction *m_previewAct;       // toolpath overlay toggle
     bool m_dirty = false;
