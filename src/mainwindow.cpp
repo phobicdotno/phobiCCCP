@@ -6,6 +6,7 @@
 #include "simpanel.h"
 #include "toolpathpanel.h"
 #include "vectoractions.h"
+#include "importui.h"
 
 #include <QApplication>
 #include <QFile>
@@ -167,6 +168,12 @@ MainWindow::MainWindow(QWidget *parent)
                         QKeySequence::Save);
     fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs,
                         QKeySequence::SaveAs);
+    fileMenu->addSeparator();
+    fileMenu->addAction(QStringLiteral("Import &SVG…"), this, [this] {
+        importVectorFile(this, m_canvas, &m_doc, {}, QStringLiteral("SVG (*.svg)")); });
+    fileMenu->addAction(QStringLiteral("Import &DXF…"), this, [this] {
+        importVectorFile(this, m_canvas, &m_doc, {}, QStringLiteral("DXF (*.dxf)")); });
+    installImportDropHandler(this, m_canvas, &m_doc, [this](const QString &p) { openFile(p); });
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
                         &MainWindow::onExportGcode,

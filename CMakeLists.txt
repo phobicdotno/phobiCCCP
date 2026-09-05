@@ -39,6 +39,7 @@ add_library(phobicccp_core STATIC
     src/grblstreamer.cpp
     src/simulation.cpp
     src/vectorops.cpp
+    src/importers.cpp
 )
 target_include_directories(phobicccp_core PUBLIC src)
 target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
@@ -53,6 +54,7 @@ add_executable(phobicccp
     src/isopreview.cpp
     src/simpanel.cpp
     src/vectoractions.cpp
+    src/importui.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets)
@@ -84,6 +86,10 @@ add_test(NAME simulation COMMAND test_simulation)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
+add_executable(test_import tests/test_import.cpp)
+target_link_libraries(test_import PRIVATE phobicccp_core)
+target_compile_definitions(test_import PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
+add_test(NAME import COMMAND test_import)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME grblsim COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/grblsim_selftest.py)
