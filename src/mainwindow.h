@@ -13,6 +13,7 @@ namespace c2d {
 
 class IsoPreview;
 class MachinePanel;
+class ModelPanel;
 class PropertiesPanel;
 class SimPanel;
 class ToolpathPanel;
@@ -26,6 +27,7 @@ public:
     void showToolpathPreview();   // enable the overlay (used by --shot)
     void showMachinePanel();      // raise the Machine tab (used by --shot)
     void showSimulation();        // raise the Simulation tab + run it synchronously (used by --shot)
+    void showModel();             // raise the Model tab + composite it synchronously (used by --shot)
 
 private slots:
     void onOpen();
@@ -54,6 +56,8 @@ private:
     QDockWidget *m_isoDock;
     SimPanel *m_sim;             // material-removal simulation (heightmap)
     QDockWidget *m_simDock;
+    ModelPanel *m_model;         // 3D modelling components + composited relief
+    QDockWidget *m_modelDock;
     bool m_isoStale = false;
     QAction *m_previewAct;       // toolpath overlay toggle
     bool m_dirty = false;

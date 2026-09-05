@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "model3d.h"
 #include "gcodeexport.h"
 #include "grblstreamer.h"
 #include "tiling.h"
@@ -353,6 +354,7 @@ int main(int argc, char *argv[])
         && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY"))
         qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    c2d::installModelProvider();   // heightModelFor(doc) reads the 3D model stored in the .c2d
     QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
     QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));
     applyDarkTheme(app);
@@ -899,6 +901,8 @@ int main(int argc, char *argv[])
             w.showMachinePanel();
         if (argc == 5 && QByteArray(argv[4]) == "simulation")
             w.showSimulation();
+        if (argc == 5 && QByteArray(argv[4]) == "model")
+            w.showModel();
         const QString out = QString::fromLocal8Bit(argv[3]);
         int rc = 1;
         QTimer::singleShot(1500, &w, [&] {

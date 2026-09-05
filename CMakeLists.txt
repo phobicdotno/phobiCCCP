@@ -46,6 +46,7 @@ add_library(phobicccp_core STATIC
     data/tools.qrc
     src/backgroundimage.cpp
     src/imagetrace.cpp
+    src/model3d.cpp
 )
 target_include_directories(phobicccp_core PUBLIC src)
 target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
@@ -64,6 +65,7 @@ add_executable(phobicccp
     src/importui.cpp
     src/tracedialog.cpp
     src/backgrounddialog.cpp
+    src/modelpanel.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets)
@@ -108,6 +110,9 @@ add_test(NAME trace COMMAND test_trace)
 add_executable(test_paths tests/test_paths.cpp)
 target_link_libraries(test_paths PRIVATE phobicccp_core)
 add_test(NAME paths COMMAND test_paths)
+add_executable(test_model3d tests/test_model3d.cpp)
+target_link_libraries(test_model3d PRIVATE phobicccp_core)
+add_test(NAME model3d COMMAND test_model3d)
 # Canvas interaction test (pen tool, node editor) drives the real widget with
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)
