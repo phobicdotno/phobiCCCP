@@ -13,7 +13,23 @@ Linux, built on the reverse-engineered format documentation in
   toolpath edits and newly created toolpaths are written into the container
 - All 5 element types render: circle, rectangle, regular polygon, path, text
 
-**Vector editing**
+**Vector editing** (Carbide Create parity)
+- **Booleans**: Union (weld), Subtract, Intersect (Edit → Vectors, icon bar);
+  **Offset** inside/outside by distance; **Align** left/right/top/bottom/
+  centres, **Center on stock**, **Distribute** — all single undo steps, and
+  toolpaths that referenced the inputs follow the results
+- **Bezier splines**: pen-style Path tool (click = corner, drag = smooth
+  handles) and a **Node edit** tool (N): drag anchors/handles, insert
+  (double-click), delete, corner/smooth/symmetric, convert shapes and text to
+  paths
+- **Text on arc** (radius, angle offset, top/bottom) plus font family, bold,
+  italic in the Properties panel
+- **Import SVG and DXF** (File menu or drag-and-drop): paths with beziers,
+  transforms, units; DXF LINE/LWPOLYLINE/ARC/CIRCLE/ELLIPSE/SPLINE/INSERT
+- **Background image** under the grid (position, width, rotation, opacity,
+  lock; stored in the .c2d the way CC does) and **Trace image** (threshold,
+  blur, despeckle, simplify, smoothing) to closed vector paths
+- Original tools still there:
 - Tools: Select (V), Circle (C), Rectangle (R), Polygon (P), Path/polyline (L),
   Text (T) — with live preview, grid + snap (G), zoom (wheel / F to fit),
   middle-mouse pan
@@ -24,6 +40,15 @@ Linux, built on the reverse-engineered format documentation in
   CC-853 specimens), so toolpaths and CC itself accept them
 
 **CAM — all 7 Carbide Create toolpath types export**
+- **Tool library** with Carbide 3D's cutters and per-material speeds & feeds
+  (Toolpaths → Tool library…; values that are guesses are flagged as such)
+- **Rest machining** for pockets (`enable_rest` / `rest_diameter`)
+- **Toolpath tiling** (File → Export G-code (tiled)… or `--export-tiled`):
+  one complete program per tile, Y-shifted, cuts split cleanly at the
+  boundary
+- **3D Simulation** tab: material-removal heightmap of the whole program
+  (end mill / ball / V-bit / bull-nose), shaded top-down view with depth
+  readout and through-cut warning
 - Toolpaths panel: edit any toolpath parameter (depths, feeds, stepover,
   tool…) and assign the canvas selection as a toolpath's vectors; edits are
   saved back into the `.c2d` in place

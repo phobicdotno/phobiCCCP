@@ -1,6 +1,7 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 (build 13) — 2026-09-05
+Carbide Create parity wave 1 — six features merged from parallel branches:
 - Material-removal simulation (Carbide Create's "3D Simulation"): new
   right-side "Simulation" tab after Preview. The stock is a heightmap (cell
   size chosen so the map stays ≤ 4 M cells, never finer than the selected
