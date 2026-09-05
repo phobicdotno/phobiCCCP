@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+- Material-removal simulation (Carbide Create's "3D Simulation"): new
+  right-side "Simulation" tab after Preview. The stock is a heightmap (cell
+  size chosen so the map stays ≤ 4 M cells, never finer than the selected
+  fine/normal/coarse setting) and every cutting move stamps the tool's swept
+  footprint — flat end mill disc, ball sphere, V-bit cone, bull-nose corner
+  radius; arcs tessellated to ≤ 0.2 mm chords, ramps split to ≤ 0.05 mm drops,
+  rapids ignored. Runs on a worker thread with progress and cancel.
+- Simulation view: shaded top-down image (light from the upper left, uncut
+  stock light, deeper floors darker, through-cuts in slate blue), wheel zoom,
+  drag pan, live X/Y/Z readout under the cursor, through-cut / unknown-tool
+  warnings in the status line. `SimPanel::image()` / `heightMap()` expose the
+  result for the isometric preview.
+- `toolGeometry(const Document&)` (gcodeexport.h): tool table keyed by tool
+  number, built from the toolpaths' embedded `tool` / `tool_pocket` JSON
+  (diameter, V-bit angle, corner radius, CC type code).
+- `--shot <file.c2d> out.png simulation` raises the Simulation tab and runs the
+  simulation synchronously before the grab.
+- `tests/test_simulation.cpp` (CTest `simulation`): pocket floor depth ± 0.01,
+  untouched stock outside, 90° V-bit surface width ≈ 4 mm at −2 mm, ball
+  profile, arc tessellation, through-cut flag, cancellation, tool table,
+  100k-segment throughput on a 2000×2000 map.
+
 ## v0.2.4 (build 12) — 2026-09-05
 - CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
   display: the offscreen Qt platform is selected automatically when no

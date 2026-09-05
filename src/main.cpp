@@ -896,6 +896,8 @@ int main(int argc, char *argv[])
             w.showToolpathPreview();
         if (argc == 5 && QByteArray(argv[4]) == "machine")
             w.showMachinePanel();
+        if (argc == 5 && QByteArray(argv[4]) == "simulation")
+            w.showSimulation();
         const QString out = QString::fromLocal8Bit(argv[3]);
         int rc = 1;
         QTimer::singleShot(1500, &w, [&] {

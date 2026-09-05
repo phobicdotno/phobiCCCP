@@ -1118,4 +1118,47 @@ GcodeResult exportGcode(Document &doc)
     return res;
 }
 
+// CC tool `type`: 0 = flat end mill, 1 = ball, 2 = V-bit. Be lenient with
+// files whose type is missing or inconsistent: a positive angle means a V-bit,
+// a corner radius equal to the tool radius means a ball.
+static ToolGeom toolGeomOf(const QJsonObject &tool)
+{
+    ToolGeom g;
+    g.number = int(tool.value("number").toDouble(0));
+    g.diameter = tool.value("diameter").toDouble(3.175);
+    if (!(g.diameter > 0))
+        g.diameter = 3.175;
+    g.angle = tool.value("angle").toDouble(0);
+    g.cornerRadius = qMax(0.0, tool.value("corner_radius").toDouble(0));
+    g.name = tool.value("name").toString();
+    const int type = int(tool.value("type").toDouble(0));
+    if (type == 2 || (g.angle > 0 && type != 1)) {
+        g.kind = ToolGeom::VBit;
+        g.angle = qBound(5.0, g.angle > 0 ? g.angle : 60.0, 179.0);
+    } else if (type == 1 || g.cornerRadius >= g.radius() - 1e-6) {
+        g.kind = ToolGeom::Ball;
+        g.cornerRadius = g.radius();
+    } else {
+        g.kind = ToolGeom::Flat;
+        g.cornerRadius = qMin(g.cornerRadius, g.radius());
+    }
+    return g;
+}
+
+QHash<int, ToolGeom> toolGeometry(const Document &doc)
+{
+    QHash<int, ToolGeom> table;
+    for (const Toolpath &t : doc.toolpaths()) {
+        for (const char *key : {"tool", "tool_pocket"}) {
+            const QJsonObject tool = t.json.value(QLatin1String(key)).toObject();
+            if (tool.isEmpty())
+                continue;
+            const ToolGeom g = toolGeomOf(tool);
+            if (!table.contains(g.number))
+                table.insert(g.number, g);
+        }
+    }
+    return table;
+}
+
 } // namespace c2d

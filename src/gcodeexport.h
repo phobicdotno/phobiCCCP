@@ -1,5 +1,6 @@
 #pragma once
 #include "post_grbl.h"
+#include <QHash>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -24,5 +25,22 @@ struct GcodeResult {
 };
 
 GcodeResult exportGcode(Document &doc);
+
+// Cutting geometry of one tool, keyed by the tool number that Op::Tool ops
+// carry — what a material-removal simulation needs and nothing else.
+struct ToolGeom {
+    enum Kind { Flat, Ball, VBit };
+    int number = 0;
+    Kind kind = Flat;
+    double diameter = 3.175;   // mm
+    double angle = 0;          // V-bit included angle (deg); 0 for end mills
+    double cornerRadius = 0;   // bull-nose corner radius (mm); = radius for ball
+    QString name;
+    double radius() const { return diameter / 2.0; }
+};
+
+// Tool table built from the toolpaths' embedded tool objects (`tool` and, for
+// v-carves, `tool_pocket`). First definition of a number wins.
+QHash<int, ToolGeom> toolGeometry(const Document &doc);
 
 } // namespace c2d
