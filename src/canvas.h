@@ -19,7 +19,7 @@ class Canvas : public QGraphicsView
 {
     Q_OBJECT
 public:
-    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText };
+    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit };
 
     explicit Canvas(QWidget *parent = nullptr);
     ~Canvas() override;
@@ -38,6 +38,10 @@ public:
     // Numeric edits from the properties panel (undoable).
     void editElement(const QString &id, const QHash<QString, double> &params);
     void moveElementBy(const QString &id, double dx, double dy);
+    // Text edits (string, font, arc settings; see Element::regenText). Undoable.
+    void editText(const QString &id, const QJsonObject &changes);
+    // "Convert to path": replace the elements by editable path elements. Undoable.
+    void convertToPaths(const QStringList &ids);
     // Replace a toolpath's JSON payload (undoable; from the toolpath panel).
     void editToolpath(const QString &uuid, const QJsonObject &newJson);
     // Insert generated elements plus a new toolpath in one shot (inlay male
@@ -46,6 +50,7 @@ public:
     QStringList selectedElementIds() const;
     Document *document() const { return m_doc; }
     void selectIds(const QStringList &ids);   // replace the selection (vector ops)
+    void selectElements(const QStringList &ids);
 
     // On-canvas g-code preview: rapids dashed, cuts colored by depth.
     void setToolpathPreview(const QVector<Op> &ops);
@@ -70,16 +75,28 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void mouseDoubleClickEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;       // Del removes selection
+    void contextMenuEvent(QContextMenuEvent *event) override;
 
 private:
     QPainterPath previewPath(const QPointF &cur) const;
     QPointF snap(QPointF p) const;
     double gridSpacing() const;
+    double pxToMm(double px) const;     // screen tolerance in scene units
     void finishPath(bool closed);
     void cancelDrawing();
     void onSelectionChanged();
     void emitZoom();
     void renderPreviewOps();
+    QGraphicsPathItem *itemFor(const QString &id) const;
+
+    // Node editor.
+    enum NodeGrab { GrabNone, GrabAnchor, GrabIn, GrabOut };
+    void syncEditTarget();              // pick the node-edit target from the selection
+    bool hitNode(const QPointF &scenePos, int *sub, int *node, NodeGrab *what) const;
+    bool hitSegment(const QPointF &scenePos, int *sub, int *seg, double *t) const;
+    void commitModel(const QString &what);   // push EditCmd(before, model) if changed
+    void previewModel();                     // live item update during a drag
+    void drawNodes(QPainter *p) const;
 
     QGraphicsScene *m_scene;
     Document *m_doc = nullptr;
@@ -89,11 +106,23 @@ private:
     bool m_snap = false;
     bool m_drawing = false;
     QPointF m_anchor;                       // scene coords (CC mm)
-    QVector<QPointF> m_pathPts;             // committed vertices (path tool)
     QGraphicsPathItem *m_preview = nullptr; // live outline while dragging
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+
+    // Pen (path) tool: click = corner, click-drag = symmetric handles.
+    QVector<PathNode> m_penNodes;
+    bool m_penDrag = false;
+
+    // Node editor state: the element being edited, its decoded model, the
+    // selected node and the drag in progress (one undo step per drag).
+    QString m_editId;
+    PathModel m_model;
+    int m_selSub = -1, m_selNode = -1;
+    NodeGrab m_grab = GrabNone;
+    bool m_grabBreak = false;               // Alt/Shift held when the handle was grabbed
+    Element m_editBefore;
 
     QVector<Op> m_previewOps;               // g-code overlay (empty = off)
     const BackgroundImage *m_bg = nullptr;  // background picture (backgroundimage.h)

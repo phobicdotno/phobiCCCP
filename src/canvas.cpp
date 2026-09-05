@@ -1,6 +1,9 @@
 #include "canvas.h"
 #include "backgroundimage.h"
+#include <QApplication>
+#include <QContextMenuEvent>
 #include <QGraphicsScene>
+#include <QMenu>
 #include <QGraphicsPathItem>
 #include <QGraphicsSceneHoverEvent>
 #include <QInputDialog>
@@ -15,6 +18,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QStyleOptionGraphicsItem>
+#include <QTimer>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QWheelEvent>
@@ -129,6 +133,26 @@ private:
     Canvas *m_c; Document *m_d; Element m_before, m_after;
 };
 
+// Swap a set of elements for another set (convert-to-path: a text becomes
+// several glyph paths). Afters are appended, so the z-order may change.
+class ReplaceCmd : public QUndoCommand
+{
+public:
+    ReplaceCmd(Canvas *c, Document *d, const QVector<Element> &before,
+               const QVector<Element> &after, const QString &text)
+        : m_c(c), m_d(d), m_before(before), m_after(after) { setText(text); }
+    void redo() override { swap(m_before, m_after); }
+    void undo() override { swap(m_after, m_before); }
+private:
+    void swap(const QVector<Element> &out, const QVector<Element> &in)
+    {
+        for (const Element &e : out) m_d->removeElementById(e.id);
+        for (const Element &e : in) m_d->addElement(e);
+        refresh(m_c);
+    }
+    Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+};
+
 class TpEditCmd : public QUndoCommand
 {
 public:
@@ -180,9 +204,11 @@ Canvas::Canvas(QWidget *parent)
 
 Canvas::~Canvas()
 {
-    // The scene deletes its items after the view is half torn down; a selected
-    // item's destructor would fire selectionChanged into viewport()->update().
-    disconnect(m_scene, &QGraphicsScene::selectionChanged, this, &Canvas::onSelectionChanged);
+    // The scene is a child QObject and dies after this destructor has run;
+    // its selectionChanged (emitted while its items are deleted) must not
+    // reach the half-destroyed Canvas.
+    disconnect(m_scene, nullptr, this, nullptr);
+    m_scene->blockSignals(true);
 }
 
 void Canvas::onSelectionChanged()
@@ -191,8 +217,74 @@ void Canvas::onSelectionChanged()
     for (QGraphicsItem *it : m_scene->selectedItems())
         if (it->data(0).isValid())
             ids << it->data(0).toString();
+    if (m_tool == NodeEdit)
+        syncEditTarget();
     emit selectionChangedIds(ids);
     viewport()->update();
+}
+
+double Canvas::pxToMm(double px) const
+{
+    return px / qMax(1e-9, qAbs(transform().m11()));
+}
+
+QGraphicsPathItem *Canvas::itemFor(const QString &id) const
+{
+    for (QGraphicsItem *it : m_scene->items())
+        if (it->data(0).isValid() && it->data(0).toString() == id)
+            return qgraphicsitem_cast<QGraphicsPathItem *>(it);
+    return nullptr;
+}
+
+void Canvas::selectElements(const QStringList &ids)
+{
+    m_scene->blockSignals(true);
+    m_scene->clearSelection();
+    for (const QString &id : ids)
+        if (QGraphicsItem *it = itemFor(id))
+            it->setSelected(true);
+    m_scene->blockSignals(false);
+    onSelectionChanged();
+}
+
+void Canvas::editText(const QString &id, const QJsonObject &changes)
+{
+    if (!m_doc || changes.isEmpty())
+        return;
+    Element *e = m_doc->elementById(id);
+    if (!e || e->geometryType != QLatin1String("text"))
+        return;
+    const Element after = Element::regenText(*e, changes);
+    if (after.raw == e->raw)
+        return;
+    m_undo->push(new EditCmd(this, m_doc, *e, after));
+}
+
+void Canvas::convertToPaths(const QStringList &ids)
+{
+    if (!m_doc)
+        return;
+    QVector<Element> before, after;
+    for (const QString &id : ids) {
+        Element *e = m_doc->elementById(id);
+        if (!e || e->geometryType == QLatin1String("path"))
+            continue;
+        before.append(*e);
+        after += Element::toPaths(*e);
+    }
+    if (before.isEmpty())
+        return;
+    if (before.size() == 1 && after.size() == 1) {
+        m_undo->push(new EditCmd(this, m_doc, before.first(), after.first()));
+    } else {
+        m_undo->push(new ReplaceCmd(this, m_doc, before, after,
+                                    tr("convert %1 element(s) to paths").arg(before.size())));
+    }
+    QStringList newIds;
+    for (const Element &e : after)
+        newIds << e.id;
+    selectElements(newIds);
+    emit statusHint(tr("%1 path(s) — press N to edit nodes").arg(after.size()));
 }
 
 void Canvas::emitZoom()
@@ -294,16 +386,181 @@ bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
 void Canvas::drawForeground(QPainter *p, const QRectF &rect)
 {
     QGraphicsView::drawForeground(p, rect);
+    if (m_tool == NodeEdit && !m_model.isEmpty()) {
+        drawNodes(p);
+        return;
+    }
+    if (m_tool == DrawPath && !m_penNodes.isEmpty()) {
+        // Pen tool: anchors so far, plus the handles of the node being dragged.
+        const double s = pxToMm(3.5);
+        p->setPen(QPen(QColor(0x1a, 0x1a, 0x1a), 0));
+        p->setBrush(kPreview);
+        for (const PathNode &n : m_penNodes)
+            p->drawRect(QRectF(n.p.x() - s, n.p.y() - s, 2 * s, 2 * s));
+        const PathNode &last = m_penNodes.last();
+        if (last.hasOut() || last.hasIn()) {
+            QPen hp(QColor(0x9f, 0xc8, 0xf2));
+            hp.setCosmetic(true);
+            p->setPen(hp);
+            p->setBrush(Qt::NoBrush);
+            p->drawLine(QLineF(last.in, last.out));
+            p->setBrush(QColor(0x9f, 0xc8, 0xf2));
+            p->drawEllipse(last.in, s, s);
+            p->drawEllipse(last.out, s, s);
+        }
+        // Closing hint: ring around the first anchor when it can be closed.
+        if (m_penNodes.size() >= 2) {
+            p->setPen(QPen(kPreview, 0));
+            p->setBrush(Qt::NoBrush);
+            p->drawEllipse(m_penNodes.first().p, pxToMm(8), pxToMm(8));
+        }
+        return;
+    }
     QString id, type;
     QPointF pos;
     if (!m_resizing && !resizeHandle(&id, &pos, &type))
         return;
     if (m_resizing)
         return;   // handle hidden while dragging; the preview shows the shape
-    const double s = 4.0 / qMax(1e-9, qAbs(transform().m11()));
+    const double s = pxToMm(4.0);
     p->setPen(QPen(QColor(0x1a, 0x1a, 0x1a), 0));
     p->setBrush(kSelected);
     p->drawRect(QRectF(pos.x() - s, pos.y() - s, 2 * s, 2 * s));
+}
+
+// Node editor overlay: tangent lines, handle circles, anchor squares. The
+// selected node is amber; smooth/symmetric anchors are drawn as diamonds so
+// the kind is visible without a menu.
+void Canvas::drawNodes(QPainter *p) const
+{
+    const double s = pxToMm(3.5);
+    const QColor handleCol(0x9f, 0xc8, 0xf2);
+    for (int si = 0; si < m_model.subs.size(); ++si) {
+        const SubPath &sub = m_model.subs.at(si);
+        QPen hp(handleCol);
+        hp.setCosmetic(true);
+        p->setPen(hp);
+        p->setBrush(Qt::NoBrush);
+        for (const PathNode &n : sub.nodes) {
+            if (n.hasIn())  p->drawLine(QLineF(n.p, n.in));
+            if (n.hasOut()) p->drawLine(QLineF(n.p, n.out));
+        }
+        p->setPen(QPen(QColor(0x1a, 0x1a, 0x1a), 0));
+        p->setBrush(handleCol);
+        for (const PathNode &n : sub.nodes) {
+            if (n.hasIn())  p->drawEllipse(n.in, s, s);
+            if (n.hasOut()) p->drawEllipse(n.out, s, s);
+        }
+        for (int ni = 0; ni < sub.nodes.size(); ++ni) {
+            const PathNode &n = sub.nodes.at(ni);
+            const bool sel = (si == m_selSub && ni == m_selNode);
+            p->setBrush(sel ? kSelected : QColor(0xf4, 0xf6, 0xfa));
+            if (n.kind == PathNode::Corner) {
+                p->drawRect(QRectF(n.p.x() - s, n.p.y() - s, 2 * s, 2 * s));
+            } else {
+                const double d = s * 1.35;
+                QPolygonF dia;
+                dia << QPointF(n.p.x(), n.p.y() + d) << QPointF(n.p.x() + d, n.p.y())
+                    << QPointF(n.p.x(), n.p.y() - d) << QPointF(n.p.x() - d, n.p.y());
+                p->drawPolygon(dia);
+            }
+        }
+    }
+}
+
+void Canvas::syncEditTarget()
+{
+    const QStringList ids = selectedElementIds();
+    m_editId.clear();
+    m_model = PathModel();
+    if (m_doc && ids.size() == 1) {
+        if (Element *e = m_doc->elementById(ids.first())) {
+            m_editId = e->id;
+            m_model = Element::pathModel(*e);
+            if (m_model.isEmpty())
+                emit statusHint(tr("Text has no nodes — right-click → Convert to path first"));
+            else if (e->geometryType != QLatin1String("path"))
+                emit statusHint(tr("%1 — editing a node converts it to a path").arg(e->geometryType));
+        }
+    }
+    m_selSub = m_selNode = -1;
+    m_grab = GrabNone;
+    viewport()->update();
+}
+
+bool Canvas::hitNode(const QPointF &pos, int *sub, int *node, NodeGrab *what) const
+{
+    const double tol = pxToMm(7.0);
+    // Handles first (they can sit on top of anchors), selected node's first.
+    for (int pass = 0; pass < 2; ++pass) {
+        for (int si = 0; si < m_model.subs.size(); ++si) {
+            const SubPath &sp = m_model.subs.at(si);
+            for (int ni = 0; ni < sp.nodes.size(); ++ni) {
+                const bool sel = (si == m_selSub && ni == m_selNode);
+                if ((pass == 0) != sel)
+                    continue;
+                const PathNode &n = sp.nodes.at(ni);
+                if (n.hasOut() && QLineF(pos, n.out).length() <= tol) {
+                    *sub = si; *node = ni; *what = GrabOut; return true;
+                }
+                if (n.hasIn() && QLineF(pos, n.in).length() <= tol) {
+                    *sub = si; *node = ni; *what = GrabIn; return true;
+                }
+            }
+        }
+    }
+    for (int si = 0; si < m_model.subs.size(); ++si) {
+        const SubPath &sp = m_model.subs.at(si);
+        for (int ni = 0; ni < sp.nodes.size(); ++ni)
+            if (QLineF(pos, sp.nodes.at(ni).p).length() <= tol) {
+                *sub = si; *node = ni; *what = GrabAnchor; return true;
+            }
+    }
+    return false;
+}
+
+bool Canvas::hitSegment(const QPointF &pos, int *sub, int *seg, double *t) const
+{
+    const double tol = pxToMm(7.0);
+    double best = tol;
+    bool hit = false;
+    for (int si = 0; si < m_model.subs.size(); ++si) {
+        int sg; double tt;
+        const double d = m_model.subs.at(si).closest(pos, &sg, &tt);
+        if (sg >= 0 && d < best) { best = d; *sub = si; *seg = sg; *t = tt; hit = true; }
+    }
+    return hit;
+}
+
+void Canvas::previewModel()
+{
+    if (QGraphicsPathItem *it = itemFor(m_editId))
+        it->setPath(m_model.painterPath());
+    viewport()->update();
+}
+
+void Canvas::commitModel(const QString &what)
+{
+    if (!m_doc || m_editId.isEmpty())
+        return;
+    Element *e = m_doc->elementById(m_editId);
+    if (!e)
+        return;
+    const Element after = Element::withPathModel(*e, m_model);
+    if (after.raw == e->raw) {
+        previewModel();
+        return;
+    }
+    const int keepSub = m_selSub, keepNode = m_selNode;
+    auto *cmd = new EditCmd(this, m_doc, *e, after);
+    cmd->setText(what);
+    m_undo->push(cmd);               // rebuild() re-decodes the model
+    m_selSub = keepSub;
+    m_selNode = keepNode;
+    if (m_selSub >= m_model.subs.size()
+        || (m_selSub >= 0 && m_selNode >= m_model.subs.at(m_selSub).nodes.size()))
+        m_selSub = m_selNode = -1;
+    viewport()->update();
 }
 
 void Canvas::setBackgroundImage(const BackgroundImage *bg)
@@ -319,6 +576,25 @@ void Canvas::setDocument(Document *doc)
     m_undo->clear();
     cancelDrawing();
     rebuild();
+
+    // Headless screenshot hooks (`--shot`): PHOBICCCP_SHOT_SELECT=<geometryType>
+    // selects the last element of that type, PHOBICCCP_SHOT_TOOL=nodes opens
+    // it in the node editor.
+    const QByteArray selType = qgetenv("PHOBICCCP_SHOT_SELECT");
+    if (m_doc && !selType.isEmpty()) {
+        QString id;
+        for (const Element &e : m_doc->elements())
+            if (e.geometryType == QString::fromLatin1(selType))
+                id = e.id;
+        const bool nodes = qgetenv("PHOBICCCP_SHOT_TOOL") == "nodes";
+        // Deferred: the main window wires its panels after setDocument().
+        QTimer::singleShot(300, this, [this, id, nodes] {
+            if (nodes)
+                setTool(NodeEdit);
+            if (!id.isEmpty())
+                selectElements({id});
+        });
+    }
 }
 
 double Canvas::gridSpacing() const
@@ -345,24 +621,33 @@ void Canvas::setTool(Tool t)
         cancelDrawing();
     m_tool = t;
     m_drawing = false;
+    m_grab = GrabNone;
     setDragMode(t == Select ? QGraphicsView::RubberBandDrag
                             : QGraphicsView::NoDrag);
-    viewport()->setCursor(t == Select ? Qt::ArrowCursor : Qt::CrossCursor);
-    const bool editable = (t == Select);
+    viewport()->setCursor(t == Select || t == NodeEdit ? Qt::ArrowCursor : Qt::CrossCursor);
+    const bool selectable = (t == Select || t == NodeEdit);
     for (QGraphicsItem *it : m_scene->items()) {
         if (it->data(0).isValid()) {
-            it->setFlag(QGraphicsItem::ItemIsSelectable, editable);
-            it->setFlag(QGraphicsItem::ItemIsMovable, editable);
+            it->setFlag(QGraphicsItem::ItemIsSelectable, selectable);
+            it->setFlag(QGraphicsItem::ItemIsMovable, t == Select);
         }
     }
     switch (t) {
-    case Select:      emit statusHint(tr("Select — click/drag to select, drag to move, Del to delete")); break;
+    case Select:      emit statusHint(tr("Select — click/drag to select, drag to move, Del to delete, right-click for Convert to path")); break;
     case DrawCircle:  emit statusHint(tr("Circle — press at center, drag to radius")); break;
     case DrawRect:    emit statusHint(tr("Rectangle — drag corner to corner")); break;
     case DrawPolygon: emit statusHint(tr("Polygon — press at center, drag to radius")); break;
-    case DrawPath:    emit statusHint(tr("Path — click to add points; Enter finishes, click near start closes, Esc cancels")); break;
+    case DrawPath:    emit statusHint(tr("Path — click = corner, click-drag = curve; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
+    case NodeEdit:    emit statusHint(tr("Nodes — drag anchors/handles (Alt breaks symmetry), double-click a segment to add, Del removes, right-click a node for its kind")); break;
     }
+    if (t == NodeEdit)
+        syncEditTarget();
+    else {
+        m_editId.clear();
+        m_model = PathModel();
+    }
+    viewport()->update();
     emit toolChanged(t);
 }
 
@@ -378,17 +663,24 @@ void Canvas::zoomFit()
 
 void Canvas::rebuild()
 {
+    // The scene is rebuilt from scratch; keep the selection (and with it the
+    // node-edit target and the properties panel) across the edit.
+    const QStringList selected = selectedElementIds();
+    m_scene->blockSignals(true);
     m_preview = nullptr;           // owned by the scene; clear() deletes it
     m_scene->clear();
-    if (!m_doc)
+    if (!m_doc) {
+        m_scene->blockSignals(false);
+        onSelectionChanged();
         return;
+    }
 
     const double w = m_doc->boardWidth();
     const double h = m_doc->boardHeight();
     // Margin so the rubber band / fit has somewhere to breathe.
     m_scene->setSceneRect(QRectF(-w * 0.2 - 20, -h * 0.2 - 20, w * 1.4 + 40, h * 1.4 + 40));
 
-    const bool editable = (m_tool == Select);
+    const bool selectable = (m_tool == Select || m_tool == NodeEdit);
     for (const Element &e : m_doc->elements()) {
         // Open paths are the only unfilled type; a path row of point_type 4
         // marks a closed one.
@@ -400,12 +692,16 @@ void Canvas::rebuild()
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
         item->setData(0, e.id);                       // scene item -> element
-        item->setFlag(QGraphicsItem::ItemIsSelectable, editable);
-        item->setFlag(QGraphicsItem::ItemIsMovable, editable);
+        item->setFlag(QGraphicsItem::ItemIsSelectable, selectable);
+        item->setFlag(QGraphicsItem::ItemIsMovable, m_tool == Select);
+        if (selected.contains(e.id))
+            item->setSelected(true);
     }
 
     if (!m_previewOps.isEmpty())
         renderPreviewOps();
+    m_scene->blockSignals(false);
+    onSelectionChanged();
 
     // First-load fit. Only trust the viewport once it has been laid out;
     // otherwise fitInView() scales to a placeholder size (0% zoom). The
@@ -594,11 +890,18 @@ QPainterPath Canvas::previewPath(const QPointF &cur) const
         break;
     }
     case DrawPath:
-        if (!m_pathPts.isEmpty()) {
-            p.moveTo(m_pathPts.first());
-            for (int i = 1; i < m_pathPts.size(); ++i)
-                p.lineTo(m_pathPts.at(i));
-            p.lineTo(cur);
+        if (!m_penNodes.isEmpty()) {
+            PathModel m;
+            SubPath sp;
+            sp.nodes = m_penNodes;
+            if (!m_penDrag) {
+                // Rubber segment to the cursor: a corner would land there.
+                PathNode c;
+                c.p = c.in = c.out = cur;
+                sp.nodes.append(c);
+            }
+            m.subs.append(sp);
+            p = m.painterPath();
         }
         break;
     default:
@@ -610,7 +913,8 @@ QPainterPath Canvas::previewPath(const QPointF &cur) const
 void Canvas::cancelDrawing()
 {
     m_drawing = false;
-    m_pathPts.clear();
+    m_penNodes.clear();
+    m_penDrag = false;
     if (m_preview) {
         m_scene->removeItem(m_preview);
         delete m_preview;
@@ -620,13 +924,26 @@ void Canvas::cancelDrawing()
 
 void Canvas::finishPath(bool closed)
 {
-    if (m_doc && m_pathPts.size() >= 2) {
-        const Element e = Element::makePath(m_pathPts, closed && m_pathPts.size() >= 3,
-                                            m_doc->defaultLayer());
+    // A double-click's second press leaves a duplicate of the previous node.
+    while (m_penNodes.size() >= 2
+           && QLineF(m_penNodes.last().p, m_penNodes.at(m_penNodes.size() - 2).p).length() < 1e-9)
+        m_penNodes.removeLast();
+    if (m_doc && m_penNodes.size() >= 2) {
+        PathModel m;
+        SubPath sp;
+        sp.nodes = m_penNodes;
+        sp.closed = closed && m_penNodes.size() >= 2;
+        if (!sp.closed) {   // no segment arrives at the first / leaves the last node
+            sp.nodes.first().in = sp.nodes.first().p;
+            sp.nodes.last().out = sp.nodes.last().p;
+        }
+        m.subs.append(sp);
+        const Element e = Element::makeBezierPath(m, m_doc->defaultLayer());
         m_undo->push(new AddCmd(this, m_doc, e));
-        emit statusHint(closed ? tr("Closed path added") : tr("Path added"));
+        emit statusHint(sp.closed ? tr("Closed path added") : tr("Path added"));
     }
     cancelDrawing();
+    viewport()->update();
 }
 
 void Canvas::mousePressEvent(QMouseEvent *event)
@@ -683,15 +1000,17 @@ void Canvas::mousePressEvent(QMouseEvent *event)
     if (m_tool == DrawPath && m_doc && event->button() == Qt::LeftButton) {
         const QPointF pos = snap(mapToScene(event->pos()));
         // Clicking near the start point closes the path.
-        if (m_pathPts.size() >= 3) {
-            const double tol = 8.0 / qMax(1e-9, qAbs(transform().m11()));
-            if (QLineF(pos, m_pathPts.first()).length() <= tol) {
+        if (m_penNodes.size() >= 2) {
+            if (QLineF(mapToScene(event->pos()), m_penNodes.first().p).length() <= pxToMm(8)) {
                 finishPath(true);
                 event->accept();
                 return;
             }
         }
-        m_pathPts.append(pos);
+        PathNode n;
+        n.p = n.in = n.out = pos;
+        m_penNodes.append(n);
+        m_penDrag = true;                 // drag pulls out symmetric handles
         if (!m_preview) {
             QPen pen(kPreview);
             pen.setCosmetic(true);
@@ -699,10 +1018,30 @@ void Canvas::mousePressEvent(QMouseEvent *event)
             m_preview = m_scene->addPath(QPainterPath(), pen);
         }
         m_preview->setPath(previewPath(pos));
-        emit statusHint(tr("Path: %1 point(s) — Enter finishes, click near start closes, Esc cancels")
-                            .arg(m_pathPts.size()));
+        emit statusHint(tr("Path: %1 node(s) — drag for a curve; Enter finishes, click near start closes, Esc cancels")
+                            .arg(m_penNodes.size()));
+        viewport()->update();
         event->accept();
         return;
+    }
+
+    if (m_tool == NodeEdit && m_doc && event->button() == Qt::LeftButton && !m_model.isEmpty()) {
+        const QPointF pos = mapToScene(event->pos());
+        int sub, node;
+        NodeGrab what;
+        if (hitNode(pos, &sub, &node, &what)) {
+            m_selSub = sub;
+            m_selNode = node;
+            m_grab = what;
+            m_grabBreak = event->modifiers() & (Qt::AltModifier | Qt::ShiftModifier);
+            if (Element *e = m_doc->elementById(m_editId))
+                m_editBefore = *e;
+            viewport()->update();
+            event->accept();
+            return;
+        }
+        m_selSub = m_selNode = -1;   // click elsewhere: (re)select elements
+        viewport()->update();
     }
 
     if (m_tool != Select && m_tool != DrawPath && m_doc
@@ -751,7 +1090,43 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    if ((m_drawing || (m_tool == DrawPath && !m_pathPts.isEmpty())) && m_preview) {
+    if (m_tool == NodeEdit && m_grab != GrabNone && !m_model.isEmpty()) {
+        SubPath &sp = m_model.subs[m_selSub];
+        PathNode &n = sp.nodes[m_selNode];
+        const bool breakSym = m_grabBreak
+                              || (event->modifiers() & (Qt::AltModifier | Qt::ShiftModifier));
+        if (m_grab == GrabAnchor) {
+            const QPointF to = snap(cc);
+            const QPointF d = to - n.p;
+            n.p = to; n.in += d; n.out += d;
+        } else {
+            sp.moveHandle(m_selNode, m_grab == GrabOut, cc, breakSym);
+        }
+        previewModel();
+        emit statusHint(tr("node %1: %2, %3 mm").arg(m_selNode)
+                            .arg(n.p.x(), 0, 'f', 2).arg(n.p.y(), 0, 'f', 2));
+        event->accept();
+        return;
+    }
+
+    if (m_tool == DrawPath && m_penDrag && !m_penNodes.isEmpty() && m_preview) {
+        // Pull the new node's handles out symmetrically; a tiny drag stays a corner.
+        PathNode &n = m_penNodes.last();
+        if (QLineF(cc, n.p).length() > pxToMm(3)) {
+            n.out = cc;
+            n.in = n.p - (cc - n.p);
+            n.kind = PathNode::Symmetric;
+        } else {
+            n.in = n.out = n.p;
+            n.kind = PathNode::Corner;
+        }
+        m_preview->setPath(previewPath(cc));
+        viewport()->update();
+        event->accept();
+        return;
+    }
+
+    if ((m_drawing || (m_tool == DrawPath && !m_penNodes.isEmpty())) && m_preview) {
         const QPointF cur = snap(cc);
         m_preview->setPath(previewPath(cur));
         switch (m_tool) {
@@ -778,6 +1153,22 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_panning && event->button() == Qt::MiddleButton) {
         m_panning = false;
         viewport()->setCursor(m_tool == Select ? Qt::ArrowCursor : Qt::CrossCursor);
+        event->accept();
+        return;
+    }
+
+    if (m_tool == NodeEdit && m_grab != GrabNone) {
+        m_grab = GrabNone;
+        commitModel(tr("move node"));
+        event->accept();
+        return;
+    }
+
+    if (m_tool == DrawPath && m_penDrag) {
+        m_penDrag = false;
+        if (m_preview)
+            m_preview->setPath(previewPath(mapToScene(event->pos())));
+        viewport()->update();
         event->accept();
         return;
     }
@@ -855,17 +1246,124 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
 
 void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
 {
-    if (m_tool == DrawPath && !m_pathPts.isEmpty()) {
+    if (m_tool == DrawPath && !m_penNodes.isEmpty()) {
         finishPath(false);
         event->accept();
         return;
     }
+    if (m_tool == NodeEdit && m_doc && !m_model.isEmpty() && event->button() == Qt::LeftButton) {
+        const QPointF pos = mapToScene(event->pos());
+        int sub, node, seg;
+        double t;
+        NodeGrab what;
+        if (!hitNode(pos, &sub, &node, &what) && hitSegment(pos, &sub, &seg, &t)) {
+            m_grab = GrabNone;
+            const int idx = m_model.subs[sub].insertNode(seg, t);
+            m_selSub = sub;
+            m_selNode = idx;
+            commitModel(tr("insert node"));
+            event->accept();
+            return;
+        }
+    }
     QGraphicsView::mouseDoubleClickEvent(event);
+}
+
+void Canvas::contextMenuEvent(QContextMenuEvent *event)
+{
+    if (!m_doc)
+        return;
+    const QPointF pos = mapToScene(event->pos());
+    QMenu menu(this);
+
+    if (m_tool == NodeEdit && !m_model.isEmpty()) {
+        int sub, node;
+        NodeGrab what;
+        if (hitNode(pos, &sub, &node, &what)) {
+            m_selSub = sub;
+            m_selNode = node;
+            viewport()->update();
+            const PathNode::Kind cur = m_model.subs.at(sub).nodes.at(node).kind;
+            auto kindAct = [&](const QString &name, PathNode::Kind k) {
+                QAction *a = menu.addAction(name);
+                a->setCheckable(true);
+                a->setChecked(cur == k);
+                connect(a, &QAction::triggered, this, [this, sub, node, k] {
+                    m_model.subs[sub].setKind(node, k);
+                    commitModel(tr("node kind"));
+                });
+            };
+            kindAct(tr("Corner"), PathNode::Corner);
+            kindAct(tr("Smooth"), PathNode::Smooth);
+            kindAct(tr("Symmetric"), PathNode::Symmetric);
+            menu.addSeparator();
+            connect(menu.addAction(tr("Straight lines (retract handles)")), &QAction::triggered,
+                    this, [this, sub, node] {
+                        m_model.subs[sub].retract(node);
+                        commitModel(tr("retract handles"));
+                    });
+            connect(menu.addAction(tr("Delete node")), &QAction::triggered, this, [this, sub, node] {
+                if (m_model.subs[sub].removeNode(node)) {
+                    m_selSub = m_selNode = -1;
+                    commitModel(tr("delete node"));
+                }
+            });
+            menu.exec(event->globalPos());
+            return;
+        }
+    }
+
+    // Element menu (Select or Nodes tool): pick the item under the cursor if
+    // it is not part of the selection.
+    if (QGraphicsItem *it = itemAt(event->pos())) {
+        if (it->data(0).isValid() && !it->isSelected()) {
+            m_scene->clearSelection();
+            it->setSelected(true);
+        }
+    }
+    const QStringList ids = selectedElementIds();
+    if (ids.isEmpty())
+        return;
+    bool convertible = false;
+    for (const QString &id : ids)
+        if (Element *e = m_doc->elementById(id))
+            if (e->geometryType != QLatin1String("path"))
+                convertible = true;
+    QAction *conv = menu.addAction(tr("Convert to path"));
+    conv->setEnabled(convertible);
+    connect(conv, &QAction::triggered, this, [this, ids] { convertToPaths(ids); });
+    if (m_tool != NodeEdit)
+        connect(menu.addAction(tr("Edit nodes  (N)")), &QAction::triggered, this,
+                [this] { setTool(NodeEdit); });
+    connect(menu.addAction(tr("Delete")), &QAction::triggered, this, [this, ids] {
+        QVector<Element> victims;
+        for (const QString &id : ids)
+            if (Element *e = m_doc->elementById(id))
+                victims.append(*e);
+        if (!victims.isEmpty())
+            m_undo->push(new DeleteCmd(this, m_doc, victims));
+    });
+    menu.exec(event->globalPos());
 }
 
 void Canvas::keyPressEvent(QKeyEvent *event)
 {
-    if (m_tool == DrawPath && !m_pathPts.isEmpty()) {
+    if (m_tool == NodeEdit && m_selSub >= 0 && m_doc
+        && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
+        if (m_model.subs[m_selSub].removeNode(m_selNode)) {
+            m_selSub = m_selNode = -1;
+            commitModel(tr("delete node"));
+        } else {
+            emit statusHint(tr("A path keeps at least two nodes — delete the element instead"));
+        }
+        return;
+    }
+    if (m_tool == NodeEdit && event->key() == Qt::Key_Escape && m_selSub >= 0) {
+        m_selSub = m_selNode = -1;
+        viewport()->update();
+        return;
+    }
+    if (m_tool == DrawPath && !m_penNodes.isEmpty()) {
         if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
             finishPath(false);
             return;
