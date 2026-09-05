@@ -84,10 +84,7 @@ public slots:
     void requestStatus();                       // '?' realtime report
     void sendRealtime(char c);                  // override bytes (0x90-0x97 &c.)
 
-    // Press-and-hold jogging: a long $J= move at `feed`, cancelled with the
-    // realtime jog-cancel byte (0x85) the moment the button is released.
-    void jogStart(char axis, int dir, double feed);
-    void jogCancel();
+    void jogCancel();                           // realtime jog-cancel (0x85)
 
     // Sequential script: one line in flight, aborts on the first error.
     void startMacro(const QStringList &lines);
@@ -99,8 +96,9 @@ public slots:
     // The same script as a line list, to prefix with e.g. zeroing commands.
     static QStringList measureToolLines(const BitSetterConfig &cfg, bool returnHome,
                                         double returnX = 0, double returnY = 0);
-    // G43.1 dynamic tool-length offset. Remembered and re-applied after a
-    // soft reset (GRBL clears it) and after $X.
+    // G43.1 dynamic tool-length offset. Remembered; sent when the line is
+    // free (never injected into a running program) and re-applied after a
+    // reset, $X and $H (GRBL clears it on reset, refuses it in Alarm).
     void applyToolLengthOffset(double mm);
 
 signals:
@@ -122,6 +120,8 @@ private:
     void pump();                                // fill GRBL's RX window
     void pumpMacro();
     void writeLine(const QString &line);
+    void flushTlo();                            // send a pending G43.1 if allowed
+    void resyncAdhoc(const QString &why);       // forget ad-hoc lines that will never ack
 
     QSerialPort *m_port = nullptr;
     QTimer *m_statusTimer;
@@ -145,6 +145,9 @@ private:
     bool m_macroInflight = false;
     bool m_macroError = false;
     int m_adhocPending = 0;                     // sendCommand() lines awaiting ok
+    QStringList m_adhocLines;                   // the same lines, oldest first
+    QElapsedTimer m_adhocClock;                 // since the last ad-hoc send/ack
+    bool m_tloPending = false;                  // G43.1 not yet on the controller
 
     double m_probeZ = 0;
     bool m_probeOk = false;

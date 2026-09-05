@@ -35,6 +35,8 @@ signals:
 protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     enum class Phase { Idle, ParkForTool, MeasureAfterChange, MeasureForRef,
@@ -45,6 +47,9 @@ private:
     QPushButton *jogButton(const QString &text, char axis, int dir);
     void jogStep(char axis, int dir);
     void jogIncrement();
+    void stopHoldJog();                  // end a running hold-jog (cancel) safely
+    QString currentPortName() const;
+    void resetFlow();                    // forget tool-change / macro state
     double jogFeed(char axis) const;
     void zero(const QString &axes);
     void goToXY0();
@@ -75,6 +80,7 @@ private:
     char m_holdAxis = 0;
     int m_holdDir = 0;
     bool m_holdJogging = false;
+    bool m_loading = false;              // loadSettings() in progress
 
     // bitsetter / tool change
     QGroupBox *m_bsGroup;

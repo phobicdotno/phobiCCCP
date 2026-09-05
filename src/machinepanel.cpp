@@ -9,6 +9,8 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QFocusEvent>
+#include <QHideEvent>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMessageBox>
@@ -170,11 +172,8 @@ MachinePanel::MachinePanel(QWidget *parent)
     auto *unlockBtn = new QPushButton(QStringLiteral("Unlock"), zeroBox);
     unlockBtn->setToolTip(QStringLiteral("Clear alarm lock ($X)"));
     zg->addWidget(unlockBtn, 2, 1);
-    connect(unlockBtn, &QPushButton::clicked, this, [this] {
-        m_grbl->sendCommand(QStringLiteral("$X"));
-        if (m_grbl->toolLengthOffset() != 0.0)
-            m_grbl->applyToolLengthOffset(m_grbl->toolLengthOffset());
-    });
+    connect(unlockBtn, &QPushButton::clicked, this,
+            [this] { m_grbl->sendCommand(QStringLiteral("$X")); });
     lay->addWidget(zeroBox);
 
     // ---- BitSetter + tool change -------------------------------------------
@@ -290,8 +289,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         else        { m_grbl->resumeStream(); m_pauseBtn->setText(QStringLiteral("⏸ Hold")); }
     });
     connect(m_stopBtn, &QPushButton::clicked, this, [this] {
-        m_phase = Phase::Idle;
-        m_onIdle = nullptr;
+        resetFlow();
         m_grbl->stopStream();
     });
 
@@ -328,6 +326,8 @@ MachinePanel::MachinePanel(QWidget *parent)
         saveSettings();
     });
     connect(m_grbl, &GrblStreamer::disconnected, this, [this] {
+        resetFlow();
+        stopHoldJog();
         m_connectBtn->setText(QStringLiteral("Connect"));
         m_state->setText(QStringLiteral("not connected"));
         m_wpos->setText(QStringLiteral("—"));
@@ -355,9 +355,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_grbl, &GrblStreamer::streamFinished, this, [this](bool ok) {
         log(ok ? QStringLiteral("== program finished ==")
                : QStringLiteral("== program stopped =="));
-        m_runBtn->setText(QStringLiteral("▶ Run"));
-        m_held = false;
-        m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+        resetFlow();
     });
 
     // Press-and-hold: after the hold delay a step-click turns into a
@@ -394,6 +392,7 @@ QPushButton *MachinePanel::jogButton(const QString &text, char axis, int dir)
     b->setFocusPolicy(Qt::NoFocus);          // keep keyboard jogging on the panel
     connect(b, &QPushButton::pressed, this, [this, axis, dir] {
         setFocus();                       // arrow keys jog from here on
+        stopHoldJog();
         m_holdAxis = axis;
         m_holdDir = dir;
         m_holdJogging = false;
@@ -452,6 +451,7 @@ void MachinePanel::keyPressEvent(QKeyEvent *event)
         return;
     // Keys jog continuously while held; a tap shorter than the hold delay
     // becomes a step, exactly like the buttons.
+    stopHoldJog();
     m_holdAxis = axis;
     m_holdDir = dir;
     m_holdJogging = false;
@@ -478,9 +478,51 @@ void MachinePanel::keyReleaseEvent(QKeyEvent *event)
     m_holdJogging = false;
 }
 
+QString MachinePanel::currentPortName() const
+{
+    // Items carry the bare port name as data and a description as text; a
+    // path typed by hand has no item.
+    const int i = m_ports->currentIndex();
+    if (i >= 0 && m_ports->itemText(i) == m_ports->currentText())
+        return m_ports->itemData(i).toString();
+    return m_ports->currentText().trimmed();
+}
+
+void MachinePanel::stopHoldJog()
+{
+    m_holdTimer->stop();
+    m_holdRepeat->stop();
+    if (m_holdJogging)
+        m_grbl->jogCancel();
+    m_holdAxis = 0;
+    m_holdJogging = false;
+}
+
+void MachinePanel::focusOutEvent(QFocusEvent *event)
+{
+    stopHoldJog();                        // a release we will never see
+    QWidget::focusOutEvent(event);
+}
+
+void MachinePanel::hideEvent(QHideEvent *event)
+{
+    stopHoldJog();
+    QWidget::hideEvent(event);
+}
+
+void MachinePanel::resetFlow()
+{
+    m_phase = Phase::Idle;
+    m_pendingTool = -1;
+    m_onIdle = nullptr;
+    m_held = false;
+    m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+    m_runBtn->setText(QStringLiteral("▶ Run"));
+}
+
 void MachinePanel::refreshPorts()
 {
-    const QString keep = m_ports->currentText();
+    const QString keep = currentPortName();
     m_ports->clear();
     const QStringList names = GrblStreamer::availablePorts();
     const QStringList details = GrblStreamer::availablePortDetails();
@@ -499,9 +541,7 @@ void MachinePanel::toggleConnect()
         m_grbl->disconnectPort();
         return;
     }
-    QString port = m_ports->currentData().toString();
-    if (m_ports->findText(m_ports->currentText()) < 0 || port.isEmpty())
-        port = m_ports->currentText().trimmed();   // typed by hand
+    const QString port = currentPortName();
     if (port.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Machine"),
                                  QStringLiteral("No serial port found. Plug in the "
@@ -525,6 +565,7 @@ BitSetterConfig MachinePanel::bitSetter() const
 
 void MachinePanel::loadSettings()
 {
+    m_loading = true;                     // widget setters must not save back
     QSettings s;
     s.beginGroup(QStringLiteral("machine"));
     m_bsGroup->setChecked(s.value(QStringLiteral("bitsetter/enabled"), false).toBool());
@@ -540,10 +581,13 @@ void MachinePanel::loadSettings()
     const QString port = s.value(QStringLiteral("port")).toString();
     if (!port.isEmpty())
         m_ports->setEditText(port);
+    m_loading = false;
 }
 
 void MachinePanel::saveSettings()
 {
+    if (m_loading)
+        return;
     QSettings s;
     s.beginGroup(QStringLiteral("machine"));
     s.setValue(QStringLiteral("bitsetter/enabled"), m_bsGroup->isChecked());
@@ -557,7 +601,7 @@ void MachinePanel::saveSettings()
     s.setValue(QStringLiteral("ref/valid"), m_haveRef);
     s.setValue(QStringLiteral("ref/z"), m_refZ);
     if (m_grbl->isConnected())
-        s.setValue(QStringLiteral("port"), m_ports->currentText());
+        s.setValue(QStringLiteral("port"), currentPortName());
 }
 
 void MachinePanel::updateOffsetLabels()
@@ -623,7 +667,7 @@ void MachinePanel::zero(const QString &axes)
     }
     QString g10 = QStringLiteral("G10 L20 P1");
     for (const QChar ax : axes)
-        g10 += QStringLiteral(" %10").arg(ax);
+        g10 += QStringLiteral(" %1").arg(ax) + QStringLiteral("0");   // " X0"
     cmds << g10;
 
     const BitSetterConfig cfg = bitSetter();

@@ -297,7 +297,12 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
                 const int e = aliveEdge(cur);
                 alive[e] = false;
                 const int next = edges.at(e).first == cur ? edges.at(e).second : edges.at(e).first;
-                if (degree(next) != 1 || smoothVertexAt(nodes.at(next)) == 0)
+                // Stop at the axis proper: a node that was a junction before
+                // pruning (adj holds the original degree) — even if this was
+                // its last spoke, as at the ends of a rounded slot — or a
+                // real corner. Only chain nodes of the spur itself are walked.
+                if (adj.at(next).size() >= 3 || smoothVertexAt(nodes.at(next)) == 0
+                    || degree(next) != 1)
                     break;
                 cur = next;
             }

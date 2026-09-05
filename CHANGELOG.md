@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.3.1 (build 14) — 2026-09-05
+Fixes from an independent code review of the machine-control work:
+- Zero X/Y/Z/all sent a G10 line without coordinates (never zeroed). Fixed.
+- V-carve: rounded slots, ellipses and round-ended strokes collapsed to a
+  single plunge after spur pruning. The pruning now stops at the axis.
+- BitSetter settings and the reference tool were overwritten with defaults on
+  every start. Fixed.
+- A tool-length offset could be injected into a running program (Clear
+  reference / Unlock). It is now queued until the line is free, and it is
+  re-applied after reset, Unlock and Home.
+- A lost ack on the wake-up line (Arduino boards reset on open) blocked every
+  stream and macro silently. The wake-up is no longer counted and a stuck
+  ad-hoc command is dropped after 3 s of Idle.
+- G-code after a tool change repeated no modal words, so the first moves
+  inherited the probe's slow feed. Every word is re-emitted after `M0 ;T`.
+- Port list kept the wrong device after a rescan; the port name (not its
+  description) is now tracked and persisted.
+- Disconnecting mid tool-change no longer leaves a prompt armed for the next
+  connection; a lost key release or focus change now cancels hold-to-jog.
+- A program ending in a tool marker no longer reports "finished" while parked.
+
 ## v0.3.0 (build 13) — 2026-09-05
 Carbide Create parity wave 1 — six features merged from parallel branches:
 - Material-removal simulation (Carbide Create's "3D Simulation"): new

@@ -186,6 +186,9 @@ QString GrblPost::generate(const QVector<Op> &ops) const
                 if (spindleOn) { line(QStringLiteral("M05")); spindleOn = false; }
                 // GRBL post: pause for a manual tool change, tool number in comment.
                 line(QStringLiteral("M0 ;T") + QString::number(op.ival));
+                // The sender runs a probe macro here (G53 moves, its own F),
+                // so nothing modal survives: the next move must carry every word.
+                X.last.clear(); Y.last.clear(); Z.last.clear(); F.last.clear(); G.last.clear();
             }
             break;
         }

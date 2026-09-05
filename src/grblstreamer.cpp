@@ -88,11 +88,18 @@ void GrblStreamer::disconnectPort()
         m_port->close();
         m_port->deleteLater();
         m_port = nullptr;
+        const bool wasProgram = m_streaming, wasMacro = m_macroActive;
         m_streaming = false;
         m_waitingTool = -1;
         m_macroActive = false;
         m_macroQueue.clear();
+        m_adhocPending = 0;
+        m_adhocLines.clear();
         m_status = MachineStatus();
+        if (wasMacro)
+            emit macroFinished(false);
+        if (wasProgram)
+            emit streamFinished(false);
         emit disconnected();
     }
 }
@@ -118,8 +125,16 @@ bool GrblStreamer::sendCommand(const QString &line)
 {
     if (!canSendCommand())
         return false;
-    ++m_adhocPending;
-    writeLine(line);
+    const QString l = line.trimmed();
+    if (!l.isEmpty()) {
+        // Empty lines (the wake newline right after open) are sent uncounted:
+        // an Arduino-class board is still resetting then and would swallow it,
+        // and a lost ack would block every later stream and macro.
+        ++m_adhocPending;
+        m_adhocLines << l;
+        m_adhocClock.restart();
+    }
+    writeLine(l);
     return true;
 }
 
@@ -133,17 +148,6 @@ void GrblStreamer::sendRealtime(char c)
 {
     if (isConnected())
         m_port->write(&c, 1);
-}
-
-void GrblStreamer::jogStart(char axis, int dir, double feed)
-{
-    if (!canSendCommand())
-        return;
-    // Far beyond any table: GRBL clips jogs to soft limits when they are on,
-    // and the cancel byte stops it long before that anyway.
-    ++m_adhocPending;
-    writeLine(QStringLiteral("$J=G91 %1%2 F%3")
-                  .arg(QChar::fromLatin1(axis)).arg(dir < 0 ? -1000 : 1000).arg(feed));
 }
 
 void GrblStreamer::jogCancel()
@@ -217,6 +221,8 @@ void GrblStreamer::stopStream()
     m_macroInflight = false;
     m_macroQueue.clear();
     m_adhocPending = 0;                         // reset flushes GRBL's buffer
+    m_adhocLines.clear();
+    m_tloPending = (m_tlo != 0.0);              // GRBL forgets G43.1 on reset
     emit consoleLine(QStringLiteral("> [soft reset]"));
     if (wasMacro)
         emit macroFinished(false);
@@ -254,9 +260,10 @@ void GrblStreamer::pump()
         m_inflightBytes += data.size();
         ++m_nextIndex;
     }
-    if (m_streaming && m_ackedCount >= m_queue.size()) {
+    if (m_streaming && m_waitingTool < 0 && m_ackedCount >= m_queue.size()) {
         m_streaming = false;
         emit streamFinished(!m_hadError);
+        flushTlo();
     }
 }
 
@@ -283,6 +290,7 @@ void GrblStreamer::pumpMacro()
     if (m_macroQueue.isEmpty()) {
         m_macroActive = false;
         emit macroFinished(!m_macroError);
+        flushTlo();
         return;
     }
     const QString line = m_macroQueue.takeFirst();
@@ -321,10 +329,31 @@ void GrblStreamer::measureTool(const BitSetterConfig &cfg, bool returnHome,
 void GrblStreamer::applyToolLengthOffset(double mm)
 {
     m_tlo = mm;
-    if (isConnected()) {
-        ++m_adhocPending;
-        writeLine(QStringLiteral("G43.1 Z%1").arg(mm, 0, 'f', 3));
-    }
+    m_tloPending = true;
+    flushTlo();
+}
+
+void GrblStreamer::flushTlo()
+{
+    if (!m_tloPending || !canSendCommand())
+        return;                                 // busy: sent when the line frees up
+    m_tloPending = false;
+    ++m_adhocPending;
+    m_adhocLines << QStringLiteral("G43.1");
+    m_adhocClock.restart();
+    writeLine(QStringLiteral("G43.1 Z%1").arg(m_tlo, 0, 'f', 3));
+}
+
+void GrblStreamer::resyncAdhoc(const QString &why)
+{
+    if (m_adhocPending == 0)
+        return;
+    emit consoleLine(QStringLiteral("!! %1 — dropping %2 unanswered command(s)")
+                         .arg(why).arg(m_adhocPending));
+    m_adhocPending = 0;
+    m_adhocLines.clear();
+    pumpMacro();
+    pump();
 }
 
 qint64 GrblStreamer::msSinceAck() const
@@ -390,6 +419,12 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         st.valid = true;
         m_status = st;
+        // An ad-hoc line that is still unanswered while the controller sits
+        // Idle for seconds was never received (typical right after a DTR
+        // reset). Without this every stream and macro would wait forever.
+        if (m_adhocPending > 0 && st.state == QLatin1String("Idle")
+            && m_adhocClock.isValid() && m_adhocClock.elapsed() > 3000)
+            resyncAdhoc(QStringLiteral("no ack while Idle"));
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
         return;
@@ -410,12 +445,16 @@ void GrblStreamer::handleLine(const QByteArray &line)
         return;
     }
 
-    // After a reset GRBL forgets G43.1; put the current tool's offset back.
-    if (line.startsWith("Grbl ") && m_tlo != 0.0 && isConnected()) {
-        QTimer::singleShot(400, this, [this] {
-            if (isConnected() && !m_macroActive && !m_streaming)
-                applyToolLengthOffset(m_tlo);
-        });
+    // After a reset GRBL forgets G43.1 (and nothing sent before the reset
+    // will be answered). Put the offset back once the controller is ready;
+    // if it boots into Alarm the $X / $H ack re-tries it.
+    if (line.startsWith("Grbl ")) {
+        m_adhocPending = 0;
+        m_adhocLines.clear();
+        if (m_tlo != 0.0) {
+            m_tloPending = true;
+            QTimer::singleShot(400, this, [this] { flushTlo(); });
+        }
     }
 
     const bool ok = (line == "ok");
@@ -423,9 +462,15 @@ void GrblStreamer::handleLine(const QByteArray &line)
 
     if ((ok || err) && m_adhocPending > 0) {
         --m_adhocPending;
+        m_adhocClock.restart();
+        const QString sent = m_adhocLines.isEmpty() ? QString() : m_adhocLines.takeFirst();
         if (err)
             emit errorOccurred(QString::fromLatin1(line));
+        // Unlock and homing both leave GRBL without the G43.1 it had.
+        if (ok && (sent == QLatin1String("$X") || sent == QLatin1String("$H")) && m_tlo != 0.0)
+            m_tloPending = true;
         if (m_adhocPending == 0) {
+            flushTlo();
             pumpMacro();
             pump();
         }

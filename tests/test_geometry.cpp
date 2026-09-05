@@ -8,6 +8,7 @@
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include "../src/gcodeexport.h"
+#include "../src/post_grbl.h"
 #include "../src/toollibrary.h"
 
 #include <QCoreApplication>
@@ -385,6 +386,50 @@ int main(int argc, char *argv[])
         double minZ;
         cutBounds(g.gcode, &minZ);
         check(approx(minZ, -2.0, 1e-3), "negative-down depth normalized");
+    }
+
+    // --- v-carve of a rounded slot keeps its medial axis ----------------------
+    // Spur pruning must stop at the axis: a 60x2 slot with semicircular ends
+    // once collapsed to a single plunge (every axis endpoint is a "smooth"
+    // boundary vertex).
+    {
+        Rig r;
+        QVector<QPointF> pts;
+        const double L = 60, w = 2, R = w / 2;
+        for (int i = 0; i <= 16; ++i) {          // right cap, bottom to top
+            const double a = -M_PI / 2 + M_PI * i / 16;
+            pts.append(QPointF(10 + L + R * std::cos(a), 20 + R * std::sin(a)));
+        }
+        for (int i = 0; i <= 16; ++i) {          // left cap, top to bottom
+            const double a = M_PI / 2 + M_PI * i / 16;
+            pts.append(QPointF(10 + R * std::cos(a), 20 + R * std::sin(a)));
+        }
+        r.addShape(c2d::Element::makePath(pts, true, layer));
+        r.addToolpath("advanced_vcarve_toolpath", {{"end_depth", QStringLiteral("-3.000")},
+                                                   {"start_depth", QStringLiteral("0.000")}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        check(g.done.size() == 1, "slot v-carve exports");
+        check(bb.width() > L * 0.8, "slot v-carve rides the whole axis, not one plunge");
+    }
+
+    // --- post: a tool change forgets every modal word ------------------------
+    {
+        QVector<c2d::Op> ops;
+        ops.append(c2d::Op::tool(1));
+        ops.append(c2d::Op::rapid(0, 0, 5));
+        ops.append(c2d::Op::feedTo(0, 0, -1, 500));
+        ops.append(c2d::Op::feedTo(10, 0, -1, 500));
+        ops.append(c2d::Op::tool(2));
+        ops.append(c2d::Op::feedTo(20, 0, -1, 500));   // same G/Z/F as before the change
+        const QStringList lines = c2d::GrblPost(true).generate(ops).split(QChar('\n'));
+        const int marker = int(lines.indexOf(QStringLiteral("M0 ;T2")));
+        check(marker >= 0, "tool marker emitted");
+        const QString after = marker >= 0 ? lines.value(marker + 1) : QString();
+        check(after.startsWith(QLatin1String("G1")) && after.contains(QLatin1String("Z-1.000"))
+                  && after.contains(QLatin1String("F500")),
+              "first move after a tool change carries G, Z and F again");
     }
 
     // --- full-document export over the sample (argv[1]) ---------------------
