@@ -1,16 +1,32 @@
 # Changelog
 
-## Unreleased
+## v0.4.3 (build 18) — 2026-09-05
+Fixes from an independent review of the 3D modelling, 3D machining, toolpath
+lifecycle and engraving work, plus robustness hardening:
+- Saving no longer deletes toolpath rows this build could not decode. They are
+  skipped when loading (so they are never shown or machined) but kept in the
+  file, instead of being thrown away on the next save.
 - Opening a truncated or corrupt file now says so instead of showing an empty
   design: SQLite opens a zero-byte file as a valid empty database, so the
   loader checks that the container really holds a Carbide Create document.
   The background loader reports an unreadable container too.
+- Editing vectors under a 3D model no longer composites the relief twice,
+  once of them on the interface thread; the background rebuild always runs now
+  and the views refresh when it lands.
+- A model rebuild that finished just as another document was opened can no
+  longer install the old document's relief into the new one.
+- Renaming or enabling a toolpath no longer rebuilds the list from inside the
+  list's own change notification.
+- STL import checks its cancel flag once every few thousand triangles as
+  intended, rather than on every one.
 - `tests/test_robustness.cpp` (CTest `robustness`): damaged documents (missing
   or emptied tables, null / corrupt / mis-sized payloads, five truncation
   points) and malformed vector imports (unterminated SVG, NaN and 1e400
-  coordinates, a DXF claiming 999999999 vertices, a block that inserts
-  itself) must fail cleanly or salvage what they can — never crash, hang or
-  allocate on a bad file's word. Imported geometry is checked to be finite.
+  coordinates, a DXF claiming 999999999 vertices, a block that inserts itself)
+  must fail cleanly or salvage what they can — never crash, hang or allocate
+  on a bad file's word.
+- The integration suite reports itself as skipped, not passed, when its sample
+  file is missing.
 
 ## v0.4.2 (build 17) — 2026-09-05
 - Node edit: fixed a redraw that was accidentally made conditional while

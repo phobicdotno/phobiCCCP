@@ -349,11 +349,14 @@ MainWindow::MainWindow(QWidget *parent)
         refreshInfo();
         m_props->refresh();
         m_tp->refresh();
-        m_model->documentChanged();
-        if (m_previewAct->isChecked())
-            refreshPreview();
-        else
-            markIsoStale();
+        // When the 3D model has to be recomposited, wait for the worker:
+        // refreshing now would build it synchronously here and again there.
+        if (!m_model->documentChanged()) {
+            if (m_previewAct->isChecked())
+                refreshPreview();
+            else
+                markIsoStale();
+        }
         statusBar()->showMessage(QStringLiteral("Edited — Ctrl+S to save"));
     });
     connect(m_canvas, &Canvas::statusHint, this, [this](const QString &m) {

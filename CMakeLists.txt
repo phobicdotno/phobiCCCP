@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.2 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -98,6 +98,7 @@ add_test(NAME robustness COMMAND test_robustness
 add_executable(test_integration tests/test_integration.cpp)
 target_link_libraries(test_integration PRIVATE phobicccp_core)
 add_test(NAME integration COMMAND test_integration)
+set_tests_properties(integration PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(test_geometry tests/test_geometry.cpp)
 target_link_libraries(test_geometry PRIVATE phobicccp_core)

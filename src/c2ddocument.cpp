@@ -19,6 +19,7 @@ bool Document::load(const QString &path, QString *error)
     m_elements.clear();
     m_toolpaths.clear();
     m_groups.clear();
+    m_unreadableToolpaths.clear();
     m_path = path;
 
     if (!QFileInfo::exists(path)) {
@@ -75,7 +76,7 @@ bool Document::load(const QString &path, QString *error)
             QSqlQuery q(db);
             // Row order is CC's machining order for toolpaths; make it explicit.
             q.exec(QStringLiteral(
-                "SELECT type, sz, data FROM items "
+                "SELECT type, sz, data, uuid FROM items "
                 "WHERE type IN ('element','toolpath','toolpath_group') ORDER BY id"));
             while (q.next()) {
                 const QString type = q.value(0).toString();
@@ -83,8 +84,13 @@ bool Document::load(const QString &path, QString *error)
                 const QByteArray blob = q.value(2).toByteArray();
                 const QByteArray json = zlibInflate(blob, sz);
                 const QJsonObject obj = QJsonDocument::fromJson(json).object();
-                if (obj.isEmpty())
+                if (obj.isEmpty()) {
+                    // Remember it so save() leaves the row alone rather than
+                    // dropping a toolpath this build simply cannot read.
+                    if (type == QLatin1String("toolpath"))
+                        m_unreadableToolpaths.insert(q.value(3).toString());
                     continue;
+                }
 
                 if (type == QLatin1String("element")) {
                     m_elements.append(Element::fromJson(obj));
@@ -180,7 +186,21 @@ bool Document::save(const QString &destPath, QString *error)
         //     (`toolpath_group`), so the group rows are left untouched.
         if (ok) {
             QSqlQuery deltp(db);
-            if (!deltp.exec(QStringLiteral("DELETE FROM items WHERE type='toolpath'"))) {
+            bool delOk = false;
+            if (m_unreadableToolpaths.isEmpty()) {
+                delOk = deltp.exec(QStringLiteral("DELETE FROM items WHERE type='toolpath'"));
+            } else {
+                // Keep the rows we could not decode exactly as they are.
+                QStringList marks;
+                for (int i = 0; i < m_unreadableToolpaths.size(); ++i)
+                    marks << QStringLiteral("?");
+                deltp.prepare(QStringLiteral("DELETE FROM items WHERE type='toolpath' "
+                                             "AND uuid NOT IN (%1)").arg(marks.join(QChar(','))));
+                for (const QString &u : m_unreadableToolpaths)
+                    deltp.addBindValue(u);
+                delOk = deltp.exec();
+            }
+            if (!delOk) {
                 if (error) *error = deltp.lastError().text();
                 ok = false;
             }

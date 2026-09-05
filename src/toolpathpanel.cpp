@@ -543,7 +543,12 @@ void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
     if (!name.isEmpty() && name != j.value("name").toString())
         j.insert(QStringLiteral("name"), name);
     m_uuid = uuid;
-    m_canvas->editToolpath(uuid, j);   // no-op when nothing changed
+    // editToolpath ends in documentChanged -> refresh(), which clears the tree
+    // and destroys `item` (and, for a rename, its open editor) while the view
+    // is still unwinding the change notification on it. Let the current event
+    // finish first.
+    QMetaObject::invokeMethod(this, [this, uuid, j] { m_canvas->editToolpath(uuid, j); },
+                              Qt::QueuedConnection);
 }
 
 void ToolpathPanel::showToolpath(const QString &uuid)

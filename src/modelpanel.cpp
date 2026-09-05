@@ -562,20 +562,22 @@ void ModelPanel::setSelection(const QStringList &ids)
     m_addVec->setEnabled(m_doc && !ids.isEmpty());
 }
 
-void ModelPanel::documentChanged()
+bool ModelPanel::documentChanged()
 {
     bool usesVectors = false;
     for (const ModelComponent &c : m_store.model.components)
         if (c.enabled && (c.kind == ModelComponent::FromVectors || c.kind == ModelComponent::Texture))
             usesVectors = true;
     if (!usesVectors)
-        return;
+        return false;
     m_store.invalidate();
     m_stale = true;
-    if (isVisible())
-        scheduleRebuild();
-    else
-        updateStatus();
+    updateStatus();
+    // Always rebuild, visible or not: the composite feeds the 3D toolpaths, so
+    // leaving it dirty only moves the work onto the GUI thread the next time
+    // anything exports.
+    scheduleRebuild();
+    return true;
 }
 
 void ModelPanel::showEvent(QShowEvent *e)
@@ -964,10 +966,12 @@ void ModelPanel::startRebuild()
 void ModelPanel::cancelRebuild()
 {
     m_debounce->stop();
-    if (m_job->isRunning()) {
-        m_job->cancel = true;
+    // Set unconditionally: the worker may already have returned while its
+    // queued finished() is still in flight, and that result belongs to the
+    // document we are leaving.
+    m_job->cancel = true;
+    if (m_job->isRunning())
         m_job->wait();
-    }
 }
 
 void ModelPanel::rebuildBlocking()

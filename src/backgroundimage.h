@@ -32,11 +32,10 @@ struct BackgroundImage
     double rotationDeg = 0;  // about the image centre, CCW positive (Y-up)
     double opacity = 0.5;    // 0-1
     bool locked = false;     // Adjust dialog refuses moves/resizes while set
-    // A document we opened had a background row. Together with `image` this
-    // separates "the user has no background" from "we could not decode the
-    // one that is in the file", which must never be overwritten on save.
-    bool fileHadRow = false;
-    bool userChanged = false;   // set/cleared/adjusted here, so our state wins
+    // Set when the background is set, cleared or adjusted here. Without it a
+    // save would overwrite a background we merely failed to decode, and would
+    // add an empty background row to documents that never had one.
+    bool userChanged = false;
 
     bool isNull() const { return image.isNull(); }
     double mmPerPixel() const { return kMmPerPixel * scale; }

@@ -135,6 +135,53 @@ int main(int argc, char *argv[])
         }
         std::printf("robustness: %d damaged documents handled\n", int(std::size(cases)));
 
+        // A toolpath row this build cannot decode must survive a save. It is
+        // skipped at load (so it cannot be shown or machined), but deleting it
+        // would silently throw away the user's work on the next Ctrl+S.
+        {
+            const QString path = dir.filePath(QStringLiteral("onebadtp.c2d"));
+            QFile::remove(path);
+            check(QFile::copy(sample, path), "copy sample for the undecodable-row case");
+            int before = 0;
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                            QStringLiteral("bad1"));
+                db.setDatabaseName(path);
+                check(db.open(), "open the copy");
+                QSqlQuery q(db);
+                q.exec(QStringLiteral("SELECT count(*) FROM items WHERE type='toolpath'"));
+                check(q.next(), "count toolpath rows");
+                before = q.value(0).toInt();
+                check(before >= 2, "the sample has several toolpaths");
+                // Corrupt exactly one payload.
+                q.exec(QStringLiteral("UPDATE items SET data = x'deadbeef' WHERE id = "
+                                      "(SELECT min(id) FROM items WHERE type='toolpath')"));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(QStringLiteral("bad1"));
+
+            c2d::Document doc;
+            QString err;
+            check(doc.load(path, &err), "document with one unreadable toolpath still loads");
+            check(doc.toolpaths().size() == before - 1, "the unreadable toolpath is not shown");
+            check(doc.unreadableToolpaths().size() == 1, "it is remembered instead");
+
+            const QString out = dir.filePath(QStringLiteral("onebadtp-saved.c2d"));
+            check(doc.save(out, &err), "saving succeeds");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                            QStringLiteral("bad2"));
+                db.setDatabaseName(out);
+                check(db.open(), "open the saved file");
+                QSqlQuery q(db);
+                q.exec(QStringLiteral("SELECT count(*) FROM items WHERE type='toolpath'"));
+                check(q.next() && q.value(0).toInt() == before,
+                      "every toolpath row survives the save, decodable or not");
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(QStringLiteral("bad2"));
+        }
+
         // Truncation at several points: the most common real-world damage.
         QFile in(sample);
         check(in.open(QIODevice::ReadOnly), "read sample");

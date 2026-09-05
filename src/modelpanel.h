@@ -41,7 +41,10 @@ public:
     // Current canvas selection — "From vectors" / "Texture" use it as the region.
     void setSelection(const QStringList &ids);
     // Vectors were edited: the composite is stale; rebuilt when the tab shows.
-    void documentChanged();
+    // Vectors changed under the model. Returns true when a rebuild was
+    // scheduled, so the caller can wait for modelRebuilt() instead of forcing
+    // a synchronous composite on the GUI thread.
+    bool documentChanged();
     // Synchronous rebuild + view refresh (used by --shot … model).
     void rebuildBlocking();
 

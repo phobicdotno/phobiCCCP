@@ -97,7 +97,6 @@ bool BackgroundImage::loadFrom(const QString &c2dPath, QString *error)
 {
     clear();
     userChanged = false;        // loading is not a user edit
-    fileHadRow = false;
     if (!QFileInfo::exists(c2dPath)) {
         if (error) *error = QStringLiteral("File not found: %1").arg(c2dPath);
         return false;
@@ -136,7 +135,6 @@ bool BackgroundImage::loadFrom(const QString &c2dPath, QString *error)
             if (error) *error = s.lastError().text();
             ok = false;
         } else if (s.next()) {
-            fileHadRow = true;
             const int sz = s.value(0).toInt();
             QByteArray blob = s.value(1).toByteArray();
             if (sz > blob.size() && !blob.isEmpty())

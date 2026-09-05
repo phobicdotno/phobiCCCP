@@ -709,7 +709,8 @@ void applyStl(Work &w, const ModelComponent &comp, std::atomic<bool> *cancel)
     };
     int done = 0;
     for (const StlTriangle &t : tris) {
-        if (cancel && *cancel && (++done & 4095) == 0) return;
+        // Count first: the atomic is only read once every 4096 triangles.
+        if ((++done & 4095) == 0 && cancel && *cancel) return;
         double px[3], py[3], pz[3];
         for (int v = 0; v < 3; ++v) {
             px[v] = comp.x + (t.v[v][0] - mn[0]) * s;

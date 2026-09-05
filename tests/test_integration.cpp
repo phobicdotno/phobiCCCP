@@ -103,7 +103,7 @@ int main(int argc, char *argv[])
     if (!QFile::exists(sample)) {
         std::fprintf(stderr, "note: sample %s not found, integration checks skipped\n",
                      sample.toUtf8().constData());
-        return 0;   // the file is a developer convenience, not a build dependency
+        return 77;  // CTest SKIP_RETURN_CODE: visible as skipped, never as passed
     }
 
     QTemporaryDir tmp;

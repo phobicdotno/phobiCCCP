@@ -1,6 +1,7 @@
 #pragma once
 #include "element.h"
 #include <QHash>
+#include <QSet>
 #include <QString>
 #include <QVector>
 
@@ -67,6 +68,10 @@ public:
     // Toolpath lifecycle. The vector order IS the machining order and is
     // what save() writes back. All of these are in-memory only until save().
     void addToolpath(const Toolpath &t) { m_toolpaths.append(t); }
+    // uuids of toolpath rows whose payload this build could not decode. They
+    // stay out of m_toolpaths but must survive a save: rewriting the toolpath
+    // rows must not delete work we merely failed to understand.
+    const QSet<QString> &unreadableToolpaths() const { return m_unreadableToolpaths; }
     void insertToolpath(int index, const Toolpath &t)
     {
         m_toolpaths.insert(qBound(0, index, int(m_toolpaths.size())), t);
@@ -144,6 +149,7 @@ public:
 private:
     QString m_path;
     QHash<QString, QString> m_params;
+    QSet<QString> m_unreadableToolpaths;
     QVector<Element> m_elements;
     QVector<Toolpath> m_toolpaths;
     QVector<ToolpathGroup> m_groups;
