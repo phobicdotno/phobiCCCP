@@ -43,6 +43,8 @@ add_library(phobicccp_core STATIC
     src/toollibrary.cpp
     src/tiling.cpp
     data/tools.qrc
+    src/backgroundimage.cpp
+    src/imagetrace.cpp
 )
 target_include_directories(phobicccp_core PUBLIC src)
 target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
@@ -59,6 +61,8 @@ add_executable(phobicccp
     src/simpanel.cpp
     src/vectoractions.cpp
     src/importui.cpp
+    src/tracedialog.cpp
+    src/backgrounddialog.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets)
@@ -97,6 +101,9 @@ add_test(NAME import COMMAND test_import)
 add_executable(test_tiling tests/test_tiling.cpp)
 target_link_libraries(test_tiling PRIVATE phobicccp_core)
 add_test(NAME tiling COMMAND test_tiling)
+add_executable(test_trace tests/test_trace.cpp)
+target_link_libraries(test_trace PRIVATE phobicccp_core)
+add_test(NAME trace COMMAND test_trace)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME grblsim COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/grblsim_selftest.py)

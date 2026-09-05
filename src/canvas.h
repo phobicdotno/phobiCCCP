@@ -13,6 +13,8 @@ class QUndoStack;
 // drawBackground; elements are scene items keyed by element id in data(0).
 namespace c2d {
 
+struct BackgroundImage;
+
 class Canvas : public QGraphicsView
 {
     Q_OBJECT
@@ -30,6 +32,8 @@ public:
     QUndoStack *undoStack() const { return m_undo; }
     void zoomFit();
     void rebuild();                    // re-sync the scene from the document
+    // Tracing background picture, painted under the grid (non-owning; nullptr clears).
+    void setBackgroundImage(const BackgroundImage *bg);
 
     // Numeric edits from the properties panel (undoable).
     void editElement(const QString &id, const QHash<QString, double> &params);
@@ -92,6 +96,7 @@ private:
     QPoint m_panLast;                       // viewport coords during pan
 
     QVector<Op> m_previewOps;               // g-code overlay (empty = off)
+    const BackgroundImage *m_bg = nullptr;  // background picture (backgroundimage.h)
 
     // Resize-handle drag state (single selected circle/rect/polygon).
     bool resizeHandle(QString *id, QPointF *pos, QString *type) const;

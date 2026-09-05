@@ -1,4 +1,5 @@
 #include "canvas.h"
+#include "backgroundimage.h"
 #include <QGraphicsScene>
 #include <QGraphicsPathItem>
 #include <QGraphicsSceneHoverEvent>
@@ -305,6 +306,12 @@ void Canvas::drawForeground(QPainter *p, const QRectF &rect)
     p->drawRect(QRectF(pos.x() - s, pos.y() - s, 2 * s, 2 * s));
 }
 
+void Canvas::setBackgroundImage(const BackgroundImage *bg)
+{
+    m_bg = bg;
+    viewport()->update();
+}
+
 void Canvas::setDocument(Document *doc)
 {
     m_doc = doc;
@@ -534,6 +541,8 @@ void Canvas::drawBackground(QPainter *p, const QRectF &rect)
     p->setPen(QPen(kBoardEdge, 0));
     p->setBrush(kBoardFill);
     p->drawRect(board);
+    if (m_bg)
+        m_bg->paint(p);   // under the grid and the vectors
 
     // Grid: minor lines at grid_spacing, majors every 5th. Skip minors when
     // they would sit closer than ~6 px on screen.
