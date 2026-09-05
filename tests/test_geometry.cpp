@@ -10,10 +10,16 @@
 #include "../src/gcodeexport.h"
 #include "../src/post_grbl.h"
 #include "../src/toollibrary.h"
+#include "../src/toolpathfactory.h"
+#include "../src/zlibutil.h"
 
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 
 #include <algorithm>
 #include <cmath>
@@ -430,6 +436,183 @@ int main(int argc, char *argv[])
         check(after.startsWith(QLatin1String("G1")) && after.contains(QLatin1String("Z-1.000"))
                   && after.contains(QLatin1String("F500")),
               "first move after a tool change carries G, Z and F again");
+    // --- engrave outline: trace the vector exactly, no offset --------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("engrave_toolpath",
+                      {{"mode", "outline"}, {"end_depth", "0.500"}, {"stepdown", 0.5}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "engrave outline exports");
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        check(approx(bb.left(), 10, 1e-3) && approx(bb.right(), 50, 1e-3)
+              && approx(bb.top(), 10, 1e-3) && approx(bb.bottom(), 30, 1e-3),
+              "engrave outline follows the rectangle");
+        check(approx(minZ, -0.5, 1e-3), "engrave outline depth");
+        // Every cut point lies on the rectangle's edges.
+        bool onEdge = true;
+        for (const CutPoint &p : cutPoints(g.gcode))
+            if (!(approx(p.x, 10, 1e-3) || approx(p.x, 50, 1e-3)
+                  || approx(p.y, 10, 1e-3) || approx(p.y, 30, 1e-3)))
+                onEdge = false;
+        check(onEdge, "engrave outline stays on the vector");
+    }
+
+    // --- engrave fill: 1 mm hatch on a 10x10 square, Ø0.5 tool -------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({5, 5}, 10, 10, layer));
+        QJsonObject tool;
+        tool.insert("diameter", 0.5);
+        tool.insert("number", 501);
+        tool.insert("angle", 0);
+        r.addToolpath("engrave_toolpath",
+                      {{"mode", "fill"}, {"end_depth", "0.500"}, {"stepdown", 0.5},
+                       {"line_spacing", 1.0}, {"angle", 0}, {"crosshatch", false},
+                       {"tool", tool}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "engrave fill exports");
+        // Hatch runs: horizontal feed moves spanning the inset width (9.5 mm)
+        // strictly inside the inset boundary (y = 0.25 / 9.75 are the outline).
+        int hatch = 0, inside = 0, cuts = 0;
+        double px = 0, py = 0, pz = 5;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc) {
+                if (op.z < -1e-6 && pz < -1e-6) {
+                    ++cuts;
+                    if (op.x >= 0.25 - 1e-3 && op.x <= 9.75 + 1e-3
+                        && op.y >= 0.25 - 1e-3 && op.y <= 9.75 + 1e-3)
+                        ++inside;
+                    if (approx(op.y, py, 1e-6) && std::fabs(op.x - px) > 9.0
+                        && op.y > 0.3 && op.y < 9.7)
+                        ++hatch;
+                }
+            }
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc
+                || op.kind == c2d::Op::Rapid) {
+                px = op.x; py = op.y; pz = op.z;
+            }
+        }
+        std::fprintf(stderr, "engrave fill: %d hatch runs, %d/%d cut moves inside\n",
+                     hatch, inside, cuts);
+        check(hatch == 9, "engrave fill yields 9 hatch lines at 1 mm");
+        check(cuts > 0 && inside == cuts, "engrave fill stays inside the inset region");
+        // The zigzag keeps the engraver down: far fewer retracts than runs.
+        int rapids = 0;
+        for (const c2d::Op &op : g.ops)
+            if (op.kind == c2d::Op::Rapid)
+                ++rapids;
+        check(rapids < 9, "engrave fill chains hatch runs without retracting");
+        double minZ;
+        cutBounds(g.gcode, &minZ);
+        check(approx(minZ, -0.5, 1e-3), "engrave fill depth");
+    }
+
+    // --- toolpath lifecycle round trip through a .c2d container ------------
+    // Build a minimal CC-schema container, create toolpaths with the factory,
+    // save / reload, delete + reorder, save / reload: count, order, the
+    // engrave type and params.num_toolpaths must all come back.
+    {
+        const QString dir = QDir::tempPath();
+        const QString src = dir + QStringLiteral("/phobicccp_test_src.c2d");
+        const QString out = dir + QStringLiteral("/phobicccp_test_out.c2d");
+        QFile::remove(src);
+        QFile::remove(out);
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                        QStringLiteral("mk"));
+            db.setDatabaseName(src);
+            check(db.open(), "create container");
+            QSqlQuery q(db);
+            q.exec(QStringLiteral("CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT)"));
+            q.exec(QStringLiteral("CREATE TABLE params(key TEXT PRIMARY KEY, value TEXT)"));
+            q.exec(QStringLiteral("CREATE TABLE sqlar(name TEXT PRIMARY KEY, mode INT, "
+                                  "mtime INT, sz INT, data BLOB)"));
+            q.exec(QStringLiteral("CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                                  "uuid TEXT UNIQUE, name TEXT, type TEXT, version TEXT, "
+                                  "sz INT, data BLOB)"));
+            for (const char *kv : {"width|100", "height|100", "thickness|10",
+                                   "num_toolpaths|0", "material|Softwood",
+                                   "retract|2.54", "display_mm|1"}) {
+                const QStringList p = QString::fromLatin1(kv).split(QChar('|'));
+                QSqlQuery ins(db);
+                ins.prepare(QStringLiteral("INSERT INTO params(key,value) VALUES(?,?)"));
+                ins.addBindValue(p.at(0));
+                ins.addBindValue(p.at(1));
+                check(ins.exec(), "param row");
+            }
+            const QByteArray group = "{\"enabled\":true,\"expanded\":true,"
+                                     "\"name\":\"Group 1\",\"uuid\":\"{g-1}\"}";
+            QSqlQuery ins(db);
+            ins.prepare(QStringLiteral("INSERT INTO items(uuid,name,type,version,sz,data) "
+                                       "VALUES('{g-1}','','toolpath_group','J1',?,?)"));
+            ins.addBindValue(group.size());
+            ins.addBindValue(c2d::zlibDeflate(group));
+            check(ins.exec(), "group row");
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("mk"));
+
+        c2d::Document doc;
+        QString err;
+        check(doc.load(src, &err), "load minimal container");
+        check(doc.toolpathGroups().size() == 1
+              && doc.defaultToolpathGroup() == QLatin1String("{g-1}"),
+              "group row read");
+        const c2d::Element sq = c2d::Element::makeRectangle({50, 50}, 20, 20, doc.defaultLayer());
+        doc.addElement(sq);
+        const c2d::Toolpath a = c2d::makeToolpath(doc, QStringLiteral("contour"), {sq.id});
+        doc.addToolpath(a);
+        const c2d::Toolpath b = c2d::makeToolpath(doc, QStringLiteral("pocket_toolpath"), {sq.id});
+        doc.addToolpath(b);
+        const c2d::Toolpath e = c2d::makeToolpath(doc, QStringLiteral("engrave_toolpath"), {sq.id});
+        doc.addToolpath(e);
+        check(a.json.value("name").toString() == QLatin1String("Contour Toolpath 1")
+              && b.json.value("name").toString() == QLatin1String("Pocket Toolpath 1")
+              && e.json.value("name").toString() == QLatin1String("Engrave 1"),
+              "factory names");
+        check(a.json.value("toolpath_group").toString() == QLatin1String("{g-1}")
+              && a.json.value("end_depth").isString()
+              && a.json.value("ofset_dir").toInt() == -1
+              && a.json.value("tool").toObject().value("number").toInt() == 201
+              && b.json.value("stepover").isDouble()
+              && e.json.value("mode").toString() == QLatin1String("outline")
+              && e.json.value("tool").toObject().value("number").toInt() == 501,
+              "factory defaults");
+        check(c2d::exportGcode(doc).done.size() == 3, "factory toolpaths all export");
+
+        check(doc.save(out, &err), "save with new toolpaths");
+        c2d::Document back;
+        check(back.load(out, &err), "reload");
+        check(back.toolpaths().size() == 3
+              && back.toolpaths().at(0).uuid == a.uuid
+              && back.toolpaths().at(1).uuid == b.uuid
+              && back.toolpaths().at(2).uuid == e.uuid
+              && back.toolpaths().at(2).type == QLatin1String("engrave_toolpath")
+              && back.params().value("num_toolpaths") == QLatin1String("3"),
+              "reload keeps the new toolpaths, their order and the engrave type");
+
+        // delete the pocket, move the engrave to the top
+        check(back.removeToolpath(b.uuid), "remove");
+        check(back.moveToolpath(e.uuid, 0), "move");
+        check(back.save(out, &err), "save after delete/move");
+        c2d::Document again;
+        check(again.load(out, &err), "reload 2");
+        check(again.toolpaths().size() == 2
+              && again.toolpaths().at(0).uuid == e.uuid
+              && again.toolpaths().at(1).uuid == a.uuid
+              && !again.toolpathByUuid(b.uuid)
+              && again.toolpathByUuid(e.uuid)->json.value("mode").toString()
+                     == QLatin1String("outline")
+              && again.params().value("num_toolpaths") == QLatin1String("2"),
+              "delete + move persist through save/reload");
+        const c2d::Toolpath d = c2d::duplicateToolpath(*again.toolpathByUuid(a.uuid));
+        check(d.uuid != a.uuid && d.json.value("uuid").toString() == d.uuid
+              && d.json.value("name").toString().endsWith(QLatin1String(" copy")),
+              "duplicate gets a new uuid");
+        QFile::remove(src);
+        QFile::remove(out);
     }
 
     // --- full-document export over the sample (argv[1]) ---------------------

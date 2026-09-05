@@ -18,6 +18,7 @@ bool Document::load(const QString &path, QString *error)
     m_params.clear();
     m_elements.clear();
     m_toolpaths.clear();
+    m_groups.clear();
     m_path = path;
 
     if (!QFileInfo::exists(path)) {
@@ -48,8 +49,10 @@ bool Document::load(const QString &path, QString *error)
         // items: elements + toolpaths
         {
             QSqlQuery q(db);
+            // Row order is CC's machining order for toolpaths; make it explicit.
             q.exec(QStringLiteral(
-                "SELECT type, sz, data FROM items WHERE type IN ('element','toolpath')"));
+                "SELECT type, sz, data FROM items "
+                "WHERE type IN ('element','toolpath','toolpath_group') ORDER BY id"));
             while (q.next()) {
                 const QString type = q.value(0).toString();
                 const int sz = q.value(1).toInt();
@@ -61,6 +64,11 @@ bool Document::load(const QString &path, QString *error)
 
                 if (type == QLatin1String("element")) {
                     m_elements.append(Element::fromJson(obj));
+                } else if (type == QLatin1String("toolpath_group")) {
+                    ToolpathGroup g;
+                    g.uuid = obj.value("uuid").toString();
+                    g.json = obj;
+                    m_groups.append(g);
                 } else {
                     Toolpath tp;
                     tp.uuid = obj.value("uuid").toString();
@@ -138,14 +146,20 @@ bool Document::save(const QString &destPath, QString *error)
             }
         }
 
-        // 3b) Write edited toolpath parameters back in place (same uuid, same
-        //     row — only sz/data change, so group membership and ordering
-        //     keep). Toolpaths created in-memory (e.g. a generated inlay male)
-        //     have no row yet and are INSERTed like elements.
+        // 3b) Toolpaths: rewrite the rows the same way, in vector order. A
+        //     deleted toolpath simply has no row any more; every kept, moved
+        //     or new one gets a fresh id in sequence, and since CC lists
+        //     toolpaths by row id the in-memory order is what it shows and
+        //     machines. Group membership rides inside each payload
+        //     (`toolpath_group`), so the group rows are left untouched.
         if (ok) {
-            QSqlQuery tpq(db);
-            tpq.prepare(QStringLiteral(
-                "UPDATE items SET sz=?, data=? WHERE uuid=? AND type='toolpath'"));
+            QSqlQuery deltp(db);
+            if (!deltp.exec(QStringLiteral("DELETE FROM items WHERE type='toolpath'"))) {
+                if (error) *error = deltp.lastError().text();
+                ok = false;
+            }
+        }
+        if (ok) {
             QSqlQuery tpins(db);
             tpins.prepare(QStringLiteral(
                 "INSERT INTO items(uuid,name,type,version,sz,data) "
@@ -154,26 +168,26 @@ bool Document::save(const QString &destPath, QString *error)
                 const QByteArray json =
                     QJsonDocument(t.json).toJson(QJsonDocument::Indented);
                 const QByteArray comp = zlibDeflate(json);
-                tpq.addBindValue(json.size());
-                tpq.addBindValue(comp);
-                tpq.addBindValue(t.uuid);
-                if (!tpq.exec()) {
-                    if (error) *error = tpq.lastError().text();
+                tpins.addBindValue(t.uuid);
+                tpins.addBindValue(t.type);            // items.name mirrors the type
+                tpins.addBindValue(json.size());
+                tpins.addBindValue(comp);
+                if (!tpins.exec()) {
+                    if (error) *error = tpins.lastError().text();
                     ok = false;
                     break;
                 }
-                if (tpq.numRowsAffected() == 0) {
-                    tpins.addBindValue(t.uuid);
-                    tpins.addBindValue(t.json.value("name").toString());
-                    tpins.addBindValue(json.size());
-                    tpins.addBindValue(comp);
-                    if (!tpins.exec()) {
-                        if (error) *error = tpins.lastError().text();
-                        ok = false;
-                        break;
-                    }
-                }
             }
+        }
+
+        // 3c) params.num_toolpaths must equal the toolpath row count.
+        if (ok && m_params.contains(QStringLiteral("num_toolpaths"))) {
+            const QString n = QString::number(m_toolpaths.size());
+            QSqlQuery pq(db);
+            pq.prepare(QStringLiteral("UPDATE params SET value=? WHERE key='num_toolpaths'"));
+            pq.addBindValue(n);
+            if (pq.exec())
+                m_params.insert(QStringLiteral("num_toolpaths"), n);
         }
 
         // 4) Blank stale renders / g-code so CC regenerates them on next open.

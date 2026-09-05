@@ -61,6 +61,48 @@ Fixes from an independent code review of the machine-control work:
 - Disconnecting mid tool-change no longer leaves a prompt armed for the next
   connection; a lost key release or focus change now cancels hold-to-jog.
 - A program ending in a tool marker no longer reports "finished" while parked.
+- Toolpath lifecycle (Toolpaths panel): **New ▾** creates a Contour, Pocket,
+  Drill, Texture, V-Carve, Keyhole, Cutout or Engrave toolpath for the vectors
+  selected on the canvas (or empty, with a hint), using Carbide Create's own
+  default parameter set for the type — the exact key names and value types CC
+  853 writes (depths as 3-decimal strings in the file's sign convention, rates
+  as numbers, `ofset_dir` spelt CC's way), named "Contour Toolpath N" etc.,
+  in the file's first toolpath group. The tool is the document's last-used
+  cutter of the right kind (flat / V-bit / engraver, `tool_pocket` included),
+  else the embedded library's #201 / #301 / #501 with the material's feeds.
+- **Duplicate**, **Delete**, **Rename** (double-click the name, F2 or the
+  context menu), an **enabled** checkbox per row, and **Move up / down** —
+  the list order is the machining order. All undoable (Ctrl+Z), via new
+  document-level commands (`src/toolpathcommands.h`).
+- `Document::insertToolpath / removeToolpath / moveToolpath / toolpathIndex`,
+  `toolpathGroups()` / `defaultToolpathGroup()` (group rows are now read).
+  `save()` rewrites the toolpath rows like the element rows — DELETE + INSERT
+  in memory order — so deletions and reorders actually reach the .c2d (the
+  old in-place UPDATE could neither delete nor reorder); `params.num_toolpaths`
+  is kept equal to the row count, `items.name` mirrors the type as CC does.
+- New toolpath type **Engrave** (`engrave_toolpath`): `mode` = `outline`
+  (trace the vectors exactly, no offset), `fill` (parallel hatch of the closed
+  regions at `line_spacing` mm and `angle`°, clipped to the region inset by
+  the tool radius — for a V / engraving cutter the radius it has at the cut
+  depth — then an outline pass on that inset boundary) or `both` (fill plus
+  the exact trace); `crosshatch` adds a second hatch at angle + 90°;
+  `end_depth` / `stepdown` as usual. The hatch is an analytic line/edge
+  clip; runs on neighbouring lines are chained into one zigzag by walking the
+  inset boundary between their ends, so the engraver stays down (a 10 × 10 mm
+  square at 1 mm spacing is one continuous move, not 9 plunges). Exported to
+  g-code, counted in the job stats, drawn in the on-canvas preview and the 3D
+  views like every other type. **Carbide Create has no engraving type in its
+  file format** — phobiCCCP's loader keeps `engrave_toolpath` rows (any type
+  string round-trips), but CC itself will ignore or refuse a file containing
+  one: delete the engrave toolpath before opening the file in CC.
+- `src/toolpathfactory.h`: `makeToolpath(doc, type, ids)`,
+  `duplicateToolpath()`, `toolpathKinds()`, `depthString()` (core library).
+- tests/test_geometry.cpp: engrave outline follows a rectangle exactly; fill
+  at 1 mm on a 10 × 10 square gives 9 hatch runs inside the inset region with
+  fewer than 9 retracts; a minimal CC-schema container round-trips three
+  factory toolpaths (names, group, defaults, engrave type) and keeps count,
+  order and `num_toolpaths` after delete + move + save + reload.
+
 ## v0.3.0 (build 13) — 2026-09-05
 Carbide Create parity wave 1 — six features merged from parallel branches:
 - Material-removal simulation (Carbide Create's "3D Simulation"): new

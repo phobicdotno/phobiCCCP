@@ -373,8 +373,9 @@ void MainWindow::onExportGcode()
     const GcodeResult r = exportGcode(m_doc);
     if (r.done.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code"),
-            QStringLiteral("No exportable toolpaths.\n\nSupported today: contour "
-                           "(no offset) and drilling.\nSkipped:\n  %1")
+            QStringLiteral("No exportable toolpaths.\n\nSupported: contour, pocket, "
+                           "cutout, drill, keyhole, texture, v-carve, engrave.\n"
+                           "Skipped:\n  %1")
                 .arg(r.skipped.join(QStringLiteral("\n  "))));
         return;
     }

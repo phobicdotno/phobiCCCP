@@ -330,6 +330,15 @@ static bool asCircle(const QPolygonF &poly, QPointF *center, double *radius, boo
     for (int i = 0; i < n; ++i)
         if (qAbs(QLineF(c, poly.at(i)).length() - r) > qMax(0.01, r * 0.004))
             return false;
+    // A regular polygon also has equidistant vertices; only accept rings
+    // dense enough that the chords themselves stay on the circle (sagitta
+    // ≤ 0.02 mm), i.e. flattened arcs, not hexagons.
+    for (int i = 0; i < n; ++i) {
+        const QPointF &a = poly.at(i), &b = poly.at(i + 1);
+        const double chord = QLineF(a, b).length();
+        if (chord > 1e-9 && r - qSqrt(qMax(0.0, r * r - chord * chord / 4)) > 0.02)
+            return false;
+    }
     double area2 = 0;
     for (int i = 0; i < n; ++i) {
         const QPointF &a = poly.at(i), &b = poly.at(i + 1);
@@ -417,6 +426,11 @@ static bool arcSpanOk(const QPolygonF &pts, int i, int j, double tol,
     for (int k = i + 1; k <= j; ++k) {
         if (qAbs(QLineF(c, pts.at(k)).length() - r) > tol)
             return false;
+        // The original straight chord must hug the arc too, or a regular
+        // polygon (vertices co-circular, sides not) would become a circle.
+        const double chord = QLineF(pts.at(k - 1), pts.at(k)).length();
+        if (r - qSqrt(qMax(0.0, r * r - chord * chord / 4)) > 2 * tol)
+            return false;
         const double a = qAtan2(pts.at(k).y() - c.y(), pts.at(k).x() - c.x());
         double da = a - aPrev;
         while (da > M_PI)  da -= 2 * M_PI;
@@ -477,6 +491,167 @@ static double perimeter(const QPolygonF &poly)
     for (int i = 1; i < poly.size(); ++i)
         len += QLineF(poly.at(i - 1), poly.at(i)).length();
     return len;
+}
+
+// ---- engraving fill: zigzag hatch clipped to a ring set -------------------
+// Parallel lines at `spacing` / `angleDeg` (anchored on the rings' bounding
+// box centre), cut against the closed even-odd rings by exact line/edge
+// intersection: the sorted crossings along each line pair up into inside
+// runs. Runs on neighbouring lines are chained into one open polyline when
+// the walk along the ring boundary between their adjacent ends is short (the
+// boundary is the tool-centre path of the inset, so walking it cuts nothing
+// outside the region); otherwise the chain ends and the next run starts
+// with a retract. Result: open polylines, ready to be one Job each.
+namespace {
+struct HatchHit {
+    double s;       // position along the hatch line
+    int ring, edge; // which ring / which edge of it was crossed
+    QPointF p;
+};
+struct HatchRun {
+    int line;
+    HatchHit a, b;  // a.s < b.s
+    bool used = false;
+};
+} // namespace
+
+static QList<QPolygonF> hatchRings(const QList<QPolygonF> &ringsIn, double spacing,
+                                   double angleDeg)
+{
+    QList<QPolygonF> rings;
+    for (QPolygonF r : ringsIn) {
+        if (r.size() > 2 && r.first() != r.last())
+            r.append(r.first());
+        if (r.size() > 3)
+            rings.append(r);
+    }
+    QList<QPolygonF> out;
+    if (rings.isEmpty() || spacing < 0.01)
+        return out;
+
+    // Per-ring cumulative arc length (vertex i sits at cum[i]); m = vertex count.
+    QVector<QVector<double>> cum(rings.size());
+    QVector<double> total(rings.size());
+    QRectF bb;
+    for (int r = 0; r < rings.size(); ++r) {
+        const QPolygonF &ring = rings.at(r);
+        cum[r].resize(ring.size());
+        cum[r][0] = 0;
+        for (int i = 1; i < ring.size(); ++i)
+            cum[r][i] = cum[r][i - 1] + QLineF(ring.at(i - 1), ring.at(i)).length();
+        total[r] = cum[r].last();
+        bb |= ring.boundingRect();
+    }
+    const double ang = qDegreesToRadians(angleDeg);
+    const QPointF dir(qCos(ang), qSin(ang));
+    const QPointF nrm(-dir.y(), dir.x());
+    const QPointF c = bb.center();
+    const double diag = QLineF(bb.topLeft(), bb.bottomRight()).length();
+    const int K = int(std::ceil(diag / 2 / spacing));
+
+    QVector<HatchRun> runs;
+    for (int k = -K; k <= K; ++k) {
+        const QPointF base = c + nrm * (k * spacing);
+        QVector<HatchHit> hits;
+        for (int r = 0; r < rings.size(); ++r) {
+            const QPolygonF &ring = rings.at(r);
+            for (int i = 0; i + 1 < ring.size(); ++i) {
+                const QPointF &P = ring.at(i), &Q = ring.at(i + 1);
+                const double fP = (P.x() - base.x()) * nrm.x() + (P.y() - base.y()) * nrm.y();
+                const double fQ = (Q.x() - base.x()) * nrm.x() + (Q.y() - base.y()) * nrm.y();
+                // half-open crossing test: a vertex exactly on the line counts once
+                if ((fP <= 0 && fQ > 0) || (fQ <= 0 && fP > 0)) {
+                    const double t = fP / (fP - fQ);
+                    const QPointF p = P + t * (Q - P);
+                    hits.append({(p.x() - base.x()) * dir.x() + (p.y() - base.y()) * dir.y(),
+                                 r, i, p});
+                }
+            }
+        }
+        std::sort(hits.begin(), hits.end(),
+                  [](const HatchHit &a, const HatchHit &b) { return a.s < b.s; });
+        for (int h = 0; h + 1 < hits.size(); h += 2)
+            if (hits.at(h + 1).s - hits.at(h).s > 0.05)
+                runs.append({k, hits.at(h), hits.at(h + 1), false});
+    }
+
+    // Arc-length position of a hit on its ring.
+    auto posOf = [&](const HatchHit &h) {
+        return cum[h.ring][h.edge] + QLineF(rings[h.ring].at(h.edge), h.p).length();
+    };
+    // Shortest boundary walk from hit A to hit B (same ring); the vertices in
+    // between are appended to `path` when `emit` is set. Returns the length.
+    auto walk = [&](const HatchHit &A, const HatchHit &B, QPolygonF *path) {
+        if (A.ring != B.ring)
+            return 1e18;
+        const int r = A.ring;
+        const int m = rings[r].size() - 1;
+        const double L = total[r];
+        const double sa = posOf(A), sb = posOf(B);
+        double fwd = sb - sa;
+        while (fwd < 0) fwd += L;
+        const double back = L - fwd;
+        if (!path)
+            return qMin(fwd, back);
+        if (fwd <= back) {
+            if (!(A.edge == B.edge && sb >= sa)) {
+                int idx = (A.edge + 1) % m;
+                for (int guard = 0; guard <= m; ++guard) {
+                    path->append(rings[r].at(idx));
+                    if (idx == B.edge)
+                        break;
+                    idx = (idx + 1) % m;
+                }
+            }
+            return fwd;
+        }
+        if (!(A.edge == B.edge && sb <= sa)) {
+            int idx = A.edge;
+            for (int guard = 0; guard <= m; ++guard) {
+                path->append(rings[r].at(idx));
+                if (idx == (B.edge + 1) % m)
+                    break;
+                idx = (idx - 1 + m) % m;
+            }
+        }
+        return back;
+    };
+
+    const double maxWalk = qMax(4.0 * spacing, 2.0);
+    for (int start = 0; start < runs.size(); ++start) {
+        if (runs.at(start).used)
+            continue;
+        runs[start].used = true;
+        QPolygonF path;
+        path << runs.at(start).a.p << runs.at(start).b.p;
+        HatchHit end = runs.at(start).b;
+        int line = runs.at(start).line;
+        for (;;) {
+            // Nearest (by boundary walk) unused run on the next line.
+            int best = -1;
+            bool bestFromA = true;
+            double bestD = maxWalk;
+            for (int i = start + 1; i < runs.size() && runs.at(i).line <= line + 1; ++i) {
+                if (runs.at(i).used || runs.at(i).line != line + 1)
+                    continue;
+                const double da = walk(end, runs.at(i).a, nullptr);
+                const double db = walk(end, runs.at(i).b, nullptr);
+                if (da <= bestD) { bestD = da; best = i; bestFromA = true; }
+                if (db < bestD)  { bestD = db; best = i; bestFromA = false; }
+            }
+            if (best < 0)
+                break;
+            runs[best].used = true;
+            const HatchHit &near = bestFromA ? runs.at(best).a : runs.at(best).b;
+            const HatchHit &far = bestFromA ? runs.at(best).b : runs.at(best).a;
+            walk(end, near, &path);
+            path << near.p << far.p;
+            end = far;
+            ++line;
+        }
+        out.append(path);
+    }
+    return out;
 }
 
 // Deterministic pseudo-random for the texture toolpath (no wall-clock seeds).
@@ -867,8 +1042,9 @@ GcodeResult exportGcode(Document &doc)
         const bool keyhole = (t.type == QLatin1String("keyhole_toolpath"));
         const bool texture = (t.type == QLatin1String("texture_toolpath"));
         const bool vcarve = (t.type == QLatin1String("advanced_vcarve_toolpath"));
+        const bool engrave = (t.type == QLatin1String("engrave_toolpath"));
         if (!contour && !pocket && !cutout && !drilling && !keyhole && !texture
-            && !vcarve) {
+            && !vcarve && !engrave) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -1094,6 +1270,60 @@ GcodeResult exportGcode(Document &doc)
                     }
                 }
                 lastPos = em.pos();
+            }
+        } else if (engrave) {
+            // ENGRAVE (phobiCCCP type, see toolpathfactory.cpp). mode
+            // "outline": trace every vector exactly, no offset. "fill": hatch
+            // the closed regions at line_spacing / angle, clipped to the
+            // region inset by the tool radius (for a V/engraving cutter the
+            // radius it actually has at the cut depth), then an outline pass
+            // on that inset boundary. "both": fill plus the exact trace.
+            const QString mode = j.value("mode").toString(QStringLiteral("outline"));
+            const bool fill = mode == QLatin1String("fill") || mode == QLatin1String("both");
+            const bool trace = mode != QLatin1String("fill");
+            cp.stepdown = qMax(0.02, j.value("stepdown").toDouble(cp.zTop - cp.zBot));
+            QVector<const Element *> closedEls;
+            for (const Element *e : elems) {
+                bool anyClosed = false;
+                for (const QPolygonF &p : finePolygons(e->painterPath)) {
+                    const bool closed = p.isClosed() && p.size() > 3;
+                    anyClosed = anyClosed || closed;
+                    // Open vectors are traced in every mode (a fill has
+                    // nothing to hatch there); closed ones only when tracing.
+                    if (p.size() >= 2 && (trace || !closed)) {
+                        Job job;
+                        job.rings.append(p);
+                        job.closed = closed;
+                        jobs.append(job);
+                    }
+                }
+                if (anyClosed)
+                    closedEls.append(e);
+            }
+            if (fill && !closedEls.isEmpty()) {
+                const double bitAngle = tool.value("angle").toDouble(0);
+                double effR = toolR;
+                if (bitAngle > 0)
+                    effR = qMin(toolR, (cp.zTop - cp.zBot)
+                                           * qTan(qDegreesToRadians(qBound(1.0, bitAngle, 179.0) / 2)));
+                effR = qMax(0.01, effR);
+                const double spacing = qMax(0.05, j.value("line_spacing").toDouble(1.0));
+                const double angle = j.value("angle").toDouble(45);
+                const QList<QPolygonF> inset = insetRings(regionOf(closedEls), effR);
+                QList<QPolygonF> lines = hatchRings(inset, spacing, angle);
+                if (j.value("crosshatch").toBool(false))
+                    lines += hatchRings(inset, spacing, angle + 90);
+                for (const QPolygonF &p : lines) {
+                    Job job;
+                    job.rings.append(p);
+                    job.closed = false;
+                    jobs.append(job);
+                }
+                for (const QPolygonF &p : inset) {   // final clean-up outline
+                    Job job;
+                    job.rings.append(p);
+                    jobs.append(job);
+                }
             }
         } else if (contour && j.value("ofset_dir").toInt(0) == 0) {
             for (const Element *e : elems)

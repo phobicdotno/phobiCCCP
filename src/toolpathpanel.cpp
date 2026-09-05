@@ -3,16 +3,23 @@
 #include "c2ddocument.h"
 #include "toollibrary.h"
 #include "toollibrarydialog.h"
+#include "toolpathcommands.h"
+#include "toolpathfactory.h"
 
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QListWidget>
+#include <QLabel>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QToolButton>
+#include <QTreeWidget>
+#include <QUndoStack>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -87,6 +94,15 @@ static QJsonValue textToValue(const QString &text, const QJsonValue &original)
     return QJsonValue(text);
 }
 
+static QToolButton *smallButton(QWidget *parent, const QString &text, const QString &tip)
+{
+    auto *b = new QToolButton(parent);
+    b->setText(text);
+    b->setToolTip(tip);
+    b->setAutoRaise(true);
+    return b;
+}
+
 ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     : QWidget(parent), m_canvas(canvas)
 {
@@ -94,10 +110,88 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     lay->setContentsMargins(6, 6, 6, 6);
     lay->setSpacing(6);
 
-    m_list = new QListWidget(this);
-    m_list->setMaximumHeight(110);
+    // Lifecycle bar: New ▾ | Duplicate | Delete | ▲ | ▼
+    auto *bar = new QHBoxLayout;
+    bar->setSpacing(2);
+    auto *newBtn = new QToolButton(this);
+    newBtn->setText(QStringLiteral("New ▾"));
+    newBtn->setPopupMode(QToolButton::InstantPopup);
+    newBtn->setToolTip(QStringLiteral(
+        "Create a toolpath of this type for the vectors selected on the canvas\n"
+        "(Carbide Create's defaults, the last-used tool, added last in the group)"));
+    auto *newMenu = new QMenu(newBtn);
+    for (const ToolpathKind &k : toolpathKinds()) {
+        QAction *a = newMenu->addAction(k.label);
+        if (k.type == QLatin1String("engrave_toolpath")) {
+            newMenu->insertSeparator(a);
+            a->setToolTip(QStringLiteral(
+                "Engraving (outline / hatch fill) — phobiCCCP-only type; "
+                "Carbide Create does not read it"));
+        }
+        const QString type = k.type;
+        connect(a, &QAction::triggered, this, [this, type] { newToolpath(type); });
+    }
+    newBtn->setMenu(newMenu);
+    bar->addWidget(newBtn);
+    m_dupBtn = smallButton(this, QStringLiteral("Duplicate"),
+                           QStringLiteral("Copy the selected toolpath (placed right after it)"));
+    connect(m_dupBtn, &QToolButton::clicked, this, &ToolpathPanel::duplicateCurrent);
+    bar->addWidget(m_dupBtn);
+    m_delBtn = smallButton(this, QStringLiteral("Delete"),
+                           QStringLiteral("Delete the selected toolpath (undoable)"));
+    connect(m_delBtn, &QToolButton::clicked, this, &ToolpathPanel::deleteCurrent);
+    bar->addWidget(m_delBtn);
+    bar->addStretch(1);
+    m_upBtn = smallButton(this, QStringLiteral("▲"),
+                          QStringLiteral("Move up — toolpaths are machined top to bottom"));
+    connect(m_upBtn, &QToolButton::clicked, this, [this] { moveCurrent(-1); });
+    bar->addWidget(m_upBtn);
+    m_downBtn = smallButton(this, QStringLiteral("▼"), QStringLiteral("Move down"));
+    connect(m_downBtn, &QToolButton::clicked, this, [this] { moveCurrent(+1); });
+    bar->addWidget(m_downBtn);
+    lay->addLayout(bar);
+
+    m_list = new QTreeWidget(this);
+    m_list->setColumnCount(3);
+    m_list->setHeaderLabels({QStringLiteral("toolpath"), QStringLiteral("type"),
+                             QStringLiteral("vectors")});
+    m_list->setRootIsDecorated(false);
+    m_list->setUniformRowHeights(true);
+    m_list->setAllColumnsShowFocus(true);
+    m_list->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_list->setEditTriggers(QAbstractItemView::DoubleClicked
+                            | QAbstractItemView::EditKeyPressed);
+    m_list->header()->setStretchLastSection(false);
+    m_list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_list->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_list->setMaximumHeight(150);
+    m_list->setToolTip(QStringLiteral(
+        "Machining order, top to bottom. Checkbox = enabled; double-click the "
+        "name to rename."));
+    m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     lay->addWidget(m_list);
-    connect(m_list, &QListWidget::currentRowChanged, this, &ToolpathPanel::showToolpath);
+    connect(m_list, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem *, QTreeWidgetItem *) { onCurrentChanged(); });
+    connect(m_list, &QTreeWidget::itemChanged, this, &ToolpathPanel::onItemChanged);
+    connect(m_list, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &p) {
+        if (!m_list->itemAt(p) || m_uuid.isEmpty())
+            return;
+        QMenu menu(this);
+        menu.addAction(QStringLiteral("Rename…"), this, &ToolpathPanel::renameCurrent);
+        menu.addAction(QStringLiteral("Duplicate"), this, &ToolpathPanel::duplicateCurrent);
+        menu.addAction(QStringLiteral("Delete"), this, &ToolpathPanel::deleteCurrent);
+        menu.addSeparator();
+        menu.addAction(QStringLiteral("Move up"), this, [this] { moveCurrent(-1); });
+        menu.addAction(QStringLiteral("Move down"), this, [this] { moveCurrent(+1); });
+        menu.exec(m_list->viewport()->mapToGlobal(p));
+    });
+
+    m_hint = new QLabel(this);
+    m_hint->setWordWrap(true);
+    m_hint->setStyleSheet(QStringLiteral("color: #a0522d;"));
+    m_hint->hide();
+    lay->addWidget(m_hint);
 
     m_table = new QTableWidget(0, 2, this);
     m_table->setHorizontalHeaderLabels({QStringLiteral("parameter"), QStringLiteral("value")});
@@ -147,7 +241,104 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
         "second piece, flip it over into the female, glue, then plane flush."));
     lay->addWidget(inlay);
     connect(inlay, &QPushButton::clicked, this, [this] { createInlayMale(); });
+
+    updateButtons();
 }
+
+// ---- lifecycle -----------------------------------------------------------
+
+void ToolpathPanel::newToolpath(const QString &type)
+{
+    if (!m_doc)
+        return;
+    const QStringList ids = m_canvas->selectedElementIds();
+    const Toolpath t = makeToolpath(*m_doc, type, ids);
+    m_uuid = t.uuid;   // refresh() (from documentChanged) selects it
+    m_canvas->undoStack()->push(
+        new TpInsertCmd(m_canvas, m_doc, t, m_doc->toolpaths().size(), QStringLiteral("new")));
+    if (ids.isEmpty())
+        m_hint->setText(QStringLiteral(
+            "\"%1\" has no vectors yet: select shapes on the canvas and press "
+            "\"Assign selected vectors\".").arg(t.json.value("name").toString()));
+    else
+        m_hint->clear();
+    m_hint->setVisible(!m_hint->text().isEmpty());
+    m_table->setFocus();
+    if (m_table->rowCount() > 0)
+        m_table->setCurrentCell(0, 1);
+}
+
+void ToolpathPanel::duplicateCurrent()
+{
+    if (!m_doc || m_uuid.isEmpty())
+        return;
+    const Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+    if (!t)
+        return;
+    const Toolpath copy = duplicateToolpath(*t);
+    const int index = m_doc->toolpathIndex(m_uuid) + 1;
+    m_uuid = copy.uuid;
+    m_canvas->undoStack()->push(
+        new TpInsertCmd(m_canvas, m_doc, copy, index, QStringLiteral("duplicate")));
+}
+
+void ToolpathPanel::deleteCurrent()
+{
+    if (!m_doc || m_uuid.isEmpty())
+        return;
+    const Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+    if (!t)
+        return;
+    // Keep the selection on a neighbour so the editor does not go blank.
+    const int index = m_doc->toolpathIndex(m_uuid);
+    const int n = m_doc->toolpaths().size();
+    const int next = index + 1 < n ? index + 1 : index - 1;
+    const QString nextUuid = next >= 0 ? m_doc->toolpaths().at(next).uuid : QString();
+    const Toolpath gone = *t;
+    m_uuid = nextUuid;
+    m_canvas->undoStack()->push(new TpRemoveCmd(m_canvas, m_doc, gone));
+}
+
+void ToolpathPanel::renameCurrent()
+{
+    if (!m_doc || m_uuid.isEmpty())
+        return;
+    const Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+    if (!t)
+        return;
+    bool ok = false;
+    const QString name = QInputDialog::getText(
+        this, QStringLiteral("Rename toolpath"), QStringLiteral("Name:"),
+        QLineEdit::Normal, t->json.value("name").toString(), &ok);
+    if (!ok || name.trimmed().isEmpty())
+        return;
+    QJsonObject j = t->json;
+    j.insert(QStringLiteral("name"), name.trimmed());
+    m_canvas->editToolpath(m_uuid, j);
+}
+
+void ToolpathPanel::moveCurrent(int delta)
+{
+    if (!m_doc || m_uuid.isEmpty())
+        return;
+    const int from = m_doc->toolpathIndex(m_uuid);
+    const int to = from + delta;
+    if (from < 0 || to < 0 || to >= m_doc->toolpaths().size())
+        return;
+    m_canvas->undoStack()->push(new TpMoveCmd(m_canvas, m_doc, m_uuid, from, to));
+}
+
+void ToolpathPanel::updateButtons()
+{
+    const bool has = m_doc && !m_uuid.isEmpty();
+    const int index = has ? m_doc->toolpathIndex(m_uuid) : -1;
+    m_dupBtn->setEnabled(has);
+    m_delBtn->setEnabled(has);
+    m_upBtn->setEnabled(has && index > 0);
+    m_downBtn->setEnabled(has && index >= 0 && index + 1 < m_doc->toolpaths().size());
+}
+
+// ---- tool library / inlay ------------------------------------------------
 
 void ToolpathPanel::pickTool()
 {
@@ -284,10 +475,13 @@ void ToolpathPanel::createInlayMale()
             .arg(gap, 0, 'f', 2));
 }
 
+// ---- list / editor -------------------------------------------------------
+
 void ToolpathPanel::setDocument(Document *doc)
 {
     m_doc = doc;
     m_uuid.clear();
+    m_hint->hide();
     refresh();
 }
 
@@ -296,46 +490,91 @@ void ToolpathPanel::refresh()
     m_loading = true;
     const QString keep = m_uuid;
     m_list->clear();
-    int keepRow = -1;
+    QTreeWidgetItem *keepItem = nullptr;
     if (m_doc) {
-        int i = 0;
         for (const Toolpath &t : m_doc->toolpaths()) {
-            m_list->addItem(QStringLiteral("%1  [%2] · %3 vectors")
-                                .arg(t.json.value("name").toString(), t.type)
-                                .arg(t.json.value("elements").toArray().size()));
+            auto *it = new QTreeWidgetItem(m_list);
+            it->setText(0, t.json.value("name").toString());
+            it->setCheckState(0, t.json.value("enabled").toBool(true) ? Qt::Checked
+                                                                       : Qt::Unchecked);
+            it->setText(1, toolpathLabel(t.type));
+            it->setToolTip(1, t.type);
+            it->setText(2, QString::number(t.json.value("elements").toArray().size()));
+            it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+            it->setData(0, Qt::UserRole, t.uuid);
+            it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsEditable
+                         | Qt::ItemIsUserCheckable);
             if (t.uuid == keep)
-                keepRow = i;
-            ++i;
+                keepItem = it;
         }
     }
     m_loading = false;
-    if (m_list->count() > 0)
-        m_list->setCurrentRow(keepRow >= 0 ? keepRow : 0);
+    if (keepItem)
+        m_list->setCurrentItem(keepItem);
+    else if (m_list->topLevelItemCount() > 0)
+        m_list->setCurrentItem(m_list->topLevelItem(0));
     else
-        showToolpath(-1);
+        showToolpath(QString());
+    // setCurrentItem on an unchanged current item does not signal; re-sync.
+    onCurrentChanged();
 }
 
-void ToolpathPanel::showToolpath(int row)
+void ToolpathPanel::onCurrentChanged()
 {
     if (m_loading)
         return;
+    const QTreeWidgetItem *it = m_list->currentItem();
+    showToolpath(it ? it->data(0, Qt::UserRole).toString() : QString());
+}
+
+void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
+{
+    if (m_loading || column != 0 || !m_doc)
+        return;
+    const QString uuid = item->data(0, Qt::UserRole).toString();
+    Toolpath *t = m_doc->toolpathByUuid(uuid);
+    if (!t)
+        return;
+    QJsonObject j = t->json;
+    const bool enabled = item->checkState(0) == Qt::Checked;
+    const QString name = item->text(0).trimmed();
+    if (enabled != j.value("enabled").toBool(true))
+        j.insert(QStringLiteral("enabled"), enabled);
+    if (!name.isEmpty() && name != j.value("name").toString())
+        j.insert(QStringLiteral("name"), name);
+    m_uuid = uuid;
+    m_canvas->editToolpath(uuid, j);   // no-op when nothing changed
+}
+
+void ToolpathPanel::showToolpath(const QString &uuid)
+{
     m_loading = true;
     m_table->setRowCount(0);
     m_uuid.clear();
-    if (m_doc && row >= 0 && row < m_doc->toolpaths().size()) {
-        const Toolpath &t = m_doc->toolpaths().at(row);
-        m_uuid = t.uuid;
-        const QStringList keys = flatKeys(t.json);
-        m_table->setRowCount(keys.size());
-        for (int i = 0; i < keys.size(); ++i) {
-            auto *k = new QTableWidgetItem(keys.at(i));
-            k->setFlags(k->flags() & ~Qt::ItemIsEditable);
-            m_table->setItem(i, 0, k);
-            m_table->setItem(i, 1,
-                             new QTableWidgetItem(valueToText(flatGet(t.json, keys.at(i)))));
+    if (m_doc) {
+        if (const Toolpath *t = m_doc->toolpathByUuid(uuid)) {
+            m_uuid = t->uuid;
+            const QStringList keys = flatKeys(t->json);
+            m_table->setRowCount(keys.size());
+            for (int i = 0; i < keys.size(); ++i) {
+                auto *k = new QTableWidgetItem(keys.at(i));
+                k->setFlags(k->flags() & ~Qt::ItemIsEditable);
+                m_table->setItem(i, 0, k);
+                m_table->setItem(i, 1,
+                                 new QTableWidgetItem(valueToText(flatGet(t->json, keys.at(i)))));
+            }
+            if (t->json.value("elements").toArray().isEmpty()) {
+                m_hint->setText(QStringLiteral(
+                    "\"%1\" has no vectors: select shapes on the canvas and press "
+                    "\"Assign selected vectors\".").arg(t->json.value("name").toString()));
+                m_hint->show();
+            } else {
+                m_hint->hide();
+            }
         }
     }
     m_loading = false;
+    updateButtons();
 }
 
 void ToolpathPanel::onCellEdited(int row, int col)
