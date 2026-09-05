@@ -1,5 +1,7 @@
 #include "gcodeexport.h"
 #include "c2ddocument.h"
+#include "cam3d.h"
+#include "heightmodel.h"
 #include "post_grbl.h"
 #include "vcarve.h"
 
@@ -10,6 +12,7 @@
 #include <QPolygonF>
 #include <QtMath>
 #include <algorithm>
+#include <functional>
 
 #ifdef HAVE_CLIPPER2
 #include <clipper2/clipper.h>
@@ -504,7 +507,41 @@ struct CutParams {
     double rampAngle = 0;    // >0: ramp entries on closed loops (degrees)
     double tabTop = -1e9;    // cutout tabs: lift to this Z inside a tab
     double tabWidth = 0;     // tab span along the loop (0 = no tabs)
+    // Optional veto for a stay-down link (3D roughing checks it against the
+    // relief); unset = any link within linkDist is taken.
+    std::function<bool(const QPointF &, const QPointF &)> linkOk;
 };
+
+// Ring-fill a centre region: concentric insets every `stepover`, innermost
+// first, as one job (a firstDelta of 0 starts on the region's own boundary —
+// used for rest regions, already in centre space).
+static void ringFillJob(const QPainterPath &area, double firstDelta, double stepover,
+                        QList<Job> &jobs)
+{
+    Job job;
+    QList<QList<QPolygonF>> shells;
+    double delta = firstDelta;
+    while (shells.size() < 500) {
+        QList<QPolygonF> s;
+        if (delta < 1e-9) {
+            for (QPolygonF p : area.toSubpathPolygons())
+                if (p.size() > 2) {
+                    closeLoop(p);
+                    s.append(p);
+                }
+        } else {
+            s = insetRings(area, delta);
+        }
+        if (s.isEmpty())
+            break;
+        shells.append(s);
+        delta += stepover;
+    }
+    for (int k = shells.size() - 1; k >= 0; --k)
+        job.rings.append(shells.at(k));
+    if (!job.rings.isEmpty())
+        jobs.append(job);
+}
 
 class Emitter
 {
@@ -697,7 +734,8 @@ public:
                 const QPolygonF &ring = job.rings.at(order.at(oi));
                 const QPointF rs = ring.first();
                 if (QLineF(pos(), rs).length() > 1e-6) {
-                    if (QLineF(pos(), rs).length() <= cp.linkDist) {
+                    if (QLineF(pos(), rs).length() <= cp.linkDist
+                        && (!cp.linkOk || cp.linkOk(pos(), rs))) {
                         m_ops.append(Op::feedTo(rs.x(), rs.y(), z, m_feed));
                         m_x = rs.x();
                         m_y = rs.y();
@@ -867,8 +905,10 @@ GcodeResult exportGcode(Document &doc)
         const bool keyhole = (t.type == QLatin1String("keyhole_toolpath"));
         const bool texture = (t.type == QLatin1String("texture_toolpath"));
         const bool vcarve = (t.type == QLatin1String("advanced_vcarve_toolpath"));
+        const bool rough3d = (t.type == QLatin1String("3d_rough_toolpath"));
+        const bool finish3d = (t.type == QLatin1String("3d_finish_toolpath"));
         if (!contour && !pocket && !cutout && !drilling && !keyhole && !texture
-            && !vcarve) {
+            && !vcarve && !rough3d && !finish3d) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -899,6 +939,68 @@ GcodeResult exportGcode(Document &doc)
         }
         if (j.value("enable_ramping").toBool(false))
             cp.rampAngle = qBound(1.0, j.value("ramp_angle").toDouble(20.0), 45.0);
+
+        if (rough3d || finish3d) {
+            // 3D toolpaths over the modeller's relief (cam3d.cpp). Emitted on
+            // their own, never pooled with the 2D ring jobs around them.
+            const HeightModel *hm = heightModelFor(doc);
+            if (!hm || !hm->valid()) {
+                res.skipped << QStringLiteral("%1 (no 3D model)").arg(name);
+                continue;
+            }
+            const Cam3dParams p3 = cam3dParams(j, safeZ);
+            const QVector<const Element *> belems = referenced(doc, j);
+            const QPainterPath boundary =
+                cam3dBoundary(*hm, belems.isEmpty() ? QPainterPath() : regionOf(belems),
+                              p3.boundaryOffset);
+            flush();
+            QVector<Op> body;
+            if (rough3d) {
+                // Z-level clearing: each level's region is pocketed with the
+                // 2D ring machinery at that depth (rings inset by the tool
+                // radius + stock to leave, stay-down links checked against
+                // the relief).
+                Emitter em(body, safeZ, feed, plunge);
+                const double r = p3.tool.radius();
+                for (const RoughLevel &lv : roughLevels(*hm, p3, boundary)) {
+                    QList<Job> jobs;
+                    for (const QPainterPath &comp : components(lv.region))
+                        ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs);
+                    CutParams lcp = cp;
+                    lcp.zTop = lv.z + p3.stepdown;
+                    lcp.zBot = lv.z;
+                    lcp.stepdown = p3.stepdown;
+                    lcp.linkDist = qMax(2.5 * p3.stepover, 4 * r);
+                    lcp.linkOk = [&, z = lv.z](const QPointF &a, const QPointF &b) {
+                        return roughLinkClear(*hm, p3, a, b, z);
+                    };
+                    for (const Job &job : orderJobs(jobs, em.pos()))
+                        em.runJob(job, lcp);
+                }
+                lastPos = em.pos();
+            } else {
+                body = finishOps(*hm, p3, boundary);
+                for (int k = body.size() - 1; k >= 0; --k)
+                    if (body.at(k).kind == Op::Feed) {
+                        lastPos = QPointF(body.at(k).x, body.at(k).y);
+                        break;
+                    }
+            }
+            if (body.isEmpty()) {
+                res.skipped << QStringLiteral("%1 (nothing to cut)").arg(name);
+                continue;
+            }
+            if (toolNo != lastTool) {
+                ops.append(Op::tool(toolNo));
+                lastTool = toolNo;
+            }
+            ops.append(Op::comment(name));
+            ops.append(Op::spindle(rpm));
+            ops.append(body);
+            ops.append(Op::spindle(0));
+            res.done << name;
+            continue;
+        }
 
         const QVector<const Element *> elems = referenced(doc, j);
         if (elems.isEmpty()) {
@@ -1127,40 +1229,12 @@ GcodeResult exportGcode(Document &doc)
             const double prevR = j.value("rest_diameter").toDouble(0) / 2.0;
             const bool useRest = j.value("enable_rest").toBool(false) && prevR > toolR + 1e-6;
 
-            // Ring-fill a centre region: concentric insets every stepover,
-            // innermost first (a firstDelta of 0 starts on the region's own
-            // boundary — used for rest regions, already in centre space).
-            auto ringFill = [&](const QPainterPath &area, double firstDelta) {
-                Job job;
-                QList<QList<QPolygonF>> shells;
-                double delta = firstDelta;
-                while (shells.size() < 500) {
-                    QList<QPolygonF> s;
-                    if (delta < 1e-9) {
-                        for (QPolygonF p : area.toSubpathPolygons())
-                            if (p.size() > 2) {
-                                closeLoop(p);
-                                s.append(p);
-                            }
-                    } else {
-                        s = insetRings(area, delta);
-                    }
-                    if (s.isEmpty())
-                        break;
-                    shells.append(s);
-                    delta += stepover;
-                }
-                for (int k = shells.size() - 1; k >= 0; --k)
-                    job.rings.append(shells.at(k));
-                if (!job.rings.isEmpty())
-                    jobs.append(job);
-            };
             for (const QPainterPath &comp : components(regionOf(elems))) {
                 if (useRest) {
                     for (const QPainterPath &rc : restRegions(comp, toolR, prevR, leave))
-                        ringFill(rc, 0.0);
+                        ringFillJob(rc, 0.0, stepover, jobs);
                 } else {
-                    ringFill(comp, toolR + leave);
+                    ringFillJob(comp, toolR + leave, stepover, jobs);
                 }
             }
         }
@@ -1221,6 +1295,11 @@ static ToolGeom toolGeomOf(const QJsonObject &tool)
         g.cornerRadius = qMin(g.cornerRadius, g.radius());
     }
     return g;
+}
+
+ToolGeom toolGeomFromJson(const QJsonObject &tool)
+{
+    return toolGeomOf(tool);
 }
 
 QHash<int, ToolGeom> toolGeometry(const Document &doc)

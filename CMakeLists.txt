@@ -34,6 +34,7 @@ add_library(phobicccp_core STATIC
     src/c2ddocument.cpp
     src/element.cpp
     src/gcodeexport.cpp
+    src/cam3d.cpp
     src/vcarve.cpp
     src/post_grbl.cpp
     src/grblstreamer.cpp
@@ -108,6 +109,9 @@ add_test(NAME trace COMMAND test_trace)
 add_executable(test_paths tests/test_paths.cpp)
 target_link_libraries(test_paths PRIVATE phobicccp_core)
 add_test(NAME paths COMMAND test_paths)
+add_executable(test_cam3d tests/test_cam3d.cpp)
+target_link_libraries(test_cam3d PRIVATE phobicccp_core)
+add_test(NAME cam3d COMMAND test_cam3d)
 # Canvas interaction test (pen tool, node editor) drives the real widget with
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)

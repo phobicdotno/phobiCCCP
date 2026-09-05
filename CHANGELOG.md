@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+- 3D roughing and finishing over the modeller's relief (Carbide Create Pro's
+  "3D Rough Machining" / "3D Finish Machining"): `3d_rough_toolpath` clears
+  the model level by level with the pocket ring machinery (stay-down links
+  checked against the relief), `3d_finish_toolpath` rasters the
+  tool-compensated surface (ball, flat and V-bit footprints) at a chosen
+  angle, stepover (mm or %), zigzag/climb/conventional, optional cross pass,
+  with an optional boundary vector and offset. 3D jobs are never pooled with
+  the 2D ring jobs around them.
+- `tests/test_cam3d.cpp` (CTest `cam3d`): verifies against the material
+  simulation that roughing stops at the model plus stock-to-leave and that a
+  3 mm ball finish reproduces a 20 mm hemisphere to within 0.043 mm without
+  ever cutting below it.
 ## v0.3.0 (build 13) — 2026-09-05
 Carbide Create parity wave 1 — six features merged from parallel branches:
 - Material-removal simulation (Carbide Create's "3D Simulation"): new
