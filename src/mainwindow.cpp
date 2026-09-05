@@ -5,6 +5,7 @@
 #include "propertiespanel.h"
 #include "simpanel.h"
 #include "toolpathpanel.h"
+#include "vectoractions.h"
 
 #include <QApplication>
 #include <QFile>
@@ -269,6 +270,7 @@ MainWindow::MainWindow(QWidget *parent)
     tb->addSeparator();
     tb->addAction(undoAct);
     tb->addAction(redoAct);
+    new VectorActions(m_canvas, editMenu, this);   // Edit → Vectors + icon bar
 
     // Status bar: transient hints on the left, zoom + live mm on the right.
     m_zoomLabel = new QLabel(QStringLiteral("100%"), this);

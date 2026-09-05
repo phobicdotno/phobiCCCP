@@ -22,6 +22,28 @@
   untouched stock outside, 90° V-bit surface width ≈ 4 mm at −2 mm, ball
   profile, arc tessellation, through-cut flag, cancellation, tool table,
   100k-segment throughput on a 2000×2000 map.
+- Edit → Vectors: Carbide Create's Booleans — **Union (Weld)** (Ctrl+Shift+U),
+  **Subtract** (Ctrl+Shift+D; first-selected minus the others — click order,
+  or the largest bounding box when several were selected at once) and
+  **Intersect** (Ctrl+Shift+I). Computed with Clipper2 on the vectors
+  flattened at 0.005 mm; each element is filled even-odd (text counters
+  survive), elements weld non-zero. Results replace the inputs as closed
+  `path` elements in CC's exact JSON shape, one per ring (holes are separate
+  nested paths), on the first input's layer.
+- Edit → Vectors → **Offset…** (Ctrl+Shift+O): distance, inside/outside, keep
+  original. Closed vectors offset as one even-odd region with round joins;
+  open paths become the outline of a stroke of width 2·d.
+- Edit → Vectors → **Align** (left/right/top/bottom/centers to the selection's
+  bounding box, Ctrl+Shift+arrows / H / V), **Center on stock** (H, V, both;
+  Ctrl+Shift+C) and **Distribute** (even center spacing, Ctrl+Alt+H / V).
+  Union / Subtract / Intersect / Offset / Center also sit on a small icon bar.
+- All vector operations are single undo steps; the results are selected
+  afterwards. Toolpaths that referenced consumed inputs are re-pointed at the
+  result elements (and restored on undo), so `elements[].uuid` never dangles.
+- `tests/test_vectorops.cpp` (CTest `vectorops`): union/intersect/subtract
+  areas, hole rings, offset bbox growth, stroke outlines, alignment maths.
+- Canvas no longer fires `selectionChanged` into a half-destroyed view when
+  closed with a selection active (crash at exit).
 
 ## v0.2.4 (build 12) — 2026-09-05
 - CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
