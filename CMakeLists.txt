@@ -37,6 +37,7 @@ add_library(phobicccp_core STATIC
     src/vcarve.cpp
     src/post_grbl.cpp
     src/grblstreamer.cpp
+    src/heightmodel.cpp
     src/simulation.cpp
     src/vectorops.cpp
     src/importers.cpp
