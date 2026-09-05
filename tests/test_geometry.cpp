@@ -436,6 +436,8 @@ int main(int argc, char *argv[])
         check(after.startsWith(QLatin1String("G1")) && after.contains(QLatin1String("Z-1.000"))
                   && after.contains(QLatin1String("F500")),
               "first move after a tool change carries G, Z and F again");
+    }
+
     // --- engrave outline: trace the vector exactly, no offset --------------
     {
         Rig r;
