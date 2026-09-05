@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+- File → Import SVG… / Import DXF… (Carbide Create's "Import DXF and SVG"),
+  plus drag-and-drop of .svg/.dxf (imported) and .c2d (opened) onto the main
+  window. Imports are one undo step. Geometry lands in mm, Y-up; if it does
+  not already fit inside the stock its bounding box is moved so the bottom-left
+  corner sits at (10, 10) mm. Curves stay cubic beziers in the CC path schema
+  (`point_type` 3 + `cp1`/`cp2`); the result is written in the same row model
+  as `Element::makePath`, so the saved file still opens in Carbide Create.
+- SVG reader (`src/importers.cpp`, QXmlStreamReader, no QtSvg): path with the
+  full `d` grammar (M/L/H/V/C/S/Q/T/A/Z, absolute and relative, arcs converted
+  to beziers), rect (rx/ry), circle, ellipse, line, polyline, polygon, nested
+  `g` transforms (translate/scale/rotate/skewX/skewY/matrix), viewBox with
+  width/height in px (96 dpi), mm, cm, in, pt, pc and preserveAspectRatio;
+  `display:none` and `defs`/`symbol`/`clipPath`/`mask` content is not drawn.
+  text, image, use and gradients are ignored and counted in the summary.
+- DXF reader (ASCII R12–2018 group codes): LINE, LWPOLYLINE and
+  POLYLINE/VERTEX/SEQEND with bulge arcs, CIRCLE, ARC, ELLIPSE, SPLINE
+  (NURBS evaluated by de Boor and flattened to 0.02 mm; fit-point-only
+  splines interpolated with Catmull-Rom cubics), INSERT/BLOCK expansion with
+  insertion point, scale, rotation and column/row arrays, mirrored extrusion
+  (230 = -1), `$INSUNITS` scaling (unitless = mm). POINT is ignored silently;
+  TEXT/MTEXT/HATCH/DIMENSION and 3D polylines are skipped and reported.
+- New CTest target `test_import` (`tests/test_import.cpp`) with hand-written
+  fixtures in `tests/data/` asserting element counts, bounding boxes in mm,
+  the CC row schema, unit scaling and the placement rule (333 checks).
+  `test_import <in.c2d> <out.c2d>` also writes a document with every fixture
+  imported for a `--shot` visual check.
+
 ## v0.2.4 (build 12) — 2026-09-05
 - CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
   display: the offscreen Qt platform is selected automatically when no
