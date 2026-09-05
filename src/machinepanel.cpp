@@ -35,11 +35,13 @@ static QDoubleSpinBox *mmSpin(QWidget *parent, double lo, double hi, double val,
 }
 
 MachinePanel::MachinePanel(QWidget *parent)
-    : QWidget(parent), m_grbl(new GrblStreamer(this)), m_holdTimer(new QTimer(this))
+    : QWidget(parent), m_grbl(new GrblStreamer(this)), m_holdTimer(new QTimer(this)),
+      m_holdRepeat(new QTimer(this))
 {
     setFocusPolicy(Qt::StrongFocus);
     m_holdTimer->setSingleShot(true);
     m_holdTimer->setInterval(350);
+    m_holdRepeat->setInterval(120);
 
     // The dock is narrow and this panel is tall: scroll the controls, keep the
     // console pinned at the bottom.
@@ -359,13 +361,19 @@ MachinePanel::MachinePanel(QWidget *parent)
     });
 
     // Press-and-hold: after the hold delay a step-click turns into a
-    // continuous jog that stops on release.
+    // continuous jog. Rather than one long $J= that relies on the release
+    // event for its cancel, feed GRBL a short increment every tick (each
+    // worth ~2 ticks of travel, so the planner never runs dry); if the
+    // release is ever lost, motion stops on its own within a fraction of a
+    // second. Release still sends jog-cancel to stop instantly.
     connect(m_holdTimer, &QTimer::timeout, this, [this] {
         if (m_holdAxis) {
             m_holdJogging = true;
-            m_grbl->jogStart(m_holdAxis, m_holdDir, jogFeed(m_holdAxis));
+            m_holdRepeat->start();
+            jogIncrement();
         }
     });
+    connect(m_holdRepeat, &QTimer::timeout, this, [this] { jogIncrement(); });
 
     loadSettings();
     updateOffsetLabels();
@@ -385,6 +393,7 @@ QPushButton *MachinePanel::jogButton(const QString &text, char axis, int dir)
     b->setFixedSize(40, 32);
     b->setFocusPolicy(Qt::NoFocus);          // keep keyboard jogging on the panel
     connect(b, &QPushButton::pressed, this, [this, axis, dir] {
+        setFocus();                       // arrow keys jog from here on
         m_holdAxis = axis;
         m_holdDir = dir;
         m_holdJogging = false;
@@ -392,6 +401,7 @@ QPushButton *MachinePanel::jogButton(const QString &text, char axis, int dir)
     });
     connect(b, &QPushButton::released, this, [this] {
         m_holdTimer->stop();
+        m_holdRepeat->stop();
         if (m_holdJogging)
             m_grbl->jogCancel();
         else if (m_holdAxis)
@@ -406,6 +416,16 @@ double MachinePanel::jogFeed(char axis) const
 {
     const double f = m_speed->currentData().toDouble();
     return axis == 'Z' ? qMin(f, 1500.0) : f;
+}
+
+void MachinePanel::jogIncrement()
+{
+    if (!m_holdAxis || !m_grbl->canSendCommand())
+        return;
+    const double f = jogFeed(m_holdAxis);
+    const double mm = f / 60.0 * (2.0 * m_holdRepeat->interval() / 1000.0);
+    m_grbl->sendCommand(QStringLiteral("$J=G91 %1%2 F%3")
+                            .arg(QChar::fromLatin1(m_holdAxis)).arg(m_holdDir * mm, 0, 'f', 3).arg(f));
 }
 
 void MachinePanel::jogStep(char axis, int dir)
@@ -449,6 +469,7 @@ void MachinePanel::keyReleaseEvent(QKeyEvent *event)
     if (event->isAutoRepeat())
         return;
     m_holdTimer->stop();
+    m_holdRepeat->stop();
     if (m_holdJogging)
         m_grbl->jogCancel();
     else if (m_holdAxis)
@@ -592,9 +613,6 @@ void MachinePanel::zero(const QString &axes)
         log(QStringLiteral("!! busy — cannot zero now"));
         return;
     }
-    QString words;
-    for (const QChar ax : axes)
-        words += QStringLiteral(" %1 0").arg(ax).remove(QChar(' '));
     QStringList cmds;
     const bool zeroZ = axes.contains(QChar('Z'));
     if (zeroZ) {
@@ -605,7 +623,7 @@ void MachinePanel::zero(const QString &axes)
     }
     QString g10 = QStringLiteral("G10 L20 P1");
     for (const QChar ax : axes)
-        g10 += QStringLiteral(" %1 0").arg(ax);
+        g10 += QStringLiteral(" %10").arg(ax);
     cmds << g10;
 
     const BitSetterConfig cfg = bitSetter();

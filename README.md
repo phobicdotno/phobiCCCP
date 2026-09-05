@@ -79,6 +79,11 @@ Linux, built on the reverse-engineered format documentation in
 - **Air-cut mode**: rehearse any program with all spindle commands stripped
   and every Z lifted by a chosen amount; every run shows a stats +
   spindle-warning confirmation first.
+- Verification status: connection, jogging, zeroing and streaming are
+  hardware-verified on a Shapeoko 5 Pro; the BitSetter measurement and the
+  automatic tool-change flow have so far been verified against
+  `tools/grblsim.py` only (`tools/flowtest.sh`). Do an air-cut run with a real
+  tool change before trusting them on a job.
 
 **Isometric preview** (Preview tab): the generated route drawn in 3D over the
 stock — rapids dashed, cuts coloured by depth — with orbit / zoom, and an

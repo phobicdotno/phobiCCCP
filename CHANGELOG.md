@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.2.3 (build 11) — 2026-09-05
+- Hold-to-jog now streams short `$J=` increments (2 ticks of travel every
+  120 ms) instead of one long jog, so motion stops by itself within a fraction
+  of a second if the release event is ever lost; release still jog-cancels.
+- Jog buttons give the Machine panel keyboard focus, so arrow / PgUp / PgDn
+  jogging works right after clicking the pad.
+- Zeroing sends `Z0` (no stray space); dead code removed from `zero()`.
+- README: verification status of the BitSetter / tool-change flow (simulator
+  only so far).
+
 ## v0.2.2 (build 10) — 2026-09-05
 - G-code export honours `stock_to_leave`: contours offset by tool radius +
   stock (inside or outside), pockets inset their walls by tool radius + stock.

@@ -44,6 +44,7 @@ private:
     void toggleConnect();
     QPushButton *jogButton(const QString &text, char axis, int dir);
     void jogStep(char axis, int dir);
+    void jogIncrement();
     double jogFeed(char axis) const;
     void zero(const QString &axes);
     void goToXY0();
@@ -70,6 +71,7 @@ private:
     // jog
     QComboBox *m_step, *m_speed;
     QTimer *m_holdTimer;                 // press-and-hold detection
+    QTimer *m_holdRepeat;                // feeds short jog increments while held
     char m_holdAxis = 0;
     int m_holdDir = 0;
     bool m_holdJogging = false;
