@@ -343,6 +343,14 @@ static int selftest(const QString &in, const QString &out)
 
 int main(int argc, char *argv[])
 {
+    // CLI modes (--export, --selftest, --grbl-*, --shot) must work on a box
+    // with no display — CI, ssh, a headless shop PC: fall back to the
+    // offscreen platform plugin there instead of aborting in QApplication.
+    if (argc > 1 && QByteArray(argv[1]).startsWith("--")
+        && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")
+        && qEnvironmentVariableIsEmpty("DISPLAY")
+        && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
     QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));

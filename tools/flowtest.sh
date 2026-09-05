@@ -20,7 +20,10 @@ echo "## program with two tool changes"
 printf '%s\n' G90 G21 'M0 ;T601' M03S1000 G0X10Y10Z2.54 G1Z-1F200 X20 G0Z2.54 M05 'M0 ;T602' M03S1000 G0X30Y30Z2.54 G1Z-1F200 X40 G0Z2.54 M05 M02 > $T/twotools.nc
 timeout 120 $BIN --grbl-run $PORT $T/twotools.nc -20 -20 > $T/run.log 2>&1 &
 RUN=$!
-for i in $(seq 1 600); do grep -q 'TOOLCHANGE T602' $T/run.log && break; sleep 0.1; done
+# Make the second tool 5 mm longer as soon as the reference tool has been
+# measured: the whole first section is still to be cut before T602, so the
+# delta is in place long before the second probe.
+for i in $(seq 1 600); do grep -q 'REF contactZ' $T/run.log && break; sleep 0.1; done
 echo "tool 5" >&3
 wait $RUN
 grep -q 'REF contactZ=-60.000' $T/run.log && echo "PASS reference tool measured" || { echo "FAIL reference"; fail=1; }

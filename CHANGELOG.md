@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.2.4 (build 12) — 2026-09-05
+- CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
+  display: the offscreen Qt platform is selected automatically when no
+  DISPLAY / WAYLAND_DISPLAY is set instead of aborting.
+- `tools/flowtest.sh` injects the longer second tool right after the reference
+  measurement instead of racing the second probe.
+
 ## v0.2.3 (build 11) — 2026-09-05
 - Hold-to-jog now streams short `$J=` increments (2 ticks of travel every
   120 ms) instead of one long jog, so motion stops by itself within a fraction
