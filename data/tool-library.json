@@ -1,0 +1,245 @@
+{
+  "_comment": [
+    "phobiCCCP tool library: the Carbide 3D cutter catalogue with per-material feeds & speeds.",
+    "Lengths in mm, feeds in mm/min, rpm, stepdown in mm, stepover in % of diameter.",
+    "'uncertain' on a tool: catalogue number / spec written from memory, not verified against the shop page.",
+    "'guess' on a feeds entry: NOT a remembered Carbide Create default — a conservative value; check before cutting.",
+    "Remembered CC defaults (imperial chart): #201 softwood 18000 rpm / 75 ipm / 15 ipm plunge / 0.060\" DOC (= 1905 / 381 / 1.524 mm, matches the CC 853 sample file);",
+    "hardwood 60 ipm / 0.050\"; acrylic 40 ipm / 0.030\"; HDPE 60 ipm / 0.050\"; aluminium 10000 rpm / 20 ipm / 5 ipm / 0.010\"."
+  ],
+  "version": 1,
+  "materials": [
+    { "id": "mdf",       "name": "MDF / plywood", "cc_names": ["MDF", "Plywood", "Any"] },
+    { "id": "softwood",  "name": "Soft wood",      "cc_names": ["Softwood", "Soft Wood"] },
+    { "id": "hardwood",  "name": "Hard wood",      "cc_names": ["Hardwood", "Hard Wood"] },
+    { "id": "acrylic",   "name": "Acrylic",        "cc_names": ["Acrylic", "Hard Plastic"] },
+    { "id": "hdpe",      "name": "HDPE",           "cc_names": ["HDPE", "Soft Plastic"] },
+    { "id": "aluminium", "name": "Aluminium",      "cc_names": ["Aluminum", "Aluminium"] }
+  ],
+  "tools": [
+    {
+      "number": 201, "model": "201", "name": "#201 End Mill (1/4\")", "kind": "endmill",
+      "diameter": 6.35, "flutes": 3, "angle": 0, "corner_radius": 0, "length": 19.05, "shank": 6.35,
+      "url": "https://shop.carbide3d.com/products/201-25-end-mill-cutter-qty-2",
+      "notes": "Carbide 3D's standard 1/4\" 3-flute square end mill; CC's default tool.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.524, "stepover_pct": 50 },
+        "softwood":  { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.524, "stepover_pct": 50 },
+        "hardwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.27,  "stepover_pct": 50 },
+        "acrylic":   { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.762, "stepover_pct": 40 },
+        "hdpe":      { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.27,  "stepover_pct": 40 },
+        "aluminium": { "rpm": 10000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 25, "guess": true, "note": "conservative; Carbide's chart is close to this but verify" }
+      }
+    },
+    {
+      "number": 251, "model": "251", "name": "#251 Downcut End Mill (1/4\")", "kind": "endmill",
+      "diameter": 6.35, "flutes": 3, "angle": 0, "corner_radius": 0, "length": 19.05, "shank": 6.35,
+      "url": "https://shop.carbide3d.com/products/251-25-downcut-end-mill",
+      "notes": "Downcut variant of #201 for clean top edges in plywood; same feeds as #201.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.524, "stepover_pct": 50 },
+        "softwood":  { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.524, "stepover_pct": 50 },
+        "hardwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.27,  "stepover_pct": 50 },
+        "acrylic":   { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.762, "stepover_pct": 40, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.27,  "stepover_pct": 40, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 381,  "plunge": 102, "stepdown": 0.2,   "stepover_pct": 25, "guess": true, "note": "downcut is a poor choice in aluminium (chip packing)" }
+      }
+    },
+    {
+      "number": 202, "model": "202", "name": "#202 Ball End Mill (1/4\")", "kind": "ball",
+      "diameter": 6.35, "flutes": 3, "angle": 0, "corner_radius": 3.175, "length": 19.05, "shank": 6.35,
+      "url": "https://shop.carbide3d.com/products/202-25-ball-cutter",
+      "notes": "1/4\" ball nose; 10 % stepover for finishing passes.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.524, "stepover_pct": 10 },
+        "softwood":  { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.524, "stepover_pct": 10 },
+        "hardwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.27,  "stepover_pct": 10 },
+        "acrylic":   { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.762, "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.27,  "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 102, "model": "102", "name": "#102 End Mill (1/8\")", "kind": "endmill",
+      "diameter": 3.175, "flutes": 2, "angle": 0, "corner_radius": 0, "length": 12.7, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/products/102-125-end-mill-cutter-qty-2",
+      "notes": "1/8\" 2-flute square end mill.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1270, "plunge": 254, "stepdown": 1.016, "stepover_pct": 50 },
+        "softwood":  { "rpm": 18000, "feed": 1270, "plunge": 254, "stepdown": 1.016, "stepover_pct": 50 },
+        "hardwood":  { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.762, "stepover_pct": 50 },
+        "acrylic":   { "rpm": 18000, "feed": 762,  "plunge": 178, "stepdown": 0.508, "stepover_pct": 40 },
+        "hdpe":      { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.762, "stepover_pct": 40, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 381,  "plunge": 76,  "stepdown": 0.127, "stepover_pct": 25, "guess": true }
+      }
+    },
+    {
+      "number": 101, "model": "101", "name": "#101 Ball End Mill (1/8\")", "kind": "ball",
+      "diameter": 3.175, "flutes": 2, "angle": 0, "corner_radius": 1.5875, "length": 12.7, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/products/101-125-ball-cutter-qty-2",
+      "notes": "1/8\" ball nose; 10 % stepover for finishing passes.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1270, "plunge": 254, "stepdown": 1.016, "stepover_pct": 10 },
+        "softwood":  { "rpm": 18000, "feed": 1270, "plunge": 254, "stepdown": 1.016, "stepover_pct": 10 },
+        "hardwood":  { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.762, "stepover_pct": 10 },
+        "acrylic":   { "rpm": 18000, "feed": 762,  "plunge": 178, "stepdown": 0.508, "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.762, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 381,  "plunge": 76,  "stepdown": 0.127, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 112, "model": "112", "name": "#112 End Mill (1/16\")", "kind": "endmill",
+      "diameter": 1.5875, "flutes": 2, "angle": 0, "corner_radius": 0, "length": 6.35, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/products/112-0625-end-mill-cutter-qty-2",
+      "notes": "1/16\" square end mill on a 1/8\" shank.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.508, "stepover_pct": 50 },
+        "softwood":  { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.508, "stepover_pct": 50 },
+        "hardwood":  { "rpm": 18000, "feed": 635,  "plunge": 152, "stepdown": 0.381, "stepover_pct": 50 },
+        "acrylic":   { "rpm": 18000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 40, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 635,  "plunge": 152, "stepdown": 0.381, "stepover_pct": 40, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 254,  "plunge": 51,  "stepdown": 0.076, "stepover_pct": 25, "guess": true }
+      }
+    },
+    {
+      "number": 111, "model": "111", "name": "#111 End Mill (1/16\", 2-flute)", "kind": "endmill", "uncertain": true,
+      "diameter": 1.5875, "flutes": 2, "angle": 0, "corner_radius": 0, "length": 6.35, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/",
+      "notes": "UNCERTAIN: #111 is remembered as the other 1/16\" square end mill in the catalogue (alternate flute count / coating); specs copied from #112.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.508, "stepover_pct": 50, "guess": true },
+        "softwood":  { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.508, "stepover_pct": 50, "guess": true },
+        "hardwood":  { "rpm": 18000, "feed": 635,  "plunge": 152, "stepdown": 0.381, "stepover_pct": 50, "guess": true },
+        "acrylic":   { "rpm": 18000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 40, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 635,  "plunge": 152, "stepdown": 0.381, "stepover_pct": 40, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 254,  "plunge": 51,  "stepdown": 0.076, "stepover_pct": 25, "guess": true }
+      }
+    },
+    {
+      "number": 122, "model": "122", "name": "#122 Ball End Mill (1/16\")", "kind": "ball",
+      "diameter": 1.5875, "flutes": 2, "angle": 0, "corner_radius": 0.79375, "length": 6.35, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/products/122-0625-ball-cutter-qty-2",
+      "notes": "1/16\" ball nose on a 1/8\" shank; 10 % stepover for finishing.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.508, "stepover_pct": 10 },
+        "softwood":  { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.508, "stepover_pct": 10 },
+        "hardwood":  { "rpm": 18000, "feed": 635,  "plunge": 152, "stepdown": 0.381, "stepover_pct": 10 },
+        "acrylic":   { "rpm": 18000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 635,  "plunge": 152, "stepdown": 0.381, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 254,  "plunge": 51,  "stepdown": 0.076, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 278, "model": "278", "name": "#278 End Mill (1/32\")", "kind": "endmill", "uncertain": true,
+      "diameter": 0.79375, "flutes": 2, "angle": 0, "corner_radius": 0, "length": 3.175, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/",
+      "notes": "UNCERTAIN number: 1/32\" (0.031\") square end mill on a 1/8\" shank. All feeds are conservative guesses.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 40, "guess": true },
+        "softwood":  { "rpm": 18000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 40, "guess": true },
+        "hardwood":  { "rpm": 18000, "feed": 381,  "plunge": 102, "stepdown": 0.2,   "stepover_pct": 40, "guess": true },
+        "acrylic":   { "rpm": 18000, "feed": 381,  "plunge": 102, "stepdown": 0.152, "stepover_pct": 30, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 381,  "plunge": 102, "stepdown": 0.2,   "stepover_pct": 30, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 152,  "plunge": 25,  "stepdown": 0.05,  "stepover_pct": 20, "guess": true }
+      }
+    },
+    {
+      "number": 301, "model": "301", "name": "#301 V Cutter 90° (1/2\")", "kind": "vbit",
+      "diameter": 12.7, "flutes": 2, "angle": 90, "corner_radius": 0, "length": 6.35, "shank": 6.35,
+      "url": "https://shop.carbide3d.com/products/301-90-v-cutter",
+      "notes": "90° included angle, 1/2\" cutting diameter, 1/4\" shank.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10 },
+        "softwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10 },
+        "hardwood":  { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10 },
+        "acrylic":   { "rpm": 18000, "feed": 762,  "plunge": 254, "stepdown": 1.27,  "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 381,  "plunge": 102, "stepdown": 0.254, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 302, "model": "302", "name": "#302 V Cutter 60° (1/2\")", "kind": "vbit",
+      "diameter": 12.7, "flutes": 2, "angle": 60, "corner_radius": 0, "length": 11.0, "shank": 6.35,
+      "url": "https://shop.carbide3d.com/products/302-60-v-cutter",
+      "notes": "60° included angle, 1/2\" cutting diameter, 1/4\" shank.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10 },
+        "softwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10 },
+        "hardwood":  { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10 },
+        "acrylic":   { "rpm": 18000, "feed": 762,  "plunge": 254, "stepdown": 1.27,  "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 381,  "plunge": 102, "stepdown": 0.254, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 321, "model": "321", "name": "#321 V Cutter 60° (1/2\", 2-flute)", "kind": "vbit", "uncertain": true,
+      "diameter": 12.7, "flutes": 2, "angle": 60, "corner_radius": 0, "length": 11.0, "shank": 6.35,
+      "url": "https://shop.carbide3d.com/",
+      "notes": "UNCERTAIN: remembered as the newer 60° 1/2\" V cutter; specs copied from #302.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10, "guess": true },
+        "softwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10, "guess": true },
+        "hardwood":  { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10, "guess": true },
+        "acrylic":   { "rpm": 18000, "feed": 762,  "plunge": 254, "stepdown": 1.27,  "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 381,  "plunge": 102, "stepdown": 0.254, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 322, "model": "322", "name": "#322 V Cutter 90° (1/2\", 2-flute)", "kind": "vbit", "uncertain": true,
+      "diameter": 12.7, "flutes": 2, "angle": 90, "corner_radius": 0, "length": 6.35, "shank": 6.35,
+      "url": "https://shop.carbide3d.com/",
+      "notes": "UNCERTAIN: remembered as the newer 90° 1/2\" V cutter; specs copied from #301.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10, "guess": true },
+        "softwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 2.54,  "stepover_pct": 10, "guess": true },
+        "hardwood":  { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10, "guess": true },
+        "acrylic":   { "rpm": 18000, "feed": 762,  "plunge": 254, "stepdown": 1.27,  "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1270, "plunge": 305, "stepdown": 2.032, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 381,  "plunge": 102, "stepdown": 0.254, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 501, "model": "501", "name": "#501 Engraver 30° (1/8\")", "kind": "engraver",
+      "diameter": 3.175, "flutes": 1, "angle": 30, "corner_radius": 0, "length": 5.0, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/products/501-engraver-30",
+      "notes": "30° single-flute engraving cutter, 1/8\" shank; tip ~0.1 mm. Treated as a V-bit (type 2, angle 30).",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.508, "stepover_pct": 10 },
+        "softwood":  { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.508, "stepover_pct": 10 },
+        "hardwood":  { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.381, "stepover_pct": 10 },
+        "acrylic":   { "rpm": 18000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.381, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 254,  "plunge": 51,  "stepdown": 0.127, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 502, "model": "502", "name": "#502 Engraver 60° (1/8\")", "kind": "engraver", "uncertain": true,
+      "diameter": 3.175, "flutes": 1, "angle": 60, "corner_radius": 0, "length": 3.0, "shank": 3.175,
+      "url": "https://shop.carbide3d.com/",
+      "notes": "UNCERTAIN number: 60° engraver on a 1/8\" shank; feeds copied from #501.",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.508, "stepover_pct": 10, "guess": true },
+        "softwood":  { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.508, "stepover_pct": 10, "guess": true },
+        "hardwood":  { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.381, "stepover_pct": 10, "guess": true },
+        "acrylic":   { "rpm": 18000, "feed": 508,  "plunge": 127, "stepdown": 0.254, "stepover_pct": 10, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 762,  "plunge": 203, "stepdown": 0.381, "stepover_pct": 10, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 254,  "plunge": 51,  "stepdown": 0.127, "stepover_pct": 10, "guess": true }
+      }
+    },
+    {
+      "number": 602, "model": "602", "name": "#602 End Mill (6 mm)", "kind": "endmill", "uncertain": true,
+      "diameter": 6.0, "flutes": 3, "angle": 0, "corner_radius": 0, "length": 19.05, "shank": 6.0,
+      "url": "https://shop.carbide3d.com/",
+      "notes": "UNCERTAIN number: metric 6 mm square end mill. Feeds copied from #201 (the CC 843 sample's user-made '6mm End Mill' #601 uses 2286 / 381 / 1.5).",
+      "feeds": {
+        "mdf":       { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.5,   "stepover_pct": 50, "guess": true },
+        "softwood":  { "rpm": 18000, "feed": 1905, "plunge": 381, "stepdown": 1.5,   "stepover_pct": 50, "guess": true },
+        "hardwood":  { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.2,   "stepover_pct": 50, "guess": true },
+        "acrylic":   { "rpm": 18000, "feed": 1016, "plunge": 254, "stepdown": 0.75,  "stepover_pct": 40, "guess": true },
+        "hdpe":      { "rpm": 18000, "feed": 1524, "plunge": 381, "stepdown": 1.2,   "stepover_pct": 40, "guess": true },
+        "aluminium": { "rpm": 10000, "feed": 508,  "plunge": 127, "stepdown": 0.25,  "stepover_pct": 25, "guess": true }
+      }
+    }
+  ]
+}

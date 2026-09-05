@@ -258,6 +258,58 @@ static QList<QPainterPath> components(const QPainterPath &region)
 }
 #endif // HAVE_CLIPPER2
 
+// ---- rest machining (both backends) ---------------------------------------
+static QPainterPath regionFromRings(const QList<QPolygonF> &rings)
+{
+    QPainterPath r;
+    r.setFillRule(Qt::OddEvenFill);
+    for (const QPolygonF &p : rings)
+        if (p.size() > 2)
+            r.addPolygon(p);
+    return r;
+}
+
+#ifdef HAVE_CLIPPER2
+static QPainterPath subtractRegion(const QPainterPath &a, const QPainterPath &b)
+{
+    return regionFromRings(ringsFromPaths(
+        C2::Difference(pathsOfRegion(a), pathsOfRegion(b), C2::FillRule::EvenOdd)));
+}
+#else
+static QPainterPath subtractRegion(const QPainterPath &a, const QPainterPath &b)
+{
+    QPainterPath r = a.subtracted(b).simplified();
+    r.setFillRule(Qt::OddEvenFill);
+    return r;
+}
+#endif
+
+// Rest machining: the tool-centre regions this cutter must still visit after
+// a prevR cutter roughed the same pocket. `mine` is where this tool fits
+// (inset by toolR + stock); `cleared` is what the previous tool swept (its
+// centre region outset by its own radius, i.e. the morphological opening of
+// the pocket). Every centre whose whole disc lies inside `cleared` —
+// inset(cleared, toolR) — can be skipped; what remains hugs the corners and
+// channels the big tool could not enter, plus one tool radius of overlap into
+// the cleared floor so the two cuts blend. (Subtracting `cleared` itself
+// would leave the material within toolR of its rounded corners uncut.)
+static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
+                                       double prevR, double leave)
+{
+    const QPainterPath mine = regionFromRings(insetRings(comp, toolR + leave));
+    if (mine.isEmpty())
+        return {};
+    const QPainterPath prevCentres = regionFromRings(insetRings(comp, prevR + leave));
+    if (prevCentres.isEmpty())
+        return components(mine);          // the big tool never fitted: all rest
+    const QPainterPath cleared = regionFromRings(outsetRings(prevCentres, prevR));
+    const QPainterPath skip = regionFromRings(insetRings(cleared, toolR));
+    const QPainterPath rest = skip.isEmpty() ? mine : subtractRegion(mine, skip);
+    if (rest.isEmpty())
+        return {};
+    return components(rest);
+}
+
 // Circular-ring detection: every vertex equidistant from the vertex centroid,
 // letting the ring go out as two G2/G3 half arcs instead of line segments.
 static bool asCircle(const QPolygonF &poly, QPointF *center, double *radius, bool *ccw)
@@ -1069,12 +1121,30 @@ GcodeResult exportGcode(Document &doc)
         } else { // pocket
             const double stepover = qMax(0.1, j.value("stepover").toDouble(toolR));
             cp.linkDist = qMax(2.5 * stepover, 4 * toolR);
-            for (const QPainterPath &comp : components(regionOf(elems))) {
+            const double leave = qMax(0.0, j.value("stock_to_leave").toDouble(0));
+            // Rest machining: with enable_rest and a rest_diameter larger than
+            // this tool, only ring-fill what that previous cutter left behind.
+            const double prevR = j.value("rest_diameter").toDouble(0) / 2.0;
+            const bool useRest = j.value("enable_rest").toBool(false) && prevR > toolR + 1e-6;
+
+            // Ring-fill a centre region: concentric insets every stepover,
+            // innermost first (a firstDelta of 0 starts on the region's own
+            // boundary — used for rest regions, already in centre space).
+            auto ringFill = [&](const QPainterPath &area, double firstDelta) {
                 Job job;
                 QList<QList<QPolygonF>> shells;
-                double delta = toolR + qMax(0.0, j.value("stock_to_leave").toDouble(0));
+                double delta = firstDelta;
                 while (shells.size() < 500) {
-                    const QList<QPolygonF> s = insetRings(comp, delta);
+                    QList<QPolygonF> s;
+                    if (delta < 1e-9) {
+                        for (QPolygonF p : area.toSubpathPolygons())
+                            if (p.size() > 2) {
+                                closeLoop(p);
+                                s.append(p);
+                            }
+                    } else {
+                        s = insetRings(area, delta);
+                    }
                     if (s.isEmpty())
                         break;
                     shells.append(s);
@@ -1084,6 +1154,14 @@ GcodeResult exportGcode(Document &doc)
                     job.rings.append(shells.at(k));
                 if (!job.rings.isEmpty())
                     jobs.append(job);
+            };
+            for (const QPainterPath &comp : components(regionOf(elems))) {
+                if (useRest) {
+                    for (const QPainterPath &rc : restRegions(comp, toolR, prevR, leave))
+                        ringFill(rc, 0.0);
+                } else {
+                    ringFill(comp, toolR + leave);
+                }
             }
         }
 

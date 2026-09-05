@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "gcodeexport.h"
 #include "grblstreamer.h"
+#include "tiling.h"
 #include "vcarve.h"
 #include <QSet>
 #include <QApplication>
@@ -906,6 +907,28 @@ int main(int argc, char *argv[])
         });
         app.exec();
         return rc;
+    }
+
+    // --export-tiled <in.c2d> <outbase> [tile_height_mm]: headless tiled
+    // export, one complete program per tile: <outbase>_tile1.nc, _tile2.nc…
+    // Tile height defaults to the document's tile_height param.
+    if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--export-tiled") {
+        c2d::Document doc;
+        QString err;
+        if (!doc.load(QString::fromLocal8Bit(argv[2]), &err)) {
+            qWarning() << "load failed:" << err;
+            return 1;
+        }
+        const double tileH = argc == 5 ? QByteArray(argv[4]).toDouble() : 0.0;
+        const c2d::TiledExport r =
+            c2d::exportTiled(doc, QString::fromLocal8Bit(argv[3]), tileH);
+        if (!r.error.isEmpty()) {
+            qWarning() << "tiled export failed:" << r.error << "skipped:" << r.skipped;
+            return r.done.isEmpty() ? 3 : 2;
+        }
+        qInfo() << "exported:" << r.done << "skipped:" << r.skipped
+                << "tile height:" << r.tileHeight << "tiles:" << r.files;
+        return 0;
     }
 
     // --export <in.c2d> <out.nc>: headless g-code export (CLI/scripting).

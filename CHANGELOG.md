@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+- Tool library / speeds and feeds: `data/tool-library.json` (embedded as a Qt
+  resource) carries the Carbide 3D cutter catalogue (#101/#102/#111/#112/#122/
+  #201/#202/#251/#278/#301/#302/#321/#322/#501/#502/#602) with per-material
+  rpm / feed / plunge / depth-per-pass / stepover for MDF-plywood, soft wood,
+  hard wood, acrylic, HDPE and aluminium; unverified catalogue numbers and
+  non-CC-default (conservative) feeds are flagged in the data and the dialog.
+  `ToolLibrary` loads it; the Toolpaths panel's new "Tool library…" button
+  (searchable list, material selector, preview of the numbers) writes the
+  chosen tool into the selected toolpath's `tool` / `speeds` objects and its
+  `stepdown` / `depth_per_pass` / `stepover` using CC's own key names, as an
+  embedded user tool, so the file still opens in Carbide Create.
+- Pocket rest machining: `enable_rest` with a `rest_diameter` larger than the
+  tool ring-fills only the corners and channels the previous cutter could not
+  reach (tool-centre region inset by the tool, minus the centres whose whole
+  disc lies in the opening the big cutter already cleared), with one tool
+  radius of overlap into the cleared floor. Geometry test: 40×20 pocket, Ø6.35
+  after Ø12.7 → four corner rings, a fraction of the full pocket's cut length.
+- Toolpath tiling: File → Export G-code (tiled)… and `--export-tiled in.c2d
+  outbase [tile_height]` write `<outbase>_tile1.nc`, `_tile2.nc`, … — tile k
+  holds the motion with Y in [k·h, (k+1)·h) shifted by −k·h, moves crossing a
+  boundary are split there (arcs tessellated first), each cut is made exactly
+  once and every tile is a complete program (header, tool changes, spindle,
+  retract-and-re-enter around every split, M02). The plain export offers
+  tiling when the document has `tiling_enabled` and the job exceeds
+  `tile_height`. New `test_tiling` (CTest `tiling`) checks a synthetic 3-tile
+  job and a document export: every tile's Y ⊆ [0, h], nothing lost or doubled.
+
 ## v0.2.4 (build 12) — 2026-09-05
 - CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
   display: the offscreen Qt platform is selected automatically when no

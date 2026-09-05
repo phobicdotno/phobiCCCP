@@ -37,6 +37,9 @@ add_library(phobicccp_core STATIC
     src/vcarve.cpp
     src/post_grbl.cpp
     src/grblstreamer.cpp
+    src/toollibrary.cpp
+    src/tiling.cpp
+    data/tools.qrc
 )
 target_include_directories(phobicccp_core PUBLIC src)
 target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
@@ -47,6 +50,7 @@ add_executable(phobicccp
     src/mainwindow.cpp
     src/propertiespanel.cpp
     src/toolpathpanel.cpp
+    src/toollibrarydialog.cpp
     src/machinepanel.cpp
     src/isopreview.cpp
 )
@@ -74,6 +78,9 @@ enable_testing()
 add_executable(test_geometry tests/test_geometry.cpp)
 target_link_libraries(test_geometry PRIVATE phobicccp_core)
 add_test(NAME geometry COMMAND test_geometry)
+add_executable(test_tiling tests/test_tiling.cpp)
+target_link_libraries(test_tiling PRIVATE phobicccp_core)
+add_test(NAME tiling COMMAND test_tiling)
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME grblsim COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/grblsim_selftest.py)

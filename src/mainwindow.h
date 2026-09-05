@@ -29,6 +29,7 @@ private slots:
     void onSave();
     void onSaveAs();
     void onExportGcode();
+    void onExportGcodeTiled();   // one program per tile_height band in Y
     void refreshPreview();
 
 private:
