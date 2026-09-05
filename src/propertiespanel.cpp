@@ -6,6 +6,8 @@
 #include <QDoubleSpinBox>
 #include <QFontComboBox>
 #include <QFormLayout>
+#include <QScrollArea>
+#include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QLabel>
@@ -32,9 +34,24 @@ QDoubleSpinBox *PropertiesPanel::spin(double max)
 PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     : QWidget(parent), m_canvas(canvas)
 {
-    auto *form = new QFormLayout(this);
+    // The form is scrolled rather than laid out directly on the panel:
+    // selecting a text element reveals its font and arc rows, and a form that
+    // owns the panel would grow the dock's minimum height by ~170 px. Stacked
+    // with the other docks that pushed the window's minimum past the height of
+    // a 1280x800 screen, so the window manager could no longer maximise it —
+    // selecting text un-maximised the window and removed its maximise button.
+    auto *inner = new QWidget(this);
+    auto *form = new QFormLayout(inner);
     form->setContentsMargins(10, 10, 10, 10);
     form->setSpacing(6);
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(inner);
+    scroll->setMinimumHeight(70);
+    auto *outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->addWidget(scroll);
 
     m_typeLabel = new QLabel(QStringLiteral("—"), this);
     m_typeLabel->setStyleSheet(QStringLiteral("font-weight: bold;"));

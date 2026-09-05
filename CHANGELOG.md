@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.4 (build 19) — 2026-09-05
+- Selecting an item no longer un-maximises the window and removes its maximise
+  button. The panels demanded so much height that the window's minimum grew
+  past a 1280x800 screen — selecting a text element pushed it from 594 to 762
+  pixels, more than fits once the titlebar and desktop panel are subtracted,
+  so the window manager could no longer maximise it. The Properties form and
+  the Model controls now scroll, and the 3D views may shrink, which keeps the
+  minimum at 517 whatever is selected.
+
 ## v0.4.3 (build 18) — 2026-09-05
 Fixes from an independent review of the 3D modelling, 3D machining, toolpath
 lifecycle and engraving work, plus robustness hardening:

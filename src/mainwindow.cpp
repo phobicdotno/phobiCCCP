@@ -18,6 +18,7 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QMenuBar>
+#include <QTimer>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QStatusBar>

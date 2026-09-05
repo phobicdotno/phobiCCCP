@@ -22,6 +22,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QProgressBar>
+#include <QScrollArea>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QThread>
@@ -481,14 +482,28 @@ ModelPanel::ModelPanel(QWidget *parent)
     });
     m_readout->setText(QStringLiteral("X    —      Y    —      Z    —"));
 
+    // The controls scroll and the relief view takes the rest: stacked in one
+    // dock column with the other panels, a tall fixed block would push the
+    // window's minimum height past a 1280x800 screen and stop it maximising.
+    auto *controls = new QWidget(this);
+    auto *clay = new QVBoxLayout(controls);
+    clay->setContentsMargins(0, 0, 0, 0);
+    clay->setSpacing(2);
+    clay->addLayout(addRow);
+    clay->addWidget(m_list);
+    clay->addWidget(m_propBox);
+    clay->addLayout(buildRow);
+    clay->addWidget(m_progress);
+    auto *scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(controls);
+    scroll->setMinimumHeight(80);
+
     auto *lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(2);
-    lay->addLayout(addRow);
-    lay->addWidget(m_list);
-    lay->addWidget(m_propBox);
-    lay->addLayout(buildRow);
-    lay->addWidget(m_progress);
+    lay->addWidget(scroll);
     lay->addWidget(m_view, 1);
     lay->addWidget(m_readout);
     lay->addWidget(m_status);

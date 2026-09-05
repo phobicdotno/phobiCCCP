@@ -32,7 +32,7 @@ public:
 
     explicit SimView(QWidget *parent) : QWidget(parent)
     {
-        setMinimumSize(200, 200);
+        setMinimumSize(120, 90);   // the view scales; do not floor the window
         setMouseTracking(true);
         setCursor(Qt::CrossCursor);
     }

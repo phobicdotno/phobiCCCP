@@ -69,7 +69,7 @@ class IsoView : public QWidget
 public:
     explicit IsoView(QWidget *parent) : QWidget(parent)
     {
-        setMinimumSize(200, 200);
+        setMinimumSize(120, 90);   // the view scales; do not floor the window
         setCursor(Qt::OpenHandCursor);
     }
 

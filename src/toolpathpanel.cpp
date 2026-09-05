@@ -166,6 +166,7 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_list->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_list->setMaximumHeight(150);
+    m_list->setMinimumHeight(60);
     m_list->setToolTip(QStringLiteral(
         "Machining order, top to bottom. Checkbox = enabled; double-click the "
         "name to rename."));
