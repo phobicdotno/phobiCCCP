@@ -59,7 +59,11 @@ static bool clipToBand(const P3 &a, const P3 &b, double lo, double hi, P3 *ca, P
 {
     const double eps = 1e-9;
     const double dy = b.y - a.y;
-    if (qAbs(dy) < eps) {
+    // A nanometre of slope over a 200 mm cut is not a slope. Testing against
+    // 1e-9 sent such a cut down the parametric branch, which split it at the
+    // tile line into two separate tile programs - half the cut, a physical
+    // stock re-index, then the other half, with a seam where they meet.
+    if (qAbs(dy) < 1e-6) {
         if (a.y < lo - eps || a.y >= hi - eps)
             return false;
         *ca = a;
@@ -156,7 +160,15 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
     const int n = tileCount(ops, tileHeight);
     QVector<TileState> tiles(n);
     auto lo = [&](int k) { return k == 0 ? -std::numeric_limits<double>::infinity() : k * tileHeight; };
-    auto hi = [&](int k) { return (k + 1) * tileHeight; };
+    // The last tile has no upper bound: tileCount deliberately keeps a maxY of
+    // exactly n * tileHeight inside tile n-1, so clipping the top tile at
+    // n * tileHeight pushed any cut lying on that line into a tile that does
+    // not exist, and it was dropped from the program altogether - the top edge
+    // of a part on stock whose height is a multiple of the tile height.
+    auto hi = [&](int k) {
+        return k == n - 1 ? std::numeric_limits<double>::infinity()
+                          : (k + 1) * tileHeight;
+    };
 
     P3 cur{0, 0, safeZ};
     double plungeFeed = 0;
@@ -273,7 +285,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
                                   : doc.params().value("tile_height", "508.0").toDouble();
     if (r.tileHeight <= 0)
         r.tileHeight = 508.0;
-    const double safeZ = doc.params().value("retract", "2.54").toDouble();
+    const double safeZ = documentSafeZ(doc);
 
     const GcodeResult g = exportGcode(doc);
     r.done = g.done;

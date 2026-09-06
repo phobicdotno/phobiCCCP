@@ -175,6 +175,12 @@ class Sim:
             return "Door:0"
         if self.hold:
             return "Hold:0"
+        # A line that has been acked is in the planner even if the exec loop has
+        # not picked it up yet. Real GRBL reports Run for that; reporting Idle
+        # says "everything I sent is done" one block too early, which is a race
+        # for anything that waits for Idle before reading position or inputs.
+        if self.motion_state == "Idle" and self.q:
+            return "Run"
         return self.motion_state
 
     def state_idle_or_alarm(self):

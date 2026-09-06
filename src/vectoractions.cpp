@@ -352,23 +352,39 @@ void VectorActions::boolean(vec::BoolOp op)
     const QVector<Element> inputs = orderedSelection();
     if (inputs.size() < 2)
         return;
-    int closed = 0;
+    // Only closed vectors take part - booleanElements skips the rest. They
+    // must also be the only ones replaced: handing the whole selection to
+    // pushReplace deleted every open path in it, without it ever having
+    // contributed to the result.
+    QVector<Element> closedInputs;
     for (const Element &e : inputs)
-        closed += vec::isClosed(e) ? 1 : 0;
-    if (closed < 2) {
+        if (vec::isClosed(e))
+            closedInputs.append(e);
+    const QString name = op == vec::BoolOp::Union ? tr("union")
+                       : op == vec::BoolOp::Subtract ? tr("subtract") : tr("intersect");
+    if (closedInputs.size() < 2) {
         emit m_canvas->statusHint(tr("Booleans need at least two closed vectors"));
         return;
     }
-    const QVector<Element> results = vec::booleanElements(inputs, op);
-    const QString name = op == vec::BoolOp::Union ? tr("union")
-                       : op == vec::BoolOp::Subtract ? tr("subtract") : tr("intersect");
+    // Subtract is "the first selected vector minus the rest". If the first one
+    // is open it is skipped entirely, every closed vector becomes a clip, and
+    // the empty result got reported as "vectors do not overlap" - which was
+    // never the reason.
+    if (op == vec::BoolOp::Subtract && !vec::isClosed(inputs.first())) {
+        emit m_canvas->statusHint(
+            tr("Subtract takes the first selected vector minus the rest — "
+               "select a closed vector first"));
+        return;
+    }
+    const QVector<Element> results = vec::booleanElements(closedInputs, op);
     if (results.isEmpty()) {
         emit m_canvas->statusHint(tr("%1: empty result — vectors do not overlap").arg(name));
         return;
     }
-    pushReplace(inputs, results, false, tr("%1 %2 vectors").arg(name).arg(inputs.size()));
+    pushReplace(closedInputs, results, false,
+                tr("%1 %2 vectors").arg(name).arg(closedInputs.size()));
     emit m_canvas->statusHint(tr("%1: %2 vector(s) → %3 closed path(s)")
-                                  .arg(name).arg(inputs.size()).arg(results.size()));
+                                  .arg(name).arg(closedInputs.size()).arg(results.size()));
 }
 
 void VectorActions::offset()

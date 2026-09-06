@@ -707,6 +707,14 @@ struct DxfCtx {
     double unit = 1;        // mm per drawing unit
     double tol = 0.02;
     QPainterPath out;       // mm, Y-up
+    // A block may INSERT other blocks, and each INSERT may be an array. The
+    // depth cap alone bounds nesting but not fan-out: eight blocks each
+    // inserting themselves eight times is 8^9 entities from a 200-byte file.
+    // Every entity emitted costs one unit of this budget; when it runs out the
+    // import stops expanding and says so, instead of running until the box
+    // dies.
+    int budget = 200000;
+    bool budgetSpent = false;
 };
 
 double pairD(const QVector<Pair> &ps, int code, double def = 0)
@@ -866,7 +874,11 @@ void flattenParam(QPainterPath &p, const std::function<QPointF(double)> &f, doub
 void splineToPath(QPainterPath &out, const Entity &e, const QTransform &xf, double tol)
 {
     Nurbs n;
-    n.degree = qMax(1, pairI(e.pairs, 71, 3));
+    // Nurbs::eval is O(degree^2) and allocates three vectors of degree+1 per
+    // call, and it is called tens of thousands of times while flattening. DXF
+    // splines are cubic in practice; anything past 15 is a malformed or
+    // hostile file, not a curve worth honouring.
+    n.degree = qBound(1, pairI(e.pairs, 71, 3), 15);
     n.knots = pairAll(e.pairs, 40);
     n.weights = pairAll(e.pairs, 41);
     const QVector<double> cx = pairAll(e.pairs, 10), cy = pairAll(e.pairs, 20);
@@ -922,8 +934,32 @@ void splineToPath(QPainterPath &out, const Entity &e, const QTransform &xf, doub
     out.addPath(p);
 }
 
+// Start and end angle straight out of the file, reduced to a sweep in
+// (0, 2pi]. Winding `a1` up by 2pi in a loop until it passes `a0` never
+// terminates for an angle the file is free to contain: past ~2.8e16 the
+// addition is a no-op in double precision, and `inf` parses fine. 0 means
+// "unusable, skip the entity".
+double arcSweep(double a0, double a1)
+{
+    if (!std::isfinite(a0) || !std::isfinite(a1))
+        return 0;
+    double sweep = std::fmod(a1 - a0, 2 * M_PI);
+    if (sweep <= 1e-12)
+        sweep += 2 * M_PI;
+    return sweep;
+}
+
 void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
 {
+    if (ctx.budget <= 0) {
+        if (!ctx.budgetSpent) {
+            ctx.budgetSpent = true;
+            addSkipped(*ctx.res, *ctx.skipped,
+                       QStringLiteral("entities beyond the expansion limit"));
+        }
+        return;
+    }
+    --ctx.budget;
     const QVector<Pair> &ps = e.pairs;
     const QTransform xf = ocs(ps) * xfIn;
     const QString &t = e.type;
@@ -963,20 +999,21 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
         if (r > 0) appendCircle(p, QPointF(pairD(ps, 10), pairD(ps, 20)), r);
     } else if (t == QLatin1String("ARC")) {
         const double r = pairD(ps, 40);
-        double a0 = qDegreesToRadians(pairD(ps, 50)), a1 = qDegreesToRadians(pairD(ps, 51));
-        while (a1 <= a0 + 1e-12) a1 += 2 * M_PI;
-        if (r > 0) appendArc(p, QPointF(pairD(ps, 10), pairD(ps, 20)), r, r, 0, a0, a1 - a0, true);
+        const double a0 = qDegreesToRadians(pairD(ps, 50));
+        const double sweep = arcSweep(a0, qDegreesToRadians(pairD(ps, 51)));
+        if (r > 0 && sweep > 0)
+            appendArc(p, QPointF(pairD(ps, 10), pairD(ps, 20)), r, r, 0, a0, sweep, true);
     } else if (t == QLatin1String("ELLIPSE")) {
         const QPointF c(pairD(ps, 10), pairD(ps, 20));
         const QPointF maj(pairD(ps, 11), pairD(ps, 21));
         const double ratio = pairD(ps, 40, 1);
         const double rx = std::hypot(maj.x(), maj.y());
         const double rot = std::atan2(maj.y(), maj.x());
-        double a0 = pairD(ps, 41, 0), a1 = pairD(ps, 42, 2 * M_PI);
-        while (a1 <= a0 + 1e-12) a1 += 2 * M_PI;
-        if (rx > 0 && ratio > 0) {
-            appendArc(p, c, rx, rx * ratio, rot, a0, a1 - a0, true);
-            if (std::fabs((a1 - a0) - 2 * M_PI) < 1e-9)
+        const double a0 = pairD(ps, 41, 0);
+        const double sweep = arcSweep(a0, pairD(ps, 42, 2 * M_PI));
+        if (rx > 0 && ratio > 0 && sweep > 0) {
+            appendArc(p, c, rx, rx * ratio, rot, a0, sweep, true);
+            if (std::fabs(sweep - 2 * M_PI) < 1e-9)
                 p.closeSubpath();
         }
     } else if (t == QLatin1String("SPLINE")) {
@@ -993,7 +1030,11 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
         const double sx = pairD(ps, 41, 1), sy = pairD(ps, 42, 1);
         const double rot = pairD(ps, 50, 0);
         const QPointF ins(pairD(ps, 10), pairD(ps, 20));
-        const int cols = qMax(1, pairI(ps, 70, 1)), rows = qMax(1, pairI(ps, 71, 1));
+        // MINSERT array counts come straight from the file. A real drawing
+        // never arrays more than a few hundred; 1e9 x 1e9 is not a drawing.
+        const int kMaxArray = 1000;
+        const int cols = qBound(1, pairI(ps, 70, 1), kMaxArray),
+                  rows = qBound(1, pairI(ps, 71, 1), kMaxArray);
         const double colSp = pairD(ps, 44, 0), rowSp = pairD(ps, 45, 0);
         for (int r = 0; r < rows; ++r) {
             for (int c = 0; c < cols; ++c) {

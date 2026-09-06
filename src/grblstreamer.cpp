@@ -68,10 +68,26 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     connect(m_port, &QSerialPort::readyRead, this, &GrblStreamer::onReadyRead);
     connect(m_port, &QSerialPort::errorOccurred, this,
             [this](QSerialPort::SerialPortError e) {
-        if (e != QSerialPort::NoError)
-            emit errorOccurred(QStringLiteral("serial port error %1 (%2)")
-                                   .arg(int(e), 0)
-                                   .arg(m_port ? m_port->errorString() : QString()));
+        if (e == QSerialPort::NoError)
+            return;
+        emit errorOccurred(QStringLiteral("serial port error %1 (%2)")
+                               .arg(int(e), 0)
+                               .arg(m_port ? m_port->errorString() : QString()));
+        // The port is gone - cable pulled, adapter reset, permissions lost.
+        // Only reporting it leaves isConnected() true, m_streaming true and
+        // the status timer writing `?` into a dead handle, so the app claims
+        // the program is still running while the machine stalls mid-cut with
+        // the spindle live. Tear the connection down so the panel says so.
+        switch (e) {
+        case QSerialPort::ResourceError:
+        case QSerialPort::DeviceNotFoundError:
+        case QSerialPort::PermissionError:
+        case QSerialPort::NotOpenError:
+            disconnectPort();
+            break;
+        default:
+            break;
+        }
     });
     m_rx.clear();
     m_status = MachineStatus();
@@ -186,10 +202,45 @@ void GrblStreamer::continueAfterToolChange()
 {
     if (!m_streaming || m_waitingTool < 0)
         return;
+    // The park travel or the BitSetter probe is still running. Resuming here
+    // would put two writers on the line: pump() writes cutting moves while
+    // pumpMacro() is still working through M5 / G53 moves, the macro branch
+    // takes every ok before the stream branch sees it (so the stream never
+    // releases its inflight entries and wedges), and the macro's own lines are
+    // written with no byte accounting at all - past GRBL's 128-byte buffer.
+    if (m_macroActive) {
+        emit consoleLine(QStringLiteral("== still moving - wait for the tool "
+                                        "measurement to finish =="));
+        return;
+    }
     m_waitingTool = -1;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
     pump();
+}
+
+// Everything in flight is void after a controller reset we did not ask for.
+// Drop the program and the macro, and tell whoever is listening that they
+// ended - unsuccessfully.
+void GrblStreamer::abortAfterReset()
+{
+    const bool wasProgram = m_streaming, wasMacro = m_macroActive;
+    m_streaming = false;
+    m_waitingTool = -1;
+    m_queue.clear();
+    m_inflightSizes.clear();
+    m_inflightBytes = 0;
+    m_macroActive = false;
+    m_macroInflight = false;
+    m_macroQueue.clear();
+    m_tloPending = (m_tlo != 0.0);
+    emit errorOccurred(QStringLiteral("controller reset: %1 stopped")
+                           .arg(wasProgram ? QStringLiteral("the program")
+                                           : QStringLiteral("the tool measurement")));
+    if (wasMacro)
+        emit macroFinished(false);
+    if (wasProgram)
+        emit streamFinished(false);
 }
 
 void GrblStreamer::pauseStream()
@@ -451,6 +502,16 @@ void GrblStreamer::handleLine(const QByteArray &line)
     if (line.startsWith("Grbl ")) {
         m_adhocPending = 0;
         m_adhocLines.clear();
+        // The controller rebooted under us - reset button, brown-out, a USB
+        // stall. Its RX buffer, modal state and G43.1 are gone and every line
+        // in flight will never be answered. Pushing the rest of the program at
+        // it would cut with the wrong modal state and the wrong tool offset;
+        // and because those acks never arrive, m_ackedCount would stay short
+        // of the queue for ever - progress frozen near 100%, streamFinished
+        // never emitted, canSendCommand() false, so even jog and $X are
+        // refused. Abort instead, and say so.
+        if (m_streaming || m_macroActive)
+            abortAfterReset();
         if (m_tlo != 0.0) {
             m_tloPending = true;
             QTimer::singleShot(400, this, [this] { flushTlo(); });

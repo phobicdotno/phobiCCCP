@@ -1,5 +1,138 @@
 # Changelog
 
+## v0.4.52 (build 23) — 2026-09-06
+
+An independent review of the whole codebase, in five parallel passes. Thirty
+findings; the ones that could cut wrong, hang, or lose work are fixed below,
+each with a regression test in the new `hardening` suite.
+
+**Toolpaths and G-code**
+- Contour toolpaths honour their tabs. Tabs were read for cutouts only, so a
+  contour taken to the full stock thickness released the part on its last pass
+  with the spindle still running — even though new contours are created with
+  tabs switched on.
+- Tabs are no longer wider than the part they hold. Three 30 mm tabs tiled the
+  whole 80 mm perimeter of a 20 mm square: the cut never went below the tab
+  top, the part was never released, and the pass then ended by plunging to
+  full depth inside a tab. Tab width is now capped at a third of the loop.
+- V-carve flat-bottom clearing steps down instead of plunging straight to full
+  depth and taking the whole depth in one lap. The medial pass only carves the
+  skeleton, so those rings run through virgin stock.
+- Ramped entry no longer cuts into the part. When the ramp reached depth it
+  went straight back to the start of the loop — a chord across the inside of
+  the ring, gouging up to 0.67 mm on a rounded corner, once per pass. It now
+  finishes the lap.
+- A depth per pass written as text ("0.500", which is how Carbide Create
+  stores some values) was silently replaced by 1.0 mm — twice the requested
+  cut. Every numeric cut parameter now accepts both forms.
+- The rest of the exporter reads the same way: stepover and its variation,
+  stock to leave, rest diameter, hatch spacing and angle, peck distance,
+  keyhole length and angle, and the V-bit angle. Only the depth keys were
+  covered before, and which keys Carbide writes as text varies by build.
+- The 3D roughing and finishing parameters read the same way too — feed,
+  plunge, depth per pass, stock to leave, boundary offset and raster angle.
+  The 2D exporter and the 3D one parse the same rows and now agree.
+- A tool whose diameter cannot be read falls back to 3.175 mm instead of
+  becoming a zero-width cutter that offsets nothing.
+- An unreadable `retract` value became a safe Z of zero, rapiding across the
+  stock with the tip at its surface. It falls back to 2.54 mm.
+- A near-circular ring is only machined as a true circle when it really is
+  one. The tolerance grew with the radius, so a 200 mm ring wobbling ±0.35 mm
+  was replaced by a perfect circle up to 0.7 mm off on diameter.
+- V-carving a rotated or curved shape no longer invents dozens of spurious
+  spokes. The boundary is split into 1 mm pieces internally, and each joint
+  read as a sharp corner: a 20 mm square rotated 17° came out as 72 chains and
+  243 mm of medial axis instead of 4 and 56.6, each false spur a full-depth
+  plunge dragged out to the surface.
+
+**Tiling**
+- Tiled export retracts to a real clearance. It read the retract height
+  straight from the document without the guard the plain exporter has, so a
+  value it could not parse — an empty one, or a comma decimal from another
+  locale — made every move between tiles a rapid at the stock surface. Both
+  exporters now read it through the same function.
+- A cut lying exactly on the top edge of the last tile is machined. Stock
+  whose height was a multiple of the tile height lost its top edge from every
+  tile — silently replaced by a rapid.
+- A cut a nanometre off horizontal is no longer split across two tiles, with a
+  physical stock re-index in the middle of it.
+
+**Saving**
+- Saving is atomic. The file is written beside the destination and moved into
+  place only once it is complete, so a failure — a full disk, a document on a
+  stick that has been pulled — leaves the previous file untouched. Before, the
+  destination was deleted first and a failed save reported after it was gone.
+- Save As retargets the document. Afterwards Ctrl+S wrote back into the file
+  that was opened, overwriting the original the user was keeping while the new
+  file stayed frozen at the Save As snapshot.
+- A 3D model that could not be read is no longer deleted by the next save. The
+  relief rows were cleared before being rewritten from a model that had loaded
+  as empty, so one truncated row cost the whole model on Ctrl+S.
+- A component whose mesh or heightmap will not decode keeps its bytes, the way
+  undecodable toolpath rows already did.
+- `num_toolpaths` counts the rows that are actually in the file, including the
+  ones this build could not decode.
+
+**Damaged and hostile files**
+- A DXF can no longer hang the app. An arc with an absurd start angle spun
+  for ever, a block array could ask for 10^18 copies, and a spline could
+  declare degree 99999.
+- A compressed block that expands without limit is rejected instead of filling
+  memory, and a nonsense uncompressed size no longer reserves a gigabyte.
+- A zero cell size, a zero tolerance and a zero-diameter tool are rejected
+  where they used to produce NaN geometry or a depth of -1e9 mm.
+
+**Machine control**
+- A controller reset in the middle of a program stops the program. The app
+  carried on streaming to a controller that had lost its modal state and tool
+  offset, and because the acks in flight never arrived it then hung at 100 %
+  for ever — no completion, and jog, unlock and zeroing all refused.
+- Continue during a tool change waits for the probe to finish. Pressing it
+  while the machine was still moving put two writers on the serial line, past
+  the controller's buffer.
+- A pulled cable disconnects. A serial error was written to the console while
+  the app went on believing it was connected and running.
+- Continuing with a tool that failed to measure now says what will happen: the
+  previous tool's length offset is still in force, so the program cuts as deep
+  as the two tools differ.
+- Press-and-hold jog stops queueing faster than the machine can move, which
+  could overflow the controller's buffer and corrupt a jog command.
+
+**Editing**
+- Opening another file, picking one from Open Recent, dropping a file on the
+  window or closing it all ask before discarding unsaved changes.
+- Union, Subtract and Intersect no longer delete open paths in the selection.
+  They never took part in the result but were removed with the inputs.
+- Subtract says when the first selected vector is open, instead of reporting
+  "vectors do not overlap" about shapes that plainly do.
+- Trace image inserts what the preview showed. Typing a value and pressing
+  Enter accepted the dialog inside the 120 ms redraw delay, inserting the
+  paths from the previous settings.
+- A simulation cancelled because the drawing changed no longer shows its
+  half-finished result as if it were the current program.
+- A drag shorter than half a grid cell with snap on no longer leaves the shape
+  in one place on screen and another in the document.
+
+**Command line**
+- `--help`, `-h` and `--version`, and an unrecognised or mis-typed option now
+  prints them and exits instead of opening the GUI on a file called
+  "--export" — which on a headless box was an invisible modal dialog.
+- `--export` leaves an existing program alone when there is nothing to export,
+  instead of overwriting it with an empty one and then reporting the failure.
+- `--shot` checks the document before opening the window, and cannot hang.
+- `--grbl-aircut` rejects a lift that is not a number of at least 1 mm; a typo
+  used to rehearse the program at its programmed depth.
+- The build is warning-clean again.
+
+**Testing**
+- The GRBL simulator reports `Run` from the moment a line is acked, instead of
+  staying `Idle` until the execution loop picks the block up. Real controllers
+  do the same, and anything that waited for `Idle` before reading position or
+  the probe input could see the previous move's state — which made the
+  simulator's own self-test fail about one run in eight, on a different check
+  each time.
+- New `hardening` suite (284 checks), run by CTest with the other fifteen.
+
 ## v0.4.12 (build 22) — 2026-09-06
 - Clicking a shape on the canvas now hands the selection over: the toolpath
   row deselects and its outline clears, instead of both panes staying lit and

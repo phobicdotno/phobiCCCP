@@ -226,6 +226,17 @@ SimPanel::SimPanel(QWidget *parent)
     connect(m_cancelBtn, &QPushButton::clicked, this, &SimPanel::cancel);
     connect(m_job, &SimulationJob::progress, this, [this](int p) { m_progress->setValue(p); });
     connect(m_job, &SimulationJob::finished, this, [this](bool) {
+        // cancel() is asynchronous: a run stopped because the program changed
+        // still unwinds and delivers its half-finished heightmap. Adopting it
+        // would show the pre-edit cut pattern under the current stock caption,
+        // with the hover readout answering from a map of a program that no
+        // longer exists.
+        if (m_discardResult) {
+            m_discardResult = false;
+            setBusy(false);
+            updateStatus();
+            return;
+        }
         takeResult(m_job->result());
         setBusy(false);
     });
@@ -254,8 +265,10 @@ void SimPanel::setJob(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
 {
     // A run already in flight is computing the previous program: stop it, or
     // its result would land as if it were current.
-    if (isRunning())
+    if (isRunning()) {
+        m_discardResult = true;
         cancel();
+    }
     m_ops = ops;
     m_tools = tools;
     m_w = stockW; m_h = stockH; m_t = qMax(0.0, stockT);

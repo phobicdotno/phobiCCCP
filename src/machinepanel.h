@@ -92,6 +92,10 @@ private:
     double m_refZ = 0;                   // machine Z where the reference tool tripped
     Phase m_phase = Phase::Idle;
     int m_pendingTool = -1;
+    // Whether m_pendingTool has actually been measured on the BitSetter. A
+    // failed measurement leaves the *previous* tool's G43.1 in force, so
+    // resuming without one cuts as deep as the two tools differ in length.
+    bool m_toolMeasured = false;
     std::function<void()> m_onIdle;
     QString m_lastState;
 

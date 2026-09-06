@@ -28,7 +28,13 @@ struct HeightModel {
     double baseZ = 0;                  // model floor (mm, <= 0)
     QVector<float> z;                  // rows*cols, row-major from the bottom
 
-    bool valid() const { return cols > 0 && rows > 0 && z.size() == cols * rows; }
+    // `cell` matters as much as the extents: sample() divides by it, so a
+    // model with cell == 0 that calls itself valid returns NaN for every
+    // height and makes compensatedZ's grid walk int(inf).
+    bool valid() const
+    {
+        return cols > 0 && rows > 0 && cell > 0 && z.size() == cols * rows;
+    }
     QRectF bounds() const { return QRectF(originX, originY, cols * cell, rows * cell); }
     void resize(int c, int r, float fill = NoModel)
     {

@@ -17,7 +17,9 @@ namespace vec {
 // fixed 0.5 path-unit chord error, so scale up first).
 static QList<QPolygonF> finePolygons(const QPainterPath &path, double tol)
 {
-    const double k = 0.5 / tol;
+    // tol is a public parameter; 0 would scale every coordinate to inf and
+    // silently return no rings at all rather than an error.
+    const double k = 0.5 / (tol > 1e-9 ? tol : 0.005);
     QList<QPolygonF> out = path.toSubpathPolygons(QTransform::fromScale(k, k));
     for (QPolygonF &poly : out)
         for (QPointF &pt : poly)

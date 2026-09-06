@@ -38,12 +38,17 @@ private slots:
     void onExportGcodeTiled();   // one program per tile_height band in Y
     void refreshPreview();
 
+protected:
+    void closeEvent(QCloseEvent *e) override;
+
 private:
     void refreshInfo();
     void refreshIso();        // rebuild the 3D preview from the current document
     void markIsoStale();      // refresh now if the Preview tab is visible, else defer
 
     void updateTitle();
+    // Ask before throwing edits away. False = the user cancelled.
+    bool confirmDiscard(const QString &what);
 
     // File > Open Recent: the last five documents opened, most recent first,
     // kept in QSettings so the list survives a restart.

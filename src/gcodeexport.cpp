@@ -29,6 +29,7 @@ static double depthToZ(const QJsonValue &v)
     return -qAbs(v.isString() ? v.toString().toDouble() : v.toDouble());
 }
 
+
 static QVector<const Element *> referenced(Document &doc, const QJsonObject &tp)
 {
     QVector<const Element *> out;
@@ -330,8 +331,14 @@ static bool asCircle(const QPolygonF &poly, QPointF *center, double *radius, boo
     const double r = rSum / n;
     if (r < 0.05)
         return false;
+    // Absolute, not proportional. A 0.4% band is 0.4 mm on a 100 mm radius,
+    // and what gets emitted is a perfect circle of radius |c - poly[0]| - so a
+    // bore that wobbles inside the band is machined up to 0.8 mm off on
+    // diameter with nothing to show for it. 0.02 mm is the same bound the
+    // sagitta test below uses, and vertices of a flattened arc sit on the
+    // true circle anyway.
     for (int i = 0; i < n; ++i)
-        if (qAbs(QLineF(c, poly.at(i)).length() - r) > qMax(0.01, r * 0.004))
+        if (qAbs(QLineF(c, poly.at(i)).length() - r) > 0.02)
             return false;
     // A regular polygon also has equidistant vertices; only accept rings
     // dense enough that the chords themselves stay on the circle (sagitta
@@ -753,22 +760,29 @@ public:
     // walking the loop (multiple laps if needed) until z is reached.
     void rampDescend(const QPolygonF &ring, double zFrom, double zTo, double angleDeg)
     {
+        if (ring.size() < 2) {
+            plungeTo(pos(), zTo);
+            return;
+        }
         const double slope = qTan(qDegreesToRadians(qBound(1.0, angleDeg, 45.0)));
         double z = zFrom;
-        int lap = 0;
-        while (z > zTo + 1e-9 && lap < 20) {
-            for (int i = 1; i < ring.size() && z > zTo + 1e-9; ++i) {
-                const double L = QLineF(ring.at(i - 1), ring.at(i)).length();
-                z = qMax(zTo, z - L * slope);
-                m_ops.append(Op::feedTo(ring.at(i).x(), ring.at(i).y(), z, m_plunge));
-                m_x = ring.at(i).x();
-                m_y = ring.at(i).y();
-            }
-            ++lap;
+        int at = 0;                                    // vertex we stand on
+        const int maxSteps = 20 * (ring.size() - 1);   // ~20 laps, as before
+        for (int st = 0; st < maxSteps && z > zTo + 1e-9; ++st) {
+            const int next = at + 1 < ring.size() ? at + 1 : 1;  // last == first
+            const double L = QLineF(ring.at(at), ring.at(next)).length();
+            z = qMax(zTo, z - L * slope);
+            m_ops.append(Op::feedTo(ring.at(next).x(), ring.at(next).y(), z, m_plunge));
+            m_x = ring.at(next).x();
+            m_y = ring.at(next).y();
+            at = next;
         }
-        // Return to the loop start at depth so the full pass begins cleanly.
-        if (QLineF(pos(), ring.first()).length() > 1e-6)
-            followSpan(ring, 0, ring.size() - 1, zTo);
+        // Carry on around the loop at depth. Going straight back to ring[0]
+        // from wherever the ramp ended is a chord across the ring: on an
+        // outside contour that cuts into the finished part, by the sagitta of
+        // the span it skipped - 0.67 mm on a 3.2 mm round join - once per pass.
+        if (at > 0 && at < ring.size() - 1)
+            followSpan(ring, at + 1, ring.size() - 1, zTo);
     }
 
     // Follow ring vertices from index a to b (inclusive) at depth z.
@@ -822,16 +836,26 @@ public:
             return;
         }
 
-        // Tabbed pass: evenly spaced tabs, each cp.tabWidth long, crossed at
-        // cp.tabTop instead of z.
+        // Tabbed pass: evenly spaced tabs crossed at cp.tabTop instead of z.
+        // The width is bounded by the loop, not just by its own parameter: a
+        // 20 mm square has an 80 mm perimeter, and three 30 mm tabs tile it
+        // completely - the "cut" never goes below tabTop, the part is never
+        // released, and the pass then ends with a full-depth plunge inside a
+        // tab. Capping the total at a third of the loop keeps more of it cut
+        // than uncut and keeps every tab clear of s = 0.
         const double len = perimeter(poly);
         const int nTabs = qBound(3, int(len / 150.0) + 3, 8);
+        const double tabW = qMin(cp.tabWidth, len / (3.0 * nTabs));
+        if (tabW < 1.0) {                 // too small a part to tab at all
+            followFitted(poly, z);
+            return;
+        }
         auto inTab = [&](double s) {
             for (int t = 0; t < nTabs; ++t) {
                 const double c = len * (t + 0.5) / nTabs;
-                if (qAbs(s - c) <= cp.tabWidth / 2
-                    || qAbs(s - c + len) <= cp.tabWidth / 2
-                    || qAbs(s - c - len) <= cp.tabWidth / 2)
+                if (qAbs(s - c) <= tabW / 2
+                    || qAbs(s - c + len) <= tabW / 2
+                    || qAbs(s - c - len) <= tabW / 2)
                     return true;
             }
             return false;
@@ -859,8 +883,10 @@ public:
                 m_y = p.y();
             }
         }
-        if (up)
-            m_ops.append(Op::feedTo(m_x, m_y, z, m_plunge));
+        // Deliberately no descent here. The tab spacing above keeps every tab
+        // clear of s = 0, so a pass cannot end inside one; if it ever did,
+        // dropping to full depth would drill a hole through the tab that is
+        // holding the part.
     }
 
     void retract()
@@ -1018,11 +1044,18 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
 
 } // namespace
 
+double documentSafeZ(const Document &doc)
+{
+    const double z = doc.params().value(QStringLiteral("retract"),
+                                        QStringLiteral("2.54")).toDouble();
+    return (!std::isfinite(z) || z < 0.5) ? 2.54 : z;
+}
+
 GcodeResult exportGcode(Document &doc)
 {
     GcodeResult res;
     QVector<Op> ops;
-    const double safeZ = doc.params().value("retract", "2.54").toDouble();
+    const double safeZ = documentSafeZ(doc);
     QPointF lastPos(0, 0);
 
     int lastTool = -1;
@@ -1091,30 +1124,39 @@ GcodeResult exportGcode(Document &doc)
         }
 
         const QJsonObject speeds = j.value("speeds").toObject();
-        const double feed = speeds.value("feedrate").toDouble(500);
-        const double plunge = speeds.value("plungerate").toDouble(100);
-        const int rpm = int(speeds.value("rpm").toDouble(10000));
+        const double feed = numOr(speeds.value("feedrate"), 500);
+        const double plunge = numOr(speeds.value("plungerate"), 100);
+        const int rpm = int(numOr(speeds.value("rpm"), 10000));
         const QJsonObject tool = j.value("tool").toObject();
-        const int toolNo = int(tool.value("number").toDouble(0));
-        const double toolR = tool.value("diameter").toDouble(6) / 2.0;
+        const int toolNo = int(numOr(tool.value("number"), 0));
+        const double toolR = numOr(tool.value("diameter"), 6) / 2.0;
 
         CutParams cp;
         cp.zTop = depthToZ(j.value("start_depth"));
+        // Tabs are a contour feature as much as a cutout one - CC offers them
+        // on both, and makeToolpath() creates contours with them switched on.
+        // Reading them for cutouts only meant a contour taken to the full
+        // stock thickness released the part on its last pass, spindle running.
+        auto readTabs = [&] {
+            if (j.value("ignore_tabs").toBool(true)
+                || numOr(j.value("tab_height"), 0) <= 0.01)
+                return;
+            cp.tabTop = cp.zBot + numOr(j.value("tab_height"), 0);
+            cp.tabWidth = qBound(1.0, numOr(j.value("tab_width"), 6.0), 30.0);
+        };
         if (cutout) {
             cp.zBot = depthToZ(j.value("cut_depth"))
                       + depthToZ(j.value("break_through"));
-            cp.stepdown = qMax(0.05, j.value("depth_per_pass").toDouble(1.0));
-            if (!j.value("ignore_tabs").toBool(true)
-                && j.value("tab_height").toDouble() > 0.01) {
-                cp.tabTop = cp.zBot + j.value("tab_height").toDouble();
-                cp.tabWidth = qBound(1.0, j.value("tab_width").toDouble(6.0), 30.0);
-            }
+            cp.stepdown = qMax(0.05, numOr(j.value("depth_per_pass"), 1.0));
+            readTabs();
         } else {
             cp.zBot = depthToZ(j.value("end_depth"));
-            cp.stepdown = qMax(0.05, j.value("stepdown").toDouble(1.0));
+            cp.stepdown = qMax(0.05, numOr(j.value("stepdown"), 1.0));
+            if (contour)
+                readTabs();
         }
         if (j.value("enable_ramping").toBool(false))
-            cp.rampAngle = qBound(1.0, j.value("ramp_angle").toDouble(20.0), 45.0);
+            cp.rampAngle = qBound(1.0, numOr(j.value("ramp_angle"), 20.0), 45.0);
 
         if (rough3d || finish3d) {
             // 3D toolpaths over the modeller's relief (cam3d.cpp). Emitted on
@@ -1189,9 +1231,9 @@ GcodeResult exportGcode(Document &doc)
 
         QList<Job> jobs;
         if (drilling || keyhole) {
-            const double peck = j.value("peck_distance").toDouble(0);
-            const double slotLen = j.value("length").toDouble(12.7);
-            const double slotAng = qDegreesToRadians(j.value("angle").toDouble(90));
+            const double peck = numOr(j.value("peck_distance"), 0);
+            const double slotLen = numOr(j.value("length"), 12.7);
+            const double slotAng = qDegreesToRadians(numOr(j.value("angle"), 90));
             QList<Job> pts;
             for (const Element *e : elems) {
                 const QJsonArray c = e->raw.value("center").toArray();
@@ -1230,13 +1272,13 @@ GcodeResult exportGcode(Document &doc)
             // region, broken into random-length strokes at random depths.
             const QPainterPath region = regionOf(elems);
             const QRectF bb = region.boundingRect();
-            const double ang = qDegreesToRadians(j.value("angle").toDouble(0));
+            const double ang = qDegreesToRadians(numOr(j.value("angle"), 0));
             const QPointF dir(qCos(ang), qSin(ang));
             const QPointF nrm(-dir.y(), dir.x());
-            const double stepover = qMax(0.2, j.value("stepover").toDouble(3));
-            const double sVar = qBound(0.0, j.value("stepover_variation").toDouble(0), 1.0);
-            const double minL = qMax(1.0, j.value("min_length").toDouble(15));
-            const double maxL = qMax(minL, j.value("max_length").toDouble(30));
+            const double stepover = qMax(0.2, numOr(j.value("stepover"), 3));
+            const double sVar = qBound(0.0, numOr(j.value("stepover_variation"), 0), 1.0);
+            const double minL = qMax(1.0, numOr(j.value("min_length"), 15));
+            const double maxL = qMax(minL, numOr(j.value("max_length"), 30));
             const double zMin = depthToZ(j.value("min_depth"));
             const double zMax = depthToZ(j.value("max_depth"));
             Lcg rng(qHash(t.uuid));
@@ -1275,9 +1317,9 @@ GcodeResult exportGcode(Document &doc)
                 }
             }
         } else if (vcarve) {
-            const double bitAngle = tool.value("angle").toDouble(60);
+            const double bitAngle = numOr(tool.value("angle"), 60);
             const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 179.0) / 2));
-            const double stepover = qMax(0.05, j.value("stepover").toDouble(0.2));
+            const double stepover = qMax(0.05, numOr(j.value("stepover"), 0.2));
             const QPainterPath region = regionOf(elems);   // fine; spurs are pruned in medialAxis()
             // Max clearance the bit can reach before bottoming out at zBot;
             // anything wider needs a flat clearing pass at full depth.
@@ -1339,9 +1381,21 @@ GcodeResult exportGcode(Document &doc)
                             if (rings.isEmpty())
                                 break;
                             for (const QPolygonF &ring : rings) {
+                                // Full depth in one pass here is virgin stock:
+                                // the medial pass only carved the skeleton, so
+                                // the mid-edge stretches of this ring are
+                                // untouched. Plunging straight to zBot and
+                                // taking the whole depth in one lap breaks
+                                // bits. Step down like every other ring job.
                                 em.rapidTo(ring.first());
-                                em.plungeTo(ring.first(), cp.zBot);
-                                em.followRing(ring, cp.zBot, flat);
+                                double zr = cp.zTop;
+                                bool deeper = true;
+                                while (deeper) {
+                                    zr = qMax(cp.zBot, zr - cp.stepdown);
+                                    deeper = zr > cp.zBot + 1e-9;
+                                    em.plungeTo(ring.first(), zr);
+                                    em.followRing(ring, zr, flat);
+                                }
                                 em.retract();
                             }
                             delta += stepover;
@@ -1383,7 +1437,7 @@ GcodeResult exportGcode(Document &doc)
             const QString mode = j.value("mode").toString(QStringLiteral("outline"));
             const bool fill = mode == QLatin1String("fill") || mode == QLatin1String("both");
             const bool trace = mode != QLatin1String("fill");
-            cp.stepdown = qMax(0.02, j.value("stepdown").toDouble(cp.zTop - cp.zBot));
+            cp.stepdown = qMax(0.02, numOr(j.value("stepdown"), cp.zTop - cp.zBot));
             QVector<const Element *> closedEls;
             for (const Element *e : elems) {
                 bool anyClosed = false;
@@ -1403,14 +1457,14 @@ GcodeResult exportGcode(Document &doc)
                     closedEls.append(e);
             }
             if (fill && !closedEls.isEmpty()) {
-                const double bitAngle = tool.value("angle").toDouble(0);
+                const double bitAngle = numOr(tool.value("angle"), 0);
                 double effR = toolR;
                 if (bitAngle > 0)
                     effR = qMin(toolR, (cp.zTop - cp.zBot)
                                            * qTan(qDegreesToRadians(qBound(1.0, bitAngle, 179.0) / 2)));
                 effR = qMax(0.01, effR);
-                const double spacing = qMax(0.05, j.value("line_spacing").toDouble(1.0));
-                const double angle = j.value("angle").toDouble(45);
+                const double spacing = qMax(0.05, numOr(j.value("line_spacing"), 1.0));
+                const double angle = numOr(j.value("angle"), 45);
                 const QList<QPolygonF> inset = insetRings(regionOf(closedEls), effR);
                 QList<QPolygonF> lines = hatchRings(inset, spacing, angle);
                 if (j.value("crosshatch").toBool(false))
@@ -1442,7 +1496,7 @@ GcodeResult exportGcode(Document &doc)
                                         : j.value("flip_inside_outside").toBool(false);
             // stock_to_leave keeps the cut that much further from the vector
             // on the material side (cutouts never leave stock).
-            const double leave = contour ? qMax(0.0, j.value("stock_to_leave").toDouble(0)) : 0.0;
+            const double leave = contour ? qMax(0.0, numOr(j.value("stock_to_leave"), 0)) : 0.0;
             const QList<QPolygonF> rings = inside ? insetRings(region, toolR + leave)
                                                   : outsetRings(region, toolR + leave);
             for (const QPolygonF &p : rings) {
@@ -1451,12 +1505,12 @@ GcodeResult exportGcode(Document &doc)
                 jobs.append(job);
             }
         } else { // pocket
-            const double stepover = qMax(0.1, j.value("stepover").toDouble(toolR));
+            const double stepover = qMax(0.1, numOr(j.value("stepover"), toolR));
             cp.linkDist = qMax(2.5 * stepover, 4 * toolR);
-            const double leave = qMax(0.0, j.value("stock_to_leave").toDouble(0));
+            const double leave = qMax(0.0, numOr(j.value("stock_to_leave"), 0));
             // Rest machining: with enable_rest and a rest_diameter larger than
             // this tool, only ring-fill what that previous cutter left behind.
-            const double prevR = j.value("rest_diameter").toDouble(0) / 2.0;
+            const double prevR = numOr(j.value("rest_diameter"), 0) / 2.0;
             const bool useRest = j.value("enable_rest").toBool(false) && prevR > toolR + 1e-6;
 
             for (const QPainterPath &comp : components(regionOf(elems))) {
@@ -1506,14 +1560,14 @@ GcodeResult exportGcode(Document &doc)
 static ToolGeom toolGeomOf(const QJsonObject &tool)
 {
     ToolGeom g;
-    g.number = int(tool.value("number").toDouble(0));
-    g.diameter = tool.value("diameter").toDouble(3.175);
-    if (!(g.diameter > 0))
+    g.number = int(numOr(tool.value("number"), 0));
+    g.diameter = numOr(tool.value("diameter"), 3.175);
+    if (!(g.diameter > 0) || !std::isfinite(g.diameter))
         g.diameter = 3.175;
-    g.angle = tool.value("angle").toDouble(0);
-    g.cornerRadius = qMax(0.0, tool.value("corner_radius").toDouble(0));
+    g.angle = numOr(tool.value("angle"), 0);
+    g.cornerRadius = qMax(0.0, numOr(tool.value("corner_radius"), 0));
     g.name = tool.value("name").toString();
-    const int type = int(tool.value("type").toDouble(0));
+    const int type = int(numOr(tool.value("type"), 0));
     if (type == 2 || (g.angle > 0 && type != 1)) {
         g.kind = ToolGeom::VBit;
         g.angle = qBound(5.0, g.angle > 0 ? g.angle : 60.0, 179.0);

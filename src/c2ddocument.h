@@ -41,6 +41,9 @@ public:
 
     QString filePath() const { return m_path; }
     const QHash<QString, QString> &params() const { return m_params; }
+    // Params are normally only ever read from the container; this exists so a
+    // caller (and the tests) can set one without a round trip through a file.
+    void setParam(const QString &key, const QString &value) { m_params.insert(key, value); }
     const QVector<Element> &elements() const { return m_elements; }
     QVector<Element> &elementsRef() { return m_elements; }   // for editing
     const QVector<Toolpath> &toolpaths() const { return m_toolpaths; }

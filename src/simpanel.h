@@ -54,6 +54,9 @@ private:
     QHash<int, ToolGeom> m_tools;
     double m_w = 0, m_h = 0, m_t = 0;
     bool m_stale = false;   // program changed since the last run
+    // Set when setJob() cancels a run that belongs to the previous program:
+    // its result must be dropped, not adopted as the current one.
+    bool m_discardResult = false;
 
     SimulationJob *m_job;
     SimResult m_result;

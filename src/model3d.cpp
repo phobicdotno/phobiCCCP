@@ -197,6 +197,9 @@ bool Model3D::loadFrom(const QString &c2dPath, QString *error)
 {
     components.clear();
     resolution = 0;
+    unreadable = false;
+    unreadableComponents.clear();
+    userChanged = false;
     if (!QFileInfo::exists(c2dPath)) {
         if (error) *error = QStringLiteral("File not found: %1").arg(c2dPath);
         return false;
@@ -214,11 +217,20 @@ bool Model3D::loadFrom(const QString &c2dPath, QString *error)
         }
         bool found = false;
         const QByteArray json = readSqlar(db, kJsonRow, &found);
-        if (found && !json.isEmpty()) {
+        QStringList badBlobs;
+        if (found && json.isEmpty()) {
+            // The row is there but did not decode - a truncated blob whose sz
+            // still claims the full length inflates to nothing. Reporting
+            // "no model" here would let the next save delete it.
+            ok = false;
+            unreadable = true;
+            if (error) *error = QStringLiteral("phobi_model3d.json is unreadable");
+        } else if (found) {
             QJsonParseError pe;
             const QJsonDocument jd = QJsonDocument::fromJson(json, &pe);
             if (pe.error != QJsonParseError::NoError) {
                 ok = false;
+                unreadable = true;
                 if (error) *error = QStringLiteral("phobi_model3d.json: %1").arg(pe.errorString());
             } else {
                 *this = fromJson(jd.object());
@@ -227,9 +239,19 @@ bool Model3D::loadFrom(const QString &c2dPath, QString *error)
                     const QByteArray blob = readSqlar(db, kBlobPrefix + c.id, &have);
                     if (have)
                         c.data = blob;
+                    // A stored component always had bytes (saveTo only writes
+                    // the row when it has any), so an empty read is damage:
+                    // remember it so the save keeps the bytes instead of
+                    // rewriting the component without them.
+                    if (have && blob.isEmpty()) {
+                        badBlobs << c.id;
+                        if (error)
+                            *error = QStringLiteral("component \"%1\" is unreadable").arg(c.name);
+                    }
                 }
             }
         }
+        unreadableComponents = badBlobs;
         db.close();
     }
     QSqlDatabase::removeDatabase(conn);
@@ -238,6 +260,15 @@ bool Model3D::loadFrom(const QString &c2dPath, QString *error)
 
 bool Model3D::saveTo(const QString &c2dPath, QString *error) const
 {
+    // The document holds a relief this build could not read. Writing what we
+    // have would delete it: the rows are cleared below before anything is put
+    // back, and there is nothing to put back. Leave the file exactly as it is
+    // unless the user has since built a model, which is an explicit decision
+    // to replace whatever was there.
+    if (unreadable && !userChanged) {
+        if (error) *error = QStringLiteral("3D model left untouched: it did not load");
+        return true;
+    }
     const QString conn = QStringLiteral("c2dm3w_%1").arg(QUuid::createUuid().toString());
     bool ok = true;
     {
@@ -252,10 +283,21 @@ bool Model3D::saveTo(const QString &c2dPath, QString *error) const
         QSqlQuery mk(db);
         mk.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS sqlar("
                                "name TEXT PRIMARY KEY, mode INT, mtime INT, sz INT, data BLOB)"));
+        // Component blobs we could not decode are kept verbatim: they are the
+        // only copy of that component's mesh or heightmap, and rewriting the
+        // component without them would lose it for good.
+        QString keep;
+        QVariantList keepArgs;
+        for (const QString &id : unreadableComponents) {
+            keep += QStringLiteral(" AND name<>?");
+            keepArgs << (kBlobPrefix + id);
+        }
         QSqlQuery del(db);
-        del.prepare(QStringLiteral("DELETE FROM sqlar WHERE name=? OR name LIKE ?"));
+        del.prepare(QStringLiteral("DELETE FROM sqlar WHERE (name=? OR name LIKE ?)") + keep);
         del.addBindValue(kJsonRow);
         del.addBindValue(kBlobPrefix + QStringLiteral("%"));
+        for (const QVariant &v : keepArgs)
+            del.addBindValue(v);
         if (!del.exec()) {
             if (error) *error = del.lastError().text();
             ok = false;
@@ -278,7 +320,7 @@ bool Model3D::saveTo(const QString &c2dPath, QString *error) const
         if (ok && !components.isEmpty()) {
             put(kJsonRow, QJsonDocument(toJson()).toJson(QJsonDocument::Indented));
             for (const ModelComponent &c : components)
-                if (ok && !c.data.isEmpty())
+                if (ok && !c.data.isEmpty() && !unreadableComponents.contains(c.id))
                     put(kBlobPrefix + c.id, c.data);
         }
         if (ok) db.commit(); else db.rollback();

@@ -60,6 +60,9 @@ public:
     bool isConnected() const;
     bool isStreaming() const { return m_streaming; }
     bool isParkedForTool() const { return m_streaming && m_waitingTool >= 0; }
+    // sendCommand() lines written but not yet answered. Continuous jog uses it
+    // to stop queueing faster than the controller retires.
+    int pendingCommands() const { return m_adhocPending; }
     bool isMacroRunning() const { return m_macroActive; }
     bool canSendCommand() const;
 
@@ -119,6 +122,7 @@ private:
     void handleLine(const QByteArray &line);
     void pump();                                // fill GRBL's RX window
     void pumpMacro();
+    void abortAfterReset();                     // controller rebooted under us
     void writeLine(const QString &line);
     void flushTlo();                            // send a pending G43.1 if allowed
     void resyncAdhoc(const QString &why);       // forget ad-hoc lines that will never ack

@@ -92,6 +92,21 @@ struct Model3D {
     // model leaves *this empty and returns true.
     bool loadFrom(const QString &c2dPath, QString *error = nullptr);
     bool saveTo(const QString &c2dPath, QString *error = nullptr) const;
+
+    // Set by loadFrom() when the document *has* a relief whose index row could
+    // not be read - truncated, or not json. saveTo() then leaves every stored
+    // row alone unless the user has since built a model of their own, because
+    // rewriting them from a model that loaded as empty would delete the
+    // relief on the next Ctrl+S. Same guard as BackgroundImage's
+    // `userChanged`, for the same reason.
+    bool unreadable = false;
+    // Ids of components whose blob row exists but would not decode. Their
+    // bytes are kept in the file and excluded from the rewrite, the way
+    // Document keeps toolpath rows it could not parse.
+    QStringList unreadableComponents;
+    // Cleared by loadFrom, set by ModelPanel on every edit: an explicit edit
+    // is allowed to overwrite an index row we could not read.
+    bool userChanged = false;
 };
 
 // ---- compositing -----------------------------------------------------------

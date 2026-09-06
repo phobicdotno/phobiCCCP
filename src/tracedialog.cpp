@@ -245,7 +245,18 @@ TraceDialog::TraceDialog(QWidget *parent)
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     buttons->button(QDialogButtonBox::Ok)->setText(tr("Insert paths"));
-    connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::accepted, this, [this] {
+        // A debounce still pending means m_result - what elements() hands
+        // back - is from the settings before the last edit. Typing a value
+        // and pressing Enter activates this default button inside the 120 ms
+        // window, so the paths inserted would be the ones the preview never
+        // showed.
+        if (m_debounce->isActive()) {
+            m_debounce->stop();
+            runTrace();
+        }
+        accept();
+    });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
 
     auto *side = new QVBoxLayout;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.12 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.52 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,6 +51,9 @@ add_library(phobicccp_core STATIC
     src/model3d.cpp
 )
 target_include_directories(phobicccp_core PUBLIC src)
+# The binary should be able to say which build it is (--version, --help);
+# PROJECT_VERSION is the single source of truth in this file.
+target_compile_definitions(phobicccp_core PUBLIC PHOBICCCP_VERSION="${PROJECT_VERSION}")
 target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
 
 add_executable(phobicccp
@@ -128,6 +131,13 @@ add_test(NAME model3d COMMAND test_model3d)
 add_executable(test_cam3d tests/test_cam3d.cpp)
 target_link_libraries(test_cam3d PRIVATE phobicccp_core)
 add_test(NAME cam3d COMMAND test_cam3d)
+# Regressions from the hardening pass: medial-axis spurs, the tile boundary,
+# contour tabs, string cut parameters, hostile DXF, atomic save, model rows
+# that will not decode. Takes the sample document for the save section.
+add_executable(test_hardening tests/test_hardening.cpp)
+target_link_libraries(test_hardening PRIVATE phobicccp_core Qt6::Sql)
+add_test(NAME hardening COMMAND test_hardening
+         "$ENV{HOME}/Documents/c2d-samples/CarbideCreateAllPossibilities.c2d")
 # Canvas interaction test (pen tool, node editor) drives the real widget with
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)

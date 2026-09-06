@@ -16,7 +16,11 @@ QByteArray zlibInflate(const QByteArray &in, int expectedSize)
     zs.avail_in = static_cast<uInt>(in.size());
 
     QByteArray out;
-    out.reserve(expectedSize > 0 ? expectedSize : in.size() * 4);
+    // `expectedSize` is the sz column, which a damaged or hostile file is free
+    // to set to anything: reserve on it only as far as the cap, or a one-line
+    // UPDATE turns every open into a gigabyte allocation.
+    const qsizetype want = expectedSize > 0 ? qsizetype(expectedSize) : in.size() * 4;
+    out.reserve(qMin(want, kMaxInflateBytes));
 
     char buf[16384];
     int ret;
@@ -29,6 +33,10 @@ QByteArray zlibInflate(const QByteArray &in, int expectedSize)
             return {};
         }
         out.append(buf, sizeof(buf) - zs.avail_out);
+        if (out.size() > kMaxInflateBytes) {   // a zip bomb, not a document
+            inflateEnd(&zs);
+            return {};
+        }
     } while (ret != Z_STREAM_END && zs.avail_out == 0);
 
     inflateEnd(&zs);

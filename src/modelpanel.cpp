@@ -956,6 +956,9 @@ void ModelPanel::applyProps()
 
 void ModelPanel::touch()
 {
+    // An explicit edit outranks the "did not load" guard in Model3D::saveTo:
+    // the user has decided what the relief should be.
+    m_store.model.userChanged = true;
     m_store.invalidate();
     m_stale = true;
     emit modelChanged();

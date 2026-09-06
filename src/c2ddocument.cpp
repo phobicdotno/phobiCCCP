@@ -2,6 +2,7 @@
 #include "zlibutil.h"
 
 #include <QFile>
+#include <cstdio>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -125,24 +126,30 @@ bool Document::save(const QString &destPath, QString *error)
 
     // 1) Clone the source container so every structural detail CC expects
     //    (schema, layer, model, toolpaths, params) is inherited verbatim.
-    if (QFileInfo(destPath).absoluteFilePath() != QFileInfo(m_path).absoluteFilePath()) {
-        QFile::remove(destPath);
-        if (!QFile::copy(m_path, destPath)) {
-            if (error) *error = QStringLiteral("Could not copy container to %1").arg(destPath);
-            return false;
-        }
-        QFile::setPermissions(destPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-                                        QFileDevice::ReadGroup | QFileDevice::ReadOther);
+    //    The clone is a temporary beside the destination, never the
+    //    destination itself: removing the target first and copying into it
+    //    destroys the previous file the moment anything below fails - a full
+    //    disk, a source on a stick that has been pulled, a failing statement -
+    //    and the SQL rollback cannot undo a file replacement. The temporary is
+    //    moved over the destination only after the transaction commits.
+    const QString tmpPath = destPath + QStringLiteral(".phobisave");
+    QFile::remove(tmpPath);
+    if (!QFile::copy(m_path, tmpPath)) {
+        if (error) *error = QStringLiteral("Could not stage a copy at %1").arg(tmpPath);
+        return false;
     }
+    QFile::setPermissions(tmpPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                   QFileDevice::ReadGroup | QFileDevice::ReadOther);
 
     const QString conn = QStringLiteral("c2dw_%1").arg(QUuid::createUuid().toString());
     bool ok = true;
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
-        db.setDatabaseName(destPath);
+        db.setDatabaseName(tmpPath);
         if (!db.open()) {
             if (error) *error = db.lastError().text();
             QSqlDatabase::removeDatabase(conn);
+            QFile::remove(tmpPath);
             return false;
         }
 
@@ -226,9 +233,11 @@ bool Document::save(const QString &destPath, QString *error)
             }
         }
 
-        // 3c) params.num_toolpaths must equal the toolpath row count.
+        // 3c) params.num_toolpaths must equal the toolpath row count - which
+        //     includes the rows we could not decode and therefore kept.
         if (ok && m_params.contains(QStringLiteral("num_toolpaths"))) {
-            const QString n = QString::number(m_toolpaths.size());
+            const QString n = QString::number(m_toolpaths.size()
+                                              + m_unreadableToolpaths.size());
             QSqlQuery pq(db);
             pq.prepare(QStringLiteral("UPDATE params SET value=? WHERE key='num_toolpaths'"));
             pq.addBindValue(n);
@@ -252,7 +261,31 @@ bool Document::save(const QString &destPath, QString *error)
         db.close();
     }
     QSqlDatabase::removeDatabase(conn);
-    return ok;
+
+    if (!ok) {
+        QFile::remove(tmpPath);          // the destination was never touched
+        return false;
+    }
+
+    // 5) Move the finished container into place. rename(2) replaces the
+    //    destination atomically within a directory, so an interrupted save
+    //    leaves either the old file or the new one, never a half-written one.
+    if (std::rename(QFile::encodeName(tmpPath).constData(),
+                    QFile::encodeName(destPath).constData()) != 0) {
+        // Non-POSIX or an odd filesystem: fall back to remove-then-rename,
+        // which is not atomic but still only runs on known-good content.
+        QFile::remove(destPath);
+        if (!QFile::rename(tmpPath, destPath)) {
+            if (error) *error = QStringLiteral("Could not move the saved file into %1").arg(destPath);
+            QFile::remove(tmpPath);
+            return false;
+        }
+    }
+
+    // Later saves belong to the file we just wrote. Without this, Save As
+    // followed by Ctrl+S writes back into the document that was opened.
+    m_path = destPath;
+    return true;
 }
 
 } // namespace c2d

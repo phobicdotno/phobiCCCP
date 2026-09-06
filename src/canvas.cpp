@@ -1265,11 +1265,14 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
     // applies directly.
     if (m_tool == Select && m_doc) {
         QVector<QPair<QString, QPointF>> moves;
+        bool dragged = false;
         for (QGraphicsItem *it : m_scene->selectedItems()) {
             QPointF d = it->pos();
             if (!d.isNull() && it->data(0).isValid()) {
+                dragged = true;
                 if (m_snap) {
-                    // Snap the delta so shapes land on the grid.
+                    // The delta is snapped, not the destination, so a drag
+                    // shorter than half a cell rounds away to nothing.
                     d = snap(d);
                     if (d.isNull())
                         continue;
@@ -1279,6 +1282,12 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         }
         if (!moves.isEmpty())
             m_undo->push(new MoveCmd(this, m_doc, moves));
+        else if (dragged)
+            // Every delta snapped away. Without this the items keep the pos()
+            // the drag gave them: the shape sits in its new place on screen
+            // while the document, the properties panel and the g-code all
+            // still have the old one, until some unrelated edit rebuilds.
+            rebuild();
     }
 }
 

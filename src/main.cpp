@@ -12,6 +12,9 @@
 #include <QJsonArray>
 #include <QRegularExpression>
 #include <QTimer>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <QPalette>
 #include <QStyleFactory>
@@ -343,8 +346,51 @@ static int selftest(const QString &in, const QString &out)
     return insOk ? 0 : 16;
 }
 
+// Every CLI mode below is dispatched on an exact argument count, so a typo or a
+// missing operand would otherwise fall all the way through to the GUI and try to
+// open a file called "--export". Print this instead, and exit non-zero.
+static void printUsage()
+{
+    std::printf(
+        "phobiCCCP " PHOBICCCP_VERSION " - Carbide Create .c2d CAD/CAM and GRBL sender\n"
+        "\n"
+        "  phobicccp [file.c2d]                          open the GUI, optionally on a file\n"
+        "\n"
+        "Headless:\n"
+        "  --export <in.c2d> <out.nc>                    export g-code\n"
+        "  --export-tiled <in.c2d> <outbase> [tile_mm]   one complete program per tile\n"
+        "  --selftest <in.c2d> <out.c2d>                 create/save/export self-check\n"
+        "  --shot <in.c2d> <out.png> [preview|machine|simulation|model]\n"
+        "                                                render the GUI to a PNG\n"
+        "\n"
+        "Machine (GRBL over serial; <port> is e.g. /dev/ttyACM0):\n"
+        "  --grbl-check <port>                           handshake only, no motion\n"
+        "  --grbl-jog-z1 <port>                          unlock, jog Z up 1 mm\n"
+        "  --grbl-probe <port> <bsX> <bsY> [safeZ]       BitSetter measurement (machine XY)\n"
+        "  --grbl-run <port> <job.nc> [bsX bsY]          stream, with automatic tool changes\n"
+        "  --grbl-aircut <port> <template.c2d> [lift_mm] rehearse a program in the air\n"
+        "  --grbl-circle <port> [feed]                   sweep the largest circle that fits\n"
+        "\n"
+        "  --version                                     print the version and exit\n"
+        "  --help, -h                                    this text\n");
+}
+
 int main(int argc, char *argv[])
 {
+    // Asked for outright: answer before Qt is constructed, so this works with
+    // no display, no fonts and no serial port.
+    if (argc > 1) {
+        const QByteArray first(argv[1]);
+        if (first == "--help" || first == "-h") {
+            printUsage();
+            return 0;
+        }
+        if (first == "--version") {
+            std::printf("phobiCCCP %s\n", PHOBICCCP_VERSION);
+            return 0;
+        }
+    }
+
     // CLI modes (--export, --selftest, --grbl-*, --shot) must work on a box
     // with no display — CI, ssh, a headless shop PC: fall back to the
     // offscreen platform plugin there instead of aborting in QApplication.
@@ -549,7 +595,19 @@ int main(int argc, char *argv[])
     if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--grbl-aircut") {
         const QString port = QString::fromLocal8Bit(argv[2]);
         const QString tmpl = QString::fromLocal8Bit(argv[3]);
-        const double lift = argc == 5 ? QByteArray(argv[4]).toDouble() : 10.0;
+        // The lift is the entire safety of this mode. toDouble() gives 0 for a
+        // typo, which would rehearse the demo at its programmed depth, and it
+        // accepts negatives, which would drive below it.
+        double lift = 10.0;
+        if (argc == 5) {
+            bool liftOk = false;
+            lift = QByteArray(argv[4]).toDouble(&liftOk);
+            if (!liftOk || !std::isfinite(lift) || lift < 1.0) {
+                qWarning() << "air-cut lift must be a number of at least 1 mm, got"
+                           << argv[4];
+                return 2;
+            }
+        }
 
         c2d::Document doc;
         QString err;
@@ -891,6 +949,26 @@ int main(int argc, char *argv[])
     // --shot <in.c2d> <out.png>: open the full GUI, render one frame to a PNG
     // and exit — headless visual smoke test of the whole window (offscreen ok).
     if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--shot") {
+        // Check the document here, not through the window: openFile() reports a
+        // failure with QMessageBox::warning, whose exec() spins its own event
+        // loop on an invisible offscreen surface - a headless smoke test would
+        // wedge for ever with nothing on screen to dismiss.
+        {
+            c2d::Document probe;
+            QString perr;
+            if (!probe.load(QString::fromLocal8Bit(argv[2]), &perr)) {
+                qWarning() << "load failed:" << perr;
+                return 1;
+            }
+        }
+        // Belt and braces: nothing in this mode may outlive a minute.
+        QTimer *watchdog = new QTimer(&app);
+        watchdog->setSingleShot(true);
+        QObject::connect(watchdog, &QTimer::timeout, [] {
+            qWarning() << "SHOT_TIMEOUT";
+            std::exit(5);
+        });
+        watchdog->start(60000);
         c2d::MainWindow w;
         w.resize(1680, 980);
         w.show();
@@ -946,15 +1024,37 @@ int main(int argc, char *argv[])
             return 1;
         }
         const c2d::GcodeResult r = c2d::exportGcode(doc);
+        // exportGcode always returns a syntactically valid program, preamble
+        // and all, even when it machined nothing. Opening the output first
+        // would replace a known-good .nc with an empty one and only then
+        // report the failure.
+        if (r.done.isEmpty()) {
+            qWarning() << "nothing to export; skipped:" << r.skipped;
+            return 3;
+        }
+        const QByteArray bytes = r.gcode.toUtf8();
         QFile f(QString::fromLocal8Bit(argv[3]));
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
             qWarning() << "write failed:" << f.errorString();
             return 2;
         }
-        f.write(r.gcode.toUtf8());
+        if (f.write(bytes) != bytes.size() || !f.flush()) {
+            qWarning() << "write failed:" << f.errorString();
+            return 2;
+        }
         qInfo() << "exported:" << r.done << "skipped:" << r.skipped
                 << "lines:" << r.gcode.count(QChar('\n'));
-        return r.done.isEmpty() ? 3 : 0;
+        return 0;
+    }
+
+    // Anything left starting with "--" is either an unknown mode or a known one
+    // with the wrong number of operands (Qt has already consumed its own
+    // options). Opening the GUI on it would silently do the wrong thing.
+    if (argc > 1 && QByteArray(argv[1]).startsWith("--")) {
+        std::fprintf(stderr, "unrecognised option or wrong number of arguments: %s\n\n",
+                     argv[1]);
+        printUsage();
+        return 2;
     }
 
     c2d::MainWindow w;

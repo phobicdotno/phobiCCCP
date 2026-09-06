@@ -14,6 +14,7 @@
 
 #include <QApplication>
 #include <QFile>
+#include <QCloseEvent>
 #include <QFileInfo>
 #include <QDockWidget>
 #include <QFileDialog>
@@ -204,18 +205,20 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_machine, &MachinePanel::livePosition,
             m_iso, &IsoPreview::setLivePosition);
 
-    // addAction(text, receiver, method, shortcut) — argument order that is
-    // stable across Qt6 minor versions (the (text, shortcut, …) overload is newer).
+    // Shortcuts are set on the returned QAction rather than passed to
+    // addAction: the (text, receiver, method, shortcut) overload is deprecated
+    // from Qt 6.4 and the (text, shortcut, receiver, method) replacement only
+    // exists from 6.3, so neither is both warning-free and version-neutral.
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
-    fileMenu->addAction(QStringLiteral("&Open…"), this, &MainWindow::onOpen,
-                        QKeySequence::Open);
+    fileMenu->addAction(QStringLiteral("&Open…"), this, &MainWindow::onOpen)
+            ->setShortcut(QKeySequence::Open);
     m_recentMenu = fileMenu->addMenu(QStringLiteral("Open &Recent"));
     m_recentMenu->setToolTipsVisible(true);   // full path, since names repeat
     rebuildRecentMenu();
-    fileMenu->addAction(QStringLiteral("&Save"), this, &MainWindow::onSave,
-                        QKeySequence::Save);
-    fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs,
-                        QKeySequence::SaveAs);
+    fileMenu->addAction(QStringLiteral("&Save"), this, &MainWindow::onSave)
+            ->setShortcut(QKeySequence::Save);
+    fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs)
+            ->setShortcut(QKeySequence::SaveAs);
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("Import &SVG…"), this, [this] {
         importVectorFile(this, m_canvas, &m_doc, {}, QStringLiteral("SVG (*.svg)")); });
@@ -224,15 +227,17 @@ MainWindow::MainWindow(QWidget *parent)
     installImportDropHandler(this, m_canvas, &m_doc, [this](const QString &p) { openFile(p); });
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
-                        &MainWindow::onExportGcode,
-                        QKeySequence(Qt::CTRL | Qt::Key_G));
+                        &MainWindow::onExportGcode)
+            ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
     fileMenu->addAction(QStringLiteral("Export G-code (&tiled)…"), this,
                         &MainWindow::onExportGcodeTiled);
     fileMenu->addSeparator();
     installImageMenus(fileMenu, this, m_canvas, &m_doc, &m_bg);   // backgrounddialog.cpp
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("E&xit"), qApp, &QApplication::quit,
-                        QKeySequence::Quit);
+    // close(), not quit(): quit() skips closeEvent and with it the
+    // unsaved-changes prompt.
+    fileMenu->addAction(QStringLiteral("E&xit"), this, &QWidget::close)
+            ->setShortcut(QKeySequence::Quit);
 
     // Edit menu: undo/redo backed by the canvas undo stack.
     auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
@@ -600,8 +605,42 @@ void MainWindow::onSaveAs()
     }
 }
 
+// m_dirty was tracked and shown in the title bar but never acted on: opening
+// another document, picking one from Open Recent, dropping a file on the
+// window or closing it all discarded an afternoon of edits without a word.
+bool MainWindow::confirmDiscard(const QString &what)
+{
+    if (!m_dirty)
+        return true;
+    const QString name = m_doc.filePath().isEmpty()
+                             ? QStringLiteral("This document")
+                             : QFileInfo(m_doc.filePath()).fileName();
+    const auto r = QMessageBox::warning(
+        this, QStringLiteral("Unsaved changes"),
+        QStringLiteral("%1 has unsaved changes.\n\n%2").arg(name, what),
+        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel,
+        QMessageBox::Save);
+    if (r == QMessageBox::Cancel)
+        return false;
+    if (r == QMessageBox::Save) {
+        onSave();
+        return !m_dirty;              // a failed save must not lose the edits
+    }
+    return true;
+}
+
+void MainWindow::closeEvent(QCloseEvent *e)
+{
+    if (confirmDiscard(QStringLiteral("Save before closing?")))
+        e->accept();
+    else
+        e->ignore();
+}
+
 void MainWindow::openFile(const QString &path)
 {
+    if (!confirmDiscard(QStringLiteral("Save before opening another file?")))
+        return;
     qDebug() << "[diag] SQL drivers:" << QSqlDatabase::drivers();
     qDebug() << "[diag] opening:" << path;
     QString err;

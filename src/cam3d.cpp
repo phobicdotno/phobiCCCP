@@ -31,11 +31,11 @@ Cam3dParams cam3dParams(const QJsonObject &j, double safeZ)
     Cam3dParams p;
     p.safeZ = safeZ;
     const QJsonObject speeds = j.value("speeds").toObject();
-    p.feed = speeds.value("feedrate").toDouble(500);
-    p.plunge = speeds.value("plungerate").toDouble(100);
+    p.feed = numOr(speeds.value("feedrate"), 500);
+    p.plunge = numOr(speeds.value("plungerate"), 100);
     p.tool = toolGeomFromJson(j.value("tool").toObject());
-    p.stockToLeave = qMax(0.0, j.value("stock_to_leave").toDouble(0));
-    p.stepdown = qMax(0.05, j.value("stepdown").toDouble(1.0));
+    p.stockToLeave = qMax(0.0, numOr(j.value("stock_to_leave"), 0));
+    p.stepdown = qMax(0.05, numOr(j.value("stepdown"), 1.0));
 
     const QJsonValue so = j.value("stepover");
     double stepover = 0;
@@ -48,7 +48,7 @@ Cam3dParams cam3dParams(const QJsonObject &j, double safeZ)
             stepover = s.toDouble();
         }
     } else {
-        stepover = so.toDouble(0);
+        stepover = numOr(so, 0);
     }
     if (!(stepover > 0))
         stepover = p.tool.diameter * 0.4;
@@ -58,8 +58,8 @@ Cam3dParams cam3dParams(const QJsonObject &j, double safeZ)
     const double md = depthToZ(j.value("max_depth"));
     if (md < -1e-9)
         p.maxDepth = md;
-    p.boundaryOffset = j.value("boundary_offset").toDouble(0);
-    p.rasterAngle = j.value("raster_angle").toDouble(0);
+    p.boundaryOffset = numOr(j.value("boundary_offset"), 0);
+    p.rasterAngle = numOr(j.value("raster_angle"), 0);
     const QString dir = j.value("direction").toString().toLower();
     p.direction = dir == QLatin1String("climb") ? Cam3dParams::Climb
                 : dir == QLatin1String("conventional") ? Cam3dParams::Conventional
@@ -414,6 +414,11 @@ double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double
         return 0;
     const double r = tool.radius();
     const double cell = m.cell;
+    // Below this neither footprint branch runs and `best` would stay at the
+    // sentinel, which the caller then clamps to maxDepth (-1e9 mm) and feeds
+    // to. A tool this small is a point: sample the surface directly.
+    if (!(r > 1e-6) || !(cell > 0))
+        return qMin(0.0, m.sample(x, y));
     double best = -1e30;
 
     // Flat part of the footprint (end mill face, bull-nose centre): the model

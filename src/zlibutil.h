@@ -7,8 +7,14 @@
 // fails on these blobs. Use these helpers (thin wrappers over zlib) instead.
 namespace c2d {
 
+// Largest blob we will inflate out of a document. Well past any real relief
+// or preview; a stream that keeps expanding past it is a zip bomb, not data.
+constexpr qsizetype kMaxInflateBytes = 256 * 1024 * 1024;
+
 // Inflate a raw zlib blob. `expectedSize` is the `sz` column value (the
 // uncompressed byte length); pass 0 if unknown and the buffer grows as needed.
+// Returns an empty array if the stream is malformed, or if it would expand
+// past `kMaxInflateBytes` - `sz` is a number in the file, not a promise.
 QByteArray zlibInflate(const QByteArray &in, int expectedSize = 0);
 
 // Deflate to a raw zlib stream CC can read back (level 6, default window).

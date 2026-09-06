@@ -278,10 +278,26 @@ MachinePanel::MachinePanel(QWidget *parent)
     runRow->addWidget(m_stopBtn);
     lay->addLayout(runRow);
     connect(m_runBtn, &QPushButton::clicked, this, [this] {
-        if (m_grbl->isParkedForTool())
-            m_grbl->continueAfterToolChange();   // manual continue after a failure
-        else
+        if (!m_grbl->isParkedForTool()) {
             runProgram();
+            return;
+        }
+        // Continuing without a successful measurement resumes with the
+        // *previous* tool's G43.1 still applied: a tool 10 mm longer then
+        // cuts 10 mm deeper on its first plunge. The message after a failed
+        // probe points at this very button, so say it plainly here.
+        if (!m_toolMeasured
+            && QMessageBox::warning(
+                   this, QStringLiteral("Tool not measured"),
+                   QStringLiteral("T%1 has not been measured on the BitSetter.\n\n"
+                                  "Continuing keeps the previous tool's length offset, "
+                                  "so the program will cut as deep as the two tools "
+                                  "differ in length.")
+                       .arg(m_pendingTool),
+                   QMessageBox::Cancel | QMessageBox::Ignore, QMessageBox::Cancel)
+                   != QMessageBox::Ignore)
+            return;
+        m_grbl->continueAfterToolChange();
     });
     connect(m_pauseBtn, &QPushButton::clicked, this, [this] {
         m_held = !m_held;
@@ -421,6 +437,15 @@ void MachinePanel::jogIncrement()
 {
     if (!m_holdAxis || !m_grbl->canSendCommand())
         return;
+    // Each tick deliberately asks for twice the travel of the interval, so the
+    // motion never gaps. With nothing bounding it, holding a jog button for a
+    // few seconds queues blocks faster than the machine retires them: GRBL's
+    // planner fills, its acks stop coming, and we keep writing 25-byte lines
+    // into a 128-byte RX buffer. Losing one character of `$J=G91 X-24.000` -
+    // the minus, say - is a full-speed jog the wrong way. Two unanswered jogs
+    // is enough to keep the motion continuous.
+    if (m_grbl->pendingCommands() >= 2)
+        return;
     const double f = jogFeed(m_holdAxis);
     const double mm = f / 60.0 * (2.0 * m_holdRepeat->interval() / 1000.0);
     m_grbl->sendCommand(QStringLiteral("$J=G91 %1%2 F%3")
@@ -514,6 +539,7 @@ void MachinePanel::resetFlow()
 {
     m_phase = Phase::Idle;
     m_pendingTool = -1;
+    m_toolMeasured = false;
     m_onIdle = nullptr;
     m_held = false;
     m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
@@ -720,6 +746,7 @@ void MachinePanel::measureTool(Phase why)
 void MachinePanel::onToolChange(int tool)
 {
     m_pendingTool = tool;
+    m_toolMeasured = false;
     m_runBtn->setText(QStringLiteral("▶ Continue"));
     m_phase = Phase::ParkForTool;
     // Spindle off, up, and over to where the operator can reach the collet.
@@ -790,11 +817,13 @@ void MachinePanel::onMacroFinished(bool ok)
         }
         if (!m_haveRef) {
             m_haveRef = true;
+            m_toolMeasured = true;
             m_refZ = m_grbl->lastProbeZ();
             m_grbl->applyToolLengthOffset(0);
             log(QStringLiteral("no reference yet — this tool becomes the reference "
                                "(trips at machine Z %1)").arg(m_refZ, 0, 'f', 3));
         } else {
+            m_toolMeasured = true;
             const double tlo = m_grbl->lastProbeZ() - m_refZ;
             m_grbl->applyToolLengthOffset(tlo);
             log(QStringLiteral("tool length offset %1%2 mm vs reference → G43.1 applied")

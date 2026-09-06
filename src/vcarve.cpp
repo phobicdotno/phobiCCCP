@@ -5,6 +5,7 @@
 #include <QPainterPath>
 #include <QPair>
 #include <QPointF>
+#include <QSet>
 #include <QtMath>
 
 #ifdef HAVE_BOOST_VORONOI
@@ -104,6 +105,16 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
     // so little that their chords are exact to well under a hundredth.
     std::vector<ISeg> isegs;
     QVector<QLineF> mmSegs;
+    // Integer coordinates of the *original* polygon vertices. A densification
+    // joint is never a corner, but rounding it to integer micrometres makes it
+    // look like one: the joint lands up to 0.5 um off the line it was cut
+    // from, which over a 1 mm piece is ~1e-3 rad - ten times the collinearity
+    // threshold below - so the joint kept its bisector, and the spur pruning
+    // could not remove it either, because that only prunes tips sitting on a
+    // polygon vertex. A 20 mm square rotated 17 deg came out as 72 chains and
+    // 243 mm of medial axis instead of 4 and 56.6, every spurious spur being
+    // a full-depth plunge and a drag out to the surface.
+    QSet<QPair<int, int>> cornerPts;
     QPainterPath region;
     region.setFillRule(Qt::OddEvenFill);
     for (const QPolygonF &ringIn : rings) {
@@ -115,6 +126,7 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
         region.addPolygon(ring);
         for (int i = 1; i < ring.size(); ++i) {
             const QPointF a = ring.at(i - 1), b = ring.at(i);
+            cornerPts.insert({int(qRound(a.x() * kScale)), int(qRound(a.y() * kScale))});
             const double L = QLineF(a, b).length();
             if (L < 1e-6)
                 continue;
@@ -198,6 +210,11 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
                         touch = true;
                     }
             if (touch) {
+                // Not an original vertex: a densification joint, so the two
+                // pieces are collinear by construction whatever the rounding
+                // says.
+                if (!cornerPts.contains({shared.x, shared.y}))
+                    continue;
                 const IPt oa = samePt(sa.p0, shared) ? sa.p1 : sa.p0;
                 const IPt ob = samePt(sb.p0, shared) ? sb.p1 : sb.p0;
                 const double cross =
