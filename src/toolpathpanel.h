@@ -49,6 +49,7 @@ private:
     // tooltip; the second bolds every row that machines the current canvas
     // selection, so a shape can be traced back to its toolpaths.
     QStringList vectorIdsOf(const QString &uuid) const;
+    void updateHighlight();           // halo follows the list's selection
     QString describeVectors(const QStringList &ids) const;
     void markUsage(const QStringList &selectedElementIds);
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.10 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.12 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -135,6 +135,12 @@ if(Qt6Test_FOUND)
     add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
+    # Panel <-> canvas selection handover (needs the real widgets).
+    add_executable(test_panels tests/test_panels.cpp src/canvas.cpp
+                   src/toolpathpanel.cpp src/toollibrarydialog.cpp)
+    target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME panels COMMAND test_panels)
+    set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
 else()
     message(STATUS "Qt6 Test not found: canvas interaction test skipped")
 endif()
@@ -142,6 +148,10 @@ find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME grblsim COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/grblsim_selftest.py)
     add_test(NAME machine_flow COMMAND ${CMAKE_SOURCE_DIR}/tools/flowtest.sh $<TARGET_FILE:phobicccp>)
+    # Both drive a real pty against wall-clock deadlines (3 s for the banner,
+    # 30 s for a homing cycle). Sharing the box with ctest -j starves them and
+    # they fail on timing alone, so they get the machine to themselves.
+    set_tests_properties(grblsim machine_flow PROPERTIES RUN_SERIAL TRUE)
 endif()
 
 include(GNUInstallDirs)

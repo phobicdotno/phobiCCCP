@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.12 (build 22) — 2026-09-06
+- Clicking a shape on the canvas now hands the selection over: the toolpath
+  row deselects and its outline clears, instead of both panes staying lit and
+  the row looking stuck. The toolpath stays *current*, so the parameter table
+  and "Assign selected vectors" still act on the one you were editing, and
+  clicking the row again brings its outline back.
+- The type and vectors columns are no longer editable. Double-clicking them
+  opened a text editor whose result was silently discarded on the next
+  refresh — the type is what the toolpath is, and the count follows its
+  element list. The name is still renamed by double-click.
+
 ## v0.4.10 (build 21) — 2026-09-05
 - Selecting a toolpath now outlines the shapes it machines on the canvas, in
   the same amber as the selected row. The vectors column only ever said how

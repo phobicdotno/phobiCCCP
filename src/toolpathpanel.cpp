@@ -16,6 +16,7 @@
 #include <QFont>
 #include <QMenu>
 #include <QSet>
+#include <QStyledItemDelegate>
 #include <QSettings>
 #include <QMessageBox>
 #include <QPushButton>
@@ -178,16 +179,41 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_list->setMinimumHeight(60);
     m_list->setToolTip(QStringLiteral(
         "Machining order, top to bottom. Checkbox = enabled; double-click the "
-        "name to rename."));
+        "name to rename. Type and vector count follow the toolpath itself."));
+    // Only the name is the user's to change. The type is what the toolpath
+    // *is* — a Drill is a Drill — and the vector count is derived from its
+    // element list, so double-clicking either used to open an editor whose
+    // result onItemChanged() then silently discarded.
+    class NoEdit : public QStyledItemDelegate
+    {
+    public:
+        using QStyledItemDelegate::QStyledItemDelegate;
+        QWidget *createEditor(QWidget *, const QStyleOptionViewItem &,
+                              const QModelIndex &) const override { return nullptr; }
+    };
+    m_list->setItemDelegateForColumn(1, new NoEdit(m_list));
+    m_list->setItemDelegateForColumn(2, new NoEdit(m_list));
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     lay->addWidget(m_list);
     connect(m_list, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *, QTreeWidgetItem *) { onCurrentChanged(); });
     connect(m_list, &QTreeWidget::itemChanged, this, &ToolpathPanel::onItemChanged);
+    // The halo follows the list's *selection*, not its current row, so that
+    // clicking the same row again after the canvas took the selection brings
+    // the halo back (currentItemChanged would not fire).
+    connect(m_list, &QTreeWidget::itemSelectionChanged, this,
+            &ToolpathPanel::updateHighlight);
     // Reverse lookup: picking a shape on the canvas bolds the toolpaths that
-    // machine it.
+    // machine it, and hands the selection over — the toolpath row deselects
+    // and its halo clears, so the two panes never both claim to be "the
+    // selection". The row stays *current*, so the parameter table and
+    // "Assign selected vectors" still act on the toolpath you were editing.
     connect(m_canvas, &Canvas::selectionChangedIds, this,
-            [this](const QStringList &ids) { markUsage(ids); });
+            [this](const QStringList &ids) {
+                if (!ids.isEmpty())
+                    m_list->clearSelection();
+                markUsage(ids);
+            });
     connect(m_list, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &p) {
         if (!m_list->itemAt(p) || m_uuid.isEmpty())
             return;
@@ -574,8 +600,17 @@ void ToolpathPanel::onCurrentChanged()
     const QTreeWidgetItem *it = m_list->currentItem();
     const QString uuid = it ? it->data(0, Qt::UserRole).toString() : QString();
     showToolpath(uuid);
-    // Light up the shapes this toolpath machines.
-    m_canvas->setVectorHighlight(vectorIdsOf(uuid));
+    updateHighlight();
+}
+
+// Outline the shapes of the selected toolpath, or nothing when the canvas has
+// taken the selection over.
+void ToolpathPanel::updateHighlight()
+{
+    const QList<QTreeWidgetItem *> sel = m_list->selectedItems();
+    m_canvas->setVectorHighlight(
+        sel.isEmpty() ? QStringList()
+                      : vectorIdsOf(sel.first()->data(0, Qt::UserRole).toString()));
 }
 
 // ---- which toolpath cuts which shape --------------------------------------

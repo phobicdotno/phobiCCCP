@@ -56,6 +56,7 @@ public:
     // the toolpath list answers "which shapes does this one cut?".
     void setVectorHighlight(const QStringList &ids);
     void clearVectorHighlight() { setVectorHighlight({}); }
+    const QStringList &vectorHighlight() const { return m_highlightIds; }
 
     // On-canvas g-code preview: rapids dashed, cuts colored by depth.
     void setToolpathPreview(const QVector<Op> &ops);
