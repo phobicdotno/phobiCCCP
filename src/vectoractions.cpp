@@ -98,8 +98,14 @@ public:
         QVector<Element> &els = m_d->elementsRef();
         int at = els.size();
         for (int i = m_removed.size() - 1; i >= 0; --i) {   // high index first
-            els.removeAt(m_removed.at(i).first);
-            at = m_removed.at(i).first;
+            const int idx = m_removed.at(i).first;
+            // The document can have been replaced under the undo stack (a
+            // failed Open used to leave it empty). undo() already clamps;
+            // without the same here, Redo indexed off the end of the vector.
+            if (idx < 0 || idx >= els.size())
+                continue;
+            els.removeAt(idx);
+            at = idx;
         }
         for (int i = 0; i < m_results.size(); ++i)
             els.insert(at + i, m_results.at(i));

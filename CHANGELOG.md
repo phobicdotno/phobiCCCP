@@ -1,5 +1,107 @@
 # Changelog
 
+## v0.4.71 (build 24) — 2026-09-06
+
+A second review pass, four parallel audits by failure class rather than by
+file, plus the whole suite under AddressSanitizer/UBSan and a bit-flip fuzzer
+over the document pipeline. Every finding below was reproduced before it was
+fixed, and each has a regression test.
+
+**Toolpaths and G-code**
+- A cut depth that cannot be read no longer produces a program. The depth
+  reader was the one number in the exporter that checked neither that the
+  text parsed nor that the result was finite, so `"nan"` put a literal
+  `G1Znan` in the file; a comma decimal or `"19.05mm"` became zero and traced
+  the shape on the surface, cutting nothing — and both were reported as a
+  successful export. Such a toolpath is now skipped, with the reason.
+- A cut depth of `"inf"`, `"1e400"` or even a finite `"1e15"` no longer hangs
+  the app. The pass loop steps down until it reaches the bottom, which for
+  those never happens; because the export runs on the interface thread, the
+  window froze with no way out. Depths needing more than 100,000 passes are
+  refused instead.
+
+**Saving**
+- A save that fails to commit is no longer reported as "Saved". The commit is
+  the statement that actually writes the file out — where a full disk, or a
+  lock held by a second window or a backup scanner, actually shows up — and
+  its result was the one that was thrown away. The staged copy, still holding
+  the *unmodified* original, was renamed over the document and the afternoon's
+  edits were gone, with the title bar clean so nothing warned on the way out.
+- The 3D relief and the background image are written into the container after
+  the document itself, and both of them could fail silently the same way. They
+  now report it, and the document stays dirty so the next save retries.
+- The toolpath count is no longer left disagreeing with the file when the
+  statement that updates it fails. Carbide Create trusts that count.
+
+**Opening**
+- A file that cannot be read to the end is refused instead of being shown as
+  a complete document. A cursor that died part-way through the table looked
+  exactly like the end of the table, so a truncated or damaged container
+  opened as a partial drawing with no warning — and the next Ctrl+S deleted
+  and rewrote only the part that had been read, making the loss permanent.
+- A failed Open leaves the document you already had open alone. Loading
+  cleared the document before it validated anything, so picking a file that
+  turned out not to be a container left the canvas, the panels and the undo
+  stack showing a document with nothing in it: the next drag rebuilt an empty
+  drawing, and the next save wrote it out.
+- Redo no longer indexes off the end of the shape list after the document
+  underneath it has been replaced.
+
+**Machine control**
+- A hard or soft limit ends the program instead of wedging the sender. On a
+  limit GRBL stops, answers nothing but a status request until it is reset,
+  and — unlike a reset — never reboots, so the acks for everything already in
+  its buffer never arrive. The stream stayed "running" for ever: progress
+  frozen, and because unlock, homing and jog are all refused while a program
+  is streaming, every one of those buttons silently did nothing.
+- A line the controller rejects stops the program. GRBL throws the rejected
+  block away and carries straight on with what is already buffered, so a
+  refused retract was followed by a rapid across the part with the tool still
+  at cutting depth — reproduced: 50 mm at 3 mm below the surface. The machine
+  is now held where it is, with the failing line named.
+- A line longer than the character-counting window no longer deadlocks the
+  sender. It could never fit, so the wait for room never ended: nothing was
+  sent, no ack could come back, and the job stopped dead with the spindle
+  running. Reproduced exactly at 120 characters.
+
+**Editing**
+- Deleting a toolpath deletes the one that is selected. Marking which
+  toolpaths machine the selected shape wrote to every row, and each write ran
+  the user-edit handler, which moved the selection to the last row — so on a
+  freshly opened file, with nothing touched, Delete removed the wrong
+  toolpath. The same desync sent parameter edits to the wrong toolpath and
+  wrote foreign keys into the saved file.
+- Editing a value in the toolpath table no longer breaks keyboard navigation:
+  the edit was applied while the table was still unwinding the change, which
+  closed the editor from under itself.
+- Removing a 3D component no longer marks the document modified twice over
+  and schedules two full recomposites for nothing.
+
+**Tiling**
+- A tile that cannot be written is reported instead of being counted as
+  exported. Writes were unchecked and unflushed, so a full disk or a stick
+  pulled mid-export left a tile ending mid-block — no retract, no spindle
+  stop — and the app listed it as successfully written.
+- Tiles left over from an earlier, longer export under the same base name are
+  now pointed out. They stay in the folder, still look like part of the job
+  and still say "(tile 4/5)" inside, and the save dialog only ever asked about
+  a file that is never written.
+
+**Importing**
+- A vector file too large to parse is refused with its size instead of taking
+  the process down with it. Parsing an ASCII DXF costs several times the file
+  in memory, and the element budget cannot help: it only starts counting once
+  the whole file is already parsed.
+
+**Testing**
+- New `machine_faults` suite: an over-long line, a rejected line and a
+  critical alarm, each driven through the real streamer against the
+  simulator. All three used to hang it.
+- The `hardening` suite covers the new depth and tiling cases (310 checks).
+  Also run this pass and clean: the whole suite under AddressSanitizer and
+  UndefinedBehaviorSanitizer, and 450 bit-flipped documents through load,
+  export and tiled export.
+
 ## v0.4.52 (build 23) — 2026-09-06
 
 An independent review of the whole codebase, in five parallel passes. Thirty

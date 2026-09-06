@@ -306,9 +306,30 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
             r.error = QStringLiteral("%1: %2").arg(path, f.errorString());
             return r;
         }
-        f.write(gcode.toUtf8());
+        // The single-file exporter already checks this; the tiled one did not,
+        // and QFile buffers, so a full disk or a stick pulled mid-export shows
+        // up at write/flush and nowhere else. A tile that ends mid-block has
+        // no retract and no M5: it cuts and then simply stops, spindle down.
+        const QByteArray bytes = gcode.toUtf8();
+        if (f.write(bytes) != bytes.size() || !f.flush()) {
+            r.error = QStringLiteral("%1: %2").arg(path, f.errorString());
+            r.files.clear();
+            r.gcode.clear();
+            return r;
+        }
         r.files << path;
         r.gcode << gcode;
+    }
+    // A previous export under the same base name may have needed more tiles.
+    // Those files are still on disk, still look like part of this job, and
+    // still carry a plausible "(tile 4/5)" comment inside. Say so rather than
+    // deleting anything: they are the user's files, and the overwrite prompt
+    // they answered was for <base>.nc, which is never written.
+    for (int k = tiles.size(); ; ++k) {
+        const QString stale = QStringLiteral("%1_tile%2.nc").arg(outBase).arg(k + 1);
+        if (!QFile::exists(stale))
+            break;
+        r.stale << stale;
     }
     return r;
 }

@@ -123,6 +123,11 @@ private:
     void pump();                                // fill GRBL's RX window
     void pumpMacro();
     void abortAfterReset();                     // controller rebooted under us
+    // Stop the running program without pretending it finished. `holdMachine`
+    // sends a feed hold first, which stops motion where it is and keeps the
+    // position (unlike ctrl-X); pass false when the controller has already
+    // stopped itself and will only listen to a reset.
+    void abortStream(const QString &why, bool holdMachine);
     void writeLine(const QString &line);
     void flushTlo();                            // send a pending G43.1 if allowed
     void resyncAdhoc(const QString &why);       // forget ad-hoc lines that will never ack

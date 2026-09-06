@@ -669,6 +669,13 @@ QString ToolpathPanel::describeVectors(const QStringList &ids) const
 void ToolpathPanel::markUsage(const QStringList &selectedElementIds)
 {
     m_selectedElements = selectedElementIds;
+    // Every setFont/setToolTip below emits itemChanged, and refresh() has
+    // already cleared m_loading by the time it calls us - so simply selecting
+    // a shape ran the user-edit slot once per row and left m_uuid pointing at
+    // the LAST toolpath while row 0 was still highlighted. Delete then removed
+    // the wrong toolpath, and parameter edits were written to it.
+    const bool wasLoading = m_loading;
+    m_loading = true;
     const QSet<QString> sel(selectedElementIds.begin(), selectedElementIds.end());
     for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
         QTreeWidgetItem *it = m_list->topLevelItem(i);
@@ -688,6 +695,7 @@ void ToolpathPanel::markUsage(const QStringList &selectedElementIds)
         it->setToolTip(0, used ? QStringLiteral("Machines the selected shape.")
                                : QString());
     }
+    m_loading = wasLoading;
 }
 
 void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
@@ -705,7 +713,9 @@ void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
         j.insert(QStringLiteral("enabled"), enabled);
     if (!name.isEmpty() && name != j.value("name").toString())
         j.insert(QStringLiteral("name"), name);
-    m_uuid = uuid;
+    // Only a change to the row the user is actually on may move the selection.
+    if (item == m_list->currentItem())
+        m_uuid = uuid;
     // editToolpath ends in documentChanged -> refresh(), which clears the tree
     // and destroys `item` (and, for a rename, its open editor) while the view
     // is still unwinding the change notification on it. Let the current event
@@ -764,7 +774,14 @@ void ToolpathPanel::onCellEdited(int row, int col)
     }
     QJsonObject j = t->json;
     flatSet(j, key, v);
-    m_canvas->editToolpath(m_uuid, j);
+    // Same reason as the tree path above: editToolpath ends in refresh(),
+    // which does setRowCount(0) on this very table while the view is still
+    // unwinding the change on the cell being edited. The open editor is then
+    // released mid-commit and the current cell resets, so keyboard navigation
+    // breaks after every edit.
+    const QString uuid = m_uuid;
+    QMetaObject::invokeMethod(this, [this, uuid, j] { m_canvas->editToolpath(uuid, j); },
+                              Qt::QueuedConnection);
 }
 
 } // namespace c2d

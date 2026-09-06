@@ -47,6 +47,10 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
                            const QString &sourceName = QString());
 
 // Read the file and dispatch on the extension (.svg / .dxf, case-insensitive).
+// Largest vector file we will read into memory. An ASCII DXF costs several
+// times its size to parse, so this is a memory bound, not a disk bound.
+constexpr qint64 kMaxImportBytes = 128LL * 1024 * 1024;
+
 ImportResult importFile(const QString &path, const ImportOptions &opt);
 bool isImportableFile(const QString &path);
 

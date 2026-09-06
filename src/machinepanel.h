@@ -26,6 +26,10 @@ class MachinePanel : public QWidget
     Q_OBJECT
 public:
     explicit MachinePanel(QWidget *parent = nullptr);
+    // The streamer is a child, so ~QWidget deletes it AFTER this panel's own
+    // members are gone, and ~GrblStreamer emits disconnected/streamFinished
+    // straight into slots that then touch them. Cut the connections first.
+    ~MachinePanel() override;
     void setDocument(Document *doc) { m_doc = doc; }
     GrblStreamer *streamer() const { return m_grbl; }
 

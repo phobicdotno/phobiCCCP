@@ -1,4 +1,6 @@
 #include "mainwindow.h"
+
+#include <utility>
 #include "backgrounddialog.h"
 #include "gcodeexport.h"
 #include "isopreview.h"
@@ -473,6 +475,18 @@ void MainWindow::onExportGcodeTiled()
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
     statusBar()->showMessage(msg, 10000);
+    // A previous export under this base name may have needed more tiles. Those
+    // files are still there, still look like part of this job, and still say
+    // "(tile 4/5)" inside. The save dialog only asked about <base>.nc, which is
+    // never written, so the user was never warned about any of them.
+    if (!r.stale.isEmpty())
+        QMessageBox::warning(
+            this, QStringLiteral("Older tiles are still in that folder"),
+            QStringLiteral("This export made %1 tile(s). These files are left over "
+                           "from an earlier, longer export and are NOT part of it:\n\n%2\n\n"
+                           "Delete them before running the job.")
+                .arg(r.files.size())
+                .arg(r.stale.join(QStringLiteral("\n"))));
 }
 
 void MainWindow::refreshPreview()
@@ -569,13 +583,35 @@ void MainWindow::onSave()
     if (!m_doc.save(m_doc.filePath(), &err)) {
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
     } else {
-        m_bg.saveTo(m_doc.filePath());
-        m_model->saveTo(m_doc.filePath());
-        m_dirty = false;
-        updateTitle();
-        statusBar()->showMessage(
-            QStringLiteral("Saved %1").arg(m_doc.filePath()), 5000);
+        saveExtras(m_doc.filePath());
     }
+}
+
+// The relief and the background live in the same container but are written
+// after Document::save has already renamed the finished file into place, so
+// they are a second, unprotected pass. Both return bool and both were being
+// discarded: a failure there meant the user was told "Saved", the dirty flag
+// was cleared, and the 3D model they had just sculpted was silently not in
+// the file. Report it, and leave the document dirty so the next Ctrl+S retries.
+void MainWindow::saveExtras(const QString &path)
+{
+    QString bgErr, mdErr;
+    const bool bgOk = m_bg.saveTo(path, &bgErr);
+    const bool mdOk = m_model->saveTo(path, &mdErr);
+    if (!bgOk || !mdOk) {
+        QMessageBox::warning(
+            this, QStringLiteral("Saved incompletely"),
+            QStringLiteral("%1 was written, but %2 could not be:\n%3")
+                .arg(path,
+                     !mdOk ? QStringLiteral("the 3D model")
+                           : QStringLiteral("the background image"),
+                     !mdOk ? mdErr : bgErr));
+        updateTitle();
+        return;                       // still dirty: the next save retries
+    }
+    m_dirty = false;
+    updateTitle();
+    statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
 }
 
 void MainWindow::onSaveAs()
@@ -597,11 +633,7 @@ void MainWindow::onSaveAs()
     if (!m_doc.save(path, &err)) {
         QMessageBox::warning(this, QStringLiteral("Save failed"), err);
     } else {
-        m_bg.saveTo(path);
-        m_model->saveTo(path);
-        m_dirty = false;
-        updateTitle();
-        statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
+        saveExtras(path);
     }
 }
 
@@ -644,11 +676,19 @@ void MainWindow::openFile(const QString &path)
     qDebug() << "[diag] SQL drivers:" << QSqlDatabase::drivers();
     qDebug() << "[diag] opening:" << path;
     QString err;
-    if (!m_doc.load(path, &err)) {
+    // load() clears the document before it validates anything, so loading
+    // straight into m_doc and returning on failure left the panels, the canvas
+    // and the undo stack pointing at a document that no longer had any
+    // contents - and m_doc.filePath() already pointing at the file that failed.
+    // The next drag rebuilt an empty drawing; the next Ctrl+S wrote it out.
+    // Load into a temporary and commit only once it worked.
+    Document next;
+    if (!next.load(path, &err)) {
         qDebug() << "[diag] LOAD FAILED:" << err;
         QMessageBox::warning(this, QStringLiteral("Open failed"), err);
         return;
     }
+    m_doc = std::move(next);
     qDebug() << "[diag] loaded elements:" << m_doc.elements().size()
              << "toolpaths:" << m_doc.toolpaths().size()
              << "board:" << m_doc.boardWidth() << "x" << m_doc.boardHeight()

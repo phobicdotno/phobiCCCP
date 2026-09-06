@@ -31,6 +31,7 @@ bool Document::load(const QString &path, QString *error)
     // Unique connection name so multiple documents can be open at once.
     const QString conn = QStringLiteral("c2d_%1").arg(QUuid::createUuid().toString());
     bool notAContainer = false;
+    QString readFailed;      // non-empty = a query died part-way through
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
         db.setDatabaseName(path);
@@ -70,6 +71,8 @@ bool Document::load(const QString &path, QString *error)
             q.exec(QStringLiteral("SELECT key, value FROM params"));
             while (q.next())
                 m_params.insert(q.value(0).toString(), q.value(1).toString());
+            if (q.lastError().isValid())
+                readFailed = q.lastError().text();
         }
 
         // items: elements + toolpaths
@@ -108,12 +111,31 @@ bool Document::load(const QString &path, QString *error)
                     m_toolpaths.append(tp);
                 }
             }
+            // A cursor that dies part-way through the table looks exactly like
+            // the end of the table. Treating the two the same presented a
+            // partly-read document as a complete one -- and the next Ctrl+S
+            // deleted and rewrote only what had been read, making the loss
+            // permanent. Rows that were read and would not decode are a
+            // different matter and are kept in m_unreadableToolpaths above.
+            if (q.lastError().isValid())
+                readFailed = q.lastError().text();
         }
         db.close();
     }
     QSqlDatabase::removeDatabase(conn);
     if (notAContainer)
         return false;
+    if (!readFailed.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("%1 could not be read to the end: %2")
+                         .arg(path, readFailed);
+        m_params.clear();
+        m_elements.clear();
+        m_toolpaths.clear();
+        m_groups.clear();
+        m_unreadableToolpaths.clear();
+        return false;
+    }
     return true;
 }
 
@@ -241,8 +263,16 @@ bool Document::save(const QString &destPath, QString *error)
             QSqlQuery pq(db);
             pq.prepare(QStringLiteral("UPDATE params SET value=? WHERE key='num_toolpaths'"));
             pq.addBindValue(n);
-            if (pq.exec())
+            if (pq.exec()) {
                 m_params.insert(QStringLiteral("num_toolpaths"), n);
+            } else {
+                // Leaving the count stale makes the file disagree with itself,
+                // and CC trusts the count.
+                if (error)
+                    *error = QStringLiteral("Could not update num_toolpaths: %1")
+                                 .arg(pq.lastError().text());
+                ok = false;
+            }
         }
 
         // 4) Blank stale renders / g-code so CC regenerates them on next open.
@@ -253,10 +283,23 @@ bool Document::save(const QString &destPath, QString *error)
                 "WHERE name IN ('all.svg','preview.svg','gcode.egc')"));
         }
 
-        if (ok)
-            db.commit();
-        else
+        // COMMIT is the statement that actually writes the transaction out:
+        // SQLite defers the page and journal flush to it, so this is where a
+        // full disk or a lock held by another process (a second window, CC,
+        // a backup scanner) surfaces. Ignoring it meant a failed commit left
+        // the staged copy holding the *unmodified* original, which was then
+        // renamed over the destination and reported as "Saved".
+        if (ok) {
+            if (!db.commit()) {
+                if (error)
+                    *error = QStringLiteral("Could not commit the save: %1")
+                                 .arg(db.lastError().text());
+                db.rollback();
+                ok = false;
+            }
+        } else {
             db.rollback();
+        }
 
         db.close();
     }

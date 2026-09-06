@@ -42,6 +42,9 @@ protected:
     void closeEvent(QCloseEvent *e) override;
 
 private:
+    // Writes the relief and the background into the container that
+    // Document::save has already put in place, and reports it if either fails.
+    void saveExtras(const QString &path);
     void refreshInfo();
     void refreshIso();        // rebuild the 3D preview from the current document
     void markIsoStale();      // refresh now if the Preview tab is visible, else defer

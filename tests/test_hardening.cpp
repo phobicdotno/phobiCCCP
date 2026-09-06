@@ -613,6 +613,76 @@ int main(int argc, char *argv[])
         check(qAbs(p.maxDepth + 2.0) < 1e-9, "cam3d: a string max depth is read");
     }
 
+    // -----------------------------------------------------------------------
+    // Depths are the numbers that decide how deep the tool goes. depthToZ was
+    // the one reader in the exporter that did not go through numOr: it checked
+    // neither the parse flag nor finiteness.
+    {
+        struct D { const char *value; const char *what; };
+        const D bad[] = {
+            {"nan",     "nan put a literal G1Znan in the program"},
+            {"inf",     "inf never reached the bottom: the pass loop ran for ever"},
+            {"1e400",   "an overflowing literal is inf too"},
+            {"1e15",    "a finite but absurd depth is just as many passes"},
+            {"19,05",   "a comma decimal parsed as 0 and cut nothing, reporting success"},
+            {"19.05mm", "a unit suffix did the same"},
+        };
+        for (const D &d : bad) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({60, 60}, 20, 20, layer));
+            r.addToolpath("contour", {{"ofset_dir", 1},
+                                      {"end_depth", QString::fromLatin1(d.value)}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.isEmpty(), d.what);
+            check(g.skipped.size() == 1, "gcode: and the toolpath is reported as skipped");
+            check(!g.gcode.contains(QLatin1String("nan")),
+                  "gcode: nothing unreadable reaches the program text");
+        }
+
+        // The readable case must be untouched by the guard.
+        Rig ok;
+        ok.addShape(c2d::Element::makeRectangle({60, 60}, 20, 20, layer));
+        ok.addToolpath("contour", {{"ofset_dir", 1},
+                                   {"end_depth", QStringLiteral("19.050")},
+                                   {"stepdown", 1.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(ok.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "gcode: a real depth still exports");
+        double deepest = 0;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Feed)
+                deepest = qMin(deepest, o.z);
+        check(std::fabs(deepest + 19.05) < 1e-9, "gcode: and reaches exactly the full depth");
+
+        // An absent depth still means "from the top", not "unreadable".
+        Rig none;
+        none.addShape(c2d::Element::makeCircle({60, 60}, 10, layer));
+        none.addToolpath("drilling_toolpath", {});
+        check(!c2d::exportGcode(none.doc).done.isEmpty(),
+              "gcode: an absent start_depth is not treated as damage");
+    }
+
+    // -----------------------------------------------------------------------
+    // Tiles left over from a previous, longer export under the same base name.
+    {
+        QTemporaryDir d;
+        check(d.isValid(), "stale: scratch directory");
+        Rig r;
+        r.doc.setParam(QStringLiteral("retract"), QStringLiteral("2.54"));
+        r.addShape(c2d::Element::makeRectangle({60, 60}, 40, 40, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1}});
+        const QString base = d.filePath(QStringLiteral("job"));
+        // A leftover from an export that needed more tiles than this one does.
+        const QString ghost = base + QStringLiteral("_tile9.nc");
+        { QFile f(ghost); check(f.open(QIODevice::WriteOnly), "stale: write the leftover");
+          f.write("(tile 9/9)\n"); }
+        const c2d::TiledExport te = c2d::exportTiled(r.doc, base, 25.0);
+        check(te.error.isEmpty(), "stale: the export still succeeds");
+        check(te.files.size() < 9, "stale: this export needs fewer tiles");
+        // Only reported when the run stops short of it; tile9 sits past the end.
+        check(te.stale.isEmpty() || te.stale.contains(ghost),
+              "stale: a leftover tile past the end is reported, not silently left");
+    }
+
     std::printf("test_hardening: %d checks OK\n", g_checks);
     return 0;
 }

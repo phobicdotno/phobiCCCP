@@ -1012,6 +1012,9 @@ int main(int argc, char *argv[])
         }
         qInfo() << "exported:" << r.done << "skipped:" << r.skipped
                 << "tile height:" << r.tileHeight << "tiles:" << r.files;
+        if (!r.stale.isEmpty())
+            qWarning() << "left over from an earlier, longer export, NOT part of "
+                          "this job:" << r.stale;
         return 0;
     }
 

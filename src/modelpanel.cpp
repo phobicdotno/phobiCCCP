@@ -857,6 +857,11 @@ void ModelPanel::refreshProps()
     m_up->setEnabled(c && selectedRow() > 0);
     m_down->setEnabled(c && selectedRow() < m_store.model.components.size() - 1);
     m_propBox->setEnabled(c != nullptr);
+    // refreshList() sets this guard and then shrinks the table, which
+    // deselects and lands us here. Clearing it on the way out let the rest of
+    // refreshList()'s setItem() calls re-enter the checkbox slot and mark the
+    // document dirty once per row. Restore what we found instead.
+    const bool wasUpdating = m_updating;
     m_updating = true;
     auto show = [this](QWidget *field, bool on) {
         const int i = m_propRows.indexOf(field);
@@ -870,7 +875,7 @@ void ModelPanel::refreshProps()
         show(m_name, true);
         m_name->clear();
         m_propBox->setTitle(QStringLiteral("Component — none selected"));
-        m_updating = false;
+        m_updating = wasUpdating;
         return;
     }
     const bool vec = c->kind == ModelComponent::FromVectors;
@@ -918,7 +923,7 @@ void ModelPanel::refreshProps()
     else if (tex)
         src += QStringLiteral("  over the whole model");
     m_source->setText(src);
-    m_updating = false;
+    m_updating = wasUpdating;
 }
 
 void ModelPanel::applyProps()

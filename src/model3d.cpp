@@ -323,7 +323,18 @@ bool Model3D::saveTo(const QString &c2dPath, QString *error) const
                 if (ok && !c.data.isEmpty() && !unreadableComponents.contains(c.id))
                     put(kBlobPrefix + c.id, c.data);
         }
-        if (ok) db.commit(); else db.rollback();
+        // The commit is where a full disk or a lock held by another process
+        // actually surfaces; without checking it, a rolled-back write was
+        // reported as a successful save.
+        if (ok) {
+            if (!db.commit()) {
+                if (error) *error = db.lastError().text();
+                db.rollback();
+                ok = false;
+            }
+        } else {
+            db.rollback();
+        }
         db.close();
     }
     QSqlDatabase::removeDatabase(conn);

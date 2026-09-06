@@ -1204,6 +1204,19 @@ ImportResult importFile(const QString &path, const ImportOptions &opt)
         res.error = QStringLiteral("Cannot read %1: %2").arg(path, f.errorString());
         return res;
     }
+    // Parsing an ASCII DXF costs several times the file size in peak memory
+    // (the bytes, then a QString of them, then the split lines, then the
+    // code/value pairs, all live at once). Without a bound, dropping a
+    // machine-generated 250 MB DXF on the window is an out-of-memory kill
+    // that takes every unsaved edit with it. The element budget below cannot
+    // help: it only starts counting once the whole file has been parsed.
+    if (f.size() > kMaxImportBytes) {
+        res.error = QStringLiteral("%1 is %2 MB; the import limit is %3 MB")
+                        .arg(QFileInfo(path).fileName())
+                        .arg(f.size() / (1024 * 1024))
+                        .arg(kMaxImportBytes / (1024 * 1024));
+        return res;
+    }
     const QByteArray data = f.readAll();
     const QString name = QFileInfo(path).fileName();
     const QString s = QFileInfo(path).suffix().toLower();

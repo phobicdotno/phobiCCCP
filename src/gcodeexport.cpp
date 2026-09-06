@@ -12,7 +12,9 @@
 #include <QPolygonF>
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 #include <functional>
+#include <limits>
 
 #ifdef HAVE_CLIPPER2
 #include <clipper2/clipper.h>
@@ -24,9 +26,31 @@ namespace c2d {
 // Depth values are strings whose sign convention flipped between CC builds
 // (843 stores "-19.126", 853 stores "19.126" for the same cut). Machine Z is
 // negative below stock top either way.
-static double depthToZ(const QJsonValue &v)
+// Depths are the numbers that decide how deep the tool goes, so they get the
+// strictest reading of all. An absent key means "from the top" and is fine; a
+// key that is present but unreadable is NOT a depth, and `ok` says so.
+//
+// This used to be a bare toString().toDouble(), which checked neither the
+// parse flag nor finiteness, and it was the only reader in this file that did
+// not go through numOr(). Four things got through it: "nan" (which toDouble
+// returns with ok == true) put a literal `G1Znan` in the program; a comma
+// decimal or "19.05mm" became 0 and traced the shape on the surface, cutting
+// nothing, and reported success; and "inf", "1e400" or even a finite "1e15"
+// made the pass loop below run for ever, freezing the app, because the export
+// runs on the GUI thread.
+static double depthToZ(const QJsonValue &v, bool *ok = nullptr)
 {
-    return -qAbs(v.isString() ? v.toString().toDouble() : v.toDouble());
+    if (ok)
+        *ok = true;
+    if (v.isUndefined() || v.isNull())
+        return 0.0;
+    const double d = numOr(v, std::numeric_limits<double>::quiet_NaN());
+    if (!std::isfinite(d)) {
+        if (ok)
+            *ok = false;
+        return 0.0;
+    }
+    return -qAbs(d);
 }
 
 
@@ -1131,8 +1155,20 @@ GcodeResult exportGcode(Document &doc)
         const int toolNo = int(numOr(tool.value("number"), 0));
         const double toolR = numOr(tool.value("diameter"), 6) / 2.0;
 
+        // Every depth this toolpath reads, with one flag for whether they were
+        // all readable. A toolpath whose depth we cannot read is refused, not
+        // guessed at: the wrong guess is a wrong cut.
+        bool depthsOk = true;
+        auto depth = [&](const QJsonValue &v) {
+            bool one = true;
+            const double z = depthToZ(v, &one);
+            if (!one)
+                depthsOk = false;
+            return z;
+        };
+
         CutParams cp;
-        cp.zTop = depthToZ(j.value("start_depth"));
+        cp.zTop = depth(j.value("start_depth"));
         // Tabs are a contour feature as much as a cutout one - CC offers them
         // on both, and makeToolpath() creates contours with them switched on.
         // Reading them for cutouts only meant a contour taken to the full
@@ -1145,18 +1181,32 @@ GcodeResult exportGcode(Document &doc)
             cp.tabWidth = qBound(1.0, numOr(j.value("tab_width"), 6.0), 30.0);
         };
         if (cutout) {
-            cp.zBot = depthToZ(j.value("cut_depth"))
-                      + depthToZ(j.value("break_through"));
+            cp.zBot = depth(j.value("cut_depth"))
+                      + depth(j.value("break_through"));
             cp.stepdown = qMax(0.05, numOr(j.value("depth_per_pass"), 1.0));
             readTabs();
         } else {
-            cp.zBot = depthToZ(j.value("end_depth"));
+            cp.zBot = depth(j.value("end_depth"));
             cp.stepdown = qMax(0.05, numOr(j.value("stepdown"), 1.0));
             if (contour)
                 readTabs();
         }
         if (j.value("enable_ramping").toBool(false))
             cp.rampAngle = qBound(1.0, numOr(j.value("ramp_angle"), 20.0), 45.0);
+
+        if (!depthsOk) {
+            res.skipped << QStringLiteral("%1 (cut depth is not a number)").arg(name);
+            continue;
+        }
+        // A readable but absurd depth is still not machinable, and the pass
+        // loop below steps down by `stepdown` until it reaches the bottom: a
+        // depth of 1e15 mm is an export that never returns. No real job is
+        // anywhere near this many passes.
+        const double passes = (cp.zTop - cp.zBot) / cp.stepdown;
+        if (!(passes < 100000.0)) {
+            res.skipped << QStringLiteral("%1 (cut depth needs too many passes)").arg(name);
+            continue;
+        }
 
         if (rough3d || finish3d) {
             // 3D toolpaths over the modeller's relief (cam3d.cpp). Emitted on
@@ -1279,8 +1329,12 @@ GcodeResult exportGcode(Document &doc)
             const double sVar = qBound(0.0, numOr(j.value("stepover_variation"), 0), 1.0);
             const double minL = qMax(1.0, numOr(j.value("min_length"), 15));
             const double maxL = qMax(minL, numOr(j.value("max_length"), 30));
-            const double zMin = depthToZ(j.value("min_depth"));
-            const double zMax = depthToZ(j.value("max_depth"));
+            const double zMin = depth(j.value("min_depth"));
+            const double zMax = depth(j.value("max_depth"));
+            if (!depthsOk) {
+                res.skipped << QStringLiteral("%1 (cut depth is not a number)").arg(name);
+                continue;
+            }
             Lcg rng(qHash(t.uuid));
 
             const double diag = QLineF(bb.topLeft(), bb.bottomRight()).length();

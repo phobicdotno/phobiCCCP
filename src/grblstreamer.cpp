@@ -255,6 +255,27 @@ void GrblStreamer::resumeStream()
         m_port->write("~", 1);
 }
 
+void GrblStreamer::abortStream(const QString &why, bool holdMachine)
+{
+    if (!m_streaming)
+        return;
+    // A feed hold decelerates to a stop and keeps the machine's position, so
+    // the operator can look at the job before deciding; ctrl-X would stop it
+    // too but lose the work coordinates with it.
+    if (holdMachine && isConnected()) {
+        const char hold = '!';
+        m_port->write(&hold, 1);
+    }
+    m_streaming = false;
+    m_waitingTool = -1;
+    m_queue.clear();
+    m_inflightSizes.clear();
+    m_inflightBytes = 0;
+    m_hadError = true;
+    emit errorOccurred(QStringLiteral("program stopped: %1").arg(why));
+    emit streamFinished(false);
+}
+
 void GrblStreamer::stopStream()
 {
     if (!isConnected())
@@ -302,8 +323,18 @@ void GrblStreamer::pump()
         if (m_conservative && !m_inflightSizes.isEmpty())
             break;
         const QByteArray data = line.toLatin1() + '\n';
-        if (m_inflightBytes + data.size() > RX_BUFFER)
+        // A line longer than the whole window can never satisfy the "wait for
+        // room" test, so waiting meant waiting for ever: nothing was written,
+        // so no ack could arrive, and the program stalled silently with the
+        // spindle running. Send it on its own once the window is empty --
+        // GRBL's own buffer is larger than ours and will answer it, with
+        // error:14 at worst, which keeps the byte accounting sound.
+        if (data.size() > RX_BUFFER) {
+            if (!m_inflightSizes.isEmpty())
+                break;                           // drain first, then send alone
+        } else if (m_inflightBytes + data.size() > RX_BUFFER) {
             break;
+        }
         m_port->write(data);
         if (m_conservative)
             emit consoleLine(QStringLiteral(">> %1").arg(line));
@@ -519,7 +550,8 @@ void GrblStreamer::handleLine(const QByteArray &line)
     }
 
     const bool ok = (line == "ok");
-    const bool err = line.startsWith("error:") || line.startsWith("ALARM:");
+    const bool alarm = line.startsWith("ALARM:");
+    const bool err = line.startsWith("error:") || alarm;
 
     if ((ok || err) && m_adhocPending > 0) {
         --m_adhocPending;
@@ -549,13 +581,36 @@ void GrblStreamer::handleLine(const QByteArray &line)
         return;
     }
 
+    // A critical alarm - a hard or soft limit, which is a routine event on a
+    // Shapeoko - is not a per-line error. GRBL stops, answers nothing but `?`
+    // until it is reset, and never acks the lines already in its buffer. It
+    // does not reboot, so the "Grbl " banner path above never fires. Counting
+    // the alarm as one ack and waiting for the others left m_streaming true
+    // for ever: progress frozen, streamFinished never emitted, and because
+    // canSendCommand() is false while streaming, unlock, homing and jog all
+    // silently did nothing.
+    if (alarm && m_streaming) {
+        abortStream(QString::fromLatin1(line)
+                        + QStringLiteral(" (reset the controller to continue)"),
+                    false);
+        return;
+    }
+
     if ((ok || err) && m_streaming && !m_inflightSizes.isEmpty()) {
         m_inflightBytes -= m_inflightSizes.takeFirst();
         ++m_ackedCount;
         m_ackClock.restart();
         if (err) {
-            m_hadError = true;
             emit errorOccurred(QString::fromLatin1(line));
+            // GRBL throws the rejected block away and carries straight on with
+            // whatever else is in its buffer. If the rejected line was the
+            // retract, the next move is a rapid at cutting depth: 50 mm across
+            // the part with the tool 3 mm under the surface. Every other sender
+            // halts here, and so do we.
+            abortStream(QStringLiteral("%1 on line %2")
+                            .arg(QString::fromLatin1(line)).arg(m_ackedCount),
+                        true);
+            return;
         }
         emit progressChanged(m_ackedCount, m_queue.size());
         pump();                                  // also handles completion

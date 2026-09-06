@@ -394,6 +394,11 @@ MachinePanel::MachinePanel(QWidget *parent)
     refreshPorts();
 }
 
+MachinePanel::~MachinePanel()
+{
+    disconnect(m_grbl, nullptr, this, nullptr);
+}
+
 // ---- small helpers -----------------------------------------------------------
 
 void MachinePanel::log(const QString &line)

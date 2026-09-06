@@ -445,8 +445,17 @@ double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double
     }
 
     // Curved part (ball, V, bull-nose fillet): supersample the bilinear
-    // surface under the inverted tool profile. The sub-step shrinks to a
-    // quarter cell while the footprint stays within ~4k samples.
+    // surface under the inverted tool profile. `n` is the sub-steps per cell:
+    // small tools get up to 4 (a smoother read of the bilinear surface),
+    // and once the tool is wider than 64 cells the integer division truncates
+    // to 0 and qBound pins it at 1 -- one sample per model cell, which is the
+    // resolution the model actually holds. Sampling coarser than that would
+    // be faster but would step over peaks and cut through them, so the cost
+    // below is inherent: it grows with the tool's area in cells. A 25 mm ball
+    // on a 0.1 mm grid is ~50k samples per point, and exportGcode runs on the
+    // GUI thread, so a large ball over a fine relief takes minutes with the
+    // window unresponsive. That is a missing progress/cancel path, not a
+    // number to clamp away.
     if (rFlat < r - 1e-9) {
         const int cellsAcross = qMax(1, int(std::ceil(2 * r / cell)));
         const int n = qBound(1, 64 / cellsAcross, 4);
