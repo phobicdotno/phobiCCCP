@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.74 (build 25) — 2026-09-06
+
+**Toolpaths and G-code**
+- Texture toolpaths no longer take minutes on a large sheet. The generator
+  asked "is this point inside the shape?" every 0.5 mm along the diagonal, for
+  every hatch line, so its cost grew with the sheet's area times the outline's
+  complexity: on a 1220 mm Shapeoko XXL panel with mounting holes that was
+  about three million of Qt's most expensive test, 25 seconds with the window
+  frozen, to emit a few hundred strokes. It now computes where each hatch line
+  crosses the boundary, the same way the engrave fill already did — measured
+  25.0 s to 0.35 s on that panel, and the self-check over it went from 77 s to
+  2 s.
+- Texture strokes reach the true edge of the shape. The old sampling rounded
+  every run to the nearest half millimetre and dropped anything shorter, so
+  strokes stopped short of the outline and narrow areas came out bare.
+
+**Testing**
+- The `hardening` suite covers the texture cost against the shape that showed
+  it up — many separate outlines spread across a large sheet, where the stroke
+  limit never trips and every hatch line is scanned in full (614 checks).
+
 ## v0.4.71 (build 24) — 2026-09-06
 
 A second review pass, four parallel audits by failure class rather than by

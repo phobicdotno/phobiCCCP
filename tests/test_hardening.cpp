@@ -18,6 +18,7 @@
 #include "../src/zlibutil.h"
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -681,6 +682,67 @@ int main(int argc, char *argv[])
         // Only reported when the run stops short of it; tile9 sits past the end.
         check(te.stale.isEmpty() || te.stale.contains(ghost),
               "stale: a leftover tile past the end is reported, not silently left");
+    }
+
+    // -----------------------------------------------------------------------
+    // Texture over a big sheet. The generator used to sample the region every
+    // 0.5 mm along the diagonal for every hatch line, so its cost grew with
+    // the square of the sheet: a 1220 mm Shapeoko XXL panel took 25 s on the
+    // interface thread. The bound here is deliberately loose - it is there to
+    // catch a return to quadratic, not to police a few hundred milliseconds.
+    {
+        // The shape that hurt: a small total area spread across a big bounding
+        // box. The stroke guard never fires, so every hatch line was scanned
+        // in full. (A solid sheet is NOT the bad case - it hits the guard
+        // almost immediately and stops early.)
+        // The cost was (path complexity) x (bounding box area), so the shape
+        // needs both: many separate outlines, spread wide. Measured with the
+        // old scan, this takes ~13 s; with 18 holes, like the sample baseplate
+        // that first showed it up, ~3 s.
+        c2d::Document doc;
+        QJsonArray refs;
+        for (int i = 0; i < 80; ++i) {
+            const double a = 2 * M_PI * i / 80;
+            const QPointF c(600 + 560 * std::cos(a), 600 + 560 * std::sin(a));
+            const c2d::Element e = c2d::Element::makeCircle(c, 25, layer);
+            doc.addElement(e);
+            refs.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
+        }
+        c2d::Toolpath tp;
+        tp.uuid = QStringLiteral("{tex}");
+        tp.type = QStringLiteral("texture_toolpath");
+        tp.json = QJsonObject{
+            {"type", "texture_toolpath"}, {"name", "tex"}, {"enabled", true},
+            {"uuid", tp.uuid}, {"elements", refs},
+            {"angle", 30}, {"min_length", 5}, {"max_length", 12}, {"stepover", 2.0},
+            {"start_depth", QStringLiteral("0.000")},
+            {"min_depth", QStringLiteral("-0.5")},
+            {"max_depth", QStringLiteral("-1.5")},
+            {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+            {"tool", QJsonObject{{"diameter", 3.175}, {"number", 301}}}};
+        doc.addToolpath(tp);
+
+        QElapsedTimer t;
+        t.start();
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const qint64 ms = t.elapsed();
+        check(g.done.size() == 1, "texture: a big sheet still exports");
+        check(ms < 5000, "texture: and does not take the old quadratic path");
+        std::printf("texture: 1200 mm sheet in %lld ms, %d ops\n",
+                    (long long)ms, int(g.ops.size()));
+
+        // Every stroke must sit inside the sheet it decorates.
+        int cuts = 0;
+        for (const c2d::Op &o : g.ops) {
+            if (o.kind != c2d::Op::Feed || o.z > -1e-9)
+                continue;
+            ++cuts;
+            check(o.x > 9.0 && o.x < 1191.0 && o.y > 9.0 && o.y < 1191.0,
+                  "texture: a stroke lies inside the bounds it was given");
+            if (cuts > 300)
+                break;                       // a sample is enough
+        }
+        check(cuts > 0, "texture: the sheet actually got strokes");
     }
 
     std::printf("test_hardening: %d checks OK\n", g_checks);

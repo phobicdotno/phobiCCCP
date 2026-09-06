@@ -1337,36 +1337,64 @@ GcodeResult exportGcode(Document &doc)
             }
             Lcg rng(qHash(t.uuid));
 
+            // Where each hatch line enters and leaves the region, computed the
+            // way the engrave hatch does it: crossings against the boundary
+            // edges, sorted, taken in pairs.
+            //
+            // This used to sample region.contains() every 0.5 mm along the full
+            // diagonal, for every hatch line -- diag^2 / (0.5 * stepover) calls
+            // to one of the most expensive predicates Qt has. On a 1220 mm
+            // Shapeoko XXL sheet that is about three million of them: measured
+            // 25 s, on the interface thread, to emit a few hundred strokes.
+            // The cost grew with the square of the sheet. Crossings are exact
+            // as well as cheap, so the runs are no longer quantised to 0.5 mm.
+            QList<QPolygonF> edges;
+            for (QPolygonF r : region.toSubpathPolygons()) {
+                if (r.size() > 2 && r.first() != r.last())
+                    r.append(r.first());
+                if (r.size() > 3)
+                    edges.append(r);
+            }
+
             const double diag = QLineF(bb.topLeft(), bb.bottomRight()).length();
             const QPointF mid = bb.center();
             int guard = 0;
+            QVector<double> hits;
             for (double off = -diag / 2; off < diag / 2 && guard < 20000; off +=
                  stepover * (1.0 + sVar * (rng.next() - 0.5))) {
                 const QPointF base = mid + nrm * off;
-                // walk the hatch line, extracting in-region runs
-                double runStart = -1;
-                for (double s = -diag / 2; s <= diag / 2 + 0.5; s += 0.5) {
-                    const QPointF p = base + dir * s;
-                    const bool in = s <= diag / 2 && region.contains(p);
-                    if (in && runStart < 0)
-                        runStart = s;
-                    if (!in && runStart >= 0) {
-                        double a = runStart;
-                        const double runEnd = s - 0.5;
-                        runStart = -1;
-                        while (a < runEnd - 1.0 && guard < 20000) {
-                            ++guard;
-                            const double L =
-                                qMin(runEnd - a, rng.in(minL, maxL));
-                            const QPointF sp = base + dir * a;
-                            const QPointF ep = base + dir * (a + L);
-                            const double z = rng.in(qMin(zMin, zMax), qMax(zMin, zMax));
-                            em.rapidTo(sp);
-                            em.plungeTo(sp, z);
-                            body.append(Op::feedTo(ep.x(), ep.y(), z, feed));
-                            em.retract();
-                            a += qMax(1.0, L * 0.7 + rng.in(0, L * 0.3));
+                hits.clear();
+                for (const QPolygonF &ring : edges) {
+                    for (int i = 0; i + 1 < ring.size(); ++i) {
+                        const QPointF &P = ring.at(i), &Q = ring.at(i + 1);
+                        const double fP = (P.x() - base.x()) * nrm.x()
+                                          + (P.y() - base.y()) * nrm.y();
+                        const double fQ = (Q.x() - base.x()) * nrm.x()
+                                          + (Q.y() - base.y()) * nrm.y();
+                        // half-open: a vertex exactly on the line counts once
+                        if ((fP <= 0 && fQ > 0) || (fQ <= 0 && fP > 0)) {
+                            const double t = fP / (fP - fQ);
+                            const QPointF p = P + t * (Q - P);
+                            hits.append((p.x() - base.x()) * dir.x()
+                                        + (p.y() - base.y()) * dir.y());
                         }
+                    }
+                }
+                std::sort(hits.begin(), hits.end());
+                for (int h = 0; h + 1 < hits.size() && guard < 20000; h += 2) {
+                    double a = hits.at(h);
+                    const double runEnd = hits.at(h + 1);
+                    while (a < runEnd - 1.0 && guard < 20000) {
+                        ++guard;
+                        const double L = qMin(runEnd - a, rng.in(minL, maxL));
+                        const QPointF sp = base + dir * a;
+                        const QPointF ep = base + dir * (a + L);
+                        const double z = rng.in(qMin(zMin, zMax), qMax(zMin, zMax));
+                        em.rapidTo(sp);
+                        em.plungeTo(sp, z);
+                        body.append(Op::feedTo(ep.x(), ep.y(), z, feed));
+                        em.retract();
+                        a += qMax(1.0, L * 0.7 + rng.in(0, L * 0.3));
                     }
                 }
             }
