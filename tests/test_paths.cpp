@@ -298,10 +298,13 @@ int main(int argc, char *argv[])
               && bb.height() < h * 1.05 && bb.height() > h * 0.6,
               "straight text sits on its baseline at pos, ascent = font_height");
         // Straight glyph outlines are stored in local space (baseline y = 0).
-        const QJsonArray firstContour = t.raw.value("rendered").toArray().at(0).toArray();
+        // Scan every contour: which one comes first is font-dependent (Helvetica
+        // may be substituted, and e.g. DejaVu emits the P's counter first), but
+        // the glyph set as a whole rests on the baseline.
         double minY = 1e9;
-        for (const QJsonValue &pv : firstContour)
-            minY = std::min(minY, pv.toArray().at(1).toDouble());
+        for (const QJsonValue &cv : t.raw.value("rendered").toArray())
+            for (const QJsonValue &pv : cv.toArray())
+                minY = std::min(minY, pv.toArray().at(1).toDouble());
         check(minY > -1 && minY < 1, "rendered outlines are local to the transform");
         const double width = bb.width();
 
