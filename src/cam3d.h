@@ -61,7 +61,8 @@ struct RoughLevel {
     QPainterPath region;
 };
 QList<RoughLevel> roughLevels(const HeightModel &model, const Cam3dParams &p,
-                              const QPainterPath &boundary);
+                              const QPainterPath &boundary,
+                              const ExportWatch *watch = nullptr);
 
 // Can the flat tool travel straight from a to b with its tip at z without
 // touching the model (+ stock to leave)? Used for the stay-down ring links.
@@ -76,7 +77,8 @@ double compensatedZ(const HeightModel &model, const ToolGeom &tool, double x, do
 // Raster passes as machine ops (rapids/feeds only — no tool/spindle/comment
 // framing). `passes` receives the number of cutting passes emitted.
 QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
-                      const QPainterPath &boundary, int *passes = nullptr);
+                      const QPainterPath &boundary, int *passes = nullptr,
+                      const ExportWatch *watch = nullptr);
 
 // ---- "New 3D toolpath" defaults for the Toolpaths panel --------------------
 QJsonObject defaultRoughToolpathJson();

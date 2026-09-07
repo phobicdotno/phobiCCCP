@@ -1,4 +1,5 @@
 #pragma once
+#include "gcodeexport.h"   // ExportWatch
 #include "post_grbl.h"
 #include <QString>
 #include <QStringList>
@@ -46,6 +47,8 @@ struct TiledExport {
 
 // Export the document and write <outBase>_tile1.nc, _tile2.nc, ... .
 // tileHeight <= 0 means the document's `tile_height` param (508 mm default).
-TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight = 0);
+TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight = 0,
+                        const ExportWatch *watch = nullptr,
+                        const HeightModel *relief = nullptr);
 
 } // namespace c2d

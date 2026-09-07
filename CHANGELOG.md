@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.4.79 (build 26) — 2026-09-07
+
+**Long exports**
+- A long export no longer freezes the window. Exporting g-code, exporting
+  tiles, pressing Run, and refreshing the toolpath or 3D preview all run the
+  export on a worker thread behind a progress dialog with a Cancel button.
+  Measured on a 100 mm relief at the modeller's finest cell: 83 seconds with a
+  3.2 mm ball, 4.5 minutes with a 12.7 mm one — that whole time the window was
+  unresponsive, with nothing to look at and no way to stop it. This does not
+  make the export faster; it makes it visible, interruptible, and something
+  the rest of the application can be used around.
+- A cancelled export is never written and never replaces what is on screen.
+  The result it returns is only the toolpaths that finished, so writing it
+  would leave a program that cuts partway and stops.
+- The export the worker runs is a snapshot. The document is copied and the 3D
+  relief is composited on the interface thread before the worker starts,
+  because the relief is cached in state the modelling panel's own rebuild
+  writes — reaching it from a background export would have been a race.
+- A g-code export that cannot be written is reported instead of announced as
+  successful. The plain export never checked its write or flush, so a full
+  disk or a stick pulled mid-write left a program ending in the middle of a
+  block, with no retract and no spindle stop, and the status bar said it had
+  been exported. Tiled export was fixed in v0.4.71; this is the same defect in
+  the other half.
+
+**Testing**
+- The `hardening` suite covers cancellation: that an export asked to stop
+  reports it and keeps only the finished toolpaths, that stopping at once
+  emits nothing, that a cancelled tiled export writes no tiles, and that an
+  export nobody interrupts is byte-for-byte what it always was (625 checks).
+
 ## v0.4.74 (build 25) — 2026-09-06
 
 **Toolpaths and G-code**

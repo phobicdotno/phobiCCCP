@@ -345,7 +345,8 @@ QList<QPolygonF> levelContours(const Field &F, double level, QVector<int> &edgeS
 // ---- rough ----------------------------------------------------------------
 
 QList<RoughLevel> roughLevels(const HeightModel &model, const Cam3dParams &p,
-                              const QPainterPath &boundary)
+                              const QPainterPath &boundary,
+                              const ExportWatch *watch)
 {
     QList<RoughLevel> out;
     if (!model.valid() || boundary.isEmpty())
@@ -361,7 +362,12 @@ QList<RoughLevel> roughLevels(const HeightModel &model, const Cam3dParams &p,
 
     const Field F(model, p.stockToLeave);
     QVector<int> edgeSeg(2 * 2 * F.W * F.H);
+    const int levelsExpected = qMax(1, int(std::ceil(-floorZ / qMax(0.01, p.stepdown))));
     for (int k = 1; k < 100000; ++k) {
+        // Each level marches the whole field for its contour, so this is the
+        // natural place to let a caller stop a long roughing pass.
+        if (watch && watch->stop(k - 1, levelsExpected, QStringLiteral("3D rough")))
+            return out;
         double L = -k * p.stepdown;
         bool last = false;
         if (L <= floorZ + 1e-9) {
@@ -536,7 +542,8 @@ void simplifyProfile(const QVector<P3> &pts, int i, int j, double up, double dow
 } // namespace
 
 QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
-                      const QPainterPath &boundary, int *passes)
+                      const QPainterPath &boundary, int *passes,
+                      const ExportWatch *watch)
 {
     QVector<Op> ops;
     int nPasses = 0;
@@ -647,7 +654,14 @@ QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
         // Climb: uncut material (the next pass, +nrm) on the left of travel
         // → travel along +d for a clockwise spindle. Conventional: −d.
         int dir = p.direction == Cam3dParams::Conventional ? -1 : 1;
+        int passIndex = 0;
         for (double o : offsets) {
+            // One pass over a fine relief with a big ball is a lot of sampling
+            // (the footprint is every model cell under the tool), so this is
+            // the granularity a caller needs to stay responsive.
+            if (watch && watch->stop(passIndex++, int(offsets.size()),
+                                     QStringLiteral("3D finish")))
+                return;
             const QPointF a = d * (sMin - 1.0) + nrm * o;
             const QPointF b = d * (sMax + 1.0) + nrm * o;
             QList<QPolygonF> pieces = clipper(a, b);

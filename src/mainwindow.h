@@ -36,7 +36,9 @@ private slots:
     void onSaveAs();
     void onExportGcode();
     void onExportGcodeTiled();   // one program per tile_height band in Y
-    void refreshPreview();
+    // `interactive` puts a cancellable progress dialog in front of a long
+    // export. --shot needs the synchronous form: it screenshots straight after.
+    void refreshPreview(bool interactive = true);
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -46,7 +48,7 @@ private:
     // Document::save has already put in place, and reports it if either fails.
     void saveExtras(const QString &path);
     void refreshInfo();
-    void refreshIso();        // rebuild the 3D preview from the current document
+    void refreshIso(bool interactive = true);   // rebuild the 3D preview from the document
     void markIsoStale();      // refresh now if the Preview tab is visible, else defer
 
     void updateTitle();

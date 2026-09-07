@@ -1,5 +1,7 @@
 #include "mainwindow.h"
 
+#include "exportprogress.h"
+
 #include <utility>
 #include "backgrounddialog.h"
 #include "gcodeexport.h"
@@ -388,7 +390,11 @@ void MainWindow::onExportGcode()
                                  QStringLiteral("Open a .c2d file first."));
         return;
     }
-    const GcodeResult r = exportGcode(m_doc);
+    const GcodeResult r = exportWithProgress(this, m_doc, QStringLiteral("Export G-code"));
+    if (r.cancelled) {
+        statusBar()->showMessage(QStringLiteral("Export cancelled"), 5000);
+        return;                       // a partial program must never be written
+    }
     if (r.done.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code"),
             QStringLiteral("No exportable toolpaths.\n\nSupported: contour, pocket, "
@@ -426,7 +432,15 @@ void MainWindow::onExportGcode()
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
     }
-    f.write(r.gcode.toUtf8());
+    // Unchecked and unflushed, a full disk or a stick pulled mid-write left a
+    // program ending in the middle of a block - no retract, no spindle stop -
+    // and the status bar said it had been exported.
+    const QByteArray bytes = r.gcode.toUtf8();
+    if (f.write(bytes) != bytes.size() || !f.flush()) {
+        QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
+        f.close();
+        return;
+    }
     f.close();
     QString msg = QStringLiteral("Exported %1 toolpath(s) to %2   [%3]")
                       .arg(r.done.size()).arg(path)
@@ -463,7 +477,12 @@ void MainWindow::onExportGcodeTiled()
     for (const char *suffix : {".nc", ".gcode"})
         if (path.endsWith(QLatin1String(suffix), Qt::CaseInsensitive))
             path.chop(int(qstrlen(suffix)));
-    const TiledExport r = exportTiled(m_doc, path, tileH);
+    const TiledExport r = exportTiledWithProgress(this, m_doc, path, tileH,
+                                                  QStringLiteral("Export G-code (tiled)"));
+    if (r.error == QLatin1String("cancelled")) {
+        statusBar()->showMessage(QStringLiteral("Export cancelled"), 5000);
+        return;
+    }
     if (!r.error.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("Export failed"),
             QStringLiteral("%1\nSkipped: %2").arg(r.error, r.skipped.join(QStringLiteral(", "))));
@@ -489,13 +508,21 @@ void MainWindow::onExportGcodeTiled()
                 .arg(r.stale.join(QStringLiteral("\n"))));
 }
 
-void MainWindow::refreshPreview()
+void MainWindow::refreshPreview(bool interactive)
 {
     if (m_doc.filePath().isEmpty()) {
         statusBar()->showMessage(QStringLiteral("Open a .c2d file first"));
         return;
     }
-    const GcodeResult r = exportGcode(m_doc);
+    const GcodeResult r = interactive
+        ? exportWithProgress(this, m_doc, QStringLiteral("Updating preview"))
+        : exportGcode(m_doc);
+    if (r.cancelled) {
+        // Keep the preview that is already on screen rather than replacing it
+        // with half a program.
+        statusBar()->showMessage(QStringLiteral("Preview update cancelled"), 5000);
+        return;
+    }
     m_canvas->setToolpathPreview(r.ops);
     m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
@@ -517,16 +544,22 @@ void MainWindow::showMachinePanel()
 void MainWindow::showToolpathPreview()
 {
     m_previewAct->setChecked(true);
-    refreshPreview();
+    refreshPreview(false);         // --shot screenshots straight after
     m_isoDock->raise();   // --shot … preview: capture the 3D tab too
 }
 
-void MainWindow::refreshIso()
+void MainWindow::refreshIso(bool interactive)
 {
     m_isoStale = false;
     if (m_doc.filePath().isEmpty())
         return;
-    const GcodeResult r = exportGcode(m_doc);
+    const GcodeResult r = interactive
+        ? exportWithProgress(this, m_doc, QStringLiteral("Updating 3D preview"))
+        : exportGcode(m_doc);
+    if (r.cancelled) {
+        statusBar()->showMessage(QStringLiteral("Preview update cancelled"), 5000);
+        return;
+    }
     m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
@@ -536,7 +569,7 @@ void MainWindow::refreshIso()
 void MainWindow::showSimulation()
 {
     if (m_isoStale)
-        refreshIso();
+        refreshIso(false);         // --shot: no dialog, the grab follows
     m_simDock->raise();
     m_sim->simulateBlocking();   // --shot … simulation: result is in the grab
 }

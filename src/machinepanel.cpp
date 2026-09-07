@@ -1,4 +1,6 @@
 #include "machinepanel.h"
+
+#include "exportprogress.h"
 #include "c2ddocument.h"
 #include "gcodeexport.h"
 
@@ -856,7 +858,14 @@ void MachinePanel::runProgram()
                                  QStringLiteral("Open a .c2d file first."));
         return;
     }
-    const GcodeResult r = exportGcode(*m_doc);
+    // Re-exported at the moment Run is pressed, so it is the current document
+    // that gets streamed - and a 3D finish is minutes of work, which used to
+    // freeze the window with the machine sitting idle.
+    const GcodeResult r = exportWithProgress(this, *m_doc, QStringLiteral("Preparing program"));
+    if (r.cancelled) {
+        log(QStringLiteral("program preparation cancelled"));
+        return;
+    }
     if (r.done.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Machine"),
                                  QStringLiteral("No exportable toolpaths."));

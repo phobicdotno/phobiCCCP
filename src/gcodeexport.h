@@ -8,6 +8,7 @@
 #include <QVector>
 
 #include <cmath>
+#include <functional>
 
 // First slice of Tier-2 CAM: generates machine-ready GRBL g-code (plaintext
 // .nc, same dialect Carbide Create hands to Carbide Motion) for the toolpath
@@ -20,15 +21,41 @@
 namespace c2d {
 
 class Document;
+struct HeightModel;
 
 struct GcodeResult {
     QString gcode;
     QStringList done;      // toolpath names emitted
     QStringList skipped;   // "name (reason)" for what was left out
     QVector<Op> ops;       // the machine operations, for on-canvas preview
+    bool cancelled = false;   // abandoned part-way: `ops` and `gcode` are partial
 };
 
-GcodeResult exportGcode(Document &doc);
+// Cooperative progress and cancellation for the long passes. A 3D finish over
+// a fine relief with a large ball is minutes of work, and the export runs on
+// whatever thread called it - so a caller that wants to stay responsive needs
+// somewhere to say "stop". Passing nullptr keeps the old behaviour exactly:
+// no callbacks, never cancelled.
+struct ExportWatch {
+    // Called at safe points, between toolpaths and between passes inside one.
+    // `what` names the toolpath or stage. Return false to abandon the export;
+    // the result then has `cancelled` set and holds only what was finished.
+    std::function<bool(int done, int total, const QString &what)> step;
+
+    // Convenience: true when the caller has asked to stop.
+    bool stop(int done, int total, const QString &what) const
+    {
+        return step && !step(done, total, what);
+    }
+};
+
+// `relief`, when given, is used instead of asking heightModelFor(doc) for the
+// document's 3D model. That matters for a caller on a worker thread: the
+// provider composites lazily and caches the result in state the modelling
+// panel also writes, so letting a background export reach it would be a race.
+// Pass a snapshot taken on the owning thread instead.
+GcodeResult exportGcode(Document &doc, const ExportWatch *watch = nullptr,
+                        const HeightModel *relief = nullptr);
 
 // The document's retract height, as every exporter must read it. `retract`
 // comes verbatim out of the params table and QString::toDouble returns 0 for

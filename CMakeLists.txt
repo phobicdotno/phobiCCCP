@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.74 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.79 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +71,7 @@ add_executable(phobicccp
     src/tracedialog.cpp
     src/backgrounddialog.cpp
     src/modelpanel.cpp
+    src/exportprogress.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets)

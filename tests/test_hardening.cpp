@@ -745,6 +745,68 @@ int main(int argc, char *argv[])
         check(cuts > 0, "texture: the sheet actually got strokes");
     }
 
+    // -----------------------------------------------------------------------
+    // Cancelling an export. The long 3D passes are minutes of work and the
+    // export runs on whatever thread asked for it, so a caller has to be able
+    // to stop one; and a caller that never says stop must get exactly what it
+    // got before the hook existed.
+    {
+        c2d::Document doc;
+        QJsonArray refs;
+        for (int i = 0; i < 4; ++i) {
+            const c2d::Element e =
+                c2d::Element::makeRectangle({60.0 + 60 * i, 60}, 40, 40, layer);
+            doc.addElement(e);
+            c2d::Toolpath tp;
+            tp.uuid = QStringLiteral("{tp-%1}").arg(i);
+            tp.type = QStringLiteral("contour");
+            tp.json = QJsonObject{
+                {"type", "contour"}, {"name", QStringLiteral("c%1").arg(i)},
+                {"enabled", true}, {"uuid", tp.uuid}, {"ofset_dir", 1},
+                {"start_depth", QStringLiteral("0.000")},
+                {"end_depth", QStringLiteral("2.000")}, {"stepdown", 1.0},
+                {"elements", QJsonArray{QJsonObject{{"uuid", e.id}}}},
+                {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300},
+                                       {"rpm", 10000}}},
+                {"tool", QJsonObject{{"diameter", 6.35}, {"number", 201}}}};
+            doc.addToolpath(tp);
+        }
+
+        const c2d::GcodeResult plain = c2d::exportGcode(doc);
+        check(plain.done.size() == 4 && !plain.cancelled, "cancel: four toolpaths export");
+
+        // A watch that never stops must not change a single byte.
+        int ticks = 0;
+        c2d::ExportWatch pass;
+        pass.step = [&](int, int, const QString &) { ++ticks; return true; };
+        const c2d::GcodeResult watched = c2d::exportGcode(doc, &pass);
+        check(!watched.cancelled, "cancel: a watch that never stops does not cancel");
+        check(watched.gcode == plain.gcode, "cancel: and produces identical g-code");
+        check(ticks >= 4, "cancel: the watch was actually called");
+
+        // Stopping at the third toolpath keeps the first two and says so.
+        c2d::ExportWatch halt;
+        halt.step = [](int done, int, const QString &) { return done < 2; };
+        const c2d::GcodeResult part = c2d::exportGcode(doc, &halt);
+        check(part.cancelled, "cancel: stopping is reported");
+        check(part.done.size() == 2, "cancel: and keeps only the finished toolpaths");
+        check(!part.done.contains(QStringLiteral("c2")), "cancel: the rest is not emitted");
+
+        // Stopping immediately leaves nothing, and must not hang or crash.
+        c2d::ExportWatch never;
+        never.step = [](int, int, const QString &) { return false; };
+        const c2d::GcodeResult none = c2d::exportGcode(doc, &never);
+        check(none.cancelled && none.done.isEmpty(), "cancel: stopping at once emits nothing");
+
+        // The tiled exporter passes the watch through rather than ignoring it.
+        QTemporaryDir td;
+        check(td.isValid(), "cancel: scratch directory");
+        const c2d::TiledExport tiled =
+            c2d::exportTiled(doc, td.filePath(QStringLiteral("j")), 200.0, &never);
+        check(!tiled.error.isEmpty(), "cancel: a cancelled tiled export is not a success");
+        check(tiled.files.isEmpty(), "cancel: and writes no tiles");
+    }
+
     std::printf("test_hardening: %d checks OK\n", g_checks);
     return 0;
 }

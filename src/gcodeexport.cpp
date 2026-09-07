@@ -1075,7 +1075,8 @@ double documentSafeZ(const Document &doc)
     return (!std::isfinite(z) || z < 0.5) ? 2.54 : z;
 }
 
-GcodeResult exportGcode(Document &doc)
+GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
+                        const HeightModel *relief)
 {
     GcodeResult res;
     QVector<Op> ops;
@@ -1123,12 +1124,17 @@ GcodeResult exportGcode(Document &doc)
         pendingTool = -1;
     };
 
+    const int tpTotal = int(doc.toolpaths().size());
     for (const Toolpath &t : doc.toolpaths()) {
         const QJsonObject j = t.json;
         if (!j.value("enabled").toBool(true))
             continue;
         const QString name = j.value("name").toString();
         const int myIndex = tpIndex++;
+        if (watch && watch->stop(myIndex, tpTotal, name)) {
+            res.cancelled = true;
+            break;
+        }
 
         const bool contour = (t.type == QLatin1String("contour"));
         const bool pocket = (t.type == QLatin1String("pocket_toolpath"));
@@ -1211,7 +1217,7 @@ GcodeResult exportGcode(Document &doc)
         if (rough3d || finish3d) {
             // 3D toolpaths over the modeller's relief (cam3d.cpp). Emitted on
             // their own, never pooled with the 2D ring jobs around them.
-            const HeightModel *hm = heightModelFor(doc);
+            const HeightModel *hm = relief ? relief : heightModelFor(doc);
             if (!hm || !hm->valid()) {
                 res.skipped << QStringLiteral("%1 (no 3D model)").arg(name);
                 continue;
@@ -1230,7 +1236,7 @@ GcodeResult exportGcode(Document &doc)
                 // the relief).
                 Emitter em(body, safeZ, feed, plunge);
                 const double r = p3.tool.radius();
-                for (const RoughLevel &lv : roughLevels(*hm, p3, boundary)) {
+                for (const RoughLevel &lv : roughLevels(*hm, p3, boundary, watch)) {
                     QList<Job> jobs;
                     for (const QPainterPath &comp : components(lv.region))
                         ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs);
@@ -1247,12 +1253,18 @@ GcodeResult exportGcode(Document &doc)
                 }
                 lastPos = em.pos();
             } else {
-                body = finishOps(*hm, p3, boundary);
+                body = finishOps(*hm, p3, boundary, nullptr, watch);
                 for (int k = body.size() - 1; k >= 0; --k)
                     if (body.at(k).kind == Op::Feed) {
                         lastPos = QPointF(body.at(k).x, body.at(k).y);
                         break;
                     }
+            }
+            // A 3D pass can be abandoned part-way, in which case `body` holds
+            // only what was finished. Do not emit half a toolpath.
+            if (watch && watch->stop(myIndex, tpTotal, name)) {
+                res.cancelled = true;
+                break;
             }
             if (body.isEmpty()) {
                 res.skipped << QStringLiteral("%1 (nothing to cut)").arg(name);

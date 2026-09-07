@@ -278,7 +278,8 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
     return out;
 }
 
-TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight)
+TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight,
+                        const ExportWatch *watch, const HeightModel *relief)
 {
     TiledExport r;
     r.tileHeight = tileHeight > 0 ? tileHeight
@@ -287,9 +288,13 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.tileHeight = 508.0;
     const double safeZ = documentSafeZ(doc);
 
-    const GcodeResult g = exportGcode(doc);
+    const GcodeResult g = exportGcode(doc, watch, relief);
     r.done = g.done;
     r.skipped = g.skipped;
+    if (g.cancelled) {
+        r.error = QStringLiteral("cancelled");
+        return r;
+    }
     if (g.done.isEmpty()) {
         r.error = QStringLiteral("no exportable toolpaths");
         return r;
