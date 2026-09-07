@@ -35,8 +35,14 @@ void runBehindDialog(QWidget *parent, const QString &title, Shared &sh,
     dlg.setMinimumDuration(300);      // a fast export must not flash a dialog
     dlg.setAutoClose(false);
     dlg.setAutoReset(false);
-    QObject::connect(&dlg, &QProgressDialog::canceled, &dlg,
-                     [&sh] { sh.cancel.store(true); });
+    // QProgressDialog turns *any* close into a cancel: closeEvent() calls
+    // cancel(), which emits canceled(). Closing it ourselves once the export
+    // has finished would therefore report a completed export as cancelled --
+    // and a cancelled export is never written to a file. Keep the connection
+    // so it can be cut before we close the dialog.
+    const QMetaObject::Connection cancelConn =
+        QObject::connect(&dlg, &QProgressDialog::canceled, &dlg,
+                         [&sh] { sh.cancel.store(true); });
 
     QThread *t = QThread::create(std::move(body));
     QEventLoop loop;
@@ -65,7 +71,14 @@ void runBehindDialog(QWidget *parent, const QString &title, Shared &sh,
     while (!done)
         loop.exec();      // the window stays alive; only Cancel is reachable
     t->wait();
+    // ThreadSanitizer reports a race here on QThread's own wait condition
+    // (the finishing thread broadcasts on it; this destroys it). Deferring
+    // with deleteLater does not remove it - it reports more, not fewer,
+    // because the teardown simply moves - and every access it names is inside
+    // uninstrumented Qt, never in this file's own state. Kept as the simple,
+    // leak-free form: wait() has returned, so the thread is done.
     delete t;
+    QObject::disconnect(cancelConn);   // the close below is not a cancel
     dlg.close();
 }
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.79 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.81 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -155,6 +155,12 @@ if(Qt6Test_FOUND)
 else()
     message(STATUS "Qt6 Test not found: canvas interaction test skipped")
 endif()
+# The threaded export helper lives in the app target, so the test compiles it
+# in directly. Worth re-running under ThreadSanitizer after any change to it.
+add_executable(test_exportjob tests/test_exportjob.cpp src/exportprogress.cpp)
+target_link_libraries(test_exportjob PRIVATE phobicccp_core Qt6::Widgets)
+add_test(NAME exportjob COMMAND test_exportjob)
+
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME grblsim COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/grblsim_selftest.py)

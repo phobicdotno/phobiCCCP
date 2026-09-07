@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.4.81 (build 27) — 2026-09-07
+
+**Long exports**
+- Fixes a regression in v0.4.79: every g-code export was reported as
+  cancelled, so nothing was ever written and the preview never updated.
+  `QProgressDialog` turns any close into a cancel — `closeEvent()` calls
+  `cancel()`, which emits `canceled()` — so dismissing the dialog once the
+  export had finished set the flag that says the result must be thrown away.
+  The dialog is now disconnected before it is closed.
+
+**Testing**
+- New `exportjob` suite drives the threaded export itself and checks it is
+  byte-for-byte identical to the synchronous one over repeated runs, and that
+  the caller's document is untouched. It found the regression above on its
+  first run. Also run by hand under ThreadSanitizer: five warnings, none of
+  them with any of this project's code in the conflicting frames — every one
+  is inside Qt's own thread teardown or libdbus, neither of which is built
+  with the sanitizer.
+
 ## v0.4.79 (build 26) — 2026-09-07
 
 **Long exports**
