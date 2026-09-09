@@ -1,5 +1,6 @@
 #pragma once
 #include "grblstreamer.h"
+#include <QHash>
 #include <QWidget>
 #include <functional>
 
@@ -14,6 +15,8 @@ class QPushButton;
 class QTimer;
 
 namespace c2d {
+
+class Gamepad;
 
 class Document;
 
@@ -50,6 +53,18 @@ private:
     void toggleConnect();
     QPushButton *jogButton(const QString &text, char axis, int dir);
     void jogStep(char axis, int dir);
+    // Press/release of a jog direction, whatever produced it: an arrow key, a
+    // jog button, or a direction on the gamepad. A tap becomes a single step,
+    // a hold becomes continuous motion, a release cancels it.
+    void beginHoldJog(char axis, int dir);
+    void endHoldJog();
+
+    // Gamepad (src/gamepad.h). Buttons are reported by the pad's own numbering,
+    // which differs between SNES clones, so every press is logged and the
+    // mapping can be overridden in QSettings under gamepad/.
+    void gamepadButton(int number, bool pressed);
+    void gamepadAxis(int number, int value);
+    void loadGamepadMapping();
     void jogIncrement();
     void stopHoldJog();                  // end a running hold-jog (cancel) safely
     QString currentPortName() const;
@@ -81,6 +96,10 @@ private:
     QComboBox *m_step, *m_speed;
     QTimer *m_holdTimer;                 // press-and-hold detection
     QTimer *m_holdRepeat;                // feeds short jog increments while held
+    Gamepad *m_pad = nullptr;
+    QLabel *m_padLabel = nullptr;
+    QHash<int, QString> m_padMap;        // button number -> action name
+    int m_padAxisDir[2] = {0, 0};        // last direction seen on axes 0 and 1
     char m_holdAxis = 0;
     int m_holdDir = 0;
     bool m_holdJogging = false;

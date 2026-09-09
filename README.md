@@ -110,6 +110,31 @@ Linux, built on the reverse-engineered format documentation in
   measures it on the BitSetter, applies the offset and continues — no manual
   Resume needed. Character-counting protocol, feed-hold / resume / soft-reset,
   realtime feed override, progress bar and console.
+- **USB gamepad** (SNES-style pads and anything else the kernel exposes as a
+  joystick): jog from the machine rather than from the keyboard, with no
+  window focus needed. Plug it in at any time — it is found within a second or
+  two and picked up again after unplugging; unplugging mid-jog cancels the
+  motion. Read straight from `/dev/input/js*`, which is world-readable on a
+  stock desktop, so there is no udev rule to install and no group to join.
+
+  | control | action |
+  |---|---|
+  | D-pad ←→ / ↑↓ | jog X / Y (tap = one step, hold = continuous) |
+  | L / R | jog Z down / up |
+  | Select | cycle the jog step (0.1 / 1 / 10 / 100 mm) |
+  | Start | Hold / Resume |
+  | B | Stop |
+  | A | zero XY |
+  | X | zero Z |
+  | Y | Unlock (`$X`) |
+
+  Starting a program is deliberately *not* on the pad: a bumped button must
+  never begin a cut. Clones number their buttons differently, so every press
+  is logged to the machine console with its number — press a button, read the
+  number, and override it in the settings under `gamepad/<number>` with one of
+  `x+ x- y+ y- z+ z- step hold stop zeroxy zeroz unlock`, or `none` to ignore
+  it. A joystick reporting fewer than two buttons is ignored, which is how a
+  MacBook's lid accelerometer (also a `js` device) is kept away from the jog.
 - **Air-cut mode**: rehearse any program with all spindle commands stripped
   and every Z lifted by a chosen amount; every run shows a stats +
   spindle-warning confirmation first.

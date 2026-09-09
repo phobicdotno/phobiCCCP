@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.81 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.88 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -72,6 +72,7 @@ add_executable(phobicccp
     src/backgrounddialog.cpp
     src/modelpanel.cpp
     src/exportprogress.cpp
+    src/gamepad.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets)
@@ -160,6 +161,14 @@ endif()
 add_executable(test_exportjob tests/test_exportjob.cpp src/exportprogress.cpp)
 target_link_libraries(test_exportjob PRIVATE phobicccp_core Qt6::Widgets)
 add_test(NAME exportjob COMMAND test_exportjob)
+
+# The gamepad reader, driven through a fifo carrying synthetic joystick events
+# so it can be tested with no controller plugged in.
+if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
+    add_executable(test_gamepad tests/test_gamepad.cpp src/gamepad.cpp)
+    target_link_libraries(test_gamepad PRIVATE Qt6::Core Qt6::Test)
+    add_test(NAME gamepad COMMAND test_gamepad)
+endif()
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)

@@ -1,5 +1,7 @@
 #include "machinepanel.h"
 
+#include "gamepad.h"
+
 #include "exportprogress.h"
 #include "c2ddocument.h"
 #include "gcodeexport.h"
@@ -138,6 +140,12 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_speed->addItem(QStringLiteral("rapid  6000"), 6000);
     m_speed->setCurrentIndex(1);
     side->addRow(QStringLiteral("mm/min"), m_speed);
+    // Says which pad is driving the jog, and stays out of the way when there
+    // is none. Button numbers are logged to the console on every press so a
+    // clone with a different layout can be remapped without guessing.
+    m_padLabel = new QLabel(QStringLiteral("gamepad: none"), jogBox);
+    m_padLabel->setEnabled(false);
+    side->addRow(QString(), m_padLabel);
     jogRow->addLayout(side);
     lay->addWidget(jogBox);
 
@@ -392,8 +400,28 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_holdRepeat, &QTimer::timeout, this, [this] { jogIncrement(); });
 
     loadSettings();
+    loadGamepadMapping();
     updateOffsetLabels();
     refreshPorts();
+
+    // A USB pad is a much better way to drive a machine than the arrow keys:
+    // it works from wherever you are standing, without the window focused.
+    m_pad = new Gamepad(this);
+    connect(m_pad, &Gamepad::connected, this, [this](const QString &name) {
+        m_padLabel->setText(QStringLiteral("gamepad: %1").arg(name));
+        m_padLabel->setEnabled(true);
+        log(QStringLiteral("gamepad connected: %1").arg(name));
+    });
+    connect(m_pad, &Gamepad::disconnected, this, [this] {
+        m_padLabel->setText(QStringLiteral("gamepad: none"));
+        m_padLabel->setEnabled(false);
+        endHoldJog();                     // a release we will never see
+        m_padAxisDir[0] = m_padAxisDir[1] = 0;
+        log(QStringLiteral("gamepad disconnected"));
+    });
+    connect(m_pad, &Gamepad::buttonChanged, this, &MachinePanel::gamepadButton);
+    connect(m_pad, &Gamepad::axisChanged, this, &MachinePanel::gamepadAxis);
+    m_pad->start();
 }
 
 MachinePanel::~MachinePanel()
@@ -481,13 +509,30 @@ void MachinePanel::keyPressEvent(QKeyEvent *event)
     }
     if (event->isAutoRepeat())
         return;
-    // Keys jog continuously while held; a tap shorter than the hold delay
-    // becomes a step, exactly like the buttons.
+    beginHoldJog(axis, dir);
+}
+
+// Keys, buttons and the gamepad all jog the same way: a tap shorter than the
+// hold delay becomes one step, holding becomes continuous motion.
+void MachinePanel::beginHoldJog(char axis, int dir)
+{
     stopHoldJog();
     m_holdAxis = axis;
     m_holdDir = dir;
     m_holdJogging = false;
     m_holdTimer->start();
+}
+
+void MachinePanel::endHoldJog()
+{
+    m_holdTimer->stop();
+    m_holdRepeat->stop();
+    if (m_holdJogging)
+        m_grbl->jogCancel();
+    else if (m_holdAxis)
+        jogStep(m_holdAxis, m_holdDir);
+    m_holdAxis = 0;
+    m_holdJogging = false;
 }
 
 void MachinePanel::keyReleaseEvent(QKeyEvent *event)
@@ -500,14 +545,7 @@ void MachinePanel::keyReleaseEvent(QKeyEvent *event)
     }
     if (event->isAutoRepeat())
         return;
-    m_holdTimer->stop();
-    m_holdRepeat->stop();
-    if (m_holdJogging)
-        m_grbl->jogCancel();
-    else if (m_holdAxis)
-        jogStep(m_holdAxis, m_holdDir);
-    m_holdAxis = 0;
-    m_holdJogging = false;
+    endHoldJog();
 }
 
 QString MachinePanel::currentPortName() const
@@ -551,6 +589,112 @@ void MachinePanel::resetFlow()
     m_held = false;
     m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
     m_runBtn->setText(QStringLiteral("▶ Run"));
+}
+
+// ---- gamepad -----------------------------------------------------------------
+//
+// Default mapping for a SNES-style pad. Clones number their buttons
+// differently, so every press is logged with its number and any of these can be
+// overridden in QSettings under "gamepad/<number>" with one of the action
+// names below. Program start is deliberately NOT on the pad: a bumped button
+// must never begin a cut. Hold and Stop are, because those are the ones worth
+// being able to hit without looking.
+void MachinePanel::loadGamepadMapping()
+{
+    m_padMap = {
+        {4, QStringLiteral("z-")},        // L
+        {5, QStringLiteral("z+")},        // R
+        {8, QStringLiteral("step")},      // Select: cycle the jog step
+        {9, QStringLiteral("hold")},      // Start:  hold / resume
+        {1, QStringLiteral("stop")},      // B
+        {0, QStringLiteral("zeroxy")},    // A
+        {3, QStringLiteral("zeroz")},     // X
+        {2, QStringLiteral("unlock")},    // Y
+    };
+    QSettings s;
+    s.beginGroup(QStringLiteral("gamepad"));
+    for (const QString &key : s.childKeys()) {
+        bool ok = false;
+        const int n = key.toInt(&ok);
+        const QString action = s.value(key).toString().trimmed().toLower();
+        if (!ok)
+            continue;
+        if (action.isEmpty() || action == QLatin1String("none"))
+            m_padMap.remove(n);
+        else
+            m_padMap.insert(n, action);
+    }
+    s.endGroup();
+}
+
+void MachinePanel::gamepadAxis(int number, int value)
+{
+    if (number > 1 || !m_grbl->isConnected())
+        return;
+    // A D-pad reports its rest position as 0 and a direction as full scale;
+    // an analogue stick needs the same treatment with a dead zone, so both are
+    // reduced to -1, 0 or +1 here.
+    const int dir = value > 16000 ? 1 : (value < -16000 ? -1 : 0);
+    if (dir == m_padAxisDir[number])
+        return;
+    m_padAxisDir[number] = dir;
+    if (dir == 0) {
+        endHoldJog();
+        return;
+    }
+    // Axis 1 is the pad's vertical: up reads negative, and up should be +Y.
+    beginHoldJog(number == 0 ? 'X' : 'Y', number == 0 ? dir : -dir);
+}
+
+void MachinePanel::gamepadButton(int number, bool pressed)
+{
+    const QString action = m_padMap.value(number);
+    if (action.isEmpty()) {
+        if (pressed)
+            log(QStringLiteral("gamepad: button %1 (unmapped — set gamepad/%1 "
+                               "in the settings to use it)").arg(number));
+        return;
+    }
+    if (!m_grbl->isConnected()) {
+        if (pressed)
+            log(QStringLiteral("gamepad: %1 ignored — not connected").arg(action));
+        return;
+    }
+
+    // Direction actions press and release like a jog key; everything else acts
+    // on press. X and Y are here as well as on the axes because plenty of SNES
+    // clones report their D-pad as four buttons rather than two axes.
+    if (action.size() == 2 && QStringLiteral("xyz").contains(action.at(0))
+        && (action.at(1) == QChar('+') || action.at(1) == QChar('-'))) {
+        if (pressed)
+            beginHoldJog(action.at(0).toUpper().toLatin1(),
+                         action.at(1) == QChar('+') ? 1 : -1);
+        else
+            endHoldJog();
+        return;
+    }
+    if (!pressed)
+        return;
+
+    if (action == QLatin1String("step")) {
+        const int n = m_step->count();
+        if (n > 0)
+            m_step->setCurrentIndex((m_step->currentIndex() + 1) % n);
+        log(QStringLiteral("gamepad: jog step %1 mm").arg(m_step->currentText()));
+    } else if (action == QLatin1String("hold")) {
+        m_pauseBtn->click();              // same path as the on-screen button
+    } else if (action == QLatin1String("stop")) {
+        m_stopBtn->click();
+    } else if (action == QLatin1String("zeroxy")) {
+        zero(QStringLiteral("XY"));
+    } else if (action == QLatin1String("zeroz")) {
+        zero(QStringLiteral("Z"));
+    } else if (action == QLatin1String("unlock")) {
+        m_grbl->sendCommand(QStringLiteral("$X"));
+    } else {
+        log(QStringLiteral("gamepad: button %1 is mapped to \"%2\", which is not "
+                           "an action").arg(number).arg(action));
+    }
 }
 
 void MachinePanel::refreshPorts()

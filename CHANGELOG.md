@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.4.88 (build 28) — 2026-09-09
+
+**Machine control**
+- A USB gamepad now jogs the machine. A SNES-style pad — or anything else the
+  kernel exposes as a joystick — drives X and Y from the D-pad, Z from the
+  shoulder buttons, and Hold, Stop, the jog step and the work-zero buttons
+  from the face buttons. It works from wherever you are standing, with the
+  window unfocused, which is the point.
+- Read straight from `/dev/input/js*`. Those nodes are world-readable on a
+  stock desktop while the `event*` ones are not, so a pad works when it is
+  plugged in, with no udev rule to install and no group to join.
+- Plug in or unplug at any time. A pad is found within a second or two of
+  being connected, and unplugging one mid-jog cancels the motion rather than
+  leaving the machine running toward a release that will never arrive.
+- Starting a program is deliberately not on the pad. A bumped button must
+  never begin a cut; Hold and Stop are there, because those are the ones worth
+  being able to hit without looking.
+- A joystick reporting fewer than two buttons is ignored. A MacBook's lid
+  accelerometer is also a `js` device — two axes, no buttons, usually `js0` —
+  and jogging a machine from the lid sensor would be a memorable way to lose a
+  part.
+- Every button press is logged with the number the pad gave it, and any button
+  can be remapped in the settings under `gamepad/<number>`. Clones disagree
+  about numbering, and some report the D-pad as four buttons rather than two
+  axes, so the direction actions work either way.
+
+**Testing**
+- New `gamepad` suite drives the reader through a fifo carrying synthetic
+  joystick records: real open, real notifier, real parsing, no hardware. It
+  covers the driver's initial state replay being ignored (otherwise every
+  button appears pressed the moment a pad is plugged in), bursts being drained
+  in one wake-up, and unplugging being reported rather than treated as an
+  error.
+
 ## v0.4.81 (build 27) — 2026-09-07
 
 **Long exports**
