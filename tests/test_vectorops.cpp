@@ -1,14 +1,17 @@
 // Headless checks for the vector operations (Booleans / Offset / Align):
 // union area, subtract producing a hole ring, offset growing the bbox by d,
-// stroke-outline offset of an open path, and the alignment arithmetic.
+// stroke-outline offset of an open path, the alignment arithmetic, and the
+// rigid transforms behind Mirror and the grid / circular arrays.
 // Plain asserts, no test framework; exits 0 on success.
 
 #include "../src/element.h"
 #include "../src/vectorops.h"
 
-#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
+#include <QTransform>
 
 #include <cmath>
 #include <cstdio>
@@ -42,6 +45,23 @@ static double netArea(const QVector<QPolygonF> &rings)
     return std::fabs(a);
 }
 
+static bool nearPt(QPointF a, QPointF b, double eps = 1e-6)
+{
+    return approx(a.x(), b.x(), eps) && approx(a.y(), b.y(), eps);
+}
+
+static bool nearRect(const QRectF &a, const QRectF &b, double eps = 1e-6)
+{
+    return nearPt(a.topLeft(), b.topLeft(), eps) && nearPt(a.bottomRight(), b.bottomRight(), eps);
+}
+
+// Signed area of an element's first subpath, flattened (orientation check).
+static double firstRingArea(const Element &e)
+{
+    const auto polys = e.painterPath.toSubpathPolygons();
+    return polys.isEmpty() ? 0 : vec::ringArea(polys.first());
+}
+
 static QRectF bounds(const QVector<Element> &els)
 {
     QRectF r;
@@ -52,7 +72,11 @@ static QRectF bounds(const QVector<Element> &els)
 
 int main(int argc, char **argv)
 {
-    QCoreApplication app(argc, argv);
+    // Text needs fonts, so a GUI application; offscreen when there is no display.
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") && qEnvironmentVariableIsEmpty("DISPLAY")
+        && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    QGuiApplication app(argc, argv);
     QJsonObject layer;
     layer.insert("name", QStringLiteral("DEFAULT"));
     layer.insert("uuid", QStringLiteral("{layer}"));
@@ -222,6 +246,146 @@ int main(int argc, char **argv)
         check(approx(d[0].y(), 0) && approx(d[1].y(), 13) && approx(d[2].y(), 0), "distribute vertically");
         check(vec::distributeDeltas({boxes[0], boxes[1]}, vec::Axis::Vertical)[1].isNull(),
               "distribute needs three");
+    }
+
+    // ---- mirror and array ----------------------------------------------------
+    {
+        const QTransform mh = vec::mirrorTransform(QRectF(0, 0, 20, 10), vec::Axis::Horizontal);
+        check(nearPt(mh.map(QPointF(0, 3)), QPointF(20, 3)) &&
+              nearPt(mh.map(QPointF(5, 7)), QPointF(15, 7)), "mirror H flips x about the box center");
+        const QTransform mv = vec::mirrorTransform(QRectF(0, 0, 20, 10), vec::Axis::Vertical);
+        check(nearPt(mv.map(QPointF(4, 0)), QPointF(4, 10)), "mirror V flips y about the box center");
+
+        // Path: every point maps, the id stays, the winding survives the flip.
+        const Element tri = Element::makePath({{0, 0}, {10, 0}, {0, 5}}, true, layer);
+        const Element triM = vec::transformElement(tri, mh);
+        check(triM.id == tri.id && triM.geometryType == "path", "mirrored path keeps id and type");
+        check(nearRect(triM.painterPath.boundingRect(), QRectF(10, 0, 10, 5)), "mirrored path bounds");
+        check(firstRingArea(tri) > 0 && firstRingArea(triM) > 0, "mirror keeps the winding (CCW)");
+        check(approx(firstRingArea(triM), firstRingArea(tri)), "mirror keeps the area");
+        const PathModel tm = Element::pathModel(triM);
+        check(tm.subs.size() == 1 && tm.subs.first().closed && tm.subs.first().nodes.size() == 3 &&
+              nearPt(tm.subs.first().nodes.first().p, QPointF(20, 0)),
+              "mirrored closed path keeps its start node");
+
+        // Bezier path under a reflection: the shape is the reflected shape.
+        PathModel bm;
+        SubPath sp;
+        PathNode a, b;
+        a.p = QPointF(0, 0); a.in = a.p; a.out = QPointF(3, 6); a.kind = PathNode::Corner;
+        b.p = QPointF(10, 0); b.in = QPointF(8, 6); b.out = b.p; b.kind = PathNode::Corner;
+        sp.nodes = {a, b};
+        bm.subs.append(sp);
+        const Element arc = Element::makeBezierPath(bm, layer);
+        const Element arcM = vec::transformElement(arc, mv);
+        const QPainterPath expect = mv.map(arc.painterPath);
+        check(nearRect(arcM.painterPath.boundingRect(), expect.boundingRect(), 1e-6) &&
+              nearPt(arcM.painterPath.pointAtPercent(0.3), expect.pointAtPercent(0.7), 1e-6),
+              "mirrored open bezier traces the reflected curve, reversed");
+
+        // Circle: stays a circle, center moves, radius kept.
+        const Element circ = Element::makeCircle({5, 5}, 3, layer);
+        const Element circM = vec::transformElement(circ, mh);
+        const QJsonArray cc = circM.raw["center"].toArray();
+        check(circM.geometryType == "circle" && circM.id == circ.id &&
+              nearPt(QPointF(cc[0].toDouble(), cc[1].toDouble()), QPointF(15, 5)) &&
+              approx(circM.raw["radius"].toDouble(), 3), "mirrored circle is the same circle, moved");
+        QTransform turn33;
+        turn33.rotate(33);
+        const Element circR = vec::transformElement(circ, turn33);
+        check(circR.geometryType == "circle" &&
+              nearRect(circR.painterPath.boundingRect(),
+                       QRectF(turn33.map(QPointF(5, 5)) - QPointF(3, 3), QSizeF(6, 6)), 1e-6),
+              "rotated circle stays a circle");
+
+        // Rectangle: symmetric under a flip (stays parametric); a 30 deg turn
+        // makes it a path with the same id.
+        const Element rect = Element::makeRectangle({4, 3}, 8, 6, layer);
+        const Element rectM = vec::transformElement(rect, mh);
+        check(rectM.geometryType == "rectangle" && rectM.id == rect.id &&
+              nearRect(rectM.painterPath.boundingRect(), QRectF(12, 0, 8, 6)),
+              "mirrored rectangle stays a rectangle");
+        QTransform turn30;
+        turn30.rotate(30);
+        const Element rectR = vec::transformElement(rect, turn30);
+        check(rectR.geometryType == "path" && rectR.id == rect.id &&
+              nearRect(rectR.painterPath.boundingRect(), turn30.map(rect.painterPath).boundingRect(), 1e-6) &&
+              approx(std::fabs(firstRingArea(rectR)), 48, 1e-6), "rotated rectangle becomes a path");
+
+        // Regular polygon: a triangle flipped is a triangle with a new rotation.
+        const Element trig = Element::makePolygon({0, 0}, 10, 3, layer, 0);
+        const Element trigM = vec::transformElement(trig, QTransform::fromScale(-1, 1));
+        check(trigM.geometryType == "regular_polygon" && trigM.id == trig.id &&
+              approx(std::fabs(trigM.raw["rotation"].toDouble()), 180, 1e-6) &&
+              nearRect(trigM.painterPath.boundingRect(),
+                       QTransform::fromScale(-1, 1).map(trig.painterPath).boundingRect(), 1e-6),
+              "mirrored triangle stays a regular polygon, rotated 180");
+        QTransform turn60;
+        turn60.rotate(60);
+        const Element hex = Element::makePolygon({0, 0}, 10, 6, layer, 0);
+        const Element hexR = vec::transformElement(hex, turn60);
+        check(hexR.geometryType == "regular_polygon" && approx(hexR.raw["rotation"].toDouble(), 0),
+              "hexagon turned by 60 deg is unchanged");
+
+        // Text: stays text; the flip lives in its transform.
+        const Element txt = Element::makeText(QStringLiteral("F"), {10, 10}, 10, "DejaVu Sans", layer);
+        const QTransform tmh = vec::mirrorTransform(txt.painterPath.boundingRect(), vec::Axis::Horizontal);
+        const Element txtM = vec::transformElement(txt, tmh);
+        const QJsonArray xf = txtM.raw["transform"].toArray();
+        check(txtM.geometryType == "text" && txtM.id == txt.id && xf.size() == 9 &&
+              approx(xf[0].toDouble(), -1) && approx(xf[4].toDouble(), 1),
+              "mirrored text keeps the flip in its transform");
+        check(nearRect(txtM.painterPath.boundingRect(), txt.painterPath.boundingRect(), 1e-6),
+              "text mirrored about its own center keeps its bounds");
+
+        // Pure translation goes through translate().
+        const Element moved = vec::transformElement(rect, QTransform::fromTranslate(5, -1));
+        check(moved.geometryType == "rectangle" &&
+              nearRect(moved.painterPath.boundingRect(), QRectF(5, -1, 8, 6)), "translation moves");
+
+        // Grid: 3 x 2 of a 10 x 4 box with gaps 2 / 1 -> 5 copies, original excluded.
+        const auto g = vec::gridTransforms(QRectF(0, 0, 10, 4), 3, 2, 2, 1);
+        check(g.size() == 5, "grid 3x2 = 5 copies");
+        QSet<QString> offs;
+        for (const QTransform &t : g)
+            offs.insert(QString::asprintf("%.3f,%.3f", t.dx(), t.dy()));
+        check(offs.contains("12.000,0.000") && offs.contains("24.000,0.000") &&
+              offs.contains("0.000,5.000") && offs.contains("24.000,5.000") &&
+              !offs.contains("0.000,0.000"), "grid steps are size + gap");
+        check(vec::gridTransforms(QRectF(0, 0, 1, 1), 0, 3, 0, 0).isEmpty() &&
+              vec::gridTransforms(QRectF(0, 0, 1, 1), 1, 1, 0, 0).isEmpty(), "grid of one is empty");
+
+        // Circular: 4 around (0,0) from (10,0): 90, 180, 270 deg.
+        const QRectF dot(9, -1, 2, 2);
+        auto c = vec::circularTransforms(dot, {0, 0}, 4, 360, true);
+        check(c.size() == 3 && nearPt(c[0].map(QPointF(10, 0)), QPointF(0, 10)) &&
+              nearPt(c[1].map(QPointF(10, 0)), QPointF(-10, 0)) &&
+              nearPt(c[2].map(QPointF(10, 0)), QPointF(0, -10)), "circular full turn, CCW");
+        check(nearPt(c[0].map(QPointF(11, 0)), QPointF(0, 11)), "rotating copies turn with the ring");
+        c = vec::circularTransforms(dot, {0, 0}, 3, 90, true);
+        check(c.size() == 2 && nearPt(c[0].map(QPointF(10, 0)), QPointF(std::sqrt(50.0), std::sqrt(50.0))) &&
+              nearPt(c[1].map(QPointF(10, 0)), QPointF(0, 10)), "partial arc: ends on both ends");
+        c = vec::circularTransforms(dot, {0, 0}, 2, 360, false);
+        check(c.size() == 1 && c[0].type() <= QTransform::TxTranslate &&
+              nearPt(c[0].map(QPointF(10, 0)), QPointF(-10, 0)), "non-rotating copies only move");
+        c = vec::circularTransforms(dot, {0, 0}, 4, -360, true);
+        check(nearPt(c[0].map(QPointF(10, 0)), QPointF(0, -10)), "negative angle runs clockwise");
+        check(vec::circularTransforms(dot, {0, 0}, 1, 360, true).isEmpty(), "circular of one is empty");
+
+        // Copies: fresh ids; a group stays a group, but a new one.
+        QJsonObject ra = rect.raw, ca = circ.raw, ta = tri.raw;
+        ra["group_id"] = QJsonArray{QStringLiteral("{g1}")};
+        ca["group_id"] = QJsonArray{QStringLiteral("{g1}")};
+        const QVector<Element> src = {Element::fromJson(ra), Element::fromJson(ca), Element::fromJson(ta)};
+        const auto cp = vec::copyElements(src, QTransform::fromTranslate(100, 0));
+        check(cp.size() == 3 && cp[0].id != rect.id && cp[1].id != circ.id && cp[2].id != tri.id &&
+              cp[0].id != cp[1].id, "copies get fresh ids");
+        const QString g0 = cp[0].raw["group_id"].toArray().at(0).toString();
+        check(!g0.isEmpty() && g0 != "{g1}" && cp[1].raw["group_id"].toArray().at(0).toString() == g0 &&
+              cp[2].raw["group_id"].toArray().isEmpty(), "copied group gets one new group id");
+        check(nearRect(cp[0].painterPath.boundingRect(), QRectF(100, 0, 8, 6)), "copy is moved");
+        const auto cp2 = vec::copyElements(src, QTransform::fromTranslate(200, 0));
+        check(cp2[0].raw["group_id"].toArray().at(0).toString() != g0, "each copy is its own group");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

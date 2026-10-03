@@ -14,7 +14,8 @@ class Canvas;
 
 // Edit → Vectors: Carbide Create's Booleans (Union / Subtract / Intersect),
 // Offset… and Alignment (align to selection, center on stock, distribute),
-// plus a small icon toolbar for the common ones. Every operation is a single
+// Mirror and grid / circular arrays, plus a small icon toolbar for the
+// common ones. Every operation is a single
 // QUndoStack command on the canvas' stack.
 //
 // Selection order matters for Subtract (first selected minus the others):
@@ -27,6 +28,16 @@ class VectorActions : public QObject
 public:
     VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *window);
 
+    // The dialog-free halves of Mirror and the arrays, on the current
+    // selection (public for the tests). Mirror flips about the selection's
+    // own center. The arrays add copies as one undo step; with
+    // `joinToolpaths` every toolpath that machines an original machines its
+    // copies too. See vec::gridTransforms / vec::circularTransforms.
+    void mirror(vec::Axis axis);
+    void gridArray(int cols, int rows, double gapX, double gapY, bool joinToolpaths);
+    void circularArray(QPointF center, int count, double spanDeg, bool rotate,
+                       bool joinToolpaths);
+
 private:
     void onSelection(const QStringList &ids);
     QVector<Element> orderedSelection() const;
@@ -37,6 +48,10 @@ private:
     void align(vec::Align mode);
     void centerOnStock(vec::Center mode);
     void distribute(vec::Axis axis);
+    void gridArrayDialog();
+    void circularArrayDialog();
+    void pushCopies(const QVector<Element> &originals, const QVector<QTransform> &placements,
+                    bool joinToolpaths, const QString &text);
     void pushMoves(const QStringList &ids, const QVector<QPointF> &deltas, const QString &text);
     void pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
                      bool keepInputs, const QString &text);

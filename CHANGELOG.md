@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.4.89 (build 29) — 2026-10-03
+
+**Vector editing**
+- **Mirror** the selection horizontally (Ctrl+Alt+M) or vertically
+  (Ctrl+Alt+F), about its own center. Shapes stay what they were wherever
+  the result allows: a circle or an axis-aligned rectangle only moves, a
+  regular polygon gets a new rotation, and text stays editable text with the
+  flip kept in its transform. Paths are flipped node by node and walked
+  backwards, so their winding is the same as before. Ids are kept, so
+  toolpaths keep machining the mirrored vectors.
+- **Grid array…**: copies of the selection in columns and rows, with the gap
+  between copies given edge to edge and the overall size shown as you type.
+- **Circular array…**: copies around a center point, either evenly over a
+  full turn or spread over an arc from first to last, rotating with the ring
+  or keeping their orientation. Positive angles are counter-clockwise.
+- Both arrays can add the copies to every toolpath that machines the
+  originals (on by default), so arraying a drilled hole drills all of them.
+  A copied group becomes a new group of its own. Each array, and each mirror,
+  is one undo step.
+- All four are in Edit → Vectors and on the Vectors icon bar.
+
+**Testing**
+- `vectorops` covers the transforms themselves: what stays parametric, the
+  winding after a reflection, text, grid and arc spacing, and group ids on
+  copies.
+- New `vectoractions` suite runs mirror and both arrays through the real
+  actions on an offscreen canvas: one undo step each, toolpaths extended (or
+  not), undo and redo restoring both the vectors and the toolpaths.
+
 ## v0.4.88 (build 28) — 2026-09-09
 
 **Machine control**

@@ -7,6 +7,9 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QLabel>
+#include <QLineF>
+#include <QSpinBox>
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -21,6 +24,7 @@
 #include <QUndoStack>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <cmath>
 
 namespace c2d {
 
@@ -154,6 +158,96 @@ private:
     Canvas *m_c; Document *m_d; QStringList m_ids; QVector<QPointF> m_deltas;
 };
 
+// Swap elements for edited versions of themselves (same ids, same places in
+// the z-order) — mirror's command.
+class ReshapeCmd : public QUndoCommand
+{
+public:
+    ReshapeCmd(Canvas *c, Document *d, const QVector<Element> &before,
+               const QVector<Element> &after, const QString &text)
+        : m_c(c), m_d(d), m_before(before), m_after(after) { setText(text); }
+    void redo() override { apply(m_after); }
+    void undo() override { apply(m_before); }
+private:
+    void apply(const QVector<Element> &els)
+    {
+        QStringList ids;
+        for (const Element &e : els) {
+            m_d->replaceElement(e);
+            ids << e.id;
+        }
+        refresh(m_c, ids);
+    }
+    Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+};
+
+// Add new elements on top of the drawing (the array's copies), and point the
+// toolpaths in `tps` at them as well.
+class AddElementsCmd : public QUndoCommand
+{
+public:
+    AddElementsCmd(Canvas *c, Document *d, const QVector<Element> &added,
+                   const QVector<QPair<Toolpath, Toolpath>> &tps, const QStringList &before,
+                   const QString &text)
+        : m_c(c), m_d(d), m_added(added), m_tps(tps), m_before(before) { setText(text); }
+    void redo() override
+    {
+        QStringList ids = m_before;
+        for (const Element &e : m_added) {
+            m_d->addElement(e);
+            ids << e.id;
+        }
+        for (const auto &p : m_tps)
+            m_d->replaceToolpath(p.second);
+        refresh(m_c, ids);
+    }
+    void undo() override
+    {
+        for (const Element &e : m_added)
+            m_d->removeElementById(e.id);
+        for (const auto &p : m_tps)
+            m_d->replaceToolpath(p.first);
+        refresh(m_c, m_before);
+    }
+private:
+    Canvas *m_c; Document *m_d;
+    QVector<Element> m_added;
+    QVector<QPair<Toolpath, Toolpath>> m_tps;
+    QStringList m_before;
+};
+
+// Toolpaths that machine an original also machine its copies: for every
+// toolpath referencing one of the keys of `copiesOf`, the copies' uuids are
+// appended to its vectors.
+QVector<QPair<Toolpath, Toolpath>> extendToolpaths(Document *d,
+                                                   const QHash<QString, QStringList> &copiesOf)
+{
+    QVector<QPair<Toolpath, Toolpath>> out;
+    for (const Toolpath &t : d->toolpaths()) {
+        QJsonArray refs = t.json.value("elements").toArray();
+        QSet<QString> seen;
+        for (const QJsonValue &v : refs)
+            seen.insert(v.toObject().value("uuid").toString());
+        bool hit = false;
+        const QJsonArray orig = refs;
+        for (const QJsonValue &v : orig) {
+            for (const QString &id : copiesOf.value(v.toObject().value("uuid").toString())) {
+                if (seen.contains(id))
+                    continue;
+                refs.append(QJsonObject{{QStringLiteral("uuid"), id}});
+                seen.insert(id);
+                hit = true;
+            }
+        }
+        if (!hit)
+            continue;
+        Toolpath after = t;
+        after.json.insert(QStringLiteral("elements"), refs);
+        out.append({t, after});
+    }
+    return out;
+}
+
 // ---- icons ---------------------------------------------------------------
 
 QIcon vecIcon(const QString &kind)
@@ -189,6 +283,32 @@ QIcon vecIcon(const QString &kind)
         p.drawRect(QRectF(2.5, 2.5, 15, 15));
         p.setBrush(ink);
         p.drawRect(QRectF(7, 7, 6, 6));
+    } else if (kind == "mirrorh") {
+        p.drawLine(QLineF(10, 2, 10, 18));
+        p.setBrush(ink);
+        p.drawPolygon(QPolygonF({QPointF(8, 4), QPointF(8, 16), QPointF(2, 16)}));
+        p.setBrush(Qt::NoBrush);
+        p.drawPolygon(QPolygonF({QPointF(12, 4), QPointF(12, 16), QPointF(18, 16)}));
+    } else if (kind == "mirrorv") {
+        p.drawLine(QLineF(2, 10, 18, 10));
+        p.setBrush(ink);
+        p.drawPolygon(QPolygonF({QPointF(4, 8), QPointF(16, 8), QPointF(16, 2)}));
+        p.setBrush(Qt::NoBrush);
+        p.drawPolygon(QPolygonF({QPointF(4, 12), QPointF(16, 12), QPointF(16, 18)}));
+    } else if (kind == "grid") {
+        p.setBrush(ink);
+        p.drawRect(QRectF(3, 3, 5, 5));
+        p.setBrush(Qt::NoBrush);
+        for (const QPointF &o : {QPointF(12, 3), QPointF(3, 12), QPointF(12, 12)})
+            p.drawRect(QRectF(o, QSizeF(5, 5)));
+    } else if (kind == "circular") {
+        p.setBrush(ink);
+        p.drawEllipse(QPointF(10, 3.5), 2.2, 2.2);
+        p.setBrush(Qt::NoBrush);
+        for (int i = 1; i < 6; ++i) {
+            const double a = M_PI / 2 + i * 2 * M_PI / 6;
+            p.drawEllipse(QPointF(10 + 6.5 * std::cos(a), 10 - 6.5 * std::sin(a)), 2.2, 2.2);
+        }
     } else if (kind == "alignh") {
         p.drawLine(QLineF(10, 2, 10, 18));
         p.setBrush(ink);
@@ -272,6 +392,24 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
         [this] { distribute(vec::Axis::Vertical); },
         QStringLiteral("Space the selected vectors' centers evenly bottom to top  (Ctrl+Alt+V)"));
 
+    m->addSeparator();
+    QAction *mirrorH = add(m, QStringLiteral("&Mirror horizontally"), A(Qt::Key_M), m_needOne,
+        [this] { mirror(vec::Axis::Horizontal); },
+        QStringLiteral("Flip the selection left to right about its own center  (Ctrl+Alt+M)"));
+    QAction *mirrorV = add(m, QStringLiteral("Mirror &vertically"), A(Qt::Key_F), m_needOne,
+        [this] { mirror(vec::Axis::Vertical); },
+        QStringLiteral("Flip the selection top to bottom about its own center  (Ctrl+Alt+F)"));
+    QAction *gridAct = add(m, QStringLiteral("&Grid array…"), QKeySequence(), m_needOne,
+        [this] { gridArrayDialog(); },
+        QStringLiteral("Copy the selection into rows and columns"));
+    QAction *circAct = add(m, QStringLiteral("&Circular array…"), QKeySequence(), m_needOne,
+        [this] { circularArrayDialog(); },
+        QStringLiteral("Copy the selection around a center point"));
+    mirrorH->setIcon(vecIcon(QStringLiteral("mirrorh")));
+    mirrorV->setIcon(vecIcon(QStringLiteral("mirrorv")));
+    gridAct->setIcon(vecIcon(QStringLiteral("grid")));
+    circAct->setIcon(vecIcon(QStringLiteral("circular")));
+
     // Icon toolbar for the everyday ones.
     unionAct->setIcon(vecIcon(QStringLiteral("union")));
     subAct->setIcon(vecIcon(QStringLiteral("subtract")));
@@ -283,6 +421,9 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
     tb->setIconSize(QSize(20, 20));
     for (QAction *a : {unionAct, subAct, interAct, offsetAct, centerAct})
+        tb->addAction(a);
+    tb->addSeparator();
+    for (QAction *a : {mirrorH, mirrorV, gridAct, circAct})
         tb->addAction(a);
 
     updateEnabled();
@@ -484,6 +625,189 @@ void VectorActions::distribute(vec::Axis axis)
         return;
     pushMoves(idsOf(els), vec::distributeDeltas(boxesOf(els), axis),
               tr("distribute %1 vectors").arg(els.size()));
+}
+
+// ---- mirror and array ------------------------------------------------------
+
+static QRectF selectionBox(const QVector<Element> &els)
+{
+    QRectF box;
+    for (const Element &e : els) {
+        const QRectF b = e.painterPath.boundingRect();
+        box = box.isNull() ? b : box.united(b);
+    }
+    return box;
+}
+
+void VectorActions::mirror(vec::Axis axis)
+{
+    const QVector<Element> before = orderedSelection();
+    if (before.isEmpty())
+        return;
+    const QTransform t = vec::mirrorTransform(selectionBox(before), axis);
+    QVector<Element> after;
+    for (const Element &e : before)
+        after.append(vec::transformElement(e, t));
+    const QString dir = axis == vec::Axis::Horizontal ? tr("horizontally") : tr("vertically");
+    m_canvas->undoStack()->push(new ReshapeCmd(m_canvas, m_canvas->document(), before, after,
+        tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir)));
+    emit m_canvas->statusHint(tr("Mirrored %1 vector(s) %2").arg(before.size()).arg(dir));
+}
+
+void VectorActions::pushCopies(const QVector<Element> &originals,
+                               const QVector<QTransform> &placements, bool joinToolpaths,
+                               const QString &text)
+{
+    Document *d = m_canvas->document();
+    if (!d || originals.isEmpty() || placements.isEmpty())
+        return;
+    QVector<Element> added;
+    QHash<QString, QStringList> copiesOf;
+    for (const QTransform &t : placements) {
+        const QVector<Element> copy = vec::copyElements(originals, t);
+        for (int i = 0; i < copy.size(); ++i)
+            copiesOf[originals.at(i).id] << copy.at(i).id;
+        added += copy;
+    }
+    const auto tps = joinToolpaths ? extendToolpaths(d, copiesOf)
+                                   : QVector<QPair<Toolpath, Toolpath>>();
+    m_canvas->undoStack()->push(
+        new AddElementsCmd(m_canvas, d, added, tps, idsOf(originals), text));
+    QString hint = tr("%1 cop(ies) of %2 vector(s)").arg(placements.size()).arg(originals.size());
+    if (!tps.isEmpty())
+        hint += tr("; added to %1 toolpath(s)").arg(tps.size());
+    emit m_canvas->statusHint(hint);
+}
+
+void VectorActions::gridArray(int cols, int rows, double gapX, double gapY, bool joinToolpaths)
+{
+    const QVector<Element> els = orderedSelection();
+    if (els.isEmpty())
+        return;
+    pushCopies(els, vec::gridTransforms(selectionBox(els), cols, rows, gapX, gapY), joinToolpaths,
+               tr("grid array %1 x %2").arg(cols).arg(rows));
+}
+
+void VectorActions::circularArray(QPointF center, int count, double spanDeg, bool rotate,
+                                  bool joinToolpaths)
+{
+    const QVector<Element> els = orderedSelection();
+    if (els.isEmpty())
+        return;
+    pushCopies(els, vec::circularTransforms(selectionBox(els), center, count, spanDeg, rotate),
+               joinToolpaths, tr("circular array of %1").arg(count));
+}
+
+// The two array dialogs share their tail: the toolpath option and the buttons.
+static QCheckBox *finishArrayDialog(QDialog &dlg, QFormLayout *form)
+{
+    auto *join = new QCheckBox(QObject::tr("Add the copies to the originals' toolpaths"), &dlg);
+    join->setChecked(true);
+    join->setToolTip(QObject::tr("A toolpath that machines a selected vector machines its copies too"));
+    form->addRow(QString(), join);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->addLayout(form);
+    lay->addWidget(buttons);
+    return join;
+}
+
+static QDoubleSpinBox *mmBox(QWidget *parent, double lo, double hi, double value)
+{
+    auto *b = new QDoubleSpinBox(parent);
+    b->setRange(lo, hi);
+    b->setDecimals(3);
+    b->setSuffix(QStringLiteral(" mm"));
+    b->setValue(value);
+    return b;
+}
+
+void VectorActions::gridArrayDialog()
+{
+    const QVector<Element> els = orderedSelection();
+    if (els.isEmpty())
+        return;
+    const QRectF box = selectionBox(els);
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Grid array"));
+    auto *form = new QFormLayout;
+    auto *cols = new QSpinBox(&dlg);
+    cols->setRange(1, 500);
+    cols->setValue(3);
+    auto *rows = new QSpinBox(&dlg);
+    rows->setRange(1, 500);
+    rows->setValue(1);
+    auto *gapX = mmBox(&dlg, -box.width(), 10000, 5.0);
+    auto *gapY = mmBox(&dlg, -box.height(), 10000, 5.0);
+    gapX->setToolTip(tr("Space between neighbouring copies, edge to edge"));
+    gapY->setToolTip(gapX->toolTip());
+    form->addRow(tr("Columns"), cols);
+    form->addRow(tr("Rows"), rows);
+    form->addRow(tr("Gap X"), gapX);
+    form->addRow(tr("Gap Y"), gapY);
+    auto *size = new QLabel(&dlg);
+    auto updateSize = [=] {
+        const double w = cols->value() * box.width() + (cols->value() - 1) * gapX->value();
+        const double h = rows->value() * box.height() + (rows->value() - 1) * gapY->value();
+        size->setText(tr("%1 × %2 mm overall").arg(w, 0, 'f', 2).arg(h, 0, 'f', 2));
+    };
+    for (QSpinBox *b : {cols, rows})
+        connect(b, &QSpinBox::valueChanged, &dlg, updateSize);
+    for (QDoubleSpinBox *b : {gapX, gapY})
+        connect(b, &QDoubleSpinBox::valueChanged, &dlg, updateSize);
+    updateSize();
+    form->addRow(tr("Size"), size);
+    QCheckBox *join = finishArrayDialog(dlg, form);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    if (cols->value() * rows->value() < 2)
+        return;
+    gridArray(cols->value(), rows->value(), gapX->value(), gapY->value(), join->isChecked());
+}
+
+void VectorActions::circularArrayDialog()
+{
+    const QVector<Element> els = orderedSelection();
+    Document *d = m_canvas->document();
+    if (els.isEmpty() || !d)
+        return;
+    const QRectF box = selectionBox(els);
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Circular array"));
+    auto *form = new QFormLayout;
+    auto *count = new QSpinBox(&dlg);
+    count->setRange(2, 1000);
+    count->setValue(6);
+    count->setToolTip(tr("Number of items including the original"));
+    // Default center: the stock's, unless the selection sits on it, in
+    // which case a ring around the selection's own center would collapse —
+    // then a point one selection-height below it.
+    QPointF c(d->boardWidth() / 2.0, d->boardHeight() / 2.0);
+    if (d->boardWidth() <= 0 || QLineF(c, box.center()).length() < 1e-3)
+        c = box.center() - QPointF(0, qMax(box.height(), 10.0) * 2);
+    auto *cx = mmBox(&dlg, -100000, 100000, c.x());
+    auto *cy = mmBox(&dlg, -100000, 100000, c.y());
+    auto *span = new QDoubleSpinBox(&dlg);
+    span->setRange(-360, 360);
+    span->setDecimals(2);
+    span->setSuffix(QStringLiteral(" °"));
+    span->setValue(360);
+    span->setToolTip(tr("360° spreads the items evenly around the circle; less places the first "
+                        "and last at the ends of the arc. Positive is counter-clockwise."));
+    auto *rotate = new QCheckBox(tr("Rotate the copies"), &dlg);
+    rotate->setChecked(true);
+    form->addRow(tr("Items"), count);
+    form->addRow(tr("Center X"), cx);
+    form->addRow(tr("Center Y"), cy);
+    form->addRow(tr("Angle"), span);
+    form->addRow(QString(), rotate);
+    QCheckBox *join = finishArrayDialog(dlg, form);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    circularArray(QPointF(cx->value(), cy->value()), count->value(), span->value(),
+                  rotate->isChecked(), join->isChecked());
 }
 
 } // namespace c2d
