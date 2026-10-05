@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.4.90 (build 30) — 2026-10-05
+
+**Sketch tools (Fusion 360 parity)**
+- Circle and Rectangle buttons get a drop-down with Fusion's variants; the
+  button reuses the last one picked, and the status bar says what to click
+  next. Every mode takes clicks; the two-point ones still accept a drag.
+- Circles: Center Diameter, 2-Point, 3-Point, 2-Tangent (pick two lines, move
+  to choose the corner and size) and 3-Tangent (pick three lines, click near
+  the in- or excircle you want).
+- Rectangles: 2-Point, 3-Point (first edge, then height; may be tilted) and
+  Center.
+- A tilted 3-point rectangle is saved as a closed path: phobiCCCP writes
+  rectangles without a rotation, and how Carbide Create treats a rotated one
+  has not been checked against a specimen yet.
+- Picking a curved edge for a tangent circle uses the tangent at the clicked
+  spot, so the circle touches the curve there but is not solved against it.
+
+**Layout**
+- Panel tabs (Toolpaths, Document, Machine, Preview, Simulation, Model) now
+  sit above their panels, bold, each with an icon; Properties has one too.
+- The divider beside the panels can be dragged wider again — the Document
+  panel's 340 px cap was holding the whole column narrow — and the dividers
+  are thicker and highlight on hover.
+
+**Testing**
+- New `sketchgeom` suite for the circle and rectangle construction maths; the
+  `canvas` suite draws every new mode through synthetic clicks and drags.
+
 ## v0.4.89 (build 29) — 2026-10-05
 
 **Files**

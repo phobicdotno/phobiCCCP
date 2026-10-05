@@ -24,6 +24,9 @@
 #include <QFileDialog>
 #include <QMenu>
 #include <QMenuBar>
+#include <QToolButton>
+#include <QTabBar>
+#include <functional>
 #include <QSettings>
 #include <QTimer>
 #include <QMessageBox>
@@ -117,6 +120,51 @@ static QIcon toolIcon(const QString &kind)
             for (int y = 4; y <= 16; y += 6)
                 p.drawPoint(QPointF(x, y));
         p.drawEllipse(QPointF(10, 10), 3.2, 3.2);
+    } else if (kind == "properties") {      // three sliders
+        for (int i = 0; i < 3; ++i) {
+            const double y = 5 + i * 5, k = (i == 1) ? 13 : (i == 0 ? 7 : 10);
+            p.drawLine(QLineF(3, y, 17, y));
+            p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+            p.drawEllipse(QPointF(k, y), 1.8, 1.8);
+            p.setBrush(Qt::NoBrush);
+        }
+    } else if (kind == "toolpaths") {       // pocket zig-zag inside a boundary
+        p.drawRect(QRectF(3, 3, 14, 14));
+        QPainterPath zz(QPointF(6, 6));
+        zz.lineTo(14, 6); zz.lineTo(14, 10); zz.lineTo(6, 10); zz.lineTo(6, 14); zz.lineTo(14, 14);
+        p.setPen(QPen(QColor(0xf0, 0xa0, 0x30), 1.6));
+        p.drawPath(zz);
+    } else if (kind == "document") {        // page with a folded corner
+        QPainterPath pg(QPointF(5, 2.5));
+        pg.lineTo(12, 2.5); pg.lineTo(16, 6.5); pg.lineTo(16, 17.5); pg.lineTo(5, 17.5);
+        pg.closeSubpath();
+        p.drawPath(pg);
+        p.drawLine(QLineF(12, 2.5, 12, 6.5));
+        p.drawLine(QLineF(12, 6.5, 16, 6.5));
+        p.drawLine(QLineF(7.5, 10, 13.5, 10));
+        p.drawLine(QLineF(7.5, 13.5, 13.5, 13.5));
+    } else if (kind == "machine") {         // gantry, spindle and bit over the bed
+        p.drawLine(QLineF(2, 17, 18, 17));
+        p.drawLine(QLineF(4, 17, 4, 4));
+        p.drawLine(QLineF(16, 17, 16, 4));
+        p.drawLine(QLineF(4, 4, 16, 4));
+        p.drawRect(QRectF(8, 5, 4, 6));
+        p.drawLine(QLineF(10, 11, 10, 14.5));
+    } else if (kind == "preview") {         // isometric cube
+        const QPointF t(10, 2.5), l(3.5, 6.2), r(16.5, 6.2), c(10, 10),
+                      bl(3.5, 13.8), br(16.5, 13.8), b(10, 17.5);
+        p.drawPolygon(QPolygonF({t, r, br, b, bl, l}));
+        p.drawLine(QLineF(l, c)); p.drawLine(QLineF(r, c)); p.drawLine(QLineF(c, b));
+    } else if (kind == "simulation") {      // play button
+        p.drawEllipse(QRectF(2.5, 2.5, 15, 15));
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        p.drawPolygon(QPolygonF({QPointF(8, 6.5), QPointF(14, 10), QPointF(8, 13.5)}));
+    } else if (kind == "model") {           // relief rising off the stock
+        QPainterPath m(QPointF(2, 15));
+        m.cubicTo(QPointF(6, 15), QPointF(7, 5), QPointF(10, 5));
+        m.cubicTo(QPointF(13, 5), QPointF(14, 15), QPointF(18, 15));
+        p.drawPath(m);
+        p.drawLine(QLineF(2, 17.5, 18, 17.5));
     }
     return QIcon(pm);
 }
@@ -145,7 +193,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_info = new QPlainTextEdit(this);
     m_info->setReadOnly(true);
-    m_info->setMaximumWidth(340);
     auto *dock = new QDockWidget(QStringLiteral("Document"), this);
     dock->setWidget(m_info);
     dock->setFeatures(QDockWidget::DockWidgetMovable);
@@ -181,6 +228,39 @@ MainWindow::MainWindow(QWidget *parent)
     tabifyDockWidget(m_isoDock, m_simDock);
     tabifyDockWidget(m_simDock, m_modelDock);
     tpDock->raise();
+
+    // Panel tabs along the top, each with an icon and a bold label; the
+    // separators beside and between the docks stay draggable.
+    setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
+    setDockOptions(dockOptions() | QMainWindow::AnimatedDocks);
+    const QList<QPair<QDockWidget *, const char *>> dockIcons = {
+        {propsDock, "properties"}, {tpDock, "toolpaths"}, {dock, "document"},
+        {mcDock, "machine"}, {m_isoDock, "preview"}, {m_simDock, "simulation"},
+        {m_modelDock, "model"}};
+    for (const auto &di : dockIcons)
+        di.first->setWindowIcon(toolIcon(QString::fromLatin1(di.second)));
+    // QMainWindow draws tabified docks on its own private tab bars and leaves
+    // their icons blank, and it rebuilds those bars whenever docks move: put
+    // each dock's icon on its tab now and again after every rearrangement.
+    auto tabIcons = [this] {
+        for (QTabBar *bar : findChildren<QTabBar *>(QString(), Qt::FindDirectChildrenOnly))
+            for (int i = 0; i < bar->count(); ++i)
+                for (QDockWidget *d : findChildren<QDockWidget *>())
+                    if (d->windowTitle() == bar->tabText(i))
+                        bar->setTabIcon(i, d->windowIcon());
+    };
+    QTimer::singleShot(0, this, tabIcons);
+    for (const auto &di : dockIcons) {
+        connect(di.first, &QDockWidget::dockLocationChanged, this,
+                [tabIcons, this] { QTimer::singleShot(0, this, tabIcons); });
+        connect(di.first, &QDockWidget::topLevelChanged, this,
+                [tabIcons, this] { QTimer::singleShot(0, this, tabIcons); });
+    }
+    setStyleSheet(styleSheet() + QStringLiteral(
+        "QMainWindow > QTabBar::tab { font-weight: bold; padding: 5px 10px; }"
+        "QMainWindow > QTabBar { qproperty-iconSize: 18px 18px; }"
+        "QMainWindow::separator { width: 6px; height: 6px; }"
+        "QMainWindow::separator:hover { background: #4a90d9; }"));
     // The 3D preview (and the simulation's program) is only rebuilt while one
     // of those tabs is showing; catch up when raised after edits behind it.
     for (QDockWidget *d : {m_isoDock, m_simDock})
@@ -274,10 +354,47 @@ MainWindow::MainWindow(QWidget *parent)
     };
     addTool(QStringLiteral("Select"), QStringLiteral("select"), Canvas::Select, Qt::Key_V,
             QStringLiteral("Select / move / delete  (V)"))->setChecked(true);
-    addTool(QStringLiteral("Circle"), QStringLiteral("circle"), Canvas::DrawCircle, Qt::Key_C,
-            QStringLiteral("Circle: press at center, drag to radius  (C)"));
-    addTool(QStringLiteral("Rect"), QStringLiteral("rect"), Canvas::DrawRect, Qt::Key_R,
-            QStringLiteral("Rectangle: drag corner to corner  (R)"));
+    QAction *circleAct = addTool(QStringLiteral("Circle"), QStringLiteral("circle"),
+            Canvas::DrawCircle, Qt::Key_C,
+            QStringLiteral("Circle (C) — arrow for Center / 2-Point / 3-Point / 2-Tangent / 3-Tangent"));
+    QAction *rectAct = addTool(QStringLiteral("Rect"), QStringLiteral("rect"),
+            Canvas::DrawRect, Qt::Key_R,
+            QStringLiteral("Rectangle (R) — arrow for 2-Point / 3-Point / Center"));
+    // Fusion's sketch variants: a drop-down on each button picks the mode and
+    // switches to the tool; the button itself reuses the last mode picked.
+    auto addModes = [&](QAction *toolAct, const QList<QPair<QString, int>> &modes,
+                        const std::function<void(int)> &apply) {
+        auto *menu = new QMenu(this);
+        auto *modeGrp = new QActionGroup(menu);
+        for (const auto &m : modes) {
+            QAction *ma = menu->addAction(m.first);
+            ma->setCheckable(true);
+            modeGrp->addAction(ma);
+            const int mode = m.second;
+            connect(ma, &QAction::triggered, this, [toolAct, apply, mode] {
+                apply(mode);
+                if (!toolAct->isChecked())
+                    toolAct->trigger();
+            });
+        }
+        menu->actions().first()->setChecked(true);
+        if (auto *btn = qobject_cast<QToolButton *>(palette->widgetForAction(toolAct))) {
+            btn->setMenu(menu);
+            btn->setPopupMode(QToolButton::MenuButtonPopup);
+        }
+    };
+    addModes(circleAct,
+             {{QStringLiteral("Center Diameter Circle"), Canvas::CircleCenterDiameter},
+              {QStringLiteral("2-Point Circle"), Canvas::Circle2Point},
+              {QStringLiteral("3-Point Circle"), Canvas::Circle3Point},
+              {QStringLiteral("2-Tangent Circle"), Canvas::Circle2Tangent},
+              {QStringLiteral("3-Tangent Circle"), Canvas::Circle3Tangent}},
+             [this](int m) { m_canvas->setCircleMode(Canvas::CircleMode(m)); });
+    addModes(rectAct,
+             {{QStringLiteral("2-Point Rectangle"), Canvas::Rect2Point},
+              {QStringLiteral("3-Point Rectangle"), Canvas::Rect3Point},
+              {QStringLiteral("Center Rectangle"), Canvas::RectCenter}},
+             [this](int m) { m_canvas->setRectMode(Canvas::RectMode(m)); });
     addTool(QStringLiteral("Polygon"), QStringLiteral("polygon"), Canvas::DrawPolygon, Qt::Key_P,
             QStringLiteral("Polygon: press at center, drag to radius  (P)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
