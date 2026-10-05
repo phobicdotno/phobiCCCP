@@ -20,10 +20,13 @@ class Canvas : public QGraphicsView
     Q_OBJECT
 public:
     enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
-                DrawEllipse, DrawSlot, DrawArc, DrawCircle3 };
+                DrawEllipse, DrawSlot, DrawArc, DrawCircle3, Trim, Extend, Break };
     // The three-click tools (slot, 3-point arc, 3-point circle): the first
     // two clicks fix two points, the third finishes the shape.
     static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc || t == DrawCircle3; }
+    // Trim / Extend / Break: hover shows what a click would do to the curve
+    // under the cursor, bounded by every other curve in the drawing.
+    static bool isModifyTool(Tool t) { return t == Trim || t == Extend || t == Break; }
 
     explicit Canvas(QWidget *parent = nullptr);
     ~Canvas() override;
@@ -127,6 +130,12 @@ private:
     void clickToolPress(const QPointF &pos);
     QPainterPath clickPreview(const QPointF &cur) const;
     bool m_fromCenter = false;              // Ctrl held: rectangle / ellipse from the center
+
+    // Trim / Extend / Break.
+    bool modifyTarget(const QPointF &q, QString *id, PathModel *model,
+                      QVector<PathModel> *others) const;
+    QPainterPath modifyPreview(const QPointF &q) const;
+    void modifyAt(const QPointF &q);
 
     // Pen (path) tool: click = corner, click-drag = symmetric handles.
     QVector<PathNode> m_penNodes;

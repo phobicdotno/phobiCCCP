@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.4.92 (build 32) — 2026-10-05
+
+**Drawing tools** (Fusion 360 sketch Trim, Extend and Break)
+- **Trim** (X): click a piece of any curve and it is cut away up to the
+  nearest curves crossing it on either side. Hovering shows the piece in red
+  first. A curve nothing crosses is removed whole; trimming a circle, a
+  rectangle or a polygon leaves an open path.
+- **Extend** (J): click near the end of an open curve and it runs on to the
+  next curve ahead, previewed as a dashed red line. A straight end segment
+  simply grows; a curved end gets a straight continuation along its tangent.
+- **Break** (B): split a curve where other curves cross it, either side of
+  the click, into separate elements you can select, delete or machine on
+  their own. A circle crossed once opens at that point.
+- Crossings include every other vector in the drawing and the curve's own
+  self-crossings. They are found on a fine polyline and then polished on the
+  true curves, so cut ends sit exactly on both curves. Each click is one undo
+  step.
+
+**Testing**
+- `sketch` covers crossings (line, circle, curve-on-curve, self-crossing),
+  trim, break and extend, including the cases that do nothing.
+- `canvas` clicks through all three tools.
+
 ## v0.4.91 (build 31) — 2026-10-05
 
 **Drawing tools** (Fusion 360 sketch Create tools)

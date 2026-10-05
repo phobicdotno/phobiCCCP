@@ -83,6 +83,24 @@ static QIcon toolIcon(const QString &kind)
         p.setBrush(QColor(0xd8, 0xdc, 0xe4));
         for (const QPointF &v : {QPointF(10, 4), QPointF(4.8, 13), QPointF(15.2, 13)})
             p.drawEllipse(v, 1.5, 1.5);
+    } else if (kind == "trim") {
+        p.drawLine(QLineF(10, 2, 10, 18));
+        p.drawLine(QLineF(2, 10, 10, 10));
+        QPen cut(QColor(0xe0, 0x50, 0x50), 1.6, Qt::DotLine);
+        p.setPen(cut);
+        p.drawLine(QLineF(10, 10, 18, 10));
+    } else if (kind == "extend") {
+        p.drawLine(QLineF(17, 2, 17, 18));
+        p.drawLine(QLineF(2, 10, 9, 10));
+        QPen ext(QColor(0x9f, 0xc8, 0xf2), 1.6, Qt::DashLine);
+        p.setPen(ext);
+        p.drawLine(QLineF(9, 10, 17, 10));
+    } else if (kind == "break") {
+        p.drawLine(QLineF(10, 2, 10, 18));
+        p.drawLine(QLineF(2, 10, 8.5, 10));
+        p.drawLine(QLineF(11.5, 10, 18, 10));
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        p.drawEllipse(QPointF(10, 10), 1.6, 1.6);
     } else if (kind == "polygon") {
         QPolygonF hex;
         for (int i = 0; i < 6; ++i) {
@@ -305,6 +323,12 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("3-point circle: click three points on the circle  (O)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
             QStringLiteral("Path: click = corner, click-drag = curve; Enter finishes, click near start closes  (L)"));
+    addTool(QStringLiteral("Trim"), QStringLiteral("trim"), Canvas::Trim, Qt::Key_X,
+            QStringLiteral("Trim: click the piece of a curve to cut away, up to where other curves cross it  (X)"));
+    addTool(QStringLiteral("Extend"), QStringLiteral("extend"), Canvas::Extend, Qt::Key_J,
+            QStringLiteral("Extend: click near an open curve's end to run it on to the next curve  (J)"));
+    addTool(QStringLiteral("Break"), QStringLiteral("break"), Canvas::Break, Qt::Key_B,
+            QStringLiteral("Break: click a curve to split it where other curves cross it  (B)"));
     addTool(QStringLiteral("Nodes"), QStringLiteral("nodes"), Canvas::NodeEdit, Qt::Key_N,
             QStringLiteral("Edit nodes: drag anchors/handles, double-click to insert, Del to remove, right-click for Corner/Smooth/Symmetric  (N)"));
     addTool(QStringLiteral("Text"), QStringLiteral("text"), Canvas::DrawText, Qt::Key_T,

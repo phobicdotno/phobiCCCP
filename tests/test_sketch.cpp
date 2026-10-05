@@ -7,7 +7,7 @@
 #include "../src/sketch.h"
 #include "../src/vectorops.h"
 
-#include <QGuiApplication>
+#include <QCoreApplication>
 #include <QJsonObject>
 #include <QLineF>
 #include <QTransform>
@@ -54,7 +54,7 @@ static double roundness(const QPainterPath &p, QPointF c, double r)
 
 int main(int argc, char **argv)
 {
-    QGuiApplication app(argc, argv);
+    QCoreApplication app(argc, argv);
     QJsonObject layer;
     layer.insert("name", QStringLiteral("DEFAULT"));
 
@@ -147,6 +147,101 @@ int main(int argc, char **argv)
         check(sketch::arc3({1, 1}, {1, 1}, {2, 2}).isEmpty(), "zero chord: nothing");
         const Element el = Element::makeBezierPath(sketch::arc3({10, 0}, {-10, 0}, {0, 10}), layer);
         check(el.geometryType == "path" && !vec::isClosed(el), "arc element is an open path");
+    }
+
+    // ---- trim / break / extend --------------------------------------------------
+    auto line = [&](QPointF a, QPointF b) {
+        return Element::pathModel(Element::makePath({a, b}, false, layer));
+    };
+    {
+        // A horizontal line crossed by two verticals at x = 30 and x = 70.
+        const PathModel h = line({0, 50}, {100, 50});
+        const QVector<PathModel> others = {line({30, 0}, {30, 100}), line({70, 0}, {70, 100})};
+        const QVector<double> cuts = sketch::crossings(h, 0, others);
+        check(cuts.size() == 2 && approx(cuts[0], 0.3) && approx(cuts[1], 0.7),
+              "line crossings at 30% and 70%");
+
+        bool hit = false;
+        PathModel t = sketch::trim(h, {50, 50.5}, 1, others, &hit);
+        check(hit && t.subs.size() == 2 && nearPt(t.subs[0].nodes.last().p, {30, 50}) &&
+              nearPt(t.subs[1].nodes.first().p, {70, 50}) &&
+              nearPt(t.subs[1].nodes.last().p, {100, 50}),
+              "trim the middle: two pieces left, ending on the crossings");
+        t = sketch::trim(h, {10, 50}, 1, others, &hit);
+        check(t.subs.size() == 1 && nearPt(t.subs[0].nodes.first().p, {30, 50}),
+              "trim an end piece back to the crossing");
+        t = sketch::trim(h, {50, 80}, 1, others, &hit);
+        check(!hit && t.subs.size() == 1, "a click away from the line trims nothing");
+        t = sketch::trim(line({0, 0}, {10, 0}), {5, 0}, 1, {}, &hit);
+        check(hit && t.isEmpty(), "a line nothing crosses is removed whole");
+
+        const QVector<PathModel> parts = sketch::breakAt(h, {50, 50}, 1, others);
+        check(parts.size() == 3 && parts[0].subs.size() == 1 &&
+              nearPt(parts[0].subs[0].nodes.first().p, {30, 50}) &&
+              nearPt(parts[0].subs[0].nodes.last().p, {70, 50}),
+              "break: the clicked piece plus the two others");
+        check(sketch::breakAt(line({0, 0}, {10, 0}), {5, 0}, 1, {}).isEmpty(),
+              "nothing crosses: nothing to break");
+    }
+    {
+        // A circle crossed by a line through its center: trim takes one half.
+        const PathModel circ = Element::pathModel(Element::makeCircle({0, 0}, 10, layer));
+        const QVector<PathModel> others = {line({-20, 0}, {20, 0})};
+        check(sketch::crossings(circ, 0, others).size() == 2, "line crosses the circle twice");
+        bool hit = false;
+        const PathModel t = sketch::trim(circ, {0, 10}, 1, others, &hit);
+        check(hit && t.subs.size() == 1 && !t.subs[0].closed, "trimmed circle is an open arc");
+        const QRectF b = t.painterPath().boundingRect();
+        check(nearRect(b, QRectF(-10, -10, 20, 10), 1e-6), "the lower half remains");
+        check(roundness(t.painterPath(), {0, 0}, 10) < 0.003, "and it is still round");
+        const PathModel whole = sketch::trim(circ, {0, 10}, 1, {}, &hit);
+        check(whole.isEmpty(), "a loop nothing crosses goes whole");
+        const QVector<PathModel> halves = sketch::breakAt(circ, {0, 10}, 1, others);
+        check(halves.size() == 2 && nearRect(halves[0].painterPath().boundingRect(),
+                                             QRectF(-10, 0, 20, 10), 1e-6),
+              "break a circle: the clicked half and the other");
+    }
+    {
+        // Two curves: crossing points sit on both (Newton-polished).
+        const PathModel a = sketch::arc3({-10, 0}, {10, 0}, {0, 10});
+        const PathModel c = Element::pathModel(Element::makeCircle({0, 10}, 8, layer));
+        const QVector<double> cuts = sketch::crossings(a, 0, {c});
+        check(cuts.size() == 2, "arc meets circle twice");
+        for (double g : cuts) {
+            const int seg = qMin(int(g), a.subs[0].segmentCount() - 1);
+            const QPointF p = a.subs[0].pointAt(seg, g - seg);
+            check(std::fabs(QLineF(p, {0, 10}).length() - 8) < 0.01 &&
+                  std::fabs(QLineF(p, {0, 0}).length() - 10) < 0.01,
+                  "crossing lies on both curves");
+        }
+    }
+    {
+        // Self-crossing: a bow tie's own crossing cuts it, its joints do not.
+        const PathModel bow = Element::pathModel(
+            Element::makePath({{0, 0}, {10, 10}, {10, 0}, {0, 10}}, false, layer));
+        const QVector<double> cuts = sketch::crossings(bow, 0, {});
+        check(cuts.size() == 2, "bow tie crosses itself once (seen from both strokes)");
+    }
+    {
+        // Extend: a line stopping short of a wall reaches it; a curve gets a
+        // straight continuation; nothing ahead, nothing happens.
+        PathModel l = line({0, 0}, {10, 0});
+        const QVector<PathModel> wall = {line({25, -5}, {25, 5})};
+        check(sketch::extend(l, {9, 0}, 2, wall) && l.subs[0].nodes.size() == 2 &&
+              nearPt(l.subs[0].nodes.last().p, {25, 0}), "line end grows to the wall");
+        PathModel l2 = line({0, 0}, {10, 0});
+        check(!sketch::extend(l2, {1, 0}, 2, wall), "the far end runs into nothing");
+        PathModel l3 = line({30, 0}, {40, 0});
+        check(sketch::extend(l3, {31, 0}, 2, wall) && nearPt(l3.subs[0].nodes.first().p, {25, 0}),
+              "start end grows backwards to the wall");
+        PathModel a = sketch::arc3({0, -10}, {10, 0}, {std::sqrt(50.0), -std::sqrt(50.0)});
+        const QVector<PathModel> top = {line({-20, 20}, {20, 20})};
+        const int nodes = a.subs[0].nodes.size();
+        check(sketch::extend(a, {10, 0}, 2, top) && a.subs[0].nodes.size() == nodes + 1 &&
+              nearPt(a.subs[0].nodes.last().p, {10, 20}, 1e-6),
+              "a curved end continues straight along its tangent");
+        PathModel closed = Element::pathModel(Element::makeCircle({0, 0}, 5, layer));
+        check(!sketch::extend(closed, {5, 0}, 1, top), "closed paths have no ends");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

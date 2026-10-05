@@ -325,6 +325,52 @@ int main(int argc, char *argv[])
         canvas.setTool(c2d::Canvas::Select);
     }
 
+    // --- Trim / Extend / Break --------------------------------------------------------
+    {
+        c2d::Document d2;
+        c2d::Canvas cv;
+        cv.resize(900, 700);
+        cv.show();
+        cv.setDocument(&d2);
+        cv.resetTransform();
+        cv.scale(3, -3);
+        cv.centerOn(QPointF(50, 50));
+        QUndoStack *u = cv.undoStack();
+        const QJsonObject layer = d2.defaultLayer();
+        const c2d::Element h = c2d::Element::makePath({{0, 50}, {100, 50}}, false, layer);
+        const c2d::Element v1 = c2d::Element::makePath({{30, 0}, {30, 100}}, false, layer);
+        const c2d::Element v2 = c2d::Element::makePath({{70, 0}, {70, 100}}, false, layer);
+        const c2d::Element shortLine = c2d::Element::makePath({{0, 20}, {20, 20}}, false, layer);
+        for (const c2d::Element &e : {h, v1, v2, shortLine})
+            d2.addElement(e);
+        cv.rebuild();
+
+        cv.setTool(c2d::Canvas::Trim);
+        QTest::mouseMove(cv.viewport(), vp(&cv, {50, 50}));
+        click(&cv, {50, 50});
+        check(u->count() == 1, "trim is one undo step");
+        const c2d::PathModel m = c2d::Element::pathModel(*d2.elementById(h.id));
+        check(m.subs.size() == 2 && near(m.subs[0].nodes.last().p, {30, 50}) &&
+              near(m.subs[1].nodes.first().p, {70, 50}), "trim cut the middle out between the verticals");
+        u->undo();
+        check(c2d::Element::pathModel(*d2.elementById(h.id)).subs.size() == 1, "undo trim");
+
+        cv.setTool(c2d::Canvas::Break);
+        click(&cv, {50, 50});
+        check(d2.elements().size() == 6 && u->count() == 1, "break makes three pieces of the line");
+        u->undo();
+        check(d2.elements().size() == 4, "undo break");
+
+        cv.setTool(c2d::Canvas::Extend);
+        click(&cv, {19, 20});
+        check(near(c2d::Element::pathModel(*d2.elementById(shortLine.id)).subs[0].nodes.last().p, {30, 20}),
+              "extend runs the short line on to the first vertical");
+        const int steps = u->count();
+        click(&cv, {90, 90});
+        check(u->count() == steps, "clicking empty space does nothing");
+        cv.setTool(c2d::Canvas::Select);
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

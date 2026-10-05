@@ -647,7 +647,7 @@ QPointF Canvas::snap(QPointF p) const
 
 void Canvas::setTool(Tool t)
 {
-    if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty())
+    if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool))
         cancelDrawing();
     m_tool = t;
     m_drawing = false;
@@ -670,6 +670,9 @@ void Canvas::setTool(Tool t)
     case DrawSlot:    emit statusHint(tr("Slot — click the first end's center, then the second's, then click to set the width")); break;
     case DrawArc:     emit statusHint(tr("Arc — click the start, then the end, then a point the arc passes through")); break;
     case DrawCircle3: emit statusHint(tr("3-point circle — click three points on the circle")); break;
+    case Trim:        emit statusHint(tr("Trim — click the piece of a curve to cut away, up to where other curves cross it")); break;
+    case Extend:      emit statusHint(tr("Extend — click near the end of an open curve to run it on to the next curve")); break;
+    case Break:       emit statusHint(tr("Break — click a curve to split it where other curves cross it")); break;
     case DrawPolygon: emit statusHint(tr("Polygon — press at center, drag to radius")); break;
     case DrawPath:    emit statusHint(tr("Path — click = corner, click-drag = curve; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
@@ -1022,6 +1025,129 @@ void Canvas::clickToolPress(const QPointF &pos)
     viewport()->update();
 }
 
+// ---- trim / extend / break ----------------------------------------------------
+
+bool Canvas::modifyTarget(const QPointF &q, QString *id, PathModel *model,
+                          QVector<PathModel> *others) const
+{
+    if (!m_doc)
+        return false;
+    const double tol = pxToMm(8);
+    double best = tol;
+    int bestIdx = -1;
+    QVector<PathModel> models;
+    const QVector<Element> &els = m_doc->elements();
+    for (int i = 0; i < els.size(); ++i) {
+        models.append(Element::pathModel(els.at(i)));   // text: empty, never a target
+        int sub;
+        double g;
+        if (!els.at(i).painterPath.boundingRect().adjusted(-tol, -tol, tol, tol).contains(q))
+            continue;
+        if (sketch::pick(models.last(), q, best, &sub, &g)) {
+            const SubPath &sp = models.last().subs.at(sub);
+            const int seg = qMin(int(g), sp.segmentCount() - 1);
+            best = QLineF(sp.pointAt(seg, g - seg), q).length();
+            bestIdx = i;
+        }
+    }
+    if (bestIdx < 0)
+        return false;
+    *id = els.at(bestIdx).id;
+    *model = models.at(bestIdx);
+    others->clear();
+    for (int i = 0; i < models.size(); ++i)
+        if (i != bestIdx && !models.at(i).isEmpty())
+            others->append(models.at(i));
+    return true;
+}
+
+QPainterPath Canvas::modifyPreview(const QPointF &q) const
+{
+    QString id;
+    PathModel m;
+    QVector<PathModel> others;
+    if (!modifyTarget(q, &id, &m, &others))
+        return QPainterPath();
+    const double tol = pxToMm(8);
+    int sub;
+    double g;
+    if (!sketch::pick(m, q, tol, &sub, &g))
+        return QPainterPath();
+    if (m_tool == Extend) {
+        PathModel grown = m;
+        if (!sketch::extend(grown, q, tol, others))
+            return QPainterPath();
+        // Just the new stretch: from the old end to the new one.
+        const SubPath &a = m.subs.at(sub), &b = grown.subs.at(sub);
+        const bool atEnd = QLineF(q, a.nodes.last().p).length() < QLineF(q, a.nodes.first().p).length();
+        QPainterPath p(atEnd ? a.nodes.last().p : a.nodes.first().p);
+        p.lineTo(atEnd ? b.nodes.last().p : b.nodes.first().p);
+        return p;
+    }
+    double from, to;
+    sketch::pieceAround(m, sub, g, sketch::crossings(m, sub, others), &from, &to);
+    PathModel piece;
+    piece.subs.append(sketch::subRange(m.subs.at(sub), from, to));
+    return piece.painterPath();
+}
+
+void Canvas::modifyAt(const QPointF &q)
+{
+    QString id;
+    PathModel m;
+    QVector<PathModel> others;
+    if (!modifyTarget(q, &id, &m, &others)) {
+        emit statusHint(tr("No curve there"));
+        return;
+    }
+    const Element before = *m_doc->elementById(id);
+    const double tol = pxToMm(8);
+    switch (m_tool) {
+    case Trim: {
+        bool hit = false;
+        const PathModel rest = sketch::trim(m, q, tol, others, &hit);
+        if (!hit)
+            return;
+        if (rest.isEmpty())
+            m_undo->push(new DeleteCmd(this, m_doc, {before}));
+        else
+            m_undo->push(new EditCmd(this, m_doc, before, Element::withPathModel(before, rest)));
+        emit statusHint(rest.isEmpty() ? tr("Trimmed: nothing crossed it, so the whole curve went")
+                                       : tr("Trimmed"));
+        break;
+    }
+    case Extend: {
+        if (!sketch::extend(m, q, tol, others)) {
+            emit statusHint(tr("Nothing ahead to extend to (closed curves have no ends)"));
+            return;
+        }
+        m_undo->push(new EditCmd(this, m_doc, before, Element::withPathModel(before, m)));
+        emit statusHint(tr("Extended"));
+        break;
+    }
+    case Break: {
+        const QVector<PathModel> parts = sketch::breakAt(m, q, tol, others);
+        if (parts.isEmpty()) {
+            emit statusHint(tr("Nothing crosses this curve: nothing to break at"));
+            return;
+        }
+        QVector<Element> after;
+        after.append(Element::withPathModel(before, parts.first()));
+        const QJsonObject layer = before.raw.value("layer").toObject();
+        for (int i = 1; i < parts.size(); ++i)
+            after.append(Element::makeBezierPath(parts.at(i), layer));
+        m_undo->push(new ReplaceCmd(this, m_doc, {before}, after,
+                                    tr("break into %1 pieces").arg(after.size())));
+        emit statusHint(tr("Broken into %1 pieces").arg(after.size()));
+        break;
+    }
+    default:
+        break;
+    }
+    if (m_preview)
+        m_preview->setPath(modifyPreview(q));
+}
+
 QPainterPath Canvas::previewPath(const QPointF &cur) const
 {
     QPainterPath p;
@@ -1208,6 +1334,12 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    if (isModifyTool(m_tool) && m_doc && event->button() == Qt::LeftButton) {
+        modifyAt(mapToScene(event->pos()));   // never snapped: it picks a curve
+        event->accept();
+        return;
+    }
+
     // NodeEdit selects and edits; it never starts a new shape, so it must not
     // reach the drawing branch (which would swallow the click before the
     // scene sees it, leaving nothing selectable with the tool).
@@ -1290,6 +1422,19 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
         }
         m_preview->setPath(previewPath(cc));
         viewport()->update();
+        event->accept();
+        return;
+    }
+
+    if (isModifyTool(m_tool) && m_doc) {
+        if (!m_preview) {
+            QPen pen(QColor(0xe0, 0x50, 0x50), 2.5);
+            pen.setCosmetic(true);
+            if (m_tool == Extend)
+                pen.setStyle(Qt::DashLine);
+            m_preview = m_scene->addPath(QPainterPath(), pen);
+        }
+        m_preview->setPath(modifyPreview(cc));
         event->accept();
         return;
     }
