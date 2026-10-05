@@ -39,7 +39,7 @@ Linux, built on the reverse-engineered format documentation in
 - Tools: Select (V), Circle (C), Rectangle (R), Polygon (P), Path/polyline (L),
   Text (T), Ellipse (E), Slot (S), 3-point Arc (A), 3-point Circle (O);
   Ctrl-drag draws rectangles and ellipses from the center; **Trim** (X), **Extend** (J)
-  and **Break** (B) at the crossings with other curves — with live preview, grid + snap (G), zoom (wheel / F to fit),
+  and **Break** (B) at the crossings with other curves; **Measure** (M) — with live preview, grid + snap (G), zoom (wheel / F to fit),
   middle-mouse pan
 - Select / rubber-band, drag to move, drag the amber handle to resize,
   Del to delete, full undo/redo (Ctrl+Z / Ctrl+Shift+Z)
@@ -51,6 +51,8 @@ Linux, built on the reverse-engineered format documentation in
 - **Create, duplicate, rename, enable, reorder and delete toolpaths** (the
   Toolpaths panel's New menu covers all seven CC types plus Engrave)
 - **Engrave**: outline, hatch fill (spacing, angle, crosshatch) or both
+- **Face** (flatten the stock), **Bore** (helical, per circle) and **2D
+  Chamfer** (V-bit bevel along edges, inside or outside), Fusion-style
 - **3D modelling** (Model tab): components from vectors (flat / round / angle
   / dome / smooth), images as heightmaps, tiled textures, STL import; the
   relief is stored in the .c2d and drives the 3D toolpaths

@@ -673,6 +673,7 @@ void Canvas::setTool(Tool t)
     case Trim:        emit statusHint(tr("Trim — click the piece of a curve to cut away, up to where other curves cross it")); break;
     case Extend:      emit statusHint(tr("Extend — click near the end of an open curve to run it on to the next curve")); break;
     case Break:       emit statusHint(tr("Break — click a curve to split it where other curves cross it")); break;
+    case Measure:     emit statusHint(tr("Measure — drag from one point to another (snaps to the grid when Snap is on)")); break;
     case DrawPolygon: emit statusHint(tr("Polygon — press at center, drag to radius")); break;
     case DrawPath:    emit statusHint(tr("Path — click = corner, click-drag = curve; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
@@ -923,6 +924,17 @@ static QRectF dragBox(const QPointF &anchor, const QPointF &cur, bool fromCenter
     return QRectF(anchor - d, anchor + d);
 }
 
+// "Measure" readout: length, the X / Y components and the angle (CCW from +X).
+static QString measureText(const QPointF &a, const QPointF &b)
+{
+    const QPointF d = b - a;
+    return QObject::tr("%1 mm   ΔX %2   ΔY %3   %4°")
+        .arg(std::hypot(d.x(), d.y()), 0, 'f', 3)
+        .arg(d.x(), 0, 'f', 3)
+        .arg(d.y(), 0, 'f', 3)
+        .arg(qRadiansToDegrees(std::atan2(d.y(), d.x())), 0, 'f', 2);
+}
+
 // Distance from p to the infinite line through a and b (to a when a == b).
 static double lineDistance(const QPointF &p, const QPointF &a, const QPointF &b)
 {
@@ -1163,6 +1175,17 @@ QPainterPath Canvas::previewPath(const QPointF &cur) const
     case DrawEllipse: {
         const QRectF b = dragBox(m_anchor, cur, m_fromCenter);
         p.addEllipse(b);
+        break;
+    }
+    case Measure: {
+        p.moveTo(m_anchor);
+        p.lineTo(cur);
+        // Small crosses on both ends.
+        const double k = pxToMm(5);
+        for (const QPointF &e : {m_anchor, cur}) {
+            p.moveTo(e - QPointF(k, k)); p.lineTo(e + QPointF(k, k));
+            p.moveTo(e - QPointF(k, -k)); p.lineTo(e + QPointF(k, -k));
+        }
         break;
     }
     case DrawPolygon: {
@@ -1463,6 +1486,9 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
         case DrawPolygon:
             emit statusHint(tr("r = %1 mm").arg(QLineF(m_anchor, cur).length(), 0, 'f', 2));
             break;
+        case Measure:
+            emit statusHint(measureText(m_anchor, cur));
+            break;
         case DrawRect:
         case DrawEllipse: {
             const QRectF r = dragBox(m_anchor, cur, m_fromCenter);
@@ -1539,6 +1565,9 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
                     Element::makeRectangle(rect.center(), rect.width(), rect.height(), layer)));
             break;
         }
+        case Measure:
+            emit statusHint(measureText(m_anchor, cur));
+            break;
         case DrawEllipse: {
             const QRectF b = dragBox(m_anchor, cur, m_fromCenter);
             if (b.width() > 0.1 && b.height() > 0.1)

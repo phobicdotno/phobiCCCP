@@ -83,6 +83,10 @@ static QIcon toolIcon(const QString &kind)
         p.setBrush(QColor(0xd8, 0xdc, 0xe4));
         for (const QPointF &v : {QPointF(10, 4), QPointF(4.8, 13), QPointF(15.2, 13)})
             p.drawEllipse(v, 1.5, 1.5);
+    } else if (kind == "measure") {
+        p.drawLine(QLineF(3, 15, 17, 5));
+        p.drawLine(QLineF(1.5, 12.8, 4.5, 17.2));
+        p.drawLine(QLineF(15.5, 2.8, 18.5, 7.2));
     } else if (kind == "trim") {
         p.drawLine(QLineF(10, 2, 10, 18));
         p.drawLine(QLineF(2, 10, 10, 10));
@@ -329,6 +333,8 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("Extend: click near an open curve's end to run it on to the next curve  (J)"));
     addTool(QStringLiteral("Break"), QStringLiteral("break"), Canvas::Break, Qt::Key_B,
             QStringLiteral("Break: click a curve to split it where other curves cross it  (B)"));
+    addTool(QStringLiteral("Measure"), QStringLiteral("measure"), Canvas::Measure, Qt::Key_M,
+            QStringLiteral("Measure: drag between two points for the distance, ΔX, ΔY and angle  (M)"));
     addTool(QStringLiteral("Nodes"), QStringLiteral("nodes"), Canvas::NodeEdit, Qt::Key_N,
             QStringLiteral("Edit nodes: drag anchors/handles, double-click to insert, Del to remove, right-click for Corner/Smooth/Symmetric  (N)"));
     addTool(QStringLiteral("Text"), QStringLiteral("text"), Canvas::DrawText, Qt::Key_T,

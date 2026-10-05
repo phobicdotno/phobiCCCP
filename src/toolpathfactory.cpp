@@ -18,6 +18,9 @@ const QVector<ToolpathKind> &toolpathKinds()
         {QStringLiteral("keyhole_toolpath"), QStringLiteral("Keyhole")},
         {QStringLiteral("cutout"), QStringLiteral("Cutout")},
         {QStringLiteral("engrave_toolpath"), QStringLiteral("Engrave")},
+        {QStringLiteral("face_toolpath"), QStringLiteral("Face")},
+        {QStringLiteral("bore_toolpath"), QStringLiteral("Bore")},
+        {QStringLiteral("chamfer_toolpath"), QStringLiteral("2D Chamfer")},
     };
     return kinds;
 }
@@ -184,7 +187,10 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
     const bool vcarve = type == QLatin1String("advanced_vcarve_toolpath");
     const bool engrave = type == QLatin1String("engrave_toolpath");
     const bool texture = type == QLatin1String("texture_toolpath");
-    const ToolPick tp = pickTool(doc, vcarve ? VBit : engrave ? Engraver : Flat);
+    const bool face = type == QLatin1String("face_toolpath");
+    const bool bore = type == QLatin1String("bore_toolpath");
+    const bool chamfer = type == QLatin1String("chamfer_toolpath");
+    const ToolPick tp = pickTool(doc, (vcarve || chamfer) ? VBit : engrave ? Engraver : Flat);
 
     QJsonObject j;
     // Common keys (CC writes automatic_parameters on all but cutout).
@@ -200,7 +206,7 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
     j.insert(QStringLiteral("version"), 1);
     if (!cutout)
         j.insert(QStringLiteral("automatic_parameters"), true);
-    if (!cutout && !texture && !engrave) {
+    if (!cutout && !texture && !engrave && !chamfer) {
         j.insert(QStringLiteral("end_depth"), depthString(doc, 2.54));
         j.insert(QStringLiteral("enable_ramping"), false);
         j.insert(QStringLiteral("ramp_angle"), 20);
@@ -296,6 +302,36 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("line_spacing"), 1.0);
         j.insert(QStringLiteral("angle"), 45);
         j.insert(QStringLiteral("crosshatch"), false);
+        j.insert(QStringLiteral("tolerance"), 0.01);
+    }
+    if (face) {
+        // phobiCCCP-only, like the two below. Zig-zag over the stock (or
+        // the bounding box of its vectors) down to end_depth.
+        stem = QStringLiteral("Face");
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.insert(QStringLiteral("end_depth"), depthString(doc, 0.5));
+        j.insert(QStringLiteral("stepdown"), 0.5);
+        j.insert(QStringLiteral("stepover"),
+                 0.7 * tp.tool.value("diameter").toDouble(6.35));
+    } else if (bore) {
+        // Helix down each circle's wall, `stepdown` per turn.
+        stem = QStringLiteral("Bore");
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.insert(QStringLiteral("end_depth"),
+                 depthString(doc, doc.params().value("thickness", "19.05").toDouble()));
+        j.insert(QStringLiteral("stepdown"), 1.0);
+        j.insert(QStringLiteral("stock_to_leave"), 0);
+        j.insert(QStringLiteral("climb"), true);
+    } else if (chamfer) {
+        // V-bit bevel `chamfer_width` wide, its tip `tip_offset` off the
+        // edge on the air side; side "outside" (a part's edge) or "inside"
+        // (a hole's rim). The depth follows from the bit angle.
+        stem = QStringLiteral("Chamfer");
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.insert(QStringLiteral("chamfer_width"), 1.0);
+        j.insert(QStringLiteral("tip_offset"), 0.5);
+        j.insert(QStringLiteral("side"), QStringLiteral("outside"));
+        j.insert(QStringLiteral("stepdown"), tp.stepdown);
         j.insert(QStringLiteral("tolerance"), 0.01);
     }
     j.insert(QStringLiteral("name"), nextName(doc, type, stem));

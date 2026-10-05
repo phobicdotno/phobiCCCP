@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.4.93 (build 33) — 2026-10-05
+
+**CAM** (Fusion 360's 2D Face, Bore and 2D Chamfer; phobiCCCP-only toolpath
+types like Engrave, which Carbide Create does not read)
+- **Face**: zig-zag passes that flatten the whole stock, or the box around
+  the vectors you give it, to the end depth. Rows run edge to edge, no
+  further apart than the stepover, and each run goes a tool radius plus
+  1 mm past both ends, so the edges come out clean and every plunge is in
+  the air beside the stock.
+- **Bore**: a helical cut down the wall of each selected circle, `stepdown`
+  per turn, a flat lap at the bottom and a move to the center before lifting.
+  It climbs (counter-clockwise) unless `climb` is off, and leaves
+  `stock_to_leave` on the wall. Circles no wider than the tool are reported
+  rather than plunged. Only the wall is cut, so a blind hole much wider than
+  the tool wants a pocket for its middle.
+- **2D Chamfer**: a V-bit bevels the selected edges `chamfer_width` wide. Its
+  tip runs `tip_offset` off the edge on the air side, outside a part's edge
+  or inside a hole's rim (`side`), and the depth is worked out from the bit
+  angle. It refuses an end mill. Open vectors are traced as they are.
+- All three are in the Toolpaths panel's New menu; a new chamfer picks a
+  V-bit from the tool library.
+
+**Drawing tools**
+- **Measure** (M): drag between two points to read the distance, ΔX, ΔY
+  and angle in the status bar. Nothing is added to the drawing.
+
+**Testing**
+- `geometry` checks each toolpath's g-code: face coverage, overrun and
+  plunges off the stock; bore arcs on the wall, sinking half the pitch per
+  half turn; chamfer offsets and depth on both sides; and the factory
+  defaults exporting cleanly.
+
 ## v0.4.92 (build 32) — 2026-10-05
 
 **Drawing tools** (Fusion 360 sketch Trim, Extend and Break)

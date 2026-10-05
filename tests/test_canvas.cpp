@@ -371,6 +371,19 @@ int main(int argc, char *argv[])
         cv.setTool(c2d::Canvas::Select);
     }
 
+    // --- Measure: reads out, adds nothing ---------------------------------------------
+    {
+        QString last;
+        QObject::connect(&canvas, &c2d::Canvas::statusHint, [&last](const QString &m) { last = m; });
+        canvas.setTool(c2d::Canvas::Measure);
+        const int n = doc.elements().size(), steps = undo->count();
+        drag(&canvas, {100, 100}, {130, 140});
+        check(doc.elements().size() == n && undo->count() == steps, "measure adds nothing");
+        check(last.startsWith(QLatin1String("50.")) || last.startsWith(QLatin1String("49.")),
+              "measure reads out the 30-40-50 distance");
+        canvas.setTool(c2d::Canvas::Select);
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }
