@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.91 (build 31) — 2026-10-05
+
+**Drawing tools** (Fusion 360 sketch Create tools)
+- **Ellipse** (E): drag across its bounding box.
+- **Slot** (S): click the centers of both rounded ends, then click once more
+  to set the width; the status bar shows the overall length and width.
+- **3-point arc** (A): click the start, the end, then any point the arc
+  passes through; it bends whichever way that point says, and three points
+  in a line give a straight line.
+- **3-point circle** (O): click three points on the circle. The result is a
+  true circle element, so drilling and the circle-specific G2/G3 output
+  treat it like any other.
+- **Rectangle and Ellipse from the center**: hold Ctrl while dragging.
+- Esc abandons a half-clicked slot, arc or circle. Ellipses, slots and arcs
+  are bezier paths (one cubic per quarter turn, round to 0.03%), so the node
+  editor, offsets and booleans all work on them.
+
+**Testing**
+- New `sketch` suite: exact end points, roundness, areas and the degenerate
+  cases (collinear points, zero width, coincident centers).
+- `canvas` drives every new tool with real mouse clicks and drags.
+
 ## v0.4.90 (build 30) — 2026-10-05
 
 **Vector editing** (Fusion 360 sketch Modify tools)

@@ -66,6 +66,23 @@ static QIcon toolIcon(const QString &kind)
         p.drawEllipse(QRectF(4, 4, 12, 12));
     } else if (kind == "rect") {
         p.drawRect(QRectF(4, 5, 12, 10));
+    } else if (kind == "ellipse") {
+        p.drawEllipse(QRectF(2.5, 5.5, 15, 9));
+    } else if (kind == "slot") {
+        p.drawRoundedRect(QRectF(2.5, 6, 15, 8), 4, 4);
+        QPen thin(QColor(0x9f, 0xc8, 0xf2), 1.0);
+        p.setPen(thin);
+        p.drawLine(QLineF(6.5, 10, 13.5, 10));
+    } else if (kind == "arc") {
+        p.drawArc(QRectF(3, 5, 14, 14), 20 * 16, 140 * 16);
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        for (const QPointF &v : {QPointF(3.6, 9.6), QPointF(10, 5), QPointF(16.4, 9.6)})
+            p.drawEllipse(v, 1.5, 1.5);
+    } else if (kind == "circle3") {
+        p.drawEllipse(QRectF(4, 4, 12, 12));
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        for (const QPointF &v : {QPointF(10, 4), QPointF(4.8, 13), QPointF(15.2, 13)})
+            p.drawEllipse(v, 1.5, 1.5);
     } else if (kind == "polygon") {
         QPolygonF hex;
         for (int i = 0; i < 6; ++i) {
@@ -275,9 +292,17 @@ MainWindow::MainWindow(QWidget *parent)
     addTool(QStringLiteral("Circle"), QStringLiteral("circle"), Canvas::DrawCircle, Qt::Key_C,
             QStringLiteral("Circle: press at center, drag to radius  (C)"));
     addTool(QStringLiteral("Rect"), QStringLiteral("rect"), Canvas::DrawRect, Qt::Key_R,
-            QStringLiteral("Rectangle: drag corner to corner  (R)"));
+            QStringLiteral("Rectangle: drag corner to corner, Ctrl from the center  (R)"));
     addTool(QStringLiteral("Polygon"), QStringLiteral("polygon"), Canvas::DrawPolygon, Qt::Key_P,
             QStringLiteral("Polygon: press at center, drag to radius  (P)"));
+    addTool(QStringLiteral("Ellipse"), QStringLiteral("ellipse"), Canvas::DrawEllipse, Qt::Key_E,
+            QStringLiteral("Ellipse: drag across its bounding box, Ctrl from the center  (E)"));
+    addTool(QStringLiteral("Slot"), QStringLiteral("slot"), Canvas::DrawSlot, Qt::Key_S,
+            QStringLiteral("Slot: click both end centers, then click to set the width  (S)"));
+    addTool(QStringLiteral("Arc"), QStringLiteral("arc"), Canvas::DrawArc, Qt::Key_A,
+            QStringLiteral("3-point arc: click start, end, then a point on the arc  (A)"));
+    addTool(QStringLiteral("3-pt circle"), QStringLiteral("circle3"), Canvas::DrawCircle3, Qt::Key_O,
+            QStringLiteral("3-point circle: click three points on the circle  (O)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
             QStringLiteral("Path: click = corner, click-drag = curve; Enter finishes, click near start closes  (L)"));
     addTool(QStringLiteral("Nodes"), QStringLiteral("nodes"), Canvas::NodeEdit, Qt::Key_N,

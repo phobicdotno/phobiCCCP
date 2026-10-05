@@ -251,6 +251,80 @@ int main(int argc, char *argv[])
               "convert to path does not delete an element with no outline");
     }
 
+    // --- Fusion-style Create tools ------------------------------------------------------
+    {
+        canvas.selectElements({});
+        // Ellipse: drag across the box; Ctrl drags from the center.
+        canvas.setTool(c2d::Canvas::DrawEllipse);
+        int n = doc.elements().size();
+        drag(&canvas, {160, 150}, {200, 170});
+        check(doc.elements().size() == n + 1, "ellipse tool adds one element");
+        QRectF b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 40) < 0.7 && std::fabs(b.height() - 20) < 0.7 &&
+              std::fabs(b.center().x() - 180) < 0.4 && std::fabs(b.center().y() - 160) < 0.4,
+              "ellipse fills the dragged box");
+        drag(&canvas, {180, 100}, {200, 110}, Qt::ControlModifier);
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.center().x() - 180) < 0.4 && std::fabs(b.center().y() - 100) < 0.4 &&
+              std::fabs(b.width() - 40) < 0.7, "Ctrl-drag: ellipse from the center");
+
+        // Rectangle from the center.
+        canvas.setTool(c2d::Canvas::DrawRect);
+        drag(&canvas, {180, 60}, {190, 65}, Qt::ControlModifier);
+        const c2d::Element &r = doc.elements().last();
+        check(r.geometryType == "rectangle" && std::fabs(r.raw["width"].toDouble() - 20) < 0.7 &&
+              std::fabs(r.painterPath.boundingRect().center().x() - 180) < 0.4,
+              "Ctrl-drag: rectangle from the center");
+
+        // Slot: two centers, then the width.
+        canvas.setTool(c2d::Canvas::DrawSlot);
+        n = doc.elements().size();
+        click(&canvas, {160, 200});
+        click(&canvas, {200, 200});
+        check(doc.elements().size() == n, "slot waits for its third click");
+        click(&canvas, {180, 205});
+        check(doc.elements().size() == n + 1 && undo->index() == undo->count(), "slot added");
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 50) < 1.0 && std::fabs(b.height() - 10) < 1.0,
+              "slot: 40 mm between centers, 10 mm wide");
+
+        // Escape abandons a half-drawn shape.
+        click(&canvas, {160, 30});
+        QTest::keyClick(&canvas, Qt::Key_Escape);
+        click(&canvas, {170, 30});
+        click(&canvas, {190, 30});
+        check(doc.elements().size() == n + 1, "Esc cancels the clicks so far");
+        QTest::keyClick(&canvas, Qt::Key_Escape);
+
+        // 3-point arc.
+        canvas.setTool(c2d::Canvas::DrawArc);
+        click(&canvas, {230, 120});
+        click(&canvas, {190, 120});
+        click(&canvas, {210, 140});
+        check(doc.elements().size() == n + 2, "arc added");
+        const c2d::Element &a = doc.elements().last();
+        check(a.geometryType == "path" && a.raw["point_type"].toArray().last().toInt() != 4,
+              "arc is an open path");
+        b = a.painterPath.boundingRect();
+        check(std::fabs(b.width() - 40) < 1.0 && std::fabs(b.height() - 20) < 1.0,
+              "arc is the upper half circle");
+
+        // 3-point circle.
+        canvas.setTool(c2d::Canvas::DrawCircle3);
+        click(&canvas, {220, 60});
+        click(&canvas, {200, 80});
+        click(&canvas, {180, 60});
+        const c2d::Element &c = doc.elements().last();
+        check(doc.elements().size() == n + 3 && c.geometryType == "circle" &&
+              std::fabs(c.raw["radius"].toDouble() - 20) < 0.5, "3-point circle is a circle of 20");
+        // Collinear points add nothing.
+        click(&canvas, {160, 0});
+        click(&canvas, {170, 0});
+        click(&canvas, {180, 0});
+        check(doc.elements().size() == n + 3, "collinear points: no circle");
+        canvas.setTool(c2d::Canvas::Select);
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

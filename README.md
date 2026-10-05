@@ -37,7 +37,8 @@ Linux, built on the reverse-engineered format documentation in
   blur, despeckle, simplify, smoothing) to closed vector paths
 - Original tools still there:
 - Tools: Select (V), Circle (C), Rectangle (R), Polygon (P), Path/polyline (L),
-  Text (T) — with live preview, grid + snap (G), zoom (wheel / F to fit),
+  Text (T), Ellipse (E), Slot (S), 3-point Arc (A), 3-point Circle (O);
+  Ctrl-drag draws rectangles and ellipses from the center — with live preview, grid + snap (G), zoom (wheel / F to fit),
   middle-mouse pan
 - Select / rubber-band, drag to move, drag the amber handle to resize,
   Del to delete, full undo/redo (Ctrl+Z / Ctrl+Shift+Z)

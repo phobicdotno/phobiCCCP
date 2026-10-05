@@ -19,7 +19,11 @@ class Canvas : public QGraphicsView
 {
     Q_OBJECT
 public:
-    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit };
+    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
+                DrawEllipse, DrawSlot, DrawArc, DrawCircle3 };
+    // The three-click tools (slot, 3-point arc, 3-point circle): the first
+    // two clicks fix two points, the third finishes the shape.
+    static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc || t == DrawCircle3; }
 
     explicit Canvas(QWidget *parent = nullptr);
     ~Canvas() override;
@@ -117,6 +121,12 @@ private:
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+
+    // Three-click tools: the points clicked so far (scene = CC mm).
+    QVector<QPointF> m_clicks;
+    void clickToolPress(const QPointF &pos);
+    QPainterPath clickPreview(const QPointF &cur) const;
+    bool m_fromCenter = false;              // Ctrl held: rectangle / ellipse from the center
 
     // Pen (path) tool: click = corner, click-drag = symmetric handles.
     QVector<PathNode> m_penNodes;
