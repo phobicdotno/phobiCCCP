@@ -1,11 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="22" fill="#1e2126"/>
-  <g stroke="#3a3f47" stroke-width="1">
+  <rect width="128" height="128" rx="22" fill="#cc0000"/>
+  <g stroke="#a30000" stroke-width="1">
     <path d="M16 32h96M16 64h96M16 96h96M32 16v96M64 16v96M96 16v96"/>
   </g>
-  <path d="M28 88 L28 40 L56 40" fill="none" stroke="#5c6470" stroke-width="4" stroke-dasharray="6 5" stroke-linecap="round"/>
-  <path d="M56 40 Q100 40 100 64 Q100 88 56 88 L28 88" fill="none" stroke="#f0a030" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="28" cy="40" r="7" fill="#1e2126" stroke="#f0a030" stroke-width="4"/>
-  <circle cx="28" cy="88" r="7" fill="#1e2126" stroke="#f0a030" stroke-width="4"/>
-  <circle cx="100" cy="64" r="7" fill="#1e2126" stroke="#f0a030" stroke-width="4"/>
+  <g fill="none" stroke="#ff8a80" stroke-width="1.5" stroke-dasharray="4 3" stroke-linecap="round">
+    <circle cx="64" cy="66" r="42"/>
+    <path d="M64.0 24.0L88.7 100.0L24.1 53.0L103.9 53.0L39.3 100.0Z"/>
+  </g>
+  <polygon points="64.0,24.0 74.0,52.2 103.9,53.0 80.2,71.3 88.7,100.0 64.0,83.0 39.3,100.0 47.8,71.3 24.1,53.0 54.0,52.2" fill="#ffd700" fill-opacity="0.18" stroke="#ffd700" stroke-width="5" stroke-linejoin="round"/>
+  <g fill="#cc0000" stroke="#ffd700" stroke-width="2.5">
+    <circle cx="64.0" cy="24.0" r="4.5"/>
+    <circle cx="74.0" cy="52.2" r="3.2"/>
+    <circle cx="103.9" cy="53.0" r="4.5"/>
+    <circle cx="80.2" cy="71.3" r="3.2"/>
+    <circle cx="88.7" cy="100.0" r="4.5"/>
+    <circle cx="64.0" cy="83.0" r="3.2"/>
+    <circle cx="39.3" cy="100.0" r="4.5"/>
+    <circle cx="47.8" cy="71.3" r="3.2"/>
+    <circle cx="24.1" cy="53.0" r="4.5"/>
+    <circle cx="54.0" cy="52.2" r="3.2"/>
+  </g>
 </svg>
