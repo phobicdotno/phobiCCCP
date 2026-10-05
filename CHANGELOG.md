@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.89 (build 29) — 2026-10-03
+## v0.4.91 (build 31) — 2026-10-05
 
 **Vector editing**
 - **Mirror** the selection horizontally (Ctrl+Alt+M) or vertically
@@ -28,6 +28,52 @@
 - New `vectoractions` suite runs mirror and both arrays through the real
   actions on an offscreen canvas: one undo step each, toolpaths extended (or
   not), undo and redo restoring both the vectors and the toolpaths.
+## v0.4.90 (build 30) — 2026-10-05
+
+**Sketch tools (Fusion 360 parity)**
+- Circle and Rectangle buttons get a drop-down with Fusion's variants; the
+  button reuses the last one picked, and the status bar says what to click
+  next. Every mode takes clicks; the two-point ones still accept a drag.
+- Circles: Center Diameter, 2-Point, 3-Point, 2-Tangent (pick two lines, move
+  to choose the corner and size) and 3-Tangent (pick three lines, click near
+  the in- or excircle you want).
+- Rectangles: 2-Point, 3-Point (first edge, then height; may be tilted) and
+  Center.
+- A tilted 3-point rectangle is saved as a closed path: phobiCCCP writes
+  rectangles without a rotation, and how Carbide Create treats a rotated one
+  has not been checked against a specimen yet.
+- Picking a curved edge for a tangent circle uses the tangent at the clicked
+  spot, so the circle touches the curve there but is not solved against it.
+
+**Layout**
+- Panel tabs (Toolpaths, Document, Machine, Preview, Simulation, Model) now
+  sit above their panels, bold, each with an icon; Properties has one too.
+- The divider beside the panels can be dragged wider again — the Document
+  panel's 340 px cap was holding the whole column narrow — and the dividers
+  are thicker and highlight on hover.
+
+**Testing**
+- New `sketchgeom` suite for the circle and rectangle construction maths; the
+  `canvas` suite draws every new mode through synthetic clicks and drags.
+
+## v0.4.89 (build 29) — 2026-10-05
+
+**Files**
+- File → New (Ctrl+N) starts a design from scratch. It asks for the stock
+  width, height and thickness, then where to save, and opens the empty design
+  ready to draw on. Until now every tool needed an existing `.c2d` to open
+  first, and with nothing open the canvas silently ignored every click.
+- The new file is a minimal container in the same layout the loader and save
+  expect, with one toolpath group so toolpaths can be added straight away.
+  Carbide Create itself has not yet been tried on a file started this way.
+
+**Look**
+- New icon: a gold star drawn as a vector path, node handles on every corner
+  over its dashed construction lines, on a red tile.
+
+**Testing**
+- New `newdoc` suite: a blank file loads empty with the stock size it was
+  given, takes an element, saves, and reloads with the element intact.
 
 ## v0.4.88 (build 28) — 2026-09-09
 

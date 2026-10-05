@@ -31,6 +31,7 @@ public:
     void showModel();             // raise the Model tab + composite it synchronously (used by --shot)
 
 private slots:
+    void onNew();
     void onOpen();
     void onSave();
     void onSaveAs();

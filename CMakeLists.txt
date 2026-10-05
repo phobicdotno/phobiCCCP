@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.89 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.91 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,7 @@ add_library(phobicccp_core STATIC
     src/heightmodel.cpp
     src/simulation.cpp
     src/vectorops.cpp
+    src/sketchgeom.cpp
     src/importers.cpp
     src/toollibrary.cpp
     src/toolpathfactory.cpp
@@ -114,6 +115,12 @@ add_test(NAME simulation COMMAND test_simulation)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
+add_executable(test_newdoc tests/test_newdoc.cpp)
+target_link_libraries(test_newdoc PRIVATE phobicccp_core)
+add_test(NAME newdoc COMMAND test_newdoc)
+add_executable(test_sketchgeom tests/test_sketchgeom.cpp)
+target_link_libraries(test_sketchgeom PRIVATE phobicccp_core)
+add_test(NAME sketchgeom COMMAND test_sketchgeom)
 add_executable(test_import tests/test_import.cpp)
 target_link_libraries(test_import PRIVATE phobicccp_core)
 target_compile_definitions(test_import PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
