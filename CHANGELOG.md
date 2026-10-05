@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.94 (build 34) — 2026-10-05
+## v0.4.96 (build 36) — 2026-10-05
 
 **CAM**
 - **Adaptive** toolpath (Fusion 360's 2D Adaptive; a phobiCCCP-only type
@@ -19,7 +19,7 @@
   is clear. Areas narrower than the tool are reported, not cut. New defaults:
   stepover a tenth of the tool, stepdown one tool diameter.
 
-## v0.4.93 (build 33) — 2026-10-05
+## v0.4.95 (build 35) — 2026-10-05
 
 **CAM** (Fusion 360's 2D Face, Bore and 2D Chamfer; phobiCCCP-only toolpath
 types like Engrave, which Carbide Create does not read)
@@ -51,7 +51,7 @@ types like Engrave, which Carbide Create does not read)
   half turn; chamfer offsets and depth on both sides; and the factory
   defaults exporting cleanly.
 
-## v0.4.92 (build 32) — 2026-10-05
+## v0.4.94 (build 34) — 2026-10-05
 
 **Drawing tools** (Fusion 360 sketch Trim, Extend and Break)
 - **Trim** (X): click a piece of any curve and it is cut away up to the
@@ -74,7 +74,7 @@ types like Engrave, which Carbide Create does not read)
   trim, break and extend, including the cases that do nothing.
 - `canvas` clicks through all three tools.
 
-## v0.4.91 (build 31) — 2026-10-05
+## v0.4.93 (build 33) — 2026-10-05
 
 **Drawing tools** (Fusion 360 sketch Create tools)
 - **Ellipse** (E): drag across its bounding box.
@@ -83,11 +83,10 @@ types like Engrave, which Carbide Create does not read)
 - **3-point arc** (A): click the start, the end, then any point the arc
   passes through; it bends whichever way that point says, and three points
   in a line give a straight line.
-- **3-point circle** (O): click three points on the circle. The result is a
-  true circle element, so drilling and the circle-specific G2/G3 output
-  treat it like any other.
-- **Rectangle and Ellipse from the center**: hold Ctrl while dragging.
-- Esc abandons a half-clicked slot, arc or circle. Ellipses, slots and arcs
+- **Ellipse from the center**: hold Ctrl while dragging. (3-point circles
+  and center rectangles come from the Circle and Rectangle drop-downs of
+  v0.4.90.)
+- Esc abandons a half-clicked slot or arc. Ellipses, slots and arcs
   are bezier paths (one cubic per quarter turn, round to 0.03%), so the node
   editor, offsets and booleans all work on them.
 
@@ -96,7 +95,7 @@ types like Engrave, which Carbide Create does not read)
   cases (collinear points, zero width, coincident centers).
 - `canvas` drives every new tool with real mouse clicks and drags.
 
-## v0.4.90 (build 30) — 2026-10-05
+## v0.4.92 (build 32) — 2026-10-05
 
 **Vector editing** (Fusion 360 sketch Modify tools)
 - **Fillet corners…** (Ctrl+Alt+E) rounds every sharp corner between two
@@ -125,7 +124,7 @@ types like Engrave, which Carbide Create does not read)
   shapes stay parametric under rotate and scale.
 - `vectoractions` runs each one through the real actions and undo stack.
 
-## v0.4.89 (build 29) — 2026-10-03
+## v0.4.91 (build 31) — 2026-10-05
 
 **Vector editing**
 - **Mirror** the selection horizontally (Ctrl+Alt+M) or vertically
@@ -153,6 +152,52 @@ types like Engrave, which Carbide Create does not read)
 - New `vectoractions` suite runs mirror and both arrays through the real
   actions on an offscreen canvas: one undo step each, toolpaths extended (or
   not), undo and redo restoring both the vectors and the toolpaths.
+## v0.4.90 (build 30) — 2026-10-05
+
+**Sketch tools (Fusion 360 parity)**
+- Circle and Rectangle buttons get a drop-down with Fusion's variants; the
+  button reuses the last one picked, and the status bar says what to click
+  next. Every mode takes clicks; the two-point ones still accept a drag.
+- Circles: Center Diameter, 2-Point, 3-Point, 2-Tangent (pick two lines, move
+  to choose the corner and size) and 3-Tangent (pick three lines, click near
+  the in- or excircle you want).
+- Rectangles: 2-Point, 3-Point (first edge, then height; may be tilted) and
+  Center.
+- A tilted 3-point rectangle is saved as a closed path: phobiCCCP writes
+  rectangles without a rotation, and how Carbide Create treats a rotated one
+  has not been checked against a specimen yet.
+- Picking a curved edge for a tangent circle uses the tangent at the clicked
+  spot, so the circle touches the curve there but is not solved against it.
+
+**Layout**
+- Panel tabs (Toolpaths, Document, Machine, Preview, Simulation, Model) now
+  sit above their panels, bold, each with an icon; Properties has one too.
+- The divider beside the panels can be dragged wider again — the Document
+  panel's 340 px cap was holding the whole column narrow — and the dividers
+  are thicker and highlight on hover.
+
+**Testing**
+- New `sketchgeom` suite for the circle and rectangle construction maths; the
+  `canvas` suite draws every new mode through synthetic clicks and drags.
+
+## v0.4.89 (build 29) — 2026-10-05
+
+**Files**
+- File → New (Ctrl+N) starts a design from scratch. It asks for the stock
+  width, height and thickness, then where to save, and opens the empty design
+  ready to draw on. Until now every tool needed an existing `.c2d` to open
+  first, and with nothing open the canvas silently ignored every click.
+- The new file is a minimal container in the same layout the loader and save
+  expect, with one toolpath group so toolpaths can be added straight away.
+  Carbide Create itself has not yet been tried on a file started this way.
+
+**Look**
+- New icon: a gold star drawn as a vector path, node handles on every corner
+  over its dashed construction lines, on a red tile.
+
+**Testing**
+- New `newdoc` suite: a blank file loads empty with the stock size it was
+  given, takes an element, saves, and reloads with the element intact.
 
 ## v0.4.88 (build 28) — 2026-09-09
 

@@ -331,4 +331,84 @@ bool Document::save(const QString &destPath, QString *error)
     return true;
 }
 
+
+bool Document::createBlank(const QString &path, double width, double height,
+                           double thickness, QString *error)
+{
+    // Same table layout the loader and save() rely on; save() clones this
+    // file, so everything later edits are written into is created here.
+    QFile::remove(path);
+    const QString conn = QStringLiteral("c2dn_%1").arg(QUuid::createUuid().toString());
+    bool ok = true;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+        db.setDatabaseName(path);
+        if (!db.open()) {
+            if (error) *error = db.lastError().text();
+            ok = false;
+        } else {
+            db.transaction();
+            QSqlQuery q(db);
+            const char *ddl[] = {
+                "CREATE TABLE metadata(key TEXT PRIMARY KEY, value TEXT)",
+                "CREATE TABLE params(key TEXT PRIMARY KEY, value TEXT)",
+                "CREATE TABLE sqlar(name TEXT PRIMARY KEY, mode INT, mtime INT, sz INT, data BLOB)",
+                "CREATE TABLE items(id INTEGER PRIMARY KEY AUTOINCREMENT, uuid TEXT UNIQUE, "
+                "name TEXT, type TEXT, version TEXT, sz INT, data BLOB)"};
+            for (const char *sql : ddl) {
+                if (ok && !q.exec(QString::fromLatin1(sql))) {
+                    if (error) *error = q.lastError().text();
+                    ok = false;
+                }
+            }
+            const QList<QPair<QString, QString>> params = {
+                {QStringLiteral("width"), QString::number(width)},
+                {QStringLiteral("height"), QString::number(height)},
+                {QStringLiteral("thickness"), QString::number(thickness)},
+                {QStringLiteral("num_toolpaths"), QStringLiteral("0")},
+                {QStringLiteral("material"), QStringLiteral("Softwood")},
+                {QStringLiteral("retract"), QStringLiteral("2.54")},
+                {QStringLiteral("display_mm"), QStringLiteral("1")}};
+            for (const auto &kv : params) {
+                if (!ok)
+                    break;
+                QSqlQuery ins(db);
+                ins.prepare(QStringLiteral("INSERT INTO params(key,value) VALUES(?,?)"));
+                ins.addBindValue(kv.first);
+                ins.addBindValue(kv.second);
+                if (!ins.exec()) {
+                    if (error) *error = ins.lastError().text();
+                    ok = false;
+                }
+            }
+            if (ok) {
+                const QString gid = QUuid::createUuid().toString();
+                const QByteArray group = QJsonDocument(QJsonObject{
+                    {QStringLiteral("enabled"), true}, {QStringLiteral("expanded"), true},
+                    {QStringLiteral("name"), QStringLiteral("Group 1")},
+                    {QStringLiteral("uuid"), gid}}).toJson(QJsonDocument::Compact);
+                QSqlQuery ins(db);
+                ins.prepare(QStringLiteral("INSERT INTO items(uuid,name,type,version,sz,data) "
+                                           "VALUES(?,'','toolpath_group','J1',?,?)"));
+                ins.addBindValue(gid);
+                ins.addBindValue(group.size());
+                ins.addBindValue(zlibDeflate(group));
+                if (!ins.exec()) {
+                    if (error) *error = ins.lastError().text();
+                    ok = false;
+                }
+            }
+            if (ok)
+                ok = db.commit();
+            else
+                db.rollback();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(conn);
+    if (!ok)
+        QFile::remove(path);
+    return ok;
+}
+
 } // namespace c2d

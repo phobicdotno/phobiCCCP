@@ -36,9 +36,9 @@ Linux, built on the reverse-engineered format documentation in
   lock; stored in the .c2d the way CC does) and **Trace image** (threshold,
   blur, despeckle, simplify, smoothing) to closed vector paths
 - Original tools still there:
-- Tools: Select (V), Circle (C), Rectangle (R), Polygon (P), Path/polyline (L),
-  Text (T), Ellipse (E), Slot (S), 3-point Arc (A), 3-point Circle (O);
-  Ctrl-drag draws rectangles and ellipses from the center; **Trim** (X), **Extend** (J)
+- Tools: Select (V), Circle (C: center, 2-point, 3-point, 2- and 3-tangent),
+  Rectangle (R: 2-point, 3-point, center), Polygon (P), Path/polyline (L),
+  Text (T), Ellipse (E, Ctrl-drag from the center), Slot (S), 3-point Arc (A); **Trim** (X), **Extend** (J)
   and **Break** (B) at the crossings with other curves; **Measure** (M) — with live preview, grid + snap (G), zoom (wheel / F to fit),
   middle-mouse pan
 - Select / rubber-band, drag to move, drag the amber handle to resize,

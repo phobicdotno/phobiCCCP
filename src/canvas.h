@@ -20,13 +20,17 @@ class Canvas : public QGraphicsView
     Q_OBJECT
 public:
     enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
-                DrawEllipse, DrawSlot, DrawArc, DrawCircle3, Trim, Extend, Break, Measure };
-    // The three-click tools (slot, 3-point arc, 3-point circle): the first
+                DrawEllipse, DrawSlot, DrawArc, Trim, Extend, Break, Measure };
+    // The three-click tools (slot, 3-point arc): the first
     // two clicks fix two points, the third finishes the shape.
-    static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc || t == DrawCircle3; }
+    static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc; }
     // Trim / Extend / Break: hover shows what a click would do to the curve
     // under the cursor, bounded by every other curve in the drawing.
     static bool isModifyTool(Tool t) { return t == Trim || t == Extend || t == Break; }
+    // Fusion's sketch variants of the Circle and Rectangle tools.
+    enum CircleMode { CircleCenterDiameter, Circle2Point, Circle3Point,
+                      Circle2Tangent, Circle3Tangent };
+    enum RectMode { Rect2Point, Rect3Point, RectCenter };
 
     explicit Canvas(QWidget *parent = nullptr);
     ~Canvas() override;
@@ -34,6 +38,8 @@ public:
     void setTool(Tool t);
     Tool tool() const { return m_tool; }
     void setPolygonSides(int n) { m_polySides = qBound(3, n, 64); }
+    void setCircleMode(CircleMode m);
+    void setRectMode(RectMode m);
     void setSnapEnabled(bool on) { m_snap = on; }
     bool snapEnabled() const { return m_snap; }
     QUndoStack *undoStack() const { return m_undo; }
@@ -119,14 +125,28 @@ private:
     bool m_snap = false;
     bool m_drawing = false;
     QPointF m_anchor;                       // scene coords (CC mm)
+
+    // Sketch circle/rectangle modes: points clicked so far and, for the
+    // tangent circles, the edges picked so far. One shape per completed set.
+    CircleMode m_circleMode = CircleCenterDiameter;
+    RectMode m_rectMode = Rect2Point;
+    QVector<QPointF> m_clicks;
+    QVector<QLineF> m_tanLines;
+    bool sketchTool() const { return m_tool == DrawCircle || m_tool == DrawRect; }
+    int sketchPointsNeeded() const;
+    int sketchLinesNeeded() const;
+    void sketchHint();
+    bool pickEdge(const QPointF &scenePos, QLineF *edge) const;
+    QPainterPath sketchPath(const QPointF &cur) const;
+    void finishSketch(const QPointF &cur);
+    void resetSketch();
     QGraphicsPathItem *m_preview = nullptr; // live outline while dragging
     QStringList m_highlightIds;             // vectors of the selected toolpath
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
 
-    // Three-click tools: the points clicked so far (scene = CC mm).
-    QVector<QPointF> m_clicks;
+    // Three-click tools reuse m_clicks (the points clicked so far, CC mm).
     void clickToolPress(const QPointF &pos);
     QPainterPath clickPreview(const QPointF &cur) const;
     bool m_fromCenter = false;              // Ctrl held: rectangle / ellipse from the center

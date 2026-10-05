@@ -268,14 +268,6 @@ int main(int argc, char *argv[])
         check(std::fabs(b.center().x() - 180) < 0.4 && std::fabs(b.center().y() - 100) < 0.4 &&
               std::fabs(b.width() - 40) < 0.7, "Ctrl-drag: ellipse from the center");
 
-        // Rectangle from the center.
-        canvas.setTool(c2d::Canvas::DrawRect);
-        drag(&canvas, {180, 60}, {190, 65}, Qt::ControlModifier);
-        const c2d::Element &r = doc.elements().last();
-        check(r.geometryType == "rectangle" && std::fabs(r.raw["width"].toDouble() - 20) < 0.7 &&
-              std::fabs(r.painterPath.boundingRect().center().x() - 180) < 0.4,
-              "Ctrl-drag: rectangle from the center");
-
         // Slot: two centers, then the width.
         canvas.setTool(c2d::Canvas::DrawSlot);
         n = doc.elements().size();
@@ -309,19 +301,6 @@ int main(int argc, char *argv[])
         check(std::fabs(b.width() - 40) < 1.0 && std::fabs(b.height() - 20) < 1.0,
               "arc is the upper half circle");
 
-        // 3-point circle.
-        canvas.setTool(c2d::Canvas::DrawCircle3);
-        click(&canvas, {220, 60});
-        click(&canvas, {200, 80});
-        click(&canvas, {180, 60});
-        const c2d::Element &c = doc.elements().last();
-        check(doc.elements().size() == n + 3 && c.geometryType == "circle" &&
-              std::fabs(c.raw["radius"].toDouble() - 20) < 0.5, "3-point circle is a circle of 20");
-        // Collinear points add nothing.
-        click(&canvas, {160, 0});
-        click(&canvas, {170, 0});
-        click(&canvas, {180, 0});
-        check(doc.elements().size() == n + 3, "collinear points: no circle");
         canvas.setTool(c2d::Canvas::Select);
     }
 
@@ -374,7 +353,8 @@ int main(int argc, char *argv[])
     // --- Measure: reads out, adds nothing ---------------------------------------------
     {
         QString last;
-        QObject::connect(&canvas, &c2d::Canvas::statusHint, [&last](const QString &m) { last = m; });
+        const QMetaObject::Connection hint = QObject::connect(
+            &canvas, &c2d::Canvas::statusHint, [&last](const QString &m) { last = m; });
         canvas.setTool(c2d::Canvas::Measure);
         const int n = doc.elements().size(), steps = undo->count();
         drag(&canvas, {100, 100}, {130, 140});
@@ -382,6 +362,92 @@ int main(int argc, char *argv[])
         check(last.startsWith(QLatin1String("50.")) || last.startsWith(QLatin1String("49.")),
               "measure reads out the 30-40-50 distance");
         canvas.setTool(c2d::Canvas::Select);
+        QObject::disconnect(hint);
+    }
+
+    // --- Fusion-style circle and rectangle modes --------------------------------
+    {
+        using C = c2d::Canvas;
+        auto last = [&] { return doc.elements().last().raw; };
+        auto center = [&](const QJsonObject &o) {
+            const QJsonArray c = o.value("center").toArray();
+            return QPointF(c.at(0).toDouble(), c.at(1).toDouble());
+        };
+        auto isCircle = [&](QPointF c, double r) {
+            const QJsonObject o = last();
+            return o.value("geometryType").toString() == QLatin1String("circle")
+                   && near(center(o), c) && std::abs(o.value("radius").toDouble() - r) < 0.02;
+        };
+        auto isRect = [&](QPointF c, double w, double h) {
+            const QJsonObject o = last();
+            return o.value("geometryType").toString() == QLatin1String("rectangle")
+                   && near(center(o), c) && std::abs(o.value("width").toDouble() - w) < 0.02
+                   && std::abs(o.value("height").toDouble() - h) < 0.02;
+        };
+        int n = doc.elements().size();
+
+        canvas.setTool(C::DrawCircle);
+        canvas.setCircleMode(C::CircleCenterDiameter);
+        drag(&canvas, {10, 120}, {15, 120});
+        check(doc.elements().size() == ++n && isCircle({10, 120}, 5), "center circle by drag");
+        click(&canvas, {40, 120});
+        click(&canvas, {40, 126});
+        check(doc.elements().size() == ++n && isCircle({40, 120}, 6), "center circle by two clicks");
+
+        canvas.setCircleMode(C::Circle2Point);
+        click(&canvas, {60, 120});
+        click(&canvas, {80, 120});
+        check(doc.elements().size() == ++n && isCircle({70, 120}, 10), "2-point circle");
+
+        canvas.setCircleMode(C::Circle3Point);
+        click(&canvas, {100, 120});
+        click(&canvas, {110, 130});
+        check(doc.elements().size() == n, "3-point circle waits for the third point");
+        click(&canvas, {120, 120});
+        check(doc.elements().size() == ++n && isCircle({110, 120}, 10), "3-point circle");
+
+        canvas.setTool(C::DrawRect);
+        canvas.setRectMode(C::Rect2Point);
+        drag(&canvas, {10, 150}, {30, 160});
+        check(doc.elements().size() == ++n && isRect({20, 155}, 20, 10), "2-point rectangle");
+        canvas.setRectMode(C::RectCenter);
+        click(&canvas, {60, 155});
+        click(&canvas, {70, 160});
+        check(doc.elements().size() == ++n && isRect({60, 155}, 20, 10), "center rectangle");
+        canvas.setRectMode(C::Rect3Point);
+        click(&canvas, {90, 150});
+        click(&canvas, {110, 150});
+        click(&canvas, {100, 162});
+        check(doc.elements().size() == ++n && isRect({100, 156}, 20, 12), "3-point axis rectangle");
+        click(&canvas, {130, 150});
+        click(&canvas, {140, 160});
+        click(&canvas, {130, 165});
+        check(doc.elements().size() == ++n
+                  && last().value("geometryType").toString() == QLatin1String("path"),
+              "3-point tilted rectangle becomes a closed path");
+
+        // A 40 mm square to be tangent to: edges x 280..320, y 280..320.
+        canvas.setRectMode(C::Rect2Point);
+        drag(&canvas, {280, 280}, {320, 320});
+        n = doc.elements().size();
+        canvas.setTool(C::DrawCircle);
+        canvas.setCircleMode(C::Circle2Tangent);
+        click(&canvas, {300, 280});                 // bottom edge
+        click(&canvas, {280, 300});                 // left edge
+        check(doc.elements().size() == n, "2-tangent waits for placement");
+        click(&canvas, {286, 286});
+        check(doc.elements().size() == ++n && isCircle({286, 286}, 6), "2-tangent circle in the corner");
+
+        canvas.setCircleMode(C::Circle3Tangent);
+        click(&canvas, {310, 280});                 // bottom
+        click(&canvas, {280, 310});                 // left
+        click(&canvas, {310, 320});                 // top
+        click(&canvas, {298, 300});
+        check(doc.elements().size() == ++n && isCircle({300, 300}, 20), "3-tangent circle");
+
+        click(&canvas, {600, 600});                 // empty space: no edge
+        QTest::keyClick(&canvas, Qt::Key_Escape);
+        check(doc.elements().size() == n, "missed edge pick and Esc add nothing");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

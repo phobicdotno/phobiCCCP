@@ -1,4 +1,5 @@
 #include "canvas.h"
+#include "sketchgeom.h"
 #include "backgroundimage.h"
 #include "sketch.h"
 #include <QApplication>
@@ -664,12 +665,11 @@ void Canvas::setTool(Tool t)
     }
     switch (t) {
     case Select:      emit statusHint(tr("Select — click/drag to select, drag to move, Del to delete, right-click for Convert to path")); break;
-    case DrawCircle:  emit statusHint(tr("Circle — press at center, drag to radius")); break;
-    case DrawRect:    emit statusHint(tr("Rectangle — drag corner to corner; hold Ctrl to drag from the center")); break;
+    case DrawCircle:
+    case DrawRect:    resetSketch(); sketchHint(); break;
     case DrawEllipse: emit statusHint(tr("Ellipse — drag across its bounding box; hold Ctrl to drag from the center")); break;
     case DrawSlot:    emit statusHint(tr("Slot — click the first end's center, then the second's, then click to set the width")); break;
     case DrawArc:     emit statusHint(tr("Arc — click the start, then the end, then a point the arc passes through")); break;
-    case DrawCircle3: emit statusHint(tr("3-point circle — click three points on the circle")); break;
     case Trim:        emit statusHint(tr("Trim — click the piece of a curve to cut away, up to where other curves cross it")); break;
     case Extend:      emit statusHint(tr("Extend — click near the end of an open curve to run it on to the next curve")); break;
     case Break:       emit statusHint(tr("Break — click a curve to split it where other curves cross it")); break;
@@ -965,17 +965,6 @@ QPainterPath Canvas::clickPreview(const QPointF &cur) const
     case DrawArc:
         p = sketch::arc3(a, b, cur).painterPath();
         break;
-    case DrawCircle3: {
-        QPointF o;
-        double r = 0;
-        if (sketch::circleThrough(a, b, cur, &o, &r))
-            p.addEllipse(o, r, r);
-        else {
-            p.moveTo(a);
-            p.lineTo(cur);
-        }
-        break;
-    }
     default:
         break;
     }
@@ -1019,15 +1008,6 @@ void Canvas::clickToolPress(const QPointF &pos)
         const PathModel m = sketch::arc3(a, b, c);
         if (!m.isEmpty())
             m_undo->push(new AddCmd(this, m_doc, Element::makeBezierPath(m, layer)));
-        break;
-    }
-    case DrawCircle3: {
-        QPointF o;
-        double r = 0;
-        if (sketch::circleThrough(a, b, c, &o, &r) && r > 0.1)
-            m_undo->push(new AddCmd(this, m_doc, Element::makeCircle(o, r, layer)));
-        else
-            emit statusHint(tr("The three points are in a line — no circle passes through them"));
         break;
     }
     default:
@@ -1222,6 +1202,7 @@ void Canvas::cancelDrawing()
 {
     m_drawing = false;
     m_clicks.clear();
+    m_tanLines.clear();
     m_penNodes.clear();
     m_penDrag = false;
     if (m_preview) {
@@ -1366,6 +1347,37 @@ void Canvas::mousePressEvent(QMouseEvent *event)
     // NodeEdit selects and edits; it never starts a new shape, so it must not
     // reach the drawing branch (which would swallow the click before the
     // scene sees it, leaving nothing selectable with the tool).
+    if (sketchTool() && m_doc && event->button() == Qt::LeftButton) {
+        if (!m_preview) {
+            QPen pen(kPreview);
+            pen.setCosmetic(true);
+            pen.setStyle(Qt::DashLine);
+            m_preview = m_scene->addPath(QPainterPath(), pen);
+        }
+        const QPointF at = mapToScene(event->pos());
+        if (m_tanLines.size() < sketchLinesNeeded()) {
+            QLineF edge;
+            if (pickEdge(at, &edge))
+                m_tanLines.append(edge);
+            else
+                emit statusHint(tr("No edge there — click on an existing line"));
+            m_preview->setPath(sketchPath(snap(at)));
+            if (m_tanLines.size() < sketchLinesNeeded() || !m_clicks.isEmpty())
+                sketchHint();
+            else
+                emit statusHint(tr("Move to choose the circle, click to place it"));
+        } else {
+            m_drawing = true;
+            m_clicks.append(snap(at));
+            if (m_clicks.size() >= sketchPointsNeeded())
+                finishSketch(m_clicks.takeLast());
+            else
+                sketchHint();
+        }
+        event->accept();
+        return;
+    }
+
     if (m_tool != Select && m_tool != DrawPath && m_tool != NodeEdit && m_doc
         && event->button() == Qt::LeftButton) {
         m_drawing = true;
@@ -1476,6 +1488,13 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (sketchTool() && m_preview) {
+        m_preview->setPath(sketchPath(snap(cc)));
+        viewport()->update();
+        event->accept();
+        return;
+    }
+
     if ((m_drawing || (m_tool == DrawPath && !m_penNodes.isEmpty())) && m_preview) {
         const QPointF cur = snap(cc);
         if (m_drawing)
@@ -1541,6 +1560,24 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
             p.insert("radius", qMax(0.1, QLineF(m_resizeCenter, cur).length()));
         }
         editElement(m_resizeId, p);
+        event->accept();
+        return;
+    }
+
+    // Sketch tools take a point per click; a press-drag-release counts the
+    // release as the next point too, so the old drag gesture still works.
+    if (sketchTool() && event->button() == Qt::LeftButton) {
+        if (m_drawing && !m_clicks.isEmpty() && m_doc) {
+            const QPointF cur = snap(mapToScene(event->pos()));
+            if (QLineF(cur, m_clicks.last()).length() > pxToMm(4)) {
+                if (m_clicks.size() + 1 >= sketchPointsNeeded())
+                    finishSketch(cur);
+                else {
+                    m_clicks.append(cur);
+                    sketchHint();
+                }
+            }
+        }
         event->accept();
         return;
     }
@@ -1776,6 +1813,246 @@ void Canvas::wheelEvent(QWheelEvent *event)
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     scale(factor, factor);
     emitZoom();
+}
+
+
+// ---- Fusion-style sketch circles and rectangles ---------------------------
+
+void Canvas::setCircleMode(CircleMode m)
+{
+    m_circleMode = m;
+    if (m_tool == DrawCircle) {
+        cancelDrawing();
+        sketchHint();
+    }
+}
+
+void Canvas::setRectMode(RectMode m)
+{
+    m_rectMode = m;
+    if (m_tool == DrawRect) {
+        cancelDrawing();
+        sketchHint();
+    }
+}
+
+void Canvas::resetSketch()
+{
+    m_clicks.clear();
+    m_tanLines.clear();
+    if (m_preview) {
+        m_scene->removeItem(m_preview);
+        delete m_preview;
+        m_preview = nullptr;
+    }
+}
+
+int Canvas::sketchLinesNeeded() const
+{
+    if (m_tool != DrawCircle)
+        return 0;
+    if (m_circleMode == Circle2Tangent) return 2;
+    if (m_circleMode == Circle3Tangent) return 3;
+    return 0;
+}
+
+int Canvas::sketchPointsNeeded() const
+{
+    if (m_tool == DrawCircle) {
+        switch (m_circleMode) {
+        case CircleCenterDiameter:
+        case Circle2Point:   return 2;
+        case Circle3Point:   return 3;
+        case Circle2Tangent:
+        case Circle3Tangent: return 1;   // where to put it
+        }
+    }
+    return m_rectMode == Rect3Point ? 3 : 2;
+}
+
+void Canvas::sketchHint()
+{
+    const int n = m_clicks.size(), l = m_tanLines.size();
+    QString h;
+    if (m_tool == DrawCircle) {
+        switch (m_circleMode) {
+        case CircleCenterDiameter:
+            h = n == 0 ? tr("Circle (center) — click the center") : tr("Click or drag to the radius");
+            break;
+        case Circle2Point:
+            h = n == 0 ? tr("Circle (2-point) — click one end of the diameter")
+                       : tr("Click the other end of the diameter");
+            break;
+        case Circle3Point:
+            h = n == 0 ? tr("Circle (3-point) — click the first point on the circle")
+                : n == 1 ? tr("Click the second point") : tr("Click the third point");
+            break;
+        case Circle2Tangent:
+            h = l < 2 ? tr("Circle (2-tangent) — click line %1 of 2").arg(l + 1)
+                      : tr("Move to choose the circle, click to place it");
+            break;
+        case Circle3Tangent:
+            h = l < 3 ? tr("Circle (3-tangent) — click line %1 of 3").arg(l + 1)
+                      : tr("Move to choose the circle, click to place it");
+            break;
+        }
+    } else {
+        switch (m_rectMode) {
+        case Rect2Point:
+            h = n == 0 ? tr("Rectangle (2-point) — click the first corner")
+                       : tr("Click or drag to the opposite corner");
+            break;
+        case Rect3Point:
+            h = n == 0 ? tr("Rectangle (3-point) — click the start of the first edge")
+                : n == 1 ? tr("Click the end of the first edge") : tr("Click to set the height");
+            break;
+        case RectCenter:
+            h = n == 0 ? tr("Rectangle (center) — click the center") : tr("Click or drag to a corner");
+            break;
+        }
+    }
+    emit statusHint(h + tr("  ·  Esc cancels"));
+}
+
+// Nearest straight piece of any element's outline within a few pixels.
+// Curves are flattened, so picking one gives its tangent at that spot.
+bool Canvas::pickEdge(const QPointF &at, QLineF *edge) const
+{
+    if (!m_doc)
+        return false;
+    double best = pxToMm(8);
+    bool found = false;
+    for (const Element &e : m_doc->elements()) {
+        if (!e.painterPath.boundingRect().adjusted(-best, -best, best, best).contains(at))
+            continue;
+        for (const QPolygonF &poly : e.painterPath.toSubpathPolygons()) {
+            for (int i = 0; i + 1 < poly.size(); ++i) {
+                const QLineF seg(poly.at(i), poly.at(i + 1));
+                const double len2 = seg.dx() * seg.dx() + seg.dy() * seg.dy();
+                if (len2 < 1e-12)
+                    continue;
+                double t = ((at.x() - seg.x1()) * seg.dx() + (at.y() - seg.y1()) * seg.dy()) / len2;
+                t = qBound(0.0, t, 1.0);
+                const double d = QLineF(seg.pointAt(t), at).length();
+                if (d < best) {
+                    best = d;
+                    *edge = seg;
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+namespace {
+
+struct SketchShape {
+    enum Kind { None, Circle, Polygon } kind = None;
+    QPointF center;
+    double radius = 0;
+    QVector<QPointF> corners;
+};
+
+QVector<QPointF> boxCorners(const QPointF &a, const QPointF &b)
+{
+    const QRectF r = QRectF(a, b).normalized();
+    return {r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()};
+}
+
+} // namespace
+
+static SketchShape sketchShape(Canvas::Tool tool, Canvas::CircleMode cm, Canvas::RectMode rm,
+                               const QVector<QPointF> &pts, const QVector<QLineF> &lines,
+                               const QPointF &cur)
+{
+    SketchShape s;
+    const int n = pts.size();
+    auto circle = [&](const sketch::Circle &c) {
+        if (c.valid) { s.kind = SketchShape::Circle; s.center = c.center; s.radius = c.radius; }
+    };
+    if (tool == Canvas::DrawCircle) {
+        switch (cm) {
+        case Canvas::CircleCenterDiameter:
+            if (n >= 1) circle({pts[0], QLineF(pts[0], cur).length(), true});
+            break;
+        case Canvas::Circle2Point:
+            if (n >= 1) circle({(pts[0] + cur) / 2.0, QLineF(pts[0], cur).length() / 2.0, true});
+            break;
+        case Canvas::Circle3Point:
+            if (n >= 2) circle(sketch::circleThrough3(pts[0], pts[1], cur));
+            break;
+        case Canvas::Circle2Tangent:
+            if (lines.size() >= 2) circle(sketch::circleTangent2(lines[0], lines[1], cur));
+            break;
+        case Canvas::Circle3Tangent:
+            if (lines.size() >= 3) circle(sketch::circleTangent3(lines[0], lines[1], lines[2], cur));
+            break;
+        }
+    } else if (n >= 1) {
+        QVector<QPointF> c;
+        switch (rm) {
+        case Canvas::Rect2Point: c = boxCorners(pts[0], cur); break;
+        case Canvas::RectCenter: c = boxCorners(pts[0] * 2.0 - cur, cur); break;
+        case Canvas::Rect3Point: if (n >= 2) c = sketch::rect3Point(pts[0], pts[1], cur); break;
+        }
+        if (c.size() == 4) { s.kind = SketchShape::Polygon; s.corners = c; }
+    }
+    if (s.kind == SketchShape::Circle && s.radius < 1e-9)
+        s.kind = SketchShape::None;
+    return s;
+}
+
+QPainterPath Canvas::sketchPath(const QPointF &cur) const
+{
+    QPainterPath p;
+    for (const QLineF &l : m_tanLines) {           // picked edges, drawn long
+        const QPointF d = (l.p2() - l.p1()) / qMax(1e-9, l.length()) * pxToMm(30);
+        p.moveTo(l.p1() - d);
+        p.lineTo(l.p2() + d);
+    }
+    if (m_tool == DrawRect && m_rectMode == Rect3Point && m_clicks.size() == 1) {
+        p.moveTo(m_clicks[0]);                     // first edge rubber band
+        p.lineTo(cur);
+    }
+    if (m_tool == DrawCircle && m_circleMode == Circle3Point && m_clicks.size() == 1) {
+        p.moveTo(m_clicks[0]);
+        p.lineTo(cur);
+    }
+    if (m_tanLines.size() < sketchLinesNeeded())
+        return p;
+    const SketchShape s = sketchShape(m_tool, m_circleMode, m_rectMode, m_clicks, m_tanLines, cur);
+    if (s.kind == SketchShape::Circle)
+        p.addEllipse(s.center, s.radius, s.radius);
+    else if (s.kind == SketchShape::Polygon)
+        p.addPolygon(QPolygonF(s.corners) << s.corners.first());
+    return p;
+}
+
+void Canvas::finishSketch(const QPointF &cur)
+{
+    const SketchShape s = sketchShape(m_tool, m_circleMode, m_rectMode, m_clicks, m_tanLines, cur);
+    resetSketch();
+    m_drawing = false;
+    if (m_doc) {
+        const QJsonObject layer = m_doc->defaultLayer();
+        if (s.kind == SketchShape::Circle && s.radius > 0.05) {
+            m_undo->push(new AddCmd(this, m_doc, Element::makeCircle(s.center, s.radius, layer)));
+        } else if (s.kind == SketchShape::Polygon) {
+            const QRectF box = QPolygonF(s.corners).boundingRect();
+            if (QLineF(s.corners[0], s.corners[1]).length() > 0.05
+                && QLineF(s.corners[1], s.corners[2]).length() > 0.05) {
+                // A tilted rectangle has no CC rectangle form: it becomes a path.
+                if (sketch::isAxisAligned(s.corners))
+                    m_undo->push(new AddCmd(this, m_doc, Element::makeRectangle(
+                        box.center(), box.width(), box.height(), layer)));
+                else
+                    m_undo->push(new AddCmd(this, m_doc,
+                        Element::makePath(s.corners, true, layer)));
+            }
+        }
+    }
+    sketchHint();
 }
 
 } // namespace c2d
