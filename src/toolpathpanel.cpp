@@ -143,6 +143,11 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
             a->setToolTip(QStringLiteral(
                 "V-bit chamfer along the selected edges — "
                 "phobiCCCP-only type; Carbide Create does not read it"));
+        } else if (k.type == QLatin1String("adaptive_toolpath")) {
+            a->setToolTip(QStringLiteral(
+                "Adaptive clearing: pocket the selected shapes with a light, "
+                "steady bite at a deep stepdown — "
+                "phobiCCCP-only type; Carbide Create does not read it"));
         }
         const QString type = k.type;
         connect(a, &QAction::triggered, this, [this, type] { newToolpath(type); });

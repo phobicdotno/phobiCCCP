@@ -746,7 +746,64 @@ int main(int argc, char *argv[])
               "chamfer with an end mill is refused");
     }
 
-    // --- the factory makes all three with working defaults -------------------
+    // --- adaptive: helix entry, passes repeated per level, inside the pocket --
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({40, 30}, 60, 40, layer));
+        r.addToolpath("adaptive_toolpath",
+                      {{"end_depth", "6.000"}, {"stepdown", 3.0}, {"stepover", 0.6},
+                       {"ramp_angle", 3}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "adaptive exports");
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        const double R = 6.35 / 2;
+        check(bb.left() >= 10 + R - 1e-3 && bb.right() <= 70 - R + 1e-3
+              && bb.top() >= 10 + R - 1e-3 && bb.bottom() <= 50 - R + 1e-3,
+              "adaptive keeps the tool inside the pocket");
+        check(bb.width() > 60 - 2 * R - 0.1 && bb.height() > 40 - 2 * R - 0.1,
+              "adaptive reaches the walls");
+        check(approx(minZ, -6, 1e-6), "adaptive depth");
+        // Two levels, each entered on a helix that sinks gently.
+        int helixArcs = 0;
+        bool gentle = true;
+        double pz = 0;
+        QVector<double> levels;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Arc && op.z < pz - 1e-9) {
+                ++helixArcs;
+                gentle = gentle && pz - op.z < 1.0;
+            }
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc) {
+                if (op.z < -1e-9 && !levels.contains(op.z) && (op.z == -3 || op.z == -6))
+                    levels.append(op.z);
+            }
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc)
+                pz = op.z;
+        }
+        check(helixArcs >= 2 * 3 && gentle, "adaptive enters each level on a gentle helix");
+        check(levels.size() == 2, "adaptive cuts at both levels");
+        // No straight plunge deeper than the hop clearance above the last floor.
+        bool softPlunges = true;
+        double px = 0, py = 0;
+        pz = 10;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Feed && approx(op.x, px) && approx(op.y, py) && op.z < pz - 1e-9)
+                softPlunges = softPlunges && pz - op.z <= 3.0 + 1.0 + 1e-6;
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                px = op.x; py = op.y; pz = op.z;
+            }
+        }
+        check(softPlunges, "adaptive never plunges more than a level into material");
+
+        Rig narrow;
+        narrow.addShape(c2d::Element::makeRectangle({40, 30}, 60, 5, layer));
+        narrow.addToolpath("adaptive_toolpath", {});
+        const c2d::GcodeResult gn = c2d::exportGcode(narrow.doc);
+        check(gn.done.isEmpty() && gn.skipped.size() == 1, "adaptive in a slot narrower than the tool is reported once");
+    }
+
+    // --- the factory makes all four with working defaults --------------------
     {
         c2d::Document doc;
         doc.setParam("width", "200");
@@ -759,10 +816,12 @@ int main(int argc, char *argv[])
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("face_toolpath"), {}));
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("bore_toolpath"), {hole.id}));
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("chamfer_toolpath"), {box.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("adaptive_toolpath"), {box.id}));
         check(c2d::toolpathLabel("chamfer_toolpath") == QLatin1String("2D Chamfer"),
               "2D Chamfer is in the New menu");
         const c2d::GcodeResult g = c2d::exportGcode(doc);
-        check(g.done.size() == 3 && g.skipped.isEmpty(), "face, bore and chamfer defaults all export");
+        check(g.done.size() == 4 && g.skipped.isEmpty(),
+              "face, bore, chamfer and adaptive defaults all export");
         const c2d::Toolpath ch = doc.toolpaths().at(2);
         check(ch.json.value("tool").toObject().value("angle").toDouble() > 0,
               "chamfer gets a V-bit from the library");

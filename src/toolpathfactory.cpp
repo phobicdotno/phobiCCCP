@@ -21,6 +21,7 @@ const QVector<ToolpathKind> &toolpathKinds()
         {QStringLiteral("face_toolpath"), QStringLiteral("Face")},
         {QStringLiteral("bore_toolpath"), QStringLiteral("Bore")},
         {QStringLiteral("chamfer_toolpath"), QStringLiteral("2D Chamfer")},
+        {QStringLiteral("adaptive_toolpath"), QStringLiteral("Adaptive")},
     };
     return kinds;
 }
@@ -190,6 +191,7 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
     const bool face = type == QLatin1String("face_toolpath");
     const bool bore = type == QLatin1String("bore_toolpath");
     const bool chamfer = type == QLatin1String("chamfer_toolpath");
+    const bool adaptive = type == QLatin1String("adaptive_toolpath");
     const ToolPick tp = pickTool(doc, (vcarve || chamfer) ? VBit : engrave ? Engraver : Flat);
 
     QJsonObject j;
@@ -333,6 +335,18 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("side"), QStringLiteral("outside"));
         j.insert(QStringLiteral("stepdown"), tp.stepdown);
         j.insert(QStringLiteral("tolerance"), 0.01);
+    } else if (adaptive) {
+        // Light radial bite (a tenth of the tool), deep stepdown (one tool
+        // diameter, capped at the depth), helix entries at `ramp_angle`.
+        stem = QStringLiteral("Adaptive");
+        const double dia = tp.tool.value("diameter").toDouble(6.35);
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.insert(QStringLiteral("end_depth"), depthString(doc, 2.54));
+        j.insert(QStringLiteral("stepdown"), dia);
+        j.insert(QStringLiteral("stepover"), 0.1 * dia);
+        j.insert(QStringLiteral("stock_to_leave"), 0);
+        j.insert(QStringLiteral("climb"), true);
+        j.insert(QStringLiteral("ramp_angle"), 2);
     }
     j.insert(QStringLiteral("name"), nextName(doc, type, stem));
 

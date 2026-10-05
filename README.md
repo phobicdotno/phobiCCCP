@@ -53,6 +53,8 @@ Linux, built on the reverse-engineered format documentation in
 - **Engrave**: outline, hatch fill (spacing, angle, crosshatch) or both
 - **Face** (flatten the stock), **Bore** (helical, per circle) and **2D
   Chamfer** (V-bit bevel along edges, inside or outside), Fusion-style
+- **Adaptive clearing** (Fusion's 2D Adaptive): pockets with a light, steady
+  radial bite at a deep stepdown, helix entries, no slotting
 - **3D modelling** (Model tab): components from vectors (flat / round / angle
   / dome / smooth), images as heightmaps, tiled textures, STL import; the
   relief is stored in the .c2d and drives the 3D toolpaths

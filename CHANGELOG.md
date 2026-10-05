@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.4.94 (build 34) — 2026-10-05
+
+**CAM**
+- **Adaptive** toolpath (Fusion 360's 2D Adaptive; a phobiCCCP-only type
+  that Carbide Create does not read). It clears the selected closed shapes
+  without the cutter ever taking much more than `stepover` of radial bite,
+  so `stepdown` can be about a tool diameter instead of slotting at a
+  fraction of it. Each part of the region is entered on a helix at its
+  widest spot (`ramp_angle`, default 2°). From there the cleared area grows
+  outward pass by pass. Where a pass would bury more of the cutter than the
+  limit (1.5× the straight-front engagement, at least +10°), as at the
+  junctions between the growing front and a wall, the step shrinks, down to
+  an eighth of the stepover. Passes run climb unless `climb` is off and
+  leave `stock_to_leave` on the walls. Between passes the tool stays down
+  over cleared ground, hops just over the last level's floor (around
+  islands along their outline), or goes up to safe Z only when nothing else
+  is clear. Areas narrower than the tool are reported, not cut. New defaults:
+  stepover a tenth of the tool, stepdown one tool diameter.
+
 ## v0.4.93 (build 33) — 2026-10-05
 
 **CAM** (Fusion 360's 2D Face, Bore and 2D Chamfer; phobiCCCP-only toolpath

@@ -1,4 +1,5 @@
 #include "gcodeexport.h"
+#include "adaptive.h"
 #include "c2ddocument.h"
 #include "cam3d.h"
 #include "heightmodel.h"
@@ -919,6 +920,23 @@ public:
         m_ops.append(Op::rapid(m_x, m_y, m_safeZ));
     }
 
+    // Rapid to an explicit Z (never above the safe height): the low hops of
+    // adaptive clearing, over ground already cut.
+    void rapidAt(const QPointF &p, double z)
+    {
+        m_ops.append(Op::rapid(p.x(), p.y(), qMin(z, m_safeZ)));
+        m_x = p.x();
+        m_y = p.y();
+    }
+
+    // An arc (helical when z differs from the current depth) around ctr.
+    void arcTo(const QPointF &to, double z, const QPointF &ctr, bool cw)
+    {
+        m_ops.append(Op::arcTo(to.x(), to.y(), z, ctr.x() - m_x, ctr.y() - m_y, cw, m_feed));
+        m_x = to.x();
+        m_y = to.y();
+    }
+
     void runJob(const Job &job, const CutParams &cp)
     {
         rapidTo(job.start());
@@ -1150,8 +1168,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         const bool face = (t.type == QLatin1String("face_toolpath"));
         const bool bore = (t.type == QLatin1String("bore_toolpath"));
         const bool chamfer = (t.type == QLatin1String("chamfer_toolpath"));
+        const bool adaptive = (t.type == QLatin1String("adaptive_toolpath"));
         if (!contour && !pocket && !cutout && !drilling && !keyhole && !texture
-            && !vcarve && !engrave && !rough3d && !finish3d && !face && !bore && !chamfer) {
+            && !vcarve && !engrave && !rough3d && !finish3d && !face && !bore && !chamfer
+            && !adaptive) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -1385,6 +1405,109 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 em.retract();
                 lastPos = ctr;
             }
+        } else if (adaptive) {
+            // ADAPTIVE (phobiCCCP type, Fusion's 2D Adaptive): the closed
+            // vectors cleared without the cutter ever taking much more than
+            // `stepover` of radial bite, so `stepdown` can be deep (about a
+            // tool diameter) without slotting. adaptive.cpp plans the 2D
+            // passes once; every depth level repeats them: a helix down at
+            // `ramp_angle` in each part's widest spot, then the passes,
+            // joined at depth, by a low hop just over the previous level's
+            // floor, or through safe Z.
+            QVector<const Element *> closedEls;
+            for (const Element *e : elems)
+                if (vec::isClosed(*e))
+                    closedEls.append(e);
+            if (closedEls.isEmpty()) {
+                res.skipped << QStringLiteral("%1 (needs closed vectors)").arg(name);
+                continue;
+            }
+            QVector<QPolygonF> rings;
+            for (QPolygonF p : regionOf(closedEls).toSubpathPolygons())
+                if (p.size() > 2) {
+                    closeLoop(p);
+                    rings.append(p);
+                }
+            adaptive::Params ap;
+            ap.toolR = toolR;
+            ap.stepover = qBound(0.02 * toolR, numOr(j.value("stepover"), 0.2 * toolR), toolR);
+            ap.leave = qMax(0.0, numOr(j.value("stock_to_leave"), 0));
+            ap.climb = j.value("climb").toBool(true);
+            const adaptive::Plan plan = adaptive::plan(rings, ap, [&] {
+                return watch && watch->stop(myIndex, tpTotal, name);
+            });
+            if (watch && watch->stop(myIndex, tpTotal, name)) {
+                res.cancelled = true;
+                break;
+            }
+            if (!plan.available) {
+                res.skipped << QStringLiteral("%1 (adaptive needs Clipper2)").arg(name);
+                continue;
+            }
+            if (plan.unreached)
+                res.skipped << QStringLiteral("%1 (%2 area(s) narrower than the tool)")
+                                   .arg(name).arg(plan.unreached);
+            if (plan.moves.isEmpty()) {
+                if (!plan.unreached)
+                    res.skipped << QStringLiteral("%1 (nothing the tool fits in)").arg(name);
+                continue;
+            }
+            const double ramp = qBound(0.5, numOr(j.value("ramp_angle"), 2.0), 15.0);
+            const double clear = 1.0;   // hops and plunges start this far above the last floor
+            double prevZ = cp.zTop;
+            while (prevZ > cp.zBot + 1e-9) {
+                const double z = qMax(cp.zBot, prevZ - cp.stepdown);
+                for (const adaptive::Move &m : plan.moves) {
+                    if (m.kind == adaptive::Move::Helix) {
+                        const QPointF ctr = m.center;
+                        const QPointF s0 = ctr + QPointF(m.radius, 0), s1 = ctr - QPointF(m.radius, 0);
+                        const double pitch = qMax(0.02, 2 * M_PI * m.radius
+                                                            * qTan(qDegreesToRadians(ramp)));
+                        em.retract();
+                        em.rapidTo(s0);
+                        em.rapidAt(s0, prevZ + clear);
+                        double hz = prevZ + clear;
+                        bool atS0 = true;
+                        while (hz > z + 1e-9) {   // half a turn at a time
+                            hz = qMax(z, hz - pitch / 2);
+                            em.arcTo(atS0 ? s1 : s0, hz, ctr, !ap.climb);
+                            atS0 = !atS0;
+                        }
+                        for (int half = 0; half < 2; ++half) {   // the flat lap at depth
+                            em.arcTo(atS0 ? s1 : s0, z, ctr, !ap.climb);
+                            atS0 = !atS0;
+                        }
+                        if (!atS0)   // odd number of half turns: round to s0
+                            em.arcTo(s0, z, ctr, !ap.climb);
+                        continue;
+                    }
+                    const QPointF start = m.path.first();
+                    switch (m.link) {
+                    case adaptive::Move::StayDown:
+                        em.feedAt(start, z, feed);
+                        break;
+                    case adaptive::Move::Lift:
+                        // Everything above the previous level is gone over
+                        // the whole pocket, so a hop just above it is clear.
+                        em.rapidAt(em.pos(), prevZ + clear);
+                        for (const QPointF &v : m.via)
+                            em.rapidAt(v, prevZ + clear);
+                        em.rapidAt(start, prevZ + clear);
+                        em.plungeTo(start, z);
+                        break;
+                    case adaptive::Move::Retract:
+                        em.retract();
+                        em.rapidTo(start);
+                        em.rapidAt(start, prevZ + clear);
+                        em.plungeTo(start, z);
+                        break;
+                    }
+                    em.followFitted(m.path, z);
+                }
+                prevZ = z;
+            }
+            em.retract();
+            lastPos = em.pos();
         } else if (chamfer) {
             // 2D CHAMFER (phobiCCCP type, Fusion's 2D Chamfer): a V-bit runs
             // `tip_offset` off the vectors on the air side, deep enough that
