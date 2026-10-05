@@ -21,6 +21,9 @@ Linux, built on the reverse-engineered format documentation in
 - **Mirror** horizontally / vertically, **Grid array** (columns × rows,
   edge-to-edge gap) and **Circular array** (count, center, full turn or arc,
   rotate copies or not); array copies can join the originals' toolpaths
+- **Fillet** and **Chamfer** corners, **Rotate**, **Scale** (percent or
+  target size) and **Move / Copy** by exact distance (Edit → Vectors →
+  Modify); shapes stay circles / rectangles / polygons wherever they can
 - **Bezier splines**: pen-style Path tool (click = corner, drag = smooth
   handles) and a **Node edit** tool (N): drag anchors/handles, insert
   (double-click), delete, corner/smooth/symmetric, convert shapes and text to

@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.4.90 (build 30) — 2026-10-05
+
+**Vector editing** (Fusion 360 sketch Modify tools)
+- **Fillet corners…** (Ctrl+Alt+E) rounds every sharp corner between two
+  straight edges of the selected vectors with a tangent arc of the given
+  radius; **Chamfer corners…** (Ctrl+Alt+K) bevels them instead. A corner
+  whose edges are too short is cut as far as they allow, sharing an edge
+  evenly with its neighbour, so a 10 mm square filleted at 5 mm or more comes
+  out round. Corners next to a curve and the ends of open paths are left as
+  they are, and circles and text have no corners to cut.
+- **Rotate…** (Ctrl+Alt+R) by any angle about the selection's center, plus
+  one-click 90° turns either way.
+- **Scale…** (Ctrl+Alt+S) about the selection's center, by percent or to a
+  width and height in mm, proportions locked or free. A circle scaled evenly
+  stays a circle with a new radius, a rectangle scaled on either axis stays a
+  rectangle, a regular polygon scaled evenly keeps its sides; only a shape
+  stretched out of its kind (a circle into an ellipse) becomes a path.
+- **Move / Copy…** moves the selection by an exact X / Y distance, or leaves
+  it in place and adds a row of copies, each one step further on, joined to
+  the originals' toolpaths like the arrays.
+- All five are in Edit → Vectors → Modify and on the Vectors icon bar; ids are
+  kept, so toolpaths keep machining what they did, and each is one undo step.
+
+**Testing**
+- `vectorops` checks the geometry: fillet arcs round to 2 microns, the area
+  each fillet and chamfer removes, oversized fillets, open paths, and which
+  shapes stay parametric under rotate and scale.
+- `vectoractions` runs each one through the real actions and undo stack.
+
 ## v0.4.89 (build 29) — 2026-10-03
 
 **Vector editing**

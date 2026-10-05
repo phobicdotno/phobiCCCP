@@ -146,10 +146,66 @@ int main(int argc, char *argv[])
     undo->undo();
     check(doc.elements().size() == 3, "undo circular");
 
+    // --- rotate / scale -----------------------------------------------------------
+    canvas->selectIds({hole.id, tri.id});   // selection box (8,0)-(30,12), center (19,6)
+    va.rotate(180);
+    check(undo->count() == base + 1, "rotate is one undo step");
+    check(doc.elementById(hole.id)->geometryType == "circle" &&
+          nearRect(doc.elementById(hole.id)->painterPath.boundingRect(), QRectF(26, 0, 4, 4)),
+          "half turn about the selection center moves the circle across");
+    check(nearRect(doc.elementById(tri.id)->painterPath.boundingRect(), QRectF(8, 6, 10, 6)),
+          "half turn flips the triangle into the other corner");
+    undo->undo();
+    check(nearRect(doc.elementById(hole.id)->painterPath.boundingRect(), QRectF(8, 8, 4, 4)),
+          "undo rotate");
+
+    canvas->selectIds({hole.id});
+    va.scale(2, 2);
+    check(doc.elementById(hole.id)->geometryType == "circle" &&
+          nearRect(doc.elementById(hole.id)->painterPath.boundingRect(), QRectF(6, 6, 8, 8)),
+          "scaled circle grows about its center and stays a circle");
+    check(refs(doc, drill.uuid) == QStringList{hole.id}, "scale keeps the toolpath's vector");
+    undo->undo();
+
+    // --- move / copy ----------------------------------------------------------------
+    va.moveCopy(5, -1, 0, true);
+    check(doc.elements().size() == 3 &&
+          nearRect(doc.elementById(hole.id)->painterPath.boundingRect(), QRectF(13, 7, 4, 4)),
+          "move by an exact distance");
+    undo->undo();
+    va.moveCopy(10, 0, 3, true);
+    check(doc.elements().size() == 6 && refs(doc, drill.uuid).size() == 4,
+          "three stepped copies, all drilled");
+    check(nearRect(doc.elements().last().painterPath.boundingRect(), QRectF(38, 8, 4, 4)),
+          "the last copy is three steps on");
+    undo->undo();
+    check(doc.elements().size() == 3 && refs(doc, drill.uuid) == QStringList{hole.id}, "undo copy");
+
+    // --- fillet / chamfer -----------------------------------------------------------
+    canvas->selectIds({hole.id, tri.id, other.id});
+    va.corners(vec::CornerStyle::Fillet, 0.5);
+    check(undo->count() == base + 1, "fillet is one undo step");
+    check(doc.elementById(hole.id)->geometryType == "circle", "circle is left alone");
+    check(doc.elementById(tri.id)->geometryType == "path" &&
+          Element::pathModel(*doc.elementById(tri.id)).subs[0].nodes.size() == 6,
+          "each triangle corner is rounded");
+    check(doc.elementById(other.id)->geometryType == "path" &&
+          refs(doc, unrelated.uuid) == QStringList{other.id}, "filleted rectangle keeps its id");
+    undo->undo();
+    check(doc.elementById(other.id)->geometryType == "rectangle", "undo fillet");
+    canvas->selectIds({hole.id});
+    const int before = undo->index();
+    va.corners(vec::CornerStyle::Chamfer, 1);
+    check(undo->index() == before, "nothing to chamfer, no command");
+
     // Nothing selected: nothing happens.
     canvas->selectIds({});
     va.mirror(vec::Axis::Vertical);
     va.gridArray(2, 2, 0, 0, true);
+    va.rotate(45);
+    va.scale(2, 2);
+    va.moveCopy(1, 1, 2, true);
+    va.corners(vec::CornerStyle::Fillet, 1);
     check(undo->index() == base, "no selection, no command");
 
     std::printf("OK: %d checks passed\n", g_checks);

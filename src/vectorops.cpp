@@ -427,23 +427,56 @@ Element transformElement(const Element &e, const QTransform &t)
                     || e.geometryType == QLatin1String("regular_polygon");
     if (shape && e.raw.contains("center")) {
         const QPointF c = jsonPt(e.raw.value("center"));
-        const QPointF moved = t.map(c) - c;
-        Element tr = e;
-        tr.translate(moved.x(), moved.y());
-        // A circle is the same circle under any rotation or reflection.
-        if (e.geometryType == QLatin1String("circle"))
-            return tr;
+        const QPointF nc = t.map(c);
+        // How the transform scales: lengths along x and y, and whether it
+        // keeps angles (rotation / reflection / uniform scale).
+        const double sx = std::hypot(t.m11(), t.m12()), sy = std::hypot(t.m21(), t.m22());
+        const bool similar = std::fabs(sx - sy) < 1e-9 * qMax(1.0, sx)
+                          && std::fabs(t.m11() * t.m21() + t.m12() * t.m22()) < 1e-9 * qMax(1.0, sx * sy);
+        const bool rigid = similar && std::fabs(sx - 1.0) < 1e-9;
+        Element cand;
+        if (rigid) {
+            cand = e;
+            const QPointF moved = nc - c;
+            cand.translate(moved.x(), moved.y());
+            // A circle is the same circle under any rotation or reflection.
+            if (e.geometryType == QLatin1String("circle"))
+                return cand;
+        } else {
+            QHash<QString, double> p;
+            p.insert("cx", nc.x());
+            p.insert("cy", nc.y());
+            if (e.geometryType == QLatin1String("circle")) {
+                if (!similar)   // stretched: an ellipse, which only a path can be
+                    return Element::withPathModel(e, mapModel(Element::pathModel(e), t));
+                p.insert("radius", e.raw.value("radius").toDouble() * sx);
+                return Element::regen(e, p);
+            }
+            if (e.geometryType == QLatin1String("rectangle")) {
+                if (similar) {
+                    p.insert("width", e.raw.value("width").toDouble() * sx);
+                    p.insert("height", e.raw.value("height").toDouble() * sx);
+                } else if (std::fabs(t.m12()) < 1e-12 && std::fabs(t.m21()) < 1e-12) {
+                    p.insert("width", e.raw.value("width").toDouble() * std::fabs(t.m11()));
+                    p.insert("height", e.raw.value("height").toDouble() * std::fabs(t.m22()));
+                }
+            } else if (similar) {
+                p.insert("radius", e.raw.value("radius").toDouble() * sx);
+            }
+            cand = Element::regen(e, p);
+        }
         const PathModel target = mapModel(Element::pathModel(e), t);
-        if (sameOutline(Element::pathModel(tr), target))
-            return tr;   // symmetric under t: a rectangle flipped, a hexagon turned by 60 deg
-        if (e.geometryType == QLatin1String("regular_polygon") && !target.isEmpty()
+        if (sameOutline(Element::pathModel(cand), target))
+            return cand;   // symmetric under t: a rectangle flipped, a hexagon turned by 60 deg
+        if (similar && e.geometryType == QLatin1String("regular_polygon") && !target.isEmpty()
             && !target.subs.first().nodes.isEmpty()) {
             // Still a regular polygon, just turned: the rotation key is the
             // angle of its first vertex about the center.
-            const QPointF v = target.subs.first().nodes.first().p - t.map(c);
+            const QPointF v = target.subs.first().nodes.first().p - nc;
             QHash<QString, double> p;
-            p.insert("cx", t.map(c).x());
-            p.insert("cy", t.map(c).y());
+            p.insert("cx", nc.x());
+            p.insert("cy", nc.y());
+            p.insert("radius", e.raw.value("radius").toDouble() * sx);
             p.insert("rotation", qRadiansToDegrees(std::atan2(v.y(), v.x())));
             const Element poly = Element::regen(e, p);
             if (sameOutline(Element::pathModel(poly), target))
@@ -526,6 +559,159 @@ QVector<Element> copyElements(const QVector<Element> &els, const QTransform &t)
         out.append(Element::fromJson(o));
     }
     return out;
+}
+
+// ---- rotate / scale --------------------------------------------------------
+
+QTransform rotateTransform(QPointF center, double deg)
+{
+    QTransform t;
+    t.translate(center.x(), center.y());
+    t.rotate(deg);
+    t.translate(-center.x(), -center.y());
+    return t;
+}
+
+QTransform scaleTransform(QPointF anchor, double sx, double sy)
+{
+    QTransform t;
+    t.translate(anchor.x(), anchor.y());
+    t.scale(sx, sy);
+    t.translate(-anchor.x(), -anchor.y());
+    return t;
+}
+
+// ---- fillet / chamfer -------------------------------------------------------
+
+namespace {
+
+QPointF unit(const QPointF &v)
+{
+    const double l = std::hypot(v.x(), v.y());
+    return l > 0 ? v / l : QPointF();
+}
+
+double len(const QPointF &v) { return std::hypot(v.x(), v.y()); }
+
+// The segment arriving at / leaving node i is a straight line.
+bool straightIn(const SubPath &s, int i)
+{
+    const int n = s.nodes.size();
+    if (!s.closed && i == 0)
+        return false;
+    const PathNode &prev = s.nodes.at((i - 1 + n) % n);
+    return !prev.hasOut() && !s.nodes.at(i).hasIn();
+}
+
+bool straightOut(const SubPath &s, int i)
+{
+    const int n = s.nodes.size();
+    if (!s.closed && i == n - 1)
+        return false;
+    const PathNode &next = s.nodes.at((i + 1) % n);
+    return !s.nodes.at(i).hasOut() && !next.hasIn();
+}
+
+// A sharp corner between two straight segments, turning by more than 1°
+// (anything less is a flattened curve, not a corner).
+bool isCorner(const SubPath &s, int i)
+{
+    const int n = s.nodes.size();
+    if (n < 3 && s.closed)
+        return false;
+    if (!straightIn(s, i) || !straightOut(s, i))
+        return false;
+    const QPointF p = s.nodes.at(i).p;
+    const QPointF a = s.nodes.at((i - 1 + n) % n).p - p;
+    const QPointF b = s.nodes.at((i + 1) % n).p - p;
+    if (len(a) < 1e-9 || len(b) < 1e-9)
+        return false;
+    const double cosA = QPointF::dotProduct(unit(a), unit(b));
+    return cosA > -std::cos(qDegreesToRadians(1.0));
+}
+
+} // namespace
+
+PathModel cornerModel(const PathModel &m, CornerStyle style, double size, int *corners)
+{
+    PathModel out;
+    int count = 0;
+    for (const SubPath &s : m.subs) {
+        const int n = s.nodes.size();
+        QVector<bool> corner(n, false);
+        for (int i = 0; i < n; ++i)
+            corner[i] = isCorner(s, i);
+        SubPath r;
+        r.closed = s.closed;
+        for (int i = 0; i < n; ++i) {
+            const PathNode &node = s.nodes.at(i);
+            if (!corner.at(i) || size <= 0) {
+                r.nodes.append(node);
+                continue;
+            }
+            const int ip = (i - 1 + n) % n, in = (i + 1) % n;
+            const QPointF p = node.p;
+            const QPointF a = s.nodes.at(ip).p - p, b = s.nodes.at(in).p - p;
+            const QPointF u = unit(a), v = unit(b);
+            const double phi = std::acos(qBound(-1.0, QPointF::dotProduct(u, v), 1.0));
+            // How far along each edge the cut starts: a neighbouring corner
+            // that is being cut too gets the other half of the shared edge.
+            const double room = qMin(len(a) * (corner.at(ip) ? 0.5 : 1.0),
+                                     len(b) * (corner.at(in) ? 0.5 : 1.0));
+            double d = style == CornerStyle::Fillet ? size / std::tan(phi / 2) : size;
+            d = qMin(d, room);
+            if (d < 1e-9) {
+                r.nodes.append(node);
+                continue;
+            }
+            PathNode t1, t2;
+            t1.p = t1.in = t1.out = p + u * d;
+            t2.p = t2.in = t2.out = p + v * d;
+            if (style == CornerStyle::Fillet) {
+                const double radius = d * std::tan(phi / 2);
+                const double sweep = M_PI - phi;
+                const double h = 4.0 / 3.0 * std::tan(sweep / 4) * radius;
+                t1.out = t1.p - u * h;
+                t2.in = t2.p - v * h;
+            }
+            r.nodes << t1 << t2;
+            ++count;
+        }
+        // Two cuts that met in the middle of an edge leave two nodes on one
+        // spot: fuse them (the first's incoming handle, the second's outgoing).
+        for (int i = 0; r.nodes.size() > 2 && i < r.nodes.size();) {
+            const int j = i + 1 < r.nodes.size() ? i + 1 : (r.closed ? 0 : -1);
+            if (j < 0 || j == i || len(r.nodes.at(i).p - r.nodes.at(j).p) > 1e-9) {
+                ++i;
+                continue;
+            }
+            PathNode f = r.nodes.at(i);
+            f.out = r.nodes.at(j).out;
+            if (f.hasIn() && f.hasOut())
+                f.kind = PathNode::Smooth;
+            r.nodes[i] = f;
+            r.nodes.removeAt(j);
+            if (j < i)
+                --i;
+        }
+        out.subs.append(r);
+    }
+    if (corners)
+        *corners = count;
+    return out;
+}
+
+Element cornerElement(const Element &e, CornerStyle style, double size, int *corners)
+{
+    if (corners)
+        *corners = 0;
+    if (e.geometryType == QLatin1String("text") || e.geometryType == QLatin1String("circle"))
+        return e;
+    int k = 0;
+    const PathModel m = cornerModel(Element::pathModel(e), style, size, &k);
+    if (corners)
+        *corners = k;
+    return k ? Element::withPathModel(e, m) : e;
 }
 
 } // namespace vec

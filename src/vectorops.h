@@ -72,7 +72,7 @@ QVector<QPointF> centerDeltas(const QVector<QRectF> &boxes, Center mode, const Q
 QVector<QPointF> distributeDeltas(const QVector<QRectF> &boxes, Axis axis);
 
 // ---- mirror and array (rigid transforms) --------------------------------
-// Every transform here is rigid (rotation, reflection, translation), and
+// Mirror and the arrays are rigid (rotation, reflection, translation), and
 // elements are moved by it as directly as their geometry type allows, so
 // that what stays parametric stays parametric:
 // - circle: only its center moves;
@@ -111,6 +111,32 @@ QVector<QTransform> circularTransforms(const QRectF &box, QPointF center, int co
 // group id shared by this copy's elements, so copies of a group are groups
 // of their own rather than members of the original.
 QVector<Element> copyElements(const QVector<Element> &els, const QTransform &t);
+
+// ---- rotate / scale ---------------------------------------------------------
+// Rotation by `deg` (counter-clockwise, Y-up) about `center`, and scaling by
+// (sx, sy) about `anchor`. transformElement keeps shapes parametric under
+// these too: a circle scaled uniformly is a circle with a new radius, an
+// axis-aligned rectangle scaled on either axis is a rectangle with a new
+// width and height, a regular polygon scaled uniformly keeps its sides;
+// anything stretched out of its kind (a circle into an ellipse) becomes a
+// path with the same id.
+QTransform rotateTransform(QPointF center, double deg);
+QTransform scaleTransform(QPointF anchor, double sx, double sy);
+
+// ---- fillet / chamfer --------------------------------------------------------
+// Fusion's sketch Fillet and Chamfer, applied to every sharp corner between
+// two straight segments (a turn of more than 1°). Fillet replaces the corner
+// with a tangent circular arc of radius `size` (one cubic, < 0.03% radial
+// error); Chamfer cuts it with a straight bevel `size` mm back along each
+// edge. A corner whose edges are too short is cut as far as they allow,
+// splitting an edge evenly with a neighbouring corner that is cut as well,
+// so a 10 mm square filleted at 5 mm comes out a circle. Corners touching a
+// curve, and open paths' end points, are left alone.
+enum class CornerStyle { Fillet, Chamfer };
+PathModel cornerModel(const PathModel &m, CornerStyle style, double size, int *corners = nullptr);
+// Element form: the result is a `path` with the same id (unchanged, and
+// `corners` 0, when it has no corners — circles and text never do).
+Element cornerElement(const Element &e, CornerStyle style, double size, int *corners = nullptr);
 
 } // namespace vec
 } // namespace c2d
