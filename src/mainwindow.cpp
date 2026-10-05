@@ -214,6 +214,8 @@ MainWindow::MainWindow(QWidget *parent)
     // from Qt 6.4 and the (text, shortcut, receiver, method) replacement only
     // exists from 6.3, so neither is both warning-free and version-neutral.
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
+    fileMenu->addAction(QStringLiteral("&New…"), this, &MainWindow::onNew)
+            ->setShortcut(QKeySequence::New);
     fileMenu->addAction(QStringLiteral("&Open…"), this, &MainWindow::onOpen)
             ->setShortcut(QKeySequence::Open);
     m_recentMenu = fileMenu->addMenu(QStringLiteral("Open &Recent"));
@@ -595,6 +597,36 @@ void MainWindow::updateTitle()
         t = QFileInfo(m_doc.filePath()).fileName() + (m_dirty ? QStringLiteral(" *") : QString())
             + QStringLiteral(" — phobiCCCP");
     setWindowTitle(t);
+}
+
+void MainWindow::onNew()
+{
+    if (!confirmDiscard(QStringLiteral("Save before starting a new file?")))
+        return;
+    bool ok = false;
+    const double w = QInputDialog::getDouble(this, QStringLiteral("New design"),
+        QStringLiteral("Stock width (mm):"), 300, 1, 5000, 2, &ok);
+    if (!ok) return;
+    const double h = QInputDialog::getDouble(this, QStringLiteral("New design"),
+        QStringLiteral("Stock height (mm):"), 300, 1, 5000, 2, &ok);
+    if (!ok) return;
+    const double t = QInputDialog::getDouble(this, QStringLiteral("New design"),
+        QStringLiteral("Stock thickness (mm):"), 19, 0.1, 500, 2, &ok);
+    if (!ok) return;
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Save new design as"), QStringLiteral("untitled.c2d"),
+        QStringLiteral("Carbide Create (*.c2d)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
+        path += QStringLiteral(".c2d");
+    QString err;
+    if (!c2d::Document::createBlank(path, w, h, t, &err)) {
+        QMessageBox::warning(this, QStringLiteral("New failed"), err);
+        return;
+    }
+    m_dirty = false;   // nothing to discard: the question was already asked
+    openFile(path);
 }
 
 void MainWindow::onOpen()

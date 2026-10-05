@@ -38,6 +38,10 @@ public:
     // and new toolpaths persist; layer, model and params are preserved
     // (params.num_toolpaths is kept in sync). Requires a file previously load()ed.
     bool save(const QString &destPath, QString *error = nullptr);
+    // Writes a minimal, empty .c2d container (stock W x H x T mm) at path,
+    // so a design can be started without an existing file to clone from.
+    static bool createBlank(const QString &path, double width, double height,
+                            double thickness, QString *error = nullptr);
 
     QString filePath() const { return m_path; }
     const QHash<QString, QString> &params() const { return m_params; }

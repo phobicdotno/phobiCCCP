@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.4.89 (build 29) — 2026-10-05
+
+**Files**
+- File → New (Ctrl+N) starts a design from scratch. It asks for the stock
+  width, height and thickness, then where to save, and opens the empty design
+  ready to draw on. Until now every tool needed an existing `.c2d` to open
+  first, and with nothing open the canvas silently ignored every click.
+- The new file is a minimal container in the same layout the loader and save
+  expect, with one toolpath group so toolpaths can be added straight away.
+  Carbide Create itself has not yet been tried on a file started this way.
+
+**Look**
+- New icon: a gold star drawn as a vector path, node handles on every corner
+  over its dashed construction lines, on a red tile.
+
+**Testing**
+- New `newdoc` suite: a blank file loads empty with the stock size it was
+  given, takes an element, saves, and reloads with the element intact.
+
 ## v0.4.88 (build 28) — 2026-09-09
 
 **Machine control**
