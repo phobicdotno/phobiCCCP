@@ -309,6 +309,36 @@ QIcon vecIcon(const QString &kind)
             const double a = M_PI / 2 + i * 2 * M_PI / 6;
             p.drawEllipse(QPointF(10 + 6.5 * std::cos(a), 10 - 6.5 * std::sin(a)), 2.2, 2.2);
         }
+    } else if (kind == "rotate") {
+        p.drawArc(QRectF(3, 3, 14, 14), 30 * 16, 270 * 16);
+        p.setBrush(ink);
+        p.drawPolygon(QPolygonF({QPointF(13.5, 1.5), QPointF(17.5, 6.5), QPointF(11.5, 7.5)}));
+    } else if (kind == "scale") {
+        p.drawRect(QRectF(2.5, 9.5, 8, 8));
+        pen.setStyle(Qt::DotLine);
+        p.setPen(pen);
+        p.drawRect(QRectF(2.5, 2.5, 15, 15));
+        pen.setStyle(Qt::SolidLine);
+        p.setPen(pen);
+        p.drawLine(QLineF(10.5, 9.5, 16, 4));
+    } else if (kind == "move") {
+        p.drawLine(QLineF(10, 2, 10, 18));
+        p.drawLine(QLineF(2, 10, 18, 10));
+        p.setBrush(ink);
+        for (const auto &tri : {QPolygonF({QPointF(10, 1), QPointF(7.5, 4.5), QPointF(12.5, 4.5)}),
+                                QPolygonF({QPointF(10, 19), QPointF(7.5, 15.5), QPointF(12.5, 15.5)}),
+                                QPolygonF({QPointF(1, 10), QPointF(4.5, 7.5), QPointF(4.5, 12.5)}),
+                                QPolygonF({QPointF(19, 10), QPointF(15.5, 7.5), QPointF(15.5, 12.5)})})
+            p.drawPolygon(tri);
+    } else if (kind == "fillet") {
+        QPainterPath c;
+        c.moveTo(3, 17);
+        c.lineTo(3, 10);
+        c.arcTo(QRectF(3, 3, 14, 14), 180, -90);
+        c.lineTo(17, 3);
+        p.drawPath(c);
+    } else if (kind == "chamfer") {
+        p.drawPolyline(QPolygonF({QPointF(3, 17), QPointF(3, 9), QPointF(9, 3), QPointF(17, 3)}));
     } else if (kind == "alignh") {
         p.drawLine(QLineF(10, 2, 10, 18));
         p.setBrush(ink);
@@ -405,6 +435,34 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     QAction *circAct = add(m, QStringLiteral("&Circular array…"), QKeySequence(), m_needOne,
         [this] { circularArrayDialog(); },
         QStringLiteral("Copy the selection around a center point"));
+    m->addSeparator();
+    QMenu *mod = m->addMenu(QStringLiteral("&Modify"));
+    QAction *rotAct = add(mod, QStringLiteral("&Rotate…"), A(Qt::Key_R), m_needOne,
+        [this] { rotateDialog(); },
+        QStringLiteral("Turn the selection about its center by an angle  (Ctrl+Alt+R)"));
+    add(mod, QStringLiteral("Rotate 90° counter-clockwise"), QKeySequence(), m_needOne,
+        [this] { rotate(90); });
+    add(mod, QStringLiteral("Rotate 90° clockwise"), QKeySequence(), m_needOne,
+        [this] { rotate(-90); });
+    QAction *scaleAct = add(mod, QStringLiteral("&Scale…"), A(Qt::Key_S), m_needOne,
+        [this] { scaleDialog(); },
+        QStringLiteral("Resize the selection about its center, by percent or to a size  (Ctrl+Alt+S)"));
+    QAction *moveAct = add(mod, QStringLiteral("&Move / Copy…"), QKeySequence(), m_needOne,
+        [this] { moveCopyDialog(); },
+        QStringLiteral("Move the selection by an exact distance, or step copies of it"));
+    mod->addSeparator();
+    QAction *filletAct = add(mod, QStringLiteral("&Fillet corners…"), A(Qt::Key_E), m_needOne,
+        [this] { cornersDialog(vec::CornerStyle::Fillet); },
+        QStringLiteral("Round the sharp corners of the selected vectors  (Ctrl+Alt+E)"));
+    QAction *chamferAct = add(mod, QStringLiteral("&Chamfer corners…"), A(Qt::Key_K), m_needOne,
+        [this] { cornersDialog(vec::CornerStyle::Chamfer); },
+        QStringLiteral("Bevel the sharp corners of the selected vectors  (Ctrl+Alt+K)"));
+    rotAct->setIcon(vecIcon(QStringLiteral("rotate")));
+    scaleAct->setIcon(vecIcon(QStringLiteral("scale")));
+    moveAct->setIcon(vecIcon(QStringLiteral("move")));
+    filletAct->setIcon(vecIcon(QStringLiteral("fillet")));
+    chamferAct->setIcon(vecIcon(QStringLiteral("chamfer")));
+
     mirrorH->setIcon(vecIcon(QStringLiteral("mirrorh")));
     mirrorV->setIcon(vecIcon(QStringLiteral("mirrorv")));
     gridAct->setIcon(vecIcon(QStringLiteral("grid")));
@@ -424,6 +482,9 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
         tb->addAction(a);
     tb->addSeparator();
     for (QAction *a : {mirrorH, mirrorV, gridAct, circAct})
+        tb->addAction(a);
+    tb->addSeparator();
+    for (QAction *a : {rotAct, scaleAct, moveAct, filletAct, chamferAct})
         tb->addAction(a);
 
     updateEnabled();
@@ -649,8 +710,7 @@ void VectorActions::mirror(vec::Axis axis)
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
     const QString dir = axis == vec::Axis::Horizontal ? tr("horizontally") : tr("vertically");
-    m_canvas->undoStack()->push(new ReshapeCmd(m_canvas, m_canvas->document(), before, after,
-        tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir)));
+    pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir));
     emit m_canvas->statusHint(tr("Mirrored %1 vector(s) %2").arg(before.size()).arg(dir));
 }
 
@@ -808,6 +868,232 @@ void VectorActions::circularArrayDialog()
         return;
     circularArray(QPointF(cx->value(), cy->value()), count->value(), span->value(),
                   rotate->isChecked(), join->isChecked());
+}
+
+// ---- modify: rotate, scale, move / copy, fillet, chamfer --------------------
+
+void VectorActions::pushReshape(const QVector<Element> &before, const QVector<Element> &after,
+                                const QString &text)
+{
+    if (before.isEmpty())
+        return;
+    m_canvas->undoStack()->push(
+        new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text));
+}
+
+void VectorActions::rotate(double deg)
+{
+    const QVector<Element> before = orderedSelection();
+    if (before.isEmpty() || qFuzzyIsNull(std::fmod(deg, 360.0)))
+        return;
+    const QTransform t = vec::rotateTransform(selectionBox(before).center(), deg);
+    QVector<Element> after;
+    for (const Element &e : before)
+        after.append(vec::transformElement(e, t));
+    pushReshape(before, after, tr("rotate %1 vector(s) by %2°").arg(before.size()).arg(deg));
+    emit m_canvas->statusHint(tr("Rotated %1 vector(s) by %2°").arg(before.size()).arg(deg));
+}
+
+void VectorActions::scale(double sx, double sy)
+{
+    const QVector<Element> before = orderedSelection();
+    if (before.isEmpty() || sx <= 0 || sy <= 0 || (qFuzzyCompare(sx, 1.0) && qFuzzyCompare(sy, 1.0)))
+        return;
+    const QTransform t = vec::scaleTransform(selectionBox(before).center(), sx, sy);
+    QVector<Element> after;
+    for (const Element &e : before)
+        after.append(vec::transformElement(e, t));
+    pushReshape(before, after,
+                tr("scale %1 vector(s) %2% × %3%").arg(before.size()).arg(sx * 100).arg(sy * 100));
+    emit m_canvas->statusHint(tr("Scaled %1 vector(s) to %2% × %3%")
+                                  .arg(before.size()).arg(sx * 100).arg(sy * 100));
+}
+
+void VectorActions::moveCopy(double dx, double dy, int copies, bool joinToolpaths)
+{
+    const QVector<Element> els = orderedSelection();
+    if (els.isEmpty() || (qFuzzyIsNull(dx) && qFuzzyIsNull(dy)))
+        return;
+    if (copies <= 0) {
+        pushMoves(idsOf(els), QVector<QPointF>(els.size(), QPointF(dx, dy)),
+                  tr("move %1 vector(s)").arg(els.size()));
+        return;
+    }
+    QVector<QTransform> steps;
+    for (int i = 1; i <= copies; ++i)
+        steps.append(QTransform::fromTranslate(i * dx, i * dy));
+    pushCopies(els, steps, joinToolpaths, tr("copy %1 vector(s) ×%2").arg(els.size()).arg(copies));
+}
+
+void VectorActions::corners(vec::CornerStyle style, double size)
+{
+    const QVector<Element> sel = orderedSelection();
+    if (sel.isEmpty() || size <= 0)
+        return;
+    QVector<Element> before, after;
+    int total = 0;
+    for (const Element &e : sel) {
+        int k = 0;
+        const Element r = vec::cornerElement(e, style, size, &k);
+        if (!k)
+            continue;
+        before.append(e);
+        after.append(r);
+        total += k;
+    }
+    const bool fillet = style == vec::CornerStyle::Fillet;
+    if (before.isEmpty()) {
+        emit m_canvas->statusHint(tr("No sharp corners between straight edges in the selection"));
+        return;
+    }
+    pushReshape(before, after, (fillet ? tr("fillet %1 corner(s)") : tr("chamfer %1 corner(s)"))
+                                   .arg(total));
+    emit m_canvas->statusHint((fillet ? tr("Filleted %1 corner(s) at %2 mm")
+                                      : tr("Chamfered %1 corner(s) at %2 mm"))
+                                  .arg(total).arg(size));
+}
+
+static QDialogButtonBox *okCancel(QDialog &dlg, QFormLayout *form)
+{
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->addLayout(form);
+    lay->addWidget(buttons);
+    return buttons;
+}
+
+void VectorActions::rotateDialog()
+{
+    if (orderedSelection().isEmpty())
+        return;
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Rotate"));
+    auto *form = new QFormLayout;
+    auto *angle = new QDoubleSpinBox(&dlg);
+    angle->setRange(-360, 360);
+    angle->setDecimals(3);
+    angle->setSuffix(QStringLiteral(" °"));
+    angle->setValue(90);
+    angle->setToolTip(tr("Positive is counter-clockwise"));
+    form->addRow(tr("Angle"), angle);
+    okCancel(dlg, form);
+    if (dlg.exec() == QDialog::Accepted)
+        rotate(angle->value());
+}
+
+void VectorActions::scaleDialog()
+{
+    const QVector<Element> els = orderedSelection();
+    if (els.isEmpty())
+        return;
+    const QRectF box = selectionBox(els);
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Scale"));
+    auto *form = new QFormLayout;
+    auto pct = [&dlg] {
+        auto *b = new QDoubleSpinBox(&dlg);
+        b->setRange(0.1, 100000);
+        b->setDecimals(3);
+        b->setSuffix(QStringLiteral(" %"));
+        b->setValue(100);
+        return b;
+    };
+    auto *px = pct(), *py = pct();
+    auto *w = mmBox(&dlg, 0.001, 100000, box.width());
+    auto *h = mmBox(&dlg, 0.001, 100000, box.height());
+    auto *lock = new QCheckBox(tr("Keep proportions"), &dlg);
+    lock->setChecked(true);
+    // A line or a row of points has no height to scale (or no width): that
+    // axis can then only follow the other one.
+    w->setEnabled(box.width() > 1e-9);
+    px->setEnabled(box.width() > 1e-9);
+    h->setEnabled(box.height() > 1e-9);
+    py->setEnabled(box.height() > 1e-9);
+    form->addRow(tr("Width"), w);
+    form->addRow(tr("Height"), h);
+    form->addRow(tr("Scale X"), px);
+    form->addRow(tr("Scale Y"), py);
+    form->addRow(QString(), lock);
+    // Four linked fields: whichever was typed in drives the rest.
+    bool busy = false;
+    auto sync = [&](double fx, double fy) {
+        if (busy)
+            return;
+        busy = true;
+        if (lock->isChecked()) {
+            if (fx > 0) fy = fx; else fx = fy;
+        }
+        if (fx > 0) {
+            px->setValue(fx * 100);
+            w->setValue(box.width() * fx);
+        }
+        if (fy > 0) {
+            py->setValue(fy * 100);
+            h->setValue(box.height() * fy);
+        }
+        busy = false;
+    };
+    connect(px, &QDoubleSpinBox::valueChanged, &dlg, [&](double v) { sync(v / 100, -1); });
+    connect(py, &QDoubleSpinBox::valueChanged, &dlg, [&](double v) { sync(-1, v / 100); });
+    connect(w, &QDoubleSpinBox::valueChanged, &dlg, [&](double v) {
+        if (box.width() > 1e-9) sync(v / box.width(), -1); });
+    connect(h, &QDoubleSpinBox::valueChanged, &dlg, [&](double v) {
+        if (box.height() > 1e-9) sync(-1, v / box.height()); });
+    connect(lock, &QCheckBox::toggled, &dlg, [&](bool on) {
+        if (on) sync(px->isEnabled() ? px->value() / 100 : -1, py->value() / 100); });
+    okCancel(dlg, form);
+    if (dlg.exec() == QDialog::Accepted) {
+        const double fx = px->isEnabled() ? px->value() / 100 : py->value() / 100;
+        const double fy = py->isEnabled() ? py->value() / 100 : fx;
+        scale(fx, fy);
+    }
+}
+
+void VectorActions::moveCopyDialog()
+{
+    if (orderedSelection().isEmpty())
+        return;
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Move / Copy"));
+    auto *form = new QFormLayout;
+    auto *dx = mmBox(&dlg, -100000, 100000, 10);
+    auto *dy = mmBox(&dlg, -100000, 100000, 0);
+    auto *copies = new QSpinBox(&dlg);
+    copies->setRange(0, 1000);
+    copies->setSpecialValueText(tr("none (move)"));
+    copies->setToolTip(tr("0 moves the selection; more leaves it where it is and adds that many "
+                          "copies, each one step further"));
+    form->addRow(tr("Move X"), dx);
+    form->addRow(tr("Move Y"), dy);
+    form->addRow(tr("Copies"), copies);
+    QCheckBox *join = finishArrayDialog(dlg, form);
+    join->setEnabled(false);
+    connect(copies, &QSpinBox::valueChanged, &dlg, [join](int n) { join->setEnabled(n > 0); });
+    if (dlg.exec() == QDialog::Accepted)
+        moveCopy(dx->value(), dy->value(), copies->value(), join->isChecked());
+}
+
+void VectorActions::cornersDialog(vec::CornerStyle style)
+{
+    if (orderedSelection().isEmpty())
+        return;
+    const bool fillet = style == vec::CornerStyle::Fillet;
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(fillet ? tr("Fillet corners") : tr("Chamfer corners"));
+    auto *form = new QFormLayout;
+    auto *size = mmBox(&dlg, 0.001, 10000, 3.0);
+    size->setToolTip(fillet ? tr("Radius of the rounded corners")
+                            : tr("How far back along each edge the bevel starts"));
+    form->addRow(fillet ? tr("Radius") : tr("Distance"), size);
+    auto *note = new QLabel(tr("Applies to every sharp corner between two straight edges "
+                               "of the selected vectors."), &dlg);
+    note->setWordWrap(true);
+    form->addRow(note);
+    okCancel(dlg, form);
+    if (dlg.exec() == QDialog::Accepted)
+        corners(style, size->value());
 }
 
 } // namespace c2d

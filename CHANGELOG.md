@@ -1,5 +1,129 @@
 # Changelog
 
+## v0.4.96 (build 36) — 2026-10-05
+
+**CAM**
+- **Adaptive** toolpath (Fusion 360's 2D Adaptive; a phobiCCCP-only type
+  that Carbide Create does not read). It clears the selected closed shapes
+  without the cutter ever taking much more than `stepover` of radial bite,
+  so `stepdown` can be about a tool diameter instead of slotting at a
+  fraction of it. Each part of the region is entered on a helix at its
+  widest spot (`ramp_angle`, default 2°). From there the cleared area grows
+  outward pass by pass. Where a pass would bury more of the cutter than the
+  limit (1.5× the straight-front engagement, at least +10°), as at the
+  junctions between the growing front and a wall, the step shrinks, down to
+  an eighth of the stepover. Passes run climb unless `climb` is off and
+  leave `stock_to_leave` on the walls. Between passes the tool stays down
+  over cleared ground, hops just over the last level's floor (around
+  islands along their outline), or goes up to safe Z only when nothing else
+  is clear. Areas narrower than the tool are reported, not cut. New defaults:
+  stepover a tenth of the tool, stepdown one tool diameter.
+
+## v0.4.95 (build 35) — 2026-10-05
+
+**CAM** (Fusion 360's 2D Face, Bore and 2D Chamfer; phobiCCCP-only toolpath
+types like Engrave, which Carbide Create does not read)
+- **Face**: zig-zag passes that flatten the whole stock, or the box around
+  the vectors you give it, to the end depth. Rows run edge to edge, no
+  further apart than the stepover, and each run goes a tool radius plus
+  1 mm past both ends, so the edges come out clean and every plunge is in
+  the air beside the stock.
+- **Bore**: a helical cut down the wall of each selected circle, `stepdown`
+  per turn, a flat lap at the bottom and a move to the center before lifting.
+  It climbs (counter-clockwise) unless `climb` is off, and leaves
+  `stock_to_leave` on the wall. Circles no wider than the tool are reported
+  rather than plunged. Only the wall is cut, so a blind hole much wider than
+  the tool wants a pocket for its middle.
+- **2D Chamfer**: a V-bit bevels the selected edges `chamfer_width` wide. Its
+  tip runs `tip_offset` off the edge on the air side, outside a part's edge
+  or inside a hole's rim (`side`), and the depth is worked out from the bit
+  angle. It refuses an end mill. Open vectors are traced as they are.
+- All three are in the Toolpaths panel's New menu; a new chamfer picks a
+  V-bit from the tool library.
+
+**Drawing tools**
+- **Measure** (M): drag between two points to read the distance, ΔX, ΔY
+  and angle in the status bar. Nothing is added to the drawing.
+
+**Testing**
+- `geometry` checks each toolpath's g-code: face coverage, overrun and
+  plunges off the stock; bore arcs on the wall, sinking half the pitch per
+  half turn; chamfer offsets and depth on both sides; and the factory
+  defaults exporting cleanly.
+
+## v0.4.94 (build 34) — 2026-10-05
+
+**Drawing tools** (Fusion 360 sketch Trim, Extend and Break)
+- **Trim** (X): click a piece of any curve and it is cut away up to the
+  nearest curves crossing it on either side. Hovering shows the piece in red
+  first. A curve nothing crosses is removed whole; trimming a circle, a
+  rectangle or a polygon leaves an open path.
+- **Extend** (J): click near the end of an open curve and it runs on to the
+  next curve ahead, previewed as a dashed red line. A straight end segment
+  simply grows; a curved end gets a straight continuation along its tangent.
+- **Break** (B): split a curve where other curves cross it, either side of
+  the click, into separate elements you can select, delete or machine on
+  their own. A circle crossed once opens at that point.
+- Crossings include every other vector in the drawing and the curve's own
+  self-crossings. They are found on a fine polyline and then polished on the
+  true curves, so cut ends sit exactly on both curves. Each click is one undo
+  step.
+
+**Testing**
+- `sketch` covers crossings (line, circle, curve-on-curve, self-crossing),
+  trim, break and extend, including the cases that do nothing.
+- `canvas` clicks through all three tools.
+
+## v0.4.93 (build 33) — 2026-10-05
+
+**Drawing tools** (Fusion 360 sketch Create tools)
+- **Ellipse** (E): drag across its bounding box.
+- **Slot** (S): click the centers of both rounded ends, then click once more
+  to set the width; the status bar shows the overall length and width.
+- **3-point arc** (A): click the start, the end, then any point the arc
+  passes through; it bends whichever way that point says, and three points
+  in a line give a straight line.
+- **Ellipse from the center**: hold Ctrl while dragging. (3-point circles
+  and center rectangles come from the Circle and Rectangle drop-downs of
+  v0.4.90.)
+- Esc abandons a half-clicked slot or arc. Ellipses, slots and arcs
+  are bezier paths (one cubic per quarter turn, round to 0.03%), so the node
+  editor, offsets and booleans all work on them.
+
+**Testing**
+- New `sketch` suite: exact end points, roundness, areas and the degenerate
+  cases (collinear points, zero width, coincident centers).
+- `canvas` drives every new tool with real mouse clicks and drags.
+
+## v0.4.92 (build 32) — 2026-10-05
+
+**Vector editing** (Fusion 360 sketch Modify tools)
+- **Fillet corners…** (Ctrl+Alt+E) rounds every sharp corner between two
+  straight edges of the selected vectors with a tangent arc of the given
+  radius; **Chamfer corners…** (Ctrl+Alt+K) bevels them instead. A corner
+  whose edges are too short is cut as far as they allow, sharing an edge
+  evenly with its neighbour, so a 10 mm square filleted at 5 mm or more comes
+  out round. Corners next to a curve and the ends of open paths are left as
+  they are, and circles and text have no corners to cut.
+- **Rotate…** (Ctrl+Alt+R) by any angle about the selection's center, plus
+  one-click 90° turns either way.
+- **Scale…** (Ctrl+Alt+S) about the selection's center, by percent or to a
+  width and height in mm, proportions locked or free. A circle scaled evenly
+  stays a circle with a new radius, a rectangle scaled on either axis stays a
+  rectangle, a regular polygon scaled evenly keeps its sides; only a shape
+  stretched out of its kind (a circle into an ellipse) becomes a path.
+- **Move / Copy…** moves the selection by an exact X / Y distance, or leaves
+  it in place and adds a row of copies, each one step further on, joined to
+  the originals' toolpaths like the arrays.
+- All five are in Edit → Vectors → Modify and on the Vectors icon bar; ids are
+  kept, so toolpaths keep machining what they did, and each is one undo step.
+
+**Testing**
+- `vectorops` checks the geometry: fillet arcs round to 2 microns, the area
+  each fillet and chamfer removes, oversized fillets, open paths, and which
+  shapes stay parametric under rotate and scale.
+- `vectoractions` runs each one through the real actions and undo stack.
+
 ## v0.4.91 (build 31) — 2026-10-05
 
 **Vector editing**

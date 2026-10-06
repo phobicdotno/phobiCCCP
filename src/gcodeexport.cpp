@@ -1,9 +1,11 @@
 #include "gcodeexport.h"
+#include "adaptive.h"
 #include "c2ddocument.h"
 #include "cam3d.h"
 #include "heightmodel.h"
 #include "post_grbl.h"
 #include "vcarve.h"
+#include "vectorops.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -918,6 +920,23 @@ public:
         m_ops.append(Op::rapid(m_x, m_y, m_safeZ));
     }
 
+    // Rapid to an explicit Z (never above the safe height): the low hops of
+    // adaptive clearing, over ground already cut.
+    void rapidAt(const QPointF &p, double z)
+    {
+        m_ops.append(Op::rapid(p.x(), p.y(), qMin(z, m_safeZ)));
+        m_x = p.x();
+        m_y = p.y();
+    }
+
+    // An arc (helical when z differs from the current depth) around ctr.
+    void arcTo(const QPointF &to, double z, const QPointF &ctr, bool cw)
+    {
+        m_ops.append(Op::arcTo(to.x(), to.y(), z, ctr.x() - m_x, ctr.y() - m_y, cw, m_feed));
+        m_x = to.x();
+        m_y = to.y();
+    }
+
     void runJob(const Job &job, const CutParams &cp)
     {
         rapidTo(job.start());
@@ -1146,8 +1165,13 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         const bool engrave = (t.type == QLatin1String("engrave_toolpath"));
         const bool rough3d = (t.type == QLatin1String("3d_rough_toolpath"));
         const bool finish3d = (t.type == QLatin1String("3d_finish_toolpath"));
+        const bool face = (t.type == QLatin1String("face_toolpath"));
+        const bool bore = (t.type == QLatin1String("bore_toolpath"));
+        const bool chamfer = (t.type == QLatin1String("chamfer_toolpath"));
+        const bool adaptive = (t.type == QLatin1String("adaptive_toolpath"));
         if (!contour && !pocket && !cutout && !drilling && !keyhole && !texture
-            && !vcarve && !engrave && !rough3d && !finish3d) {
+            && !vcarve && !engrave && !rough3d && !finish3d && !face && !bore && !chamfer
+            && !adaptive) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -1283,7 +1307,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         }
 
         const QVector<const Element *> elems = referenced(doc, j);
-        if (elems.isEmpty()) {
+        // Facing works on the stock when it has no vectors of its own.
+        const QRectF stock(0, 0, doc.boardWidth(), doc.boardHeight());
+        if (elems.isEmpty() && !(face && stock.width() > 0 && stock.height() > 0)) {
             res.skipped << QStringLiteral("%1 (no vectors)").arg(name);
             continue;
         }
@@ -1292,7 +1318,246 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         Emitter em(body, safeZ, feed, plunge);
 
         QList<Job> jobs;
-        if (drilling || keyhole) {
+        if (face) {
+            // FACE (phobiCCCP type, Fusion's Face): zig-zag passes along X
+            // over the stock, or over the bounding box of the vectors given,
+            // `stepover` apart, each run carried a tool radius + 1 mm past
+            // both ends so the edges come out clean and every plunge is in
+            // the air beside the stock.
+            QRectF area;
+            for (const Element *e : elems)
+                area = area.isNull() ? e->painterPath.boundingRect()
+                                     : area.united(e->painterPath.boundingRect());
+            if (elems.isEmpty())
+                area = stock;
+            const double stepover = qBound(0.05, numOr(j.value("stepover"), toolR), 2 * toolR);
+            const double x0 = area.left() - toolR - 1, x1 = area.right() + toolR + 1;
+            // Rows from one edge to the other, the outermost exactly on the
+            // edges, evenly spread (never wider than the stepover asked for).
+            const int rows = qMax(1, int(std::ceil(area.height() / stepover - 1e-9))) + 1;
+            QPolygonF zig;
+            for (int k = 0; k < rows; ++k) {
+                const double y = rows == 1 ? area.center().y()
+                                           : area.top() + area.height() * k / (rows - 1);
+                const bool fwd = (k % 2) == 0;
+                zig << QPointF(fwd ? x0 : x1, y) << QPointF(fwd ? x1 : x0, y);
+            }
+            Job job;
+            job.rings.append(zig);
+            job.closed = false;
+            jobs.append(job);
+        } else if (bore) {
+            // BORE (phobiCCCP type, Fusion's Bore): a helix down the wall of
+            // each circle, `stepdown` per turn, one flat lap at the bottom,
+            // then out through the center. Climb (counter-clockwise inside a
+            // hole) unless climb is false. Only the wall is cut: a blind hole
+            // much wider than the tool wants a pocket for its middle.
+            const double leave = qMax(0.0, numOr(j.value("stock_to_leave"), 0));
+            const bool climb = j.value("climb").toBool(true);
+            const double pitch = cp.stepdown;
+            int tooSmall = 0;
+            QList<Job> holes;
+            for (const Element *e : elems) {
+                if (e->geometryType != QLatin1String("circle"))
+                    continue;
+                const QJsonArray c = e->raw.value("center").toArray();
+                const QPointF ctr(c.at(0).toDouble(), c.at(1).toDouble());
+                const double R = numOr(e->raw.value("radius"), 0);
+                if (R - leave - toolR < 0.05) {
+                    ++tooSmall;
+                    continue;
+                }
+                Job h;
+                h.rings.append(QPolygonF() << ctr << QPointF(R - leave - toolR, 0));
+                holes.append(h);
+            }
+            if (tooSmall)
+                res.skipped << QStringLiteral("%1 (%2 circle(s) no wider than the tool)")
+                                   .arg(name).arg(tooSmall);
+            if (holes.isEmpty()) {
+                if (!tooSmall)
+                    res.skipped << QStringLiteral("%1 (no circles to bore)").arg(name);
+                continue;
+            }
+            for (const Job &h : orderJobs(holes, lastPos)) {
+                const QPointF ctr = h.rings.first().at(0);
+                const double hr = h.rings.first().at(1).x();
+                const QPointF s0 = ctr + QPointF(hr, 0), s1 = ctr - QPointF(hr, 0);
+                em.rapidTo(s0);
+                em.plungeTo(s0, cp.zTop);
+                double z = cp.zTop;
+                bool atS0 = true;
+                // Half a turn at a time, sinking half the pitch, to the bottom.
+                while (z > cp.zBot + 1e-9) {
+                    z = qMax(cp.zBot, z - pitch / 2);
+                    const QPointF from = atS0 ? s0 : s1, to = atS0 ? s1 : s0;
+                    body.append(Op::arcTo(to.x(), to.y(), z, ctr.x() - from.x(),
+                                          ctr.y() - from.y(), !climb, feed));
+                    atS0 = !atS0;
+                }
+                for (int half = 0; half < 2; ++half) {   // the flat lap at depth
+                    const QPointF from = atS0 ? s0 : s1, to = atS0 ? s1 : s0;
+                    body.append(Op::arcTo(to.x(), to.y(), z, ctr.x() - from.x(),
+                                          ctr.y() - from.y(), !climb, feed));
+                    atS0 = !atS0;
+                }
+                em.feedAt(ctr, cp.zBot, feed);   // off the wall before lifting
+                em.retract();
+                lastPos = ctr;
+            }
+        } else if (adaptive) {
+            // ADAPTIVE (phobiCCCP type, Fusion's 2D Adaptive): the closed
+            // vectors cleared without the cutter ever taking much more than
+            // `stepover` of radial bite, so `stepdown` can be deep (about a
+            // tool diameter) without slotting. adaptive.cpp plans the 2D
+            // passes once; every depth level repeats them: a helix down at
+            // `ramp_angle` in each part's widest spot, then the passes,
+            // joined at depth, by a low hop just over the previous level's
+            // floor, or through safe Z.
+            QVector<const Element *> closedEls;
+            for (const Element *e : elems)
+                if (vec::isClosed(*e))
+                    closedEls.append(e);
+            if (closedEls.isEmpty()) {
+                res.skipped << QStringLiteral("%1 (needs closed vectors)").arg(name);
+                continue;
+            }
+            QVector<QPolygonF> rings;
+            for (QPolygonF p : regionOf(closedEls).toSubpathPolygons())
+                if (p.size() > 2) {
+                    closeLoop(p);
+                    rings.append(p);
+                }
+            adaptive::Params ap;
+            ap.toolR = toolR;
+            ap.stepover = qBound(0.02 * toolR, numOr(j.value("stepover"), 0.2 * toolR), toolR);
+            ap.leave = qMax(0.0, numOr(j.value("stock_to_leave"), 0));
+            ap.climb = j.value("climb").toBool(true);
+            const adaptive::Plan plan = adaptive::plan(rings, ap, [&] {
+                return watch && watch->stop(myIndex, tpTotal, name);
+            });
+            if (watch && watch->stop(myIndex, tpTotal, name)) {
+                res.cancelled = true;
+                break;
+            }
+            if (!plan.available) {
+                res.skipped << QStringLiteral("%1 (adaptive needs Clipper2)").arg(name);
+                continue;
+            }
+            if (plan.unreached)
+                res.skipped << QStringLiteral("%1 (%2 area(s) narrower than the tool)")
+                                   .arg(name).arg(plan.unreached);
+            if (plan.moves.isEmpty()) {
+                if (!plan.unreached)
+                    res.skipped << QStringLiteral("%1 (nothing the tool fits in)").arg(name);
+                continue;
+            }
+            const double ramp = qBound(0.5, numOr(j.value("ramp_angle"), 2.0), 15.0);
+            const double clear = 1.0;   // hops and plunges start this far above the last floor
+            double prevZ = cp.zTop;
+            while (prevZ > cp.zBot + 1e-9) {
+                const double z = qMax(cp.zBot, prevZ - cp.stepdown);
+                for (const adaptive::Move &m : plan.moves) {
+                    if (m.kind == adaptive::Move::Helix) {
+                        const QPointF ctr = m.center;
+                        const QPointF s0 = ctr + QPointF(m.radius, 0), s1 = ctr - QPointF(m.radius, 0);
+                        const double pitch = qMax(0.02, 2 * M_PI * m.radius
+                                                            * qTan(qDegreesToRadians(ramp)));
+                        em.retract();
+                        em.rapidTo(s0);
+                        em.rapidAt(s0, prevZ + clear);
+                        double hz = prevZ + clear;
+                        bool atS0 = true;
+                        while (hz > z + 1e-9) {   // half a turn at a time
+                            hz = qMax(z, hz - pitch / 2);
+                            em.arcTo(atS0 ? s1 : s0, hz, ctr, !ap.climb);
+                            atS0 = !atS0;
+                        }
+                        for (int half = 0; half < 2; ++half) {   // the flat lap at depth
+                            em.arcTo(atS0 ? s1 : s0, z, ctr, !ap.climb);
+                            atS0 = !atS0;
+                        }
+                        if (!atS0)   // odd number of half turns: round to s0
+                            em.arcTo(s0, z, ctr, !ap.climb);
+                        continue;
+                    }
+                    const QPointF start = m.path.first();
+                    switch (m.link) {
+                    case adaptive::Move::StayDown:
+                        em.feedAt(start, z, feed);
+                        break;
+                    case adaptive::Move::Lift:
+                        // Everything above the previous level is gone over
+                        // the whole pocket, so a hop just above it is clear.
+                        em.rapidAt(em.pos(), prevZ + clear);
+                        for (const QPointF &v : m.via)
+                            em.rapidAt(v, prevZ + clear);
+                        em.rapidAt(start, prevZ + clear);
+                        em.plungeTo(start, z);
+                        break;
+                    case adaptive::Move::Retract:
+                        em.retract();
+                        em.rapidTo(start);
+                        em.rapidAt(start, prevZ + clear);
+                        em.plungeTo(start, z);
+                        break;
+                    }
+                    em.followFitted(m.path, z);
+                }
+                prevZ = z;
+            }
+            em.retract();
+            lastPos = em.pos();
+        } else if (chamfer) {
+            // 2D CHAMFER (phobiCCCP type, Fusion's 2D Chamfer): a V-bit runs
+            // `tip_offset` off the vectors on the air side, deep enough that
+            // the cone cuts a bevel `chamfer_width` wide into the edge.
+            // side "outside" bevels a part's outer edge (tip outside the
+            // closed vectors), "inside" a hole's or pocket's rim. Open
+            // vectors are traced as they are.
+            const double bitAngle = numOr(tool.value("angle"), 0);
+            if (!(bitAngle > 0)) {
+                res.skipped << QStringLiteral("%1 (needs a V-bit)").arg(name);
+                continue;
+            }
+            const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 170.0) / 2));
+            const double width = qMax(0.0, numOr(j.value("chamfer_width"), 1.0));
+            const double tip = qMax(0.0, numOr(j.value("tip_offset"), 0.5));
+            const bool inside = j.value("side").toString() == QLatin1String("inside");
+            cp.zBot = cp.zTop - (width + tip) / halfTan;
+            QVector<const Element *> closedEls;
+            for (const Element *e : elems) {
+                if (vec::isClosed(*e)) {
+                    closedEls.append(e);
+                    continue;
+                }
+                for (const QPolygonF &p : finePolygons(e->painterPath))
+                    if (p.size() >= 2) {
+                        Job job;
+                        job.rings.append(p);
+                        job.closed = false;
+                        jobs.append(job);
+                    }
+            }
+            if (!closedEls.isEmpty()) {
+                const QPainterPath region = regionOf(closedEls);
+                QList<QPolygonF> rings;
+                if (tip < 1e-6) {
+                    for (QPolygonF p : region.toSubpathPolygons())
+                        if (p.size() > 2) {
+                            closeLoop(p);
+                            rings.append(p);
+                        }
+                } else {
+                    rings = inside ? insetRings(region, tip) : outsetRings(region, tip);
+                }
+                for (const QPolygonF &p : rings) {
+                    Job job;
+                    job.rings.append(p);
+                    jobs.append(job);
+                }
+            }
+        } else if (drilling || keyhole) {
             const double peck = numOr(j.value("peck_distance"), 0);
             const double slotLen = numOr(j.value("length"), 12.7);
             const double slotAng = qDegreesToRadians(numOr(j.value("angle"), 90));

@@ -10,6 +10,7 @@
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLineF>
 #include <QSet>
 #include <QTransform>
 
@@ -386,6 +387,108 @@ int main(int argc, char **argv)
         check(nearRect(cp[0].painterPath.boundingRect(), QRectF(100, 0, 8, 6)), "copy is moved");
         const auto cp2 = vec::copyElements(src, QTransform::fromTranslate(200, 0));
         check(cp2[0].raw["group_id"].toArray().at(0).toString() != g0, "each copy is its own group");
+    }
+
+    // ---- rotate / scale keep shapes parametric ------------------------------
+    {
+        QJsonObject layer;
+        layer.insert("name", QStringLiteral("DEFAULT"));
+        const Element circ = Element::makeCircle({5, 5}, 3, layer);
+        const Element c2 = vec::transformElement(circ, vec::scaleTransform({0, 0}, 2, 2));
+        check(c2.geometryType == "circle" && c2.id == circ.id &&
+              approx(c2.raw["radius"].toDouble(), 6) &&
+              nearRect(c2.painterPath.boundingRect(), QRectF(4, 4, 12, 12), 1e-6),
+              "uniform scale: circle stays a circle with twice the radius");
+        const Element ce = vec::transformElement(circ, vec::scaleTransform({5, 5}, 2, 1));
+        check(ce.geometryType == "path" && ce.id == circ.id &&
+              nearRect(ce.painterPath.boundingRect(), QRectF(-1, 2, 12, 6), 1e-3),
+              "stretched circle becomes an elliptical path");
+
+        const Element rect = Element::makeRectangle({4, 3}, 8, 6, layer);
+        const Element rs = vec::transformElement(rect, vec::scaleTransform({4, 3}, 1.5, 0.5));
+        check(rs.geometryType == "rectangle" && approx(rs.raw["width"].toDouble(), 12) &&
+              approx(rs.raw["height"].toDouble(), 3) &&
+              nearRect(rs.painterPath.boundingRect(), QRectF(-2, 1.5, 12, 3)),
+              "axis scale: rectangle keeps its kind with new width and height");
+        const Element r90 = vec::transformElement(rect, vec::rotateTransform({4, 3}, 90));
+        check(r90.geometryType == "path" && r90.id == rect.id &&
+              nearRect(r90.painterPath.boundingRect(), QRectF(1, -1, 6, 8), 1e-6),
+              "a quarter turn of an 8 x 6 rectangle is a 6 x 8 outline (as a path)");
+
+        const Element hex = Element::makePolygon({0, 0}, 10, 6, layer, 0);
+        const Element hs = vec::transformElement(hex, vec::scaleTransform({0, 0}, 0.5, 0.5));
+        check(hs.geometryType == "regular_polygon" && approx(hs.raw["radius"].toDouble(), 5) &&
+              hs.raw["num_sides"].toInt() == 6, "uniform scale: polygon keeps its sides");
+        const Element hr = vec::transformElement(hex, vec::rotateTransform({0, 0}, 15));
+        check(hr.geometryType == "regular_polygon" && approx(hr.raw["rotation"].toDouble(), 15, 1e-6),
+              "rotated polygon takes the angle as its rotation");
+
+        const Element tri = Element::makePath({{0, 0}, {10, 0}, {0, 5}}, true, layer);
+        const Element tr = vec::transformElement(tri, vec::rotateTransform({0, 0}, 90));
+        check(nearRect(tr.painterPath.boundingRect(), QRectF(-5, 0, 5, 10), 1e-9),
+              "path rotates node by node, counter-clockwise");
+    }
+
+    // ---- fillet / chamfer ---------------------------------------------------
+    {
+        // Qt flattens curves to about half a unit, so measure areas at 100x.
+        auto fineArea = [](const Element &e) {
+            return std::fabs(vec::ringArea(e.painterPath.toFillPolygon(QTransform::fromScale(100, 100))))
+                   / 1e4;
+        };
+        QJsonObject layer;
+        layer.insert("name", QStringLiteral("DEFAULT"));
+        const Element sq = Element::makeRectangle({0, 0}, 20, 10, layer);
+        int k = 0;
+        const Element f = vec::cornerElement(sq, vec::CornerStyle::Fillet, 2, &k);
+        check(k == 4 && f.geometryType == "path" && f.id == sq.id, "fillet: four corners, same id");
+        const PathModel fm = Element::pathModel(f);
+        check(fm.subs.size() == 1 && fm.subs[0].closed && fm.subs[0].nodes.size() == 8,
+              "fillet: each corner becomes two tangent points");
+        const double area = fineArea(f);
+        check(approx(area, 200 - (4 - M_PI) * 4, 0.02), "fillet: area loses (4 - pi) r^2");
+        check(nearRect(f.painterPath.boundingRect(), QRectF(-10, -5, 20, 10), 1e-6),
+              "fillet keeps the extents");
+        // Every point of the top-right arc is r from the arc's center.
+        bool onArc = true;
+        int samples = 0;
+        const QPointF ctr(10 - 2, 5 - 2);
+        for (int i = 0; i <= 1000; ++i) {
+            const QPointF q = f.painterPath.pointAtPercent(i / 1000.0);
+            if (q.x() > ctr.x() + 1e-9 && q.y() > ctr.y() + 1e-9) {
+                ++samples;
+                onArc = onArc && std::fabs(QLineF(q, ctr).length() - 2) < 2e-3;
+            }
+        }
+        check(samples > 5 && onArc, "fillet arc is round to within 2 microns");
+
+        const Element ch = vec::cornerElement(sq, vec::CornerStyle::Chamfer, 2, &k);
+        check(k == 4 && approx(fineArea(ch), 200 - 4 * 2),
+              "chamfer: four 2 mm bevels cut 2 mm^2 each");
+
+        // Too big: a 10 x 10 square filleted at 50 mm is a circle of 5.
+        const Element small = Element::makeRectangle({0, 0}, 10, 10, layer);
+        const Element round = vec::cornerElement(small, vec::CornerStyle::Fillet, 50, &k);
+        const PathModel rm = Element::pathModel(round);
+        check(k == 4 && rm.subs[0].nodes.size() == 4, "oversized fillet: cuts meet and fuse");
+        check(approx(fineArea(round), M_PI * 25, 0.05),
+              "oversized fillet: a circle");
+
+        // Open path: the ends are not corners; the middle one is.
+        const Element vee = Element::makePath({{0, 0}, {10, 0}, {10, 10}}, false, layer);
+        const Element vf = vec::cornerElement(vee, vec::CornerStyle::Chamfer, 3, &k);
+        const PathModel vm = Element::pathModel(vf);
+        check(k == 1 && vm.subs[0].nodes.size() == 4 && !vm.subs[0].closed &&
+              nearPt(vm.subs[0].nodes[1].p, {7, 0}) && nearPt(vm.subs[0].nodes[2].p, {10, 3}),
+              "open path: only the inner corner is chamfered");
+
+        // Nothing to cut.
+        const Element circ = Element::makeCircle({0, 0}, 5, layer);
+        check(vec::cornerElement(circ, vec::CornerStyle::Fillet, 1, &k).geometryType == "circle" && k == 0,
+              "circle has no corners");
+        const Element line = Element::makePath({{0, 0}, {10, 0}}, false, layer);
+        vec::cornerElement(line, vec::CornerStyle::Fillet, 1, &k);
+        check(k == 0, "a single line has no corners");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

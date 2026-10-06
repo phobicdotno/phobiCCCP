@@ -14,7 +14,8 @@ class Canvas;
 
 // Edit → Vectors: Carbide Create's Booleans (Union / Subtract / Intersect),
 // Offset… and Alignment (align to selection, center on stock, distribute),
-// Mirror and grid / circular arrays, plus a small icon toolbar for the
+// Mirror and grid / circular arrays, and Fusion's Modify tools (rotate,
+// scale, move/copy, fillet, chamfer), plus a small icon toolbar for the
 // common ones. Every operation is a single
 // QUndoStack command on the canvas' stack.
 //
@@ -37,6 +38,15 @@ public:
     void gridArray(int cols, int rows, double gapX, double gapY, bool joinToolpaths);
     void circularArray(QPointF center, int count, double spanDeg, bool rotate,
                        bool joinToolpaths);
+    // Fusion's Modify tools, dialog-free. Rotate and scale work about the
+    // selection's center; moveCopy moves it by (dx, dy), or with copies > 0
+    // leaves it in place and adds that many copies, each one (dx, dy)
+    // further on. corners() fillets or chamfers every sharp line-line
+    // corner of the selected vectors (vec::cornerElement).
+    void rotate(double deg);
+    void scale(double sx, double sy);
+    void moveCopy(double dx, double dy, int copies, bool joinToolpaths);
+    void corners(vec::CornerStyle style, double size);
 
 private:
     void onSelection(const QStringList &ids);
@@ -50,6 +60,12 @@ private:
     void distribute(vec::Axis axis);
     void gridArrayDialog();
     void circularArrayDialog();
+    void rotateDialog();
+    void scaleDialog();
+    void moveCopyDialog();
+    void cornersDialog(vec::CornerStyle style);
+    void pushReshape(const QVector<Element> &before, const QVector<Element> &after,
+                     const QString &text);
     void pushCopies(const QVector<Element> &originals, const QVector<QTransform> &placements,
                     bool joinToolpaths, const QString &text);
     void pushMoves(const QStringList &ids, const QVector<QPointF> &deltas, const QString &text);

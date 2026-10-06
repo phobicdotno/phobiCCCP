@@ -21,6 +21,9 @@ Linux, built on the reverse-engineered format documentation in
 - **Mirror** horizontally / vertically, **Grid array** (columns × rows,
   edge-to-edge gap) and **Circular array** (count, center, full turn or arc,
   rotate copies or not); array copies can join the originals' toolpaths
+- **Fillet** and **Chamfer** corners, **Rotate**, **Scale** (percent or
+  target size) and **Move / Copy** by exact distance (Edit → Vectors →
+  Modify); shapes stay circles / rectangles / polygons wherever they can
 - **Bezier splines**: pen-style Path tool (click = corner, drag = smooth
   handles) and a **Node edit** tool (N): drag anchors/handles, insert
   (double-click), delete, corner/smooth/symmetric, convert shapes and text to
@@ -33,8 +36,10 @@ Linux, built on the reverse-engineered format documentation in
   lock; stored in the .c2d the way CC does) and **Trace image** (threshold,
   blur, despeckle, simplify, smoothing) to closed vector paths
 - Original tools still there:
-- Tools: Select (V), Circle (C), Rectangle (R), Polygon (P), Path/polyline (L),
-  Text (T) — with live preview, grid + snap (G), zoom (wheel / F to fit),
+- Tools: Select (V), Circle (C: center, 2-point, 3-point, 2- and 3-tangent),
+  Rectangle (R: 2-point, 3-point, center), Polygon (P), Path/polyline (L),
+  Text (T), Ellipse (E, Ctrl-drag from the center), Slot (S), 3-point Arc (A); **Trim** (X), **Extend** (J)
+  and **Break** (B) at the crossings with other curves; **Measure** (M) — with live preview, grid + snap (G), zoom (wheel / F to fit),
   middle-mouse pan
 - Select / rubber-band, drag to move, drag the amber handle to resize,
   Del to delete, full undo/redo (Ctrl+Z / Ctrl+Shift+Z)
@@ -46,6 +51,10 @@ Linux, built on the reverse-engineered format documentation in
 - **Create, duplicate, rename, enable, reorder and delete toolpaths** (the
   Toolpaths panel's New menu covers all seven CC types plus Engrave)
 - **Engrave**: outline, hatch fill (spacing, angle, crosshatch) or both
+- **Face** (flatten the stock), **Bore** (helical, per circle) and **2D
+  Chamfer** (V-bit bevel along edges, inside or outside), Fusion-style
+- **Adaptive clearing** (Fusion's 2D Adaptive): pockets with a light, steady
+  radial bite at a deep stepdown, helix entries, no slotting
 - **3D modelling** (Model tab): components from vectors (flat / round / angle
   / dome / smooth), images as heightmaps, tiled textures, STL import; the
   relief is stored in the .c2d and drives the 3D toolpaths

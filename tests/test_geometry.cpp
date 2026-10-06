@@ -632,6 +632,201 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "note: no .c2d passed, sample export skipped\n");
     }
 
+    // --- face: zig-zag over the stock, past both ends ------------------------
+    {
+        Rig r;
+        r.doc.setParam("width", "100");
+        r.doc.setParam("height", "50");
+        r.addToolpath("face_toolpath",
+                      {{"end_depth", "1.000"}, {"stepdown", 0.5}, {"stepover", 4.0},
+                       {"elements", QJsonArray()}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "face exports with no vectors");
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        const double R = 6.35 / 2;
+        check(approx(bb.left(), -R - 1, 1e-3) && approx(bb.right(), 100 + R + 1, 1e-3)
+              && approx(bb.top(), 0, 1e-3) && approx(bb.bottom(), 50, 1e-3),
+              "face runs past both ends and covers edge to edge");
+        check(approx(minZ, -1, 1e-3), "face depth");
+        // Rows no further apart than the stepover, at both depths.
+        QVector<double> ys;
+        for (const CutPoint &p : cutPoints(g.gcode))
+            if (approx(p.z, -0.5, 1e-6) && !ys.contains(p.y))
+                ys.append(p.y);
+        std::sort(ys.begin(), ys.end());
+        double gap = 0;
+        for (int i = 1; i < ys.size(); ++i)
+            gap = std::max(gap, ys[i] - ys[i - 1]);
+        check(ys.size() >= 14 && gap <= 4 + 1e-6, "face rows never wider than the stepover");
+        // Every plunge lands beside the stock, not on it.
+        bool plungesOff = true;
+        double px = 0, py = 0, pz = 10;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Feed && op.z < pz - 1e-9 && approx(op.x, px) && approx(op.y, py)
+                && op.x > -R + 1e-6 && op.x < 100 + R - 1e-6)
+                plungesOff = false;
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                px = op.x; py = op.y; pz = op.z;
+            }
+        }
+        check(plungesOff, "face plunges beside the stock");
+    }
+
+    // --- bore: helix down the circle's wall ------------------------------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({20, 20}, 10, layer));
+        r.addToolpath("bore_toolpath", {{"end_depth", "5.000"}, {"stepdown", 2.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "bore exports");
+        const double hr = 10 - 6.35 / 2;
+        int arcs = 0;
+        bool onWall = true, sinking = true, ccw = true;
+        double lastZ = 0, minZ = 0;
+        double px = 0, py = 0;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Arc) {
+                ++arcs;
+                onWall = onWall && approx(std::hypot(op.x - 20, op.y - 20), hr, 1e-6)
+                         && approx(std::hypot(px + op.ci - 20, py + op.cj - 20), 0, 1e-6);
+                sinking = sinking && op.z <= lastZ + 1e-9 && lastZ - op.z <= 1.0 + 1e-9;
+                ccw = ccw && !op.cw;
+                lastZ = op.z;
+                minZ = std::min(minZ, op.z);
+            }
+            if (op.kind != c2d::Op::Comment && op.kind != c2d::Op::Spindle && op.kind != c2d::Op::Tool) {
+                px = op.x; py = op.y;
+                if (op.kind != c2d::Op::Arc) lastZ = op.kind == c2d::Op::Rapid ? lastZ : op.z;
+            }
+        }
+        check(arcs == 5 * 2 / 2 + 2, "bore: half turns to 5 mm at 1 mm each, then a flat lap");
+        check(onWall, "bore arcs ride the wall, centered on the hole");
+        check(sinking && approx(minZ, -5, 1e-9), "bore sinks half the pitch per half turn");
+        check(ccw, "bore climbs (counter-clockwise) by default");
+
+        Rig small;
+        small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
+        small.addToolpath("bore_toolpath", {});
+        const c2d::GcodeResult gs = c2d::exportGcode(small.doc);
+        check(gs.done.isEmpty() && gs.skipped.size() == 1 && gs.skipped.first().contains("no wider"),
+              "a hole the tool cannot bore is reported once");
+    }
+
+    // --- 2D chamfer: V-bit, offset tip, depth from the angle ------------------
+    {
+        QJsonObject vbit;
+        vbit.insert("diameter", 12.7);
+        vbit.insert("number", 301);
+        vbit.insert("angle", 90);
+        vbit.insert("type", 2);
+        for (const bool inside : {false, true}) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+            r.addToolpath("chamfer_toolpath",
+                          {{"chamfer_width", 1.0}, {"tip_offset", 0.5},
+                           {"side", inside ? "inside" : "outside"}, {"stepdown", 5.0},
+                           {"tool", vbit}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1 && g.skipped.isEmpty(), "chamfer exports");
+            double minZ;
+            const QRectF bb = cutBounds(g.gcode, &minZ);
+            const double o = inside ? -0.5 : 0.5;
+            check(approx(bb.left(), 10 - o, 1e-2) && approx(bb.right(), 50 + o, 1e-2)
+                  && approx(bb.top(), 10 - o, 1e-2) && approx(bb.bottom(), 30 + o, 1e-2),
+                  inside ? "inside chamfer: tip inset by the offset"
+                         : "outside chamfer: tip outset by the offset");
+            check(approx(minZ, -1.5, 1e-3), "90-degree bit: depth = width + tip offset");
+        }
+        Rig flat;
+        flat.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        flat.addToolpath("chamfer_toolpath", {});
+        const c2d::GcodeResult gf = c2d::exportGcode(flat.doc);
+        check(gf.done.isEmpty() && gf.skipped.size() == 1 && gf.skipped.first().contains("V-bit"),
+              "chamfer with an end mill is refused");
+    }
+
+    // --- adaptive: helix entry, passes repeated per level, inside the pocket --
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({40, 30}, 60, 40, layer));
+        r.addToolpath("adaptive_toolpath",
+                      {{"end_depth", "6.000"}, {"stepdown", 3.0}, {"stepover", 0.6},
+                       {"ramp_angle", 3}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "adaptive exports");
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        const double R = 6.35 / 2;
+        check(bb.left() >= 10 + R - 1e-3 && bb.right() <= 70 - R + 1e-3
+              && bb.top() >= 10 + R - 1e-3 && bb.bottom() <= 50 - R + 1e-3,
+              "adaptive keeps the tool inside the pocket");
+        check(bb.width() > 60 - 2 * R - 0.1 && bb.height() > 40 - 2 * R - 0.1,
+              "adaptive reaches the walls");
+        check(approx(minZ, -6, 1e-6), "adaptive depth");
+        // Two levels, each entered on a helix that sinks gently.
+        int helixArcs = 0;
+        bool gentle = true;
+        double pz = 0;
+        QVector<double> levels;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Arc && op.z < pz - 1e-9) {
+                ++helixArcs;
+                gentle = gentle && pz - op.z < 1.0;
+            }
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc) {
+                if (op.z < -1e-9 && !levels.contains(op.z) && (op.z == -3 || op.z == -6))
+                    levels.append(op.z);
+            }
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc)
+                pz = op.z;
+        }
+        check(helixArcs >= 2 * 3 && gentle, "adaptive enters each level on a gentle helix");
+        check(levels.size() == 2, "adaptive cuts at both levels");
+        // No straight plunge deeper than the hop clearance above the last floor.
+        bool softPlunges = true;
+        double px = 0, py = 0;
+        pz = 10;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Feed && approx(op.x, px) && approx(op.y, py) && op.z < pz - 1e-9)
+                softPlunges = softPlunges && pz - op.z <= 3.0 + 1.0 + 1e-6;
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                px = op.x; py = op.y; pz = op.z;
+            }
+        }
+        check(softPlunges, "adaptive never plunges more than a level into material");
+
+        Rig narrow;
+        narrow.addShape(c2d::Element::makeRectangle({40, 30}, 60, 5, layer));
+        narrow.addToolpath("adaptive_toolpath", {});
+        const c2d::GcodeResult gn = c2d::exportGcode(narrow.doc);
+        check(gn.done.isEmpty() && gn.skipped.size() == 1, "adaptive in a slot narrower than the tool is reported once");
+    }
+
+    // --- the factory makes all four with working defaults --------------------
+    {
+        c2d::Document doc;
+        doc.setParam("width", "200");
+        doc.setParam("height", "100");
+        doc.setParam("thickness", "12");
+        const c2d::Element hole = c2d::Element::makeCircle({50, 50}, 8, layer);
+        const c2d::Element box = c2d::Element::makeRectangle({120, 50}, 40, 30, layer);
+        doc.addElement(hole);
+        doc.addElement(box);
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("face_toolpath"), {}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("bore_toolpath"), {hole.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("chamfer_toolpath"), {box.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("adaptive_toolpath"), {box.id}));
+        check(c2d::toolpathLabel("chamfer_toolpath") == QLatin1String("2D Chamfer"),
+              "2D Chamfer is in the New menu");
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        check(g.done.size() == 4 && g.skipped.isEmpty(),
+              "face, bore, chamfer and adaptive defaults all export");
+        const c2d::Toolpath ch = doc.toolpaths().at(2);
+        check(ch.json.value("tool").toObject().value("angle").toDouble() > 0,
+              "chamfer gets a V-bit from the library");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

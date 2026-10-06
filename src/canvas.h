@@ -19,7 +19,14 @@ class Canvas : public QGraphicsView
 {
     Q_OBJECT
 public:
-    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit };
+    enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
+                DrawEllipse, DrawSlot, DrawArc, Trim, Extend, Break, Measure };
+    // The three-click tools (slot, 3-point arc): the first
+    // two clicks fix two points, the third finishes the shape.
+    static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc; }
+    // Trim / Extend / Break: hover shows what a click would do to the curve
+    // under the cursor, bounded by every other curve in the drawing.
+    static bool isModifyTool(Tool t) { return t == Trim || t == Extend || t == Break; }
     // Fusion's sketch variants of the Circle and Rectangle tools.
     enum CircleMode { CircleCenterDiameter, Circle2Point, Circle3Point,
                       Circle2Tangent, Circle3Tangent };
@@ -138,6 +145,17 @@ private:
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+
+    // Three-click tools reuse m_clicks (the points clicked so far, CC mm).
+    void clickToolPress(const QPointF &pos);
+    QPainterPath clickPreview(const QPointF &cur) const;
+    bool m_fromCenter = false;              // Ctrl held: rectangle / ellipse from the center
+
+    // Trim / Extend / Break.
+    bool modifyTarget(const QPointF &q, QString *id, PathModel *model,
+                      QVector<PathModel> *others) const;
+    QPainterPath modifyPreview(const QPointF &q) const;
+    void modifyAt(const QPointF &q);
 
     // Pen (path) tool: click = corner, click-drag = symmetric handles.
     QVector<PathNode> m_penNodes;

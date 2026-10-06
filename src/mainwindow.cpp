@@ -69,6 +69,40 @@ static QIcon toolIcon(const QString &kind)
         p.drawEllipse(QRectF(4, 4, 12, 12));
     } else if (kind == "rect") {
         p.drawRect(QRectF(4, 5, 12, 10));
+    } else if (kind == "ellipse") {
+        p.drawEllipse(QRectF(2.5, 5.5, 15, 9));
+    } else if (kind == "slot") {
+        p.drawRoundedRect(QRectF(2.5, 6, 15, 8), 4, 4);
+        QPen thin(QColor(0x9f, 0xc8, 0xf2), 1.0);
+        p.setPen(thin);
+        p.drawLine(QLineF(6.5, 10, 13.5, 10));
+    } else if (kind == "arc") {
+        p.drawArc(QRectF(3, 5, 14, 14), 20 * 16, 140 * 16);
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        for (const QPointF &v : {QPointF(3.6, 9.6), QPointF(10, 5), QPointF(16.4, 9.6)})
+            p.drawEllipse(v, 1.5, 1.5);
+    } else if (kind == "measure") {
+        p.drawLine(QLineF(3, 15, 17, 5));
+        p.drawLine(QLineF(1.5, 12.8, 4.5, 17.2));
+        p.drawLine(QLineF(15.5, 2.8, 18.5, 7.2));
+    } else if (kind == "trim") {
+        p.drawLine(QLineF(10, 2, 10, 18));
+        p.drawLine(QLineF(2, 10, 10, 10));
+        QPen cut(QColor(0xe0, 0x50, 0x50), 1.6, Qt::DotLine);
+        p.setPen(cut);
+        p.drawLine(QLineF(10, 10, 18, 10));
+    } else if (kind == "extend") {
+        p.drawLine(QLineF(17, 2, 17, 18));
+        p.drawLine(QLineF(2, 10, 9, 10));
+        QPen ext(QColor(0x9f, 0xc8, 0xf2), 1.6, Qt::DashLine);
+        p.setPen(ext);
+        p.drawLine(QLineF(9, 10, 17, 10));
+    } else if (kind == "break") {
+        p.drawLine(QLineF(10, 2, 10, 18));
+        p.drawLine(QLineF(2, 10, 8.5, 10));
+        p.drawLine(QLineF(11.5, 10, 18, 10));
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        p.drawEllipse(QPointF(10, 10), 1.6, 1.6);
     } else if (kind == "polygon") {
         QPolygonF hex;
         for (int i = 0; i < 6; ++i) {
@@ -397,8 +431,22 @@ MainWindow::MainWindow(QWidget *parent)
              [this](int m) { m_canvas->setRectMode(Canvas::RectMode(m)); });
     addTool(QStringLiteral("Polygon"), QStringLiteral("polygon"), Canvas::DrawPolygon, Qt::Key_P,
             QStringLiteral("Polygon: press at center, drag to radius  (P)"));
+    addTool(QStringLiteral("Ellipse"), QStringLiteral("ellipse"), Canvas::DrawEllipse, Qt::Key_E,
+            QStringLiteral("Ellipse: drag across its bounding box, Ctrl from the center  (E)"));
+    addTool(QStringLiteral("Slot"), QStringLiteral("slot"), Canvas::DrawSlot, Qt::Key_S,
+            QStringLiteral("Slot: click both end centers, then click to set the width  (S)"));
+    addTool(QStringLiteral("Arc"), QStringLiteral("arc"), Canvas::DrawArc, Qt::Key_A,
+            QStringLiteral("3-point arc: click start, end, then a point on the arc  (A)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
             QStringLiteral("Path: click = corner, click-drag = curve; Enter finishes, click near start closes  (L)"));
+    addTool(QStringLiteral("Trim"), QStringLiteral("trim"), Canvas::Trim, Qt::Key_X,
+            QStringLiteral("Trim: click the piece of a curve to cut away, up to where other curves cross it  (X)"));
+    addTool(QStringLiteral("Extend"), QStringLiteral("extend"), Canvas::Extend, Qt::Key_J,
+            QStringLiteral("Extend: click near an open curve's end to run it on to the next curve  (J)"));
+    addTool(QStringLiteral("Break"), QStringLiteral("break"), Canvas::Break, Qt::Key_B,
+            QStringLiteral("Break: click a curve to split it where other curves cross it  (B)"));
+    addTool(QStringLiteral("Measure"), QStringLiteral("measure"), Canvas::Measure, Qt::Key_M,
+            QStringLiteral("Measure: drag between two points for the distance, ΔX, ΔY and angle  (M)"));
     addTool(QStringLiteral("Nodes"), QStringLiteral("nodes"), Canvas::NodeEdit, Qt::Key_N,
             QStringLiteral("Edit nodes: drag anchors/handles, double-click to insert, Del to remove, right-click for Corner/Smooth/Symmetric  (N)"));
     addTool(QStringLiteral("Text"), QStringLiteral("text"), Canvas::DrawText, Qt::Key_T,

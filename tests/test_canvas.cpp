@@ -251,6 +251,119 @@ int main(int argc, char *argv[])
               "convert to path does not delete an element with no outline");
     }
 
+    // --- Fusion-style Create tools ------------------------------------------------------
+    {
+        canvas.selectElements({});
+        // Ellipse: drag across the box; Ctrl drags from the center.
+        canvas.setTool(c2d::Canvas::DrawEllipse);
+        int n = doc.elements().size();
+        drag(&canvas, {160, 150}, {200, 170});
+        check(doc.elements().size() == n + 1, "ellipse tool adds one element");
+        QRectF b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 40) < 0.7 && std::fabs(b.height() - 20) < 0.7 &&
+              std::fabs(b.center().x() - 180) < 0.4 && std::fabs(b.center().y() - 160) < 0.4,
+              "ellipse fills the dragged box");
+        drag(&canvas, {180, 100}, {200, 110}, Qt::ControlModifier);
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.center().x() - 180) < 0.4 && std::fabs(b.center().y() - 100) < 0.4 &&
+              std::fabs(b.width() - 40) < 0.7, "Ctrl-drag: ellipse from the center");
+
+        // Slot: two centers, then the width.
+        canvas.setTool(c2d::Canvas::DrawSlot);
+        n = doc.elements().size();
+        click(&canvas, {160, 200});
+        click(&canvas, {200, 200});
+        check(doc.elements().size() == n, "slot waits for its third click");
+        click(&canvas, {180, 205});
+        check(doc.elements().size() == n + 1 && undo->index() == undo->count(), "slot added");
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 50) < 1.0 && std::fabs(b.height() - 10) < 1.0,
+              "slot: 40 mm between centers, 10 mm wide");
+
+        // Escape abandons a half-drawn shape.
+        click(&canvas, {160, 30});
+        QTest::keyClick(&canvas, Qt::Key_Escape);
+        click(&canvas, {170, 30});
+        click(&canvas, {190, 30});
+        check(doc.elements().size() == n + 1, "Esc cancels the clicks so far");
+        QTest::keyClick(&canvas, Qt::Key_Escape);
+
+        // 3-point arc.
+        canvas.setTool(c2d::Canvas::DrawArc);
+        click(&canvas, {230, 120});
+        click(&canvas, {190, 120});
+        click(&canvas, {210, 140});
+        check(doc.elements().size() == n + 2, "arc added");
+        const c2d::Element &a = doc.elements().last();
+        check(a.geometryType == "path" && a.raw["point_type"].toArray().last().toInt() != 4,
+              "arc is an open path");
+        b = a.painterPath.boundingRect();
+        check(std::fabs(b.width() - 40) < 1.0 && std::fabs(b.height() - 20) < 1.0,
+              "arc is the upper half circle");
+
+        canvas.setTool(c2d::Canvas::Select);
+    }
+
+    // --- Trim / Extend / Break --------------------------------------------------------
+    {
+        c2d::Document d2;
+        c2d::Canvas cv;
+        cv.resize(900, 700);
+        cv.show();
+        cv.setDocument(&d2);
+        cv.resetTransform();
+        cv.scale(3, -3);
+        cv.centerOn(QPointF(50, 50));
+        QUndoStack *u = cv.undoStack();
+        const QJsonObject layer = d2.defaultLayer();
+        const c2d::Element h = c2d::Element::makePath({{0, 50}, {100, 50}}, false, layer);
+        const c2d::Element v1 = c2d::Element::makePath({{30, 0}, {30, 100}}, false, layer);
+        const c2d::Element v2 = c2d::Element::makePath({{70, 0}, {70, 100}}, false, layer);
+        const c2d::Element shortLine = c2d::Element::makePath({{0, 20}, {20, 20}}, false, layer);
+        for (const c2d::Element &e : {h, v1, v2, shortLine})
+            d2.addElement(e);
+        cv.rebuild();
+
+        cv.setTool(c2d::Canvas::Trim);
+        QTest::mouseMove(cv.viewport(), vp(&cv, {50, 50}));
+        click(&cv, {50, 50});
+        check(u->count() == 1, "trim is one undo step");
+        const c2d::PathModel m = c2d::Element::pathModel(*d2.elementById(h.id));
+        check(m.subs.size() == 2 && near(m.subs[0].nodes.last().p, {30, 50}) &&
+              near(m.subs[1].nodes.first().p, {70, 50}), "trim cut the middle out between the verticals");
+        u->undo();
+        check(c2d::Element::pathModel(*d2.elementById(h.id)).subs.size() == 1, "undo trim");
+
+        cv.setTool(c2d::Canvas::Break);
+        click(&cv, {50, 50});
+        check(d2.elements().size() == 6 && u->count() == 1, "break makes three pieces of the line");
+        u->undo();
+        check(d2.elements().size() == 4, "undo break");
+
+        cv.setTool(c2d::Canvas::Extend);
+        click(&cv, {19, 20});
+        check(near(c2d::Element::pathModel(*d2.elementById(shortLine.id)).subs[0].nodes.last().p, {30, 20}),
+              "extend runs the short line on to the first vertical");
+        const int steps = u->count();
+        click(&cv, {90, 90});
+        check(u->count() == steps, "clicking empty space does nothing");
+        cv.setTool(c2d::Canvas::Select);
+    }
+
+    // --- Measure: reads out, adds nothing ---------------------------------------------
+    {
+        QString last;
+        const QMetaObject::Connection hint = QObject::connect(
+            &canvas, &c2d::Canvas::statusHint, [&last](const QString &m) { last = m; });
+        canvas.setTool(c2d::Canvas::Measure);
+        const int n = doc.elements().size(), steps = undo->count();
+        drag(&canvas, {100, 100}, {130, 140});
+        check(doc.elements().size() == n && undo->count() == steps, "measure adds nothing");
+        check(last.startsWith(QLatin1String("50.")) || last.startsWith(QLatin1String("49.")),
+              "measure reads out the 30-40-50 distance");
+        canvas.setTool(c2d::Canvas::Select);
+        QObject::disconnect(hint);
+    }
 
     // --- Fusion-style circle and rectangle modes --------------------------------
     {

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.91 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.96 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,8 @@ add_library(phobicccp_core STATIC
     src/heightmodel.cpp
     src/simulation.cpp
     src/vectorops.cpp
+    src/sketch.cpp
+    src/adaptive.cpp
     src/sketchgeom.cpp
     src/importers.cpp
     src/toollibrary.cpp
@@ -112,6 +114,12 @@ add_test(NAME geometry COMMAND test_geometry)
 add_executable(test_simulation tests/test_simulation.cpp)
 target_link_libraries(test_simulation PRIVATE phobicccp_core)
 add_test(NAME simulation COMMAND test_simulation)
+add_executable(test_adaptive tests/test_adaptive.cpp)
+target_link_libraries(test_adaptive PRIVATE phobicccp_core)
+add_test(NAME adaptive COMMAND test_adaptive)
+add_executable(test_sketch tests/test_sketch.cpp)
+target_link_libraries(test_sketch PRIVATE phobicccp_core)
+add_test(NAME sketch COMMAND test_sketch)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
