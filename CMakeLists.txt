@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.90 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.91 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -160,6 +160,11 @@ if(Qt6Test_FOUND)
     target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
+    # Mirror / arrays through the real Edit → Vectors actions and undo stack.
+    add_executable(test_vectoractions tests/test_vectoractions.cpp src/canvas.cpp
+                   src/vectoractions.cpp)
+    target_link_libraries(test_vectoractions PRIVATE phobicccp_core Qt6::Widgets)
+    add_test(NAME vectoractions COMMAND test_vectoractions)
 else()
     message(STATUS "Qt6 Test not found: canvas interaction test skipped")
 endif()

@@ -1,6 +1,10 @@
 #include "vectorops.h"
+#include <QHash>
 #include <QJsonArray>
+#include <QLineF>
 #include <QTransform>
+#include <QUuid>
+#include <QtMath>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -317,6 +321,211 @@ QVector<QPointF> distributeDeltas(const QVector<QRectF> &boxes, Axis axis)
         d[i] = axis == Axis::Horizontal ? QPointF(shift, 0) : QPointF(0, shift);
     }
     return d;
+}
+
+// ---- mirror and array ------------------------------------------------------
+
+static QPointF jsonPt(const QJsonValue &v)
+{
+    const QJsonArray a = v.toArray();
+    return a.size() == 2 ? QPointF(a.at(0).toDouble(), a.at(1).toDouble()) : QPointF();
+}
+
+// Every anchor and handle of a model, as one list.
+static QVector<QPointF> modelPoints(const PathModel &m)
+{
+    QVector<QPointF> out;
+    for (const SubPath &s : m.subs)
+        for (const PathNode &n : s.nodes)
+            out << n.p << n.in << n.out;
+    return out;
+}
+
+// Same outline up to node order and direction: the anchors and handles of
+// the two models match one to one. Enough to tell that a rectangle or a
+// regular polygon came out of a transform as the same shape.
+static bool sameOutline(const PathModel &a, const PathModel &b)
+{
+    const QVector<QPointF> pa = modelPoints(a), pb = modelPoints(b);
+    if (pa.size() != pb.size() || pa.isEmpty())
+        return false;
+    QVector<bool> used(pb.size(), false);
+    for (const QPointF &p : pa) {
+        bool found = false;
+        for (int i = 0; i < pb.size(); ++i) {
+            if (!used.at(i) && QLineF(p, pb.at(i)).length() < 1e-6) {
+                used[i] = true;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
+static PathModel mapModel(const PathModel &m, const QTransform &t)
+{
+    PathModel out = m;
+    const bool flip = t.determinant() < 0;
+    for (SubPath &s : out.subs) {
+        for (PathNode &n : s.nodes) {
+            n.p = t.map(n.p);
+            n.in = t.map(n.in);
+            n.out = t.map(n.out);
+        }
+        if (!flip || s.nodes.size() < 2)
+            continue;
+        // A reflection turns CCW into CW. Walk the subpath backwards (a closed
+        // one keeps its start node) so the winding the file had is kept; the
+        // handles swap sides along with the direction.
+        QVector<PathNode> r;
+        const int n = s.nodes.size();
+        if (s.closed) {
+            r << s.nodes.first();
+            for (int i = n - 1; i >= 1; --i)
+                r << s.nodes.at(i);
+        } else {
+            for (int i = n - 1; i >= 0; --i)
+                r << s.nodes.at(i);
+        }
+        for (PathNode &node : r)
+            std::swap(node.in, node.out);
+        s.nodes = r;
+    }
+    return out;
+}
+
+Element transformElement(const Element &e, const QTransform &t)
+{
+    if (t.isIdentity())
+        return e;
+    if (t.type() <= QTransform::TxTranslate) {
+        Element c = e;
+        c.translate(t.dx(), t.dy());
+        return c;
+    }
+
+    if (e.geometryType == QLatin1String("text")) {
+        // Text is placed by its own row-major 3x3; compose ours after it.
+        QJsonObject o = e.raw;
+        const QJsonArray a = o.value("transform").toArray();
+        QTransform xf;
+        if (a.size() == 9)
+            xf = QTransform(a.at(0).toDouble(), a.at(1).toDouble(),
+                            a.at(3).toDouble(), a.at(4).toDouble(),
+                            a.at(6).toDouble(), a.at(7).toDouble());
+        const QTransform n = xf * t;
+        o.insert("transform", QJsonArray{n.m11(), n.m12(), 0, n.m21(), n.m22(), 0,
+                                         n.dx(), n.dy(), 1});
+        return Element::fromJson(o);
+    }
+
+    const bool shape = e.geometryType == QLatin1String("circle")
+                    || e.geometryType == QLatin1String("rectangle")
+                    || e.geometryType == QLatin1String("regular_polygon");
+    if (shape && e.raw.contains("center")) {
+        const QPointF c = jsonPt(e.raw.value("center"));
+        const QPointF moved = t.map(c) - c;
+        Element tr = e;
+        tr.translate(moved.x(), moved.y());
+        // A circle is the same circle under any rotation or reflection.
+        if (e.geometryType == QLatin1String("circle"))
+            return tr;
+        const PathModel target = mapModel(Element::pathModel(e), t);
+        if (sameOutline(Element::pathModel(tr), target))
+            return tr;   // symmetric under t: a rectangle flipped, a hexagon turned by 60 deg
+        if (e.geometryType == QLatin1String("regular_polygon") && !target.isEmpty()
+            && !target.subs.first().nodes.isEmpty()) {
+            // Still a regular polygon, just turned: the rotation key is the
+            // angle of its first vertex about the center.
+            const QPointF v = target.subs.first().nodes.first().p - t.map(c);
+            QHash<QString, double> p;
+            p.insert("cx", t.map(c).x());
+            p.insert("cy", t.map(c).y());
+            p.insert("rotation", qRadiansToDegrees(std::atan2(v.y(), v.x())));
+            const Element poly = Element::regen(e, p);
+            if (sameOutline(Element::pathModel(poly), target))
+                return poly;
+        }
+        return Element::withPathModel(e, target);
+    }
+
+    return Element::withPathModel(e, mapModel(Element::pathModel(e), t));
+}
+
+QTransform mirrorTransform(const QRectF &box, Axis axis)
+{
+    const QPointF c = box.center();
+    QTransform t;
+    t.translate(c.x(), c.y());
+    if (axis == Axis::Horizontal)
+        t.scale(-1, 1);
+    else
+        t.scale(1, -1);
+    t.translate(-c.x(), -c.y());
+    return t;
+}
+
+QVector<QTransform> gridTransforms(const QRectF &box, int cols, int rows,
+                                   double gapX, double gapY)
+{
+    QVector<QTransform> out;
+    if (cols < 1 || rows < 1)
+        return out;
+    const double stepX = box.width() + gapX, stepY = box.height() + gapY;
+    for (int r = 0; r < rows; ++r)
+        for (int c = 0; c < cols; ++c)
+            if (r || c)
+                out.append(QTransform::fromTranslate(c * stepX, r * stepY));
+    return out;
+}
+
+QVector<QTransform> circularTransforms(const QRectF &box, QPointF center, int count,
+                                       double spanDeg, bool rotate)
+{
+    QVector<QTransform> out;
+    if (count < 2)
+        return out;
+    const double step = std::fabs(spanDeg) >= 360.0 ? (spanDeg < 0 ? -360.0 : 360.0) / count
+                                                    : spanDeg / (count - 1);
+    const QPointF b = box.center();
+    for (int i = 1; i < count; ++i) {
+        const double a = i * step;
+        QTransform turn;
+        turn.translate(center.x(), center.y());
+        turn.rotate(a);
+        turn.translate(-center.x(), -center.y());
+        if (rotate) {
+            out.append(turn);
+        } else {
+            const QPointF d = turn.map(b) - b;
+            out.append(QTransform::fromTranslate(d.x(), d.y()));
+        }
+    }
+    return out;
+}
+
+QVector<Element> copyElements(const QVector<Element> &els, const QTransform &t)
+{
+    QHash<QString, QString> groups;
+    QVector<Element> out;
+    for (const Element &e : els) {
+        QJsonObject o = transformElement(e, t).raw;
+        o.insert("id", QUuid::createUuid().toString());
+        QJsonArray g;
+        for (const QJsonValue &v : o.value("group_id").toArray()) {
+            if (!v.isString()) { g.append(v); continue; }
+            QString &mapped = groups[v.toString()];
+            if (mapped.isEmpty())
+                mapped = QUuid::createUuid().toString();
+            g.append(mapped);
+        }
+        o.insert("group_id", g);
+        out.append(Element::fromJson(o));
+    }
+    return out;
 }
 
 } // namespace vec

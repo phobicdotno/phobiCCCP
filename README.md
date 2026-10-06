@@ -18,6 +18,9 @@ Linux, built on the reverse-engineered format documentation in
   **Offset** inside/outside by distance; **Align** left/right/top/bottom/
   centres, **Center on stock**, **Distribute** — all single undo steps, and
   toolpaths that referenced the inputs follow the results
+- **Mirror** horizontally / vertically, **Grid array** (columns × rows,
+  edge-to-edge gap) and **Circular array** (count, center, full turn or arc,
+  rotate copies or not); array copies can join the originals' toolpaths
 - **Bezier splines**: pen-style Path tool (click = corner, drag = smooth
   handles) and a **Node edit** tool (N): drag anchors/handles, insert
   (double-click), delete, corner/smooth/symmetric, convert shapes and text to

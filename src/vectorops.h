@@ -4,6 +4,7 @@
 #include <QPainterPath>
 #include <QPolygonF>
 #include <QRectF>
+#include <QTransform>
 #include <QVector>
 
 // Vector operations on elements — Carbide Create's Booleans, Offsets and
@@ -69,6 +70,47 @@ QVector<QPointF> centerDeltas(const QVector<QRectF> &boxes, Center mode, const Q
 // Evenly spaced centers between the two outermost boxes along `axis`
 // (needs >= 3 boxes, otherwise all-zero deltas).
 QVector<QPointF> distributeDeltas(const QVector<QRectF> &boxes, Axis axis);
+
+// ---- mirror and array (rigid transforms) --------------------------------
+// Every transform here is rigid (rotation, reflection, translation), and
+// elements are moved by it as directly as their geometry type allows, so
+// that what stays parametric stays parametric:
+// - circle: only its center moves;
+// - rectangle / regular polygon: only the center moves (rotation key
+//   updated for a polygon) when the transformed outline is the same shape,
+//   otherwise the element becomes a `path` with the same id;
+// - path: every anchor and handle is mapped; under a reflection each
+//   subpath's direction is reversed so the winding stays what it was;
+// - text: the transform is composed into the element's own `transform`, so
+//   it stays editable text (mirrored text reads mirrored).
+Element transformElement(const Element &e, const QTransform &t);
+
+// Reflection about the vertical (Horizontal: left <-> right) or horizontal
+// (Vertical: top <-> bottom) line through the center of `box`.
+QTransform mirrorTransform(const QRectF &box, Axis axis);
+
+// The translations that lay a block of size `box` out in `cols` x `rows`
+// with `gapX` / `gapY` mm between neighbouring copies, growing right and up
+// (CC's Y-up). The original's own cell (0, 0) is not included, so the result
+// holds cols*rows - 1 transforms; empty when either count is below 1.
+QVector<QTransform> gridTransforms(const QRectF &box, int cols, int rows,
+                                   double gapX, double gapY);
+
+// `count` positions around `center` (the original included, as the first,
+// which is not returned): over a full turn when |spanDeg| >= 360, the copies
+// split it evenly; over a partial arc the first and last copies sit on its
+// ends. With `rotate` each copy turns with its position (like a clock's
+// numerals on a rotating dial); without it the copies keep their
+// orientation and only their bounding-box centre travels around the circle.
+// Positive angles are counter-clockwise (Y-up).
+QVector<QTransform> circularTransforms(const QRectF &box, QPointF center, int count,
+                                       double spanDeg, bool rotate);
+
+// Copies of `els` moved by `t`, each with a fresh id. Group membership is
+// kept within the copy: every group id the inputs use maps to one new
+// group id shared by this copy's elements, so copies of a group are groups
+// of their own rather than members of the original.
+QVector<Element> copyElements(const QVector<Element> &els, const QTransform &t);
 
 } // namespace vec
 } // namespace c2d
