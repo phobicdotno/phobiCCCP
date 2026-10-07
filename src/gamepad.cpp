@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QSettings>
 #include <QSocketNotifier>
 #include <QTimer>
 
@@ -16,6 +17,90 @@
 #endif
 
 namespace c2d {
+
+namespace gamepadmap {
+
+QStringList actions()
+{
+    return {QStringLiteral("x+"), QStringLiteral("x-"), QStringLiteral("y+"),
+            QStringLiteral("y-"), QStringLiteral("z+"), QStringLiteral("z-"),
+            QStringLiteral("step"), QStringLiteral("hold"), QStringLiteral("stop"),
+            QStringLiteral("zeroxy"), QStringLiteral("zeroz"), QStringLiteral("unlock")};
+}
+
+QString label(const QString &action)
+{
+    static const QHash<QString, QString> names = {
+        {QStringLiteral("x+"), QStringLiteral("Jog X+")},
+        {QStringLiteral("x-"), QStringLiteral("Jog X−")},
+        {QStringLiteral("y+"), QStringLiteral("Jog Y+")},
+        {QStringLiteral("y-"), QStringLiteral("Jog Y−")},
+        {QStringLiteral("z+"), QStringLiteral("Jog Z+ (up)")},
+        {QStringLiteral("z-"), QStringLiteral("Jog Z− (down)")},
+        {QStringLiteral("step"), QStringLiteral("Cycle jog step")},
+        {QStringLiteral("hold"), QStringLiteral("Hold / resume")},
+        {QStringLiteral("stop"), QStringLiteral("Stop")},
+        {QStringLiteral("zeroxy"), QStringLiteral("Zero XY")},
+        {QStringLiteral("zeroz"), QStringLiteral("Zero Z")},
+        {QStringLiteral("unlock"), QStringLiteral("Unlock ($X)")},
+    };
+    return names.value(action, action);
+}
+
+// Default mapping for a SNES-style pad. Program start is deliberately not an
+// action at all: a bumped button must never begin a cut. Hold and Stop are,
+// because those are the ones worth being able to hit without looking.
+GamepadMap defaults()
+{
+    return {
+        {4, QStringLiteral("z-")},        // L
+        {5, QStringLiteral("z+")},        // R
+        {8, QStringLiteral("step")},      // Select: cycle the jog step
+        {9, QStringLiteral("hold")},      // Start:  hold / resume
+        {1, QStringLiteral("stop")},      // B
+        {0, QStringLiteral("zeroxy")},    // A
+        {3, QStringLiteral("zeroz")},     // X
+        {2, QStringLiteral("unlock")},    // Y
+    };
+}
+
+GamepadMap load(QSettings &s)
+{
+    GamepadMap map = defaults();
+    s.beginGroup(QStringLiteral("gamepad"));
+    for (const QString &key : s.childKeys()) {
+        bool ok = false;
+        const int n = key.toInt(&ok);
+        const QString action = s.value(key).toString().trimmed().toLower();
+        if (!ok)
+            continue;
+        if (action.isEmpty() || action == QLatin1String("none"))
+            map.remove(n);
+        else
+            map.insert(n, action);
+    }
+    s.endGroup();
+    return map;
+}
+
+// Writes the whole mapping rather than a diff against the defaults, so a later
+// change of defaults never silently remaps a pad someone has already set up.
+// Default buttons left unmapped are written as "none", or load() would bring
+// them back.
+void save(QSettings &s, const GamepadMap &map)
+{
+    s.beginGroup(QStringLiteral("gamepad"));
+    s.remove(QString());
+    const GamepadMap def = defaults();
+    for (auto it = def.cbegin(); it != def.cend(); ++it)
+        if (!map.contains(it.key()))
+            s.setValue(QString::number(it.key()), QStringLiteral("none"));
+    for (auto it = map.cbegin(); it != map.cend(); ++it)
+        s.setValue(QString::number(it.key()), it.value());
+    s.endGroup();
+}
+
+} // namespace gamepadmap
 
 namespace {
 constexpr int kScanIntervalMs = 1500;   // hotplug poll; nothing is urgent here
