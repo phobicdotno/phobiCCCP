@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.4.97 (build 37) — 2026-10-07
+
+**Machine control**
+- **Rehearse tool change** in the BitSetter box runs a single tool change with
+  the spindle off and nothing cut. The machine parks at the tool-change spot
+  and asks for the tool. It then measures the tool on the BitSetter, applies
+  the offset and goes back to safe Z. The rehearsal is a tiny program streamed
+  like a job, so it runs the same park, measure, offset and continue code a
+  real tool change does. It ends by showing the offset it measured. Until now
+  that flow had only been checked against the simulator; this is the
+  supervised first check on the machine. It needs a reference tool first.
+- **Map buttons…** in the Jog box opens a gamepad mapping dialog. Press a
+  button on the pad to find its row, pick what it should do, and save. Reset
+  to defaults is there too. The pad is ignored while the dialog is open, so
+  finding the Stop button does not stop the machine. Saving writes the whole
+  mapping, with switched-off default buttons stored as `none`.
+
+**CLI**
+- `--grbl-rehearse <port> <bsX> <bsY> [safeZ]` measures a reference tool,
+  then runs the rehearsal program through the real streamer.
+
+**Testing**
+- GitHub Actions now builds and runs the whole ctest suite on Ubuntu 24.04
+  on every push and pull request, with the widget suites on Qt's offscreen
+  platform.
+- New `rehearsal` suite: the rehearsal program never starts the spindle,
+  never feeds or probes, and only rapids straight up to safe Z.
+- `machine_flow` now runs the rehearsal against the simulator and expects an
+  offset of 0.000 with the same tool in.
+- `gamepad` covers saving and loading the mapping, a switched-off default
+  staying off, and the dialog: a pad press adds a row without changing the
+  mapping until an action is picked.
+
 ## v0.4.96 (build 36) — 2026-10-05
 
 **CAM**

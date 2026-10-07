@@ -65,6 +65,7 @@ private:
     void gamepadButton(int number, bool pressed);
     void gamepadAxis(int number, int value);
     void loadGamepadMapping();
+    void editGamepadMapping();
     void jogIncrement();
     void stopHoldJog();                  // end a running hold-jog (cancel) safely
     QString currentPortName() const;
@@ -75,6 +76,8 @@ private:
     void measureTool(Phase why);
     void onMacroFinished(bool ok);
     void onToolChange(int tool);
+    void rehearseToolChange();
+    void finishRehearsal(bool ok, bool measured);
     void onStatus(const MachineStatus &st);
     void whenIdle(std::function<void()> fn);
     BitSetterConfig bitSetter() const;
@@ -99,6 +102,7 @@ private:
     Gamepad *m_pad = nullptr;
     QLabel *m_padLabel = nullptr;
     QHash<int, QString> m_padMap;        // button number -> action name
+    bool m_padMapping = false;           // mapping dialog open: presses do nothing
     int m_padAxisDir[2] = {0, 0};        // last direction seen on axes 0 and 1
     char m_holdAxis = 0;
     int m_holdDir = 0;
@@ -119,6 +123,7 @@ private:
     // failed measurement leaves the *previous* tool's G43.1 in force, so
     // resuming without one cuts as deep as the two tools differ in length.
     bool m_toolMeasured = false;
+    bool m_rehearsal = false;            // the running program is a rehearsal
     std::function<void()> m_onIdle;
     QString m_lastState;
 

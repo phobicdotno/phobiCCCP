@@ -368,6 +368,7 @@ static void printUsage()
         "  --grbl-jog-z1 <port>                          unlock, jog Z up 1 mm\n"
         "  --grbl-probe <port> <bsX> <bsY> [safeZ]       BitSetter measurement (machine XY)\n"
         "  --grbl-run <port> <job.nc> [bsX bsY]          stream, with automatic tool changes\n"
+        "  --grbl-rehearse <port> <bsX> <bsY> [safeZ]    reference + one tool change, spindle off\n"
         "  --grbl-aircut <port> <template.c2d> [lift_mm] rehearse a program in the air\n"
         "  --grbl-circle <port> [feed]                   sweep the largest circle that fits\n"
         "\n"
@@ -539,6 +540,62 @@ int main(int argc, char *argv[])
             return 1;
         QTimer::singleShot(1500, &grbl, [&] { grbl.startStream(lines); });
         QTimer::singleShot(15 * 60 * 1000, &app, [&] { qInfo() << "RUN_TIMEOUT"; QCoreApplication::exit(2); });
+        return app.exec();
+    }
+
+    // --grbl-rehearse <port> <bsX> <bsY> [safeZ]: measure a reference tool, then
+    // stream the Machine panel's tool-change rehearsal program through the real
+    // streamer: park, measure, G43.1, continue. No spindle, no cut, no prompt.
+    // REHEARSE_OK reports the offset; with the same tool in it should be ~0.
+    if ((argc == 5 || argc == 6) && QByteArray(argv[1]) == "--grbl-rehearse") {
+        c2d::GrblStreamer grbl;
+        c2d::BitSetterConfig cfg;
+        cfg.enabled = true;
+        cfg.x = QByteArray(argv[3]).toDouble();
+        cfg.y = QByteArray(argv[4]).toDouble();
+        if (argc == 6)
+            cfg.safeZ = QByteArray(argv[5]).toDouble();
+        bool haveRef = false;
+        double refZ = 0;
+        int changes = 0;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { if (!l.startsWith(QLatin1String("ok"))) qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::toolChangeRequested, [&](int t) {
+            ++changes;
+            qInfo().noquote() << QStringLiteral("TOOLCHANGE T%1 parked").arg(t);
+            grbl.measureTool(cfg, false);
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::macroFinished, [&](bool ok) {
+            if (!ok || !grbl.lastProbeOk()) {
+                qInfo() << "REHEARSE_FAILED (probe)";
+                QCoreApplication::exit(1);
+                return;
+            }
+            if (!haveRef) {
+                haveRef = true;
+                refZ = grbl.lastProbeZ();
+                grbl.applyToolLengthOffset(0);
+                qInfo().noquote() << QStringLiteral("REF contactZ=%1").arg(refZ, 0, 'f', 3);
+                grbl.startStream(c2d::GrblStreamer::toolChangeRehearsalLines(cfg, 1));
+                return;
+            }
+            const double tlo = grbl.lastProbeZ() - refZ;
+            grbl.applyToolLengthOffset(tlo);
+            qInfo().noquote() << QStringLiteral("TLO %1 (contactZ=%2)").arg(tlo, 0, 'f', 3).arg(grbl.lastProbeZ(), 0, 'f', 3);
+            grbl.continueAfterToolChange();
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            ok = ok && changes == 1;
+            qInfo().noquote() << (ok ? QStringLiteral("REHEARSE_OK tlo=%1").arg(grbl.toolLengthOffset(), 0, 'f', 3)
+                                     : QStringLiteral("REHEARSE_FAILED"));
+            QTimer::singleShot(300, &app, [&, ok] { grbl.disconnectPort(); QCoreApplication::exit(ok ? 0 : 1); });
+        });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        QTimer::singleShot(1500, &grbl, [&] { grbl.measureTool(cfg, false); });
+        QTimer::singleShot(5 * 60 * 1000, &app, [&] { qInfo() << "REHEARSE_TIMEOUT"; QCoreApplication::exit(2); });
         return app.exec();
     }
 

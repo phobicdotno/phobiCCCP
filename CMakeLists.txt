@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.96 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.97 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -76,6 +76,7 @@ add_executable(phobicccp
     src/modelpanel.cpp
     src/exportprogress.cpp
     src/gamepad.cpp
+    src/gamepadmapdialog.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets)
@@ -133,6 +134,10 @@ add_executable(test_import tests/test_import.cpp)
 target_link_libraries(test_import PRIVATE phobicccp_core)
 target_compile_definitions(test_import PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
 add_test(NAME import COMMAND test_import)
+# The tool-change rehearsal program: what it may and may not send.
+add_executable(test_rehearsal tests/test_rehearsal.cpp)
+target_link_libraries(test_rehearsal PRIVATE phobicccp_core)
+add_test(NAME rehearsal COMMAND test_rehearsal)
 add_executable(test_tiling tests/test_tiling.cpp)
 target_link_libraries(test_tiling PRIVATE phobicccp_core)
 add_test(NAME tiling COMMAND test_tiling)
@@ -185,8 +190,9 @@ add_test(NAME exportjob COMMAND test_exportjob)
 # The gamepad reader, driven through a fifo carrying synthetic joystick events
 # so it can be tested with no controller plugged in.
 if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
-    add_executable(test_gamepad tests/test_gamepad.cpp src/gamepad.cpp)
-    target_link_libraries(test_gamepad PRIVATE Qt6::Core Qt6::Test)
+    add_executable(test_gamepad tests/test_gamepad.cpp src/gamepad.cpp
+                   src/gamepadmapdialog.cpp)
+    target_link_libraries(test_gamepad PRIVATE Qt6::Widgets Qt6::Test)
     add_test(NAME gamepad COMMAND test_gamepad)
 endif()
 
