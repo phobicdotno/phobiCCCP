@@ -16,9 +16,13 @@
 #include "toolpathpanel.h"
 #include "vectoractions.h"
 #include "importui.h"
+#include "setupsheet.h"
+#include <QDesktopServices>
+#include <QUrl>
 
 #include <QApplication>
 #include <QFile>
+#include <QDir>
 #include <QCloseEvent>
 #include <QFileInfo>
 #include <QDockWidget>
@@ -363,6 +367,33 @@ MainWindow::MainWindow(QWidget *parent)
             ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
     fileMenu->addAction(QStringLiteral("Export G-code (&tiled)…"), this,
                         &MainWindow::onExportGcodeTiled);
+    fileMenu->addAction(QStringLiteral("Setup S&heet…"), this, [this] {
+        // Fusion's setup sheet: a printable page of the job for the machine.
+        if (m_doc.toolpaths().isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("Setup sheet"),
+                                     QStringLiteral("There are no toolpaths to describe yet."));
+            return;
+        }
+        const QFileInfo fi(m_doc.filePath());
+        const QString title = fi.fileName().isEmpty() ? QStringLiteral("Untitled") : fi.completeBaseName();
+        const QString dest = QFileDialog::getSaveFileName(
+            this, QStringLiteral("Save setup sheet"),
+            (fi.fileName().isEmpty() ? QDir::homePath() : fi.absolutePath())
+                + QLatin1Char('/') + title + QStringLiteral(" setup sheet.html"),
+            QStringLiteral("HTML (*.html)"));
+        if (dest.isEmpty())
+            return;
+        QFile f(dest);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(this, QStringLiteral("Setup sheet"),
+                                 QStringLiteral("Could not write %1").arg(dest));
+            return;
+        }
+        f.write(setupSheetHtml(m_doc, title).toUtf8());
+        f.close();
+        statusBar()->showMessage(QStringLiteral("Setup sheet saved to %1").arg(dest), 6000);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dest));
+    });
     fileMenu->addSeparator();
     installImageMenus(fileMenu, this, m_canvas, &m_doc, &m_bg);   // backgrounddialog.cpp
     fileMenu->addSeparator();

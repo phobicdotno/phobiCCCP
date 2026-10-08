@@ -87,7 +87,7 @@ public:
     static Element makePoint(QPointF at, const QJsonObject &layer);
     static bool isPoint(const Element &e);
     // Construction geometry (Fusion's construction lines): `construction`
-    // marks a vector that is drawn dashed, still snaps and still serves
+    // marks a vector that is drawn dashed and still serves
     // trim, extend, arrays and mirrors as a reference, but is never machined.
     static bool isConstruction(const Element &e);
     static Element withConstruction(const Element &src, bool on);

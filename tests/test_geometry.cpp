@@ -8,6 +8,7 @@
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include "../src/gcodeexport.h"
+#include "../src/setupsheet.h"
 #include "../src/post_grbl.h"
 #include "../src/toollibrary.h"
 #include "../src/toolpathfactory.h"
@@ -892,6 +893,67 @@ int main(int argc, char *argv[])
         const c2d::GcodeResult gs = c2d::exportGcode(small.doc);
         check(gs.done.isEmpty() && gs.skipped.size() == 1 && gs.skipped.first().contains("too small"),
               "a hole too small to thread is reported once");
+    }
+
+    // --- construction geometry and sketch points ---------------------------------
+    {
+        Rig r;
+        const c2d::Element box = c2d::Element::makeRectangle({40, 30}, 40, 20, layer);
+        const c2d::Element guide = c2d::Element::withConstruction(
+            c2d::Element::makeRectangle({40, 30}, 80, 60, layer), true);
+        const c2d::Element pt = c2d::Element::makePoint({40, 30}, layer);
+        r.doc.addElement(box);
+        r.doc.addElement(guide);
+        r.doc.addElement(pt);
+        check(c2d::Element::isConstruction(guide) && !c2d::Element::isConstruction(box),
+              "construction flag");
+        check(c2d::Element::isPoint(pt) && !c2d::Element::isPoint(box), "point flag");
+        check(c2d::Element::isConstruction(c2d::Element::regen(guide, {{"width", 70.0}})),
+              "construction survives a resize");
+        QJsonArray all;
+        for (const c2d::Element *e : {&box, &guide, &pt})
+            all.append(QJsonObject{{"uuid", e->id}});
+        r.addToolpath("pocket_toolpath", {{"elements", all}, {"stepover", 2.0}});
+        c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double minZ;
+        QRectF bb = cutBounds(g.gcode, &minZ);
+        check(g.done.size() == 1 && bb.width() < 40 && bb.height() < 20,
+              "pocket machines the box, not the construction frame or the point");
+        Rig d;
+        d.doc.addElement(guide);
+        d.doc.addElement(pt);
+        d.addToolpath("drilling_toolpath", {{"elements", all}});
+        g = c2d::exportGcode(d.doc);
+        int plunges = 0;
+        bool atPoint = true;
+        for (const CutPoint &p : cutPoints(g.gcode))
+            if (p.z < -1e-6) {
+                ++plunges;
+                atPoint = atPoint && approx(p.x, 40, 1e-6) && approx(p.y, 30, 1e-6);
+            }
+        check(g.done.size() == 1 && plunges >= 1 && atPoint, "drilling drills the point only");
+        Rig only;
+        only.addShape(guide);
+        only.addToolpath("contour", {});
+        g = c2d::exportGcode(only.doc);
+        check(g.done.isEmpty() && g.skipped.size() == 1 && g.skipped.first().contains("no vectors"),
+              "a toolpath on construction geometry alone is reported, not cut");
+    }
+
+    // --- setup sheet ---------------------------------------------------------------
+    {
+        Rig r;
+        r.doc.setParam("width", "100");
+        r.doc.setParam("height", "60");
+        r.doc.setParam("thickness", "12");
+        r.addShape(c2d::Element::makeRectangle({40, 30}, 40, 20, layer));
+        r.addToolpath("contour", {{"name", "Outline <cut>"}, {"ofset_dir", 1}});
+        const QString html = c2d::setupSheetHtml(r.doc, QStringLiteral("Job"));
+        check(html.contains("100.00 × 60.00 × 12.00 mm"), "setup sheet: stock size");
+        check(html.contains("Outline &lt;cut&gt;") && !html.contains("<cut>"),
+              "setup sheet: toolpath names, escaped");
+        check(html.contains("T201") && html.contains("6.350 mm"), "setup sheet: the tool");
+        check(html.contains("Estimated time"), "setup sheet: job totals");
     }
 
     // --- the factory makes all four with working defaults --------------------
