@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "aboutdialog.h"
 
 #include "exportprogress.h"
 
@@ -360,6 +361,15 @@ MainWindow::MainWindow(QWidget *parent)
             ->setShortcut(QKeySequence::Quit);
 
     // Edit menu: undo/redo backed by the canvas undo stack.
+    // Help goes last on the bar; other menus are still being added below and
+    // by the install* helpers, so append it once construction has finished.
+    QTimer::singleShot(0, this, [this] {
+        auto *helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
+        helpMenu->addAction(QStringLiteral("&About phobiCCCP"), this, [this] {
+            AboutDialog dlg(this);
+            dlg.exec();
+        });
+    });
     auto *editMenu = menuBar()->addMenu(QStringLiteral("&Edit"));
     QAction *undoAct = m_canvas->undoStack()->createUndoAction(this, QStringLiteral("&Undo"));
     undoAct->setShortcut(QKeySequence::Undo);

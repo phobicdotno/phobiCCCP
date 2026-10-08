@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.96 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.97 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -63,6 +63,7 @@ add_executable(phobicccp
     src/main.cpp
     src/canvas.cpp
     src/mainwindow.cpp
+    src/aboutdialog.cpp
     src/propertiespanel.cpp
     src/toolpathpanel.cpp
     src/toollibrarydialog.cpp
@@ -162,6 +163,9 @@ if(Qt6Test_FOUND)
     add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
+    add_executable(test_about tests/test_about.cpp src/aboutdialog.cpp data/tools.qrc)
+    target_link_libraries(test_about PRIVATE phobicccp_core Qt6::Widgets)
+    add_test(NAME about COMMAND test_about)
     # Panel <-> canvas selection handover (needs the real widgets).
     add_executable(test_panels tests/test_panels.cpp src/canvas.cpp
                    src/toolpathpanel.cpp src/toollibrarydialog.cpp)

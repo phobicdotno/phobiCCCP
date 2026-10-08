@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.97 (build 37) — 2026-10-08
+
+**About**
+- Help → About shows the logo, the version and build number, and a short
+  "What's new": one line per release with the areas it touched, read from
+  this changelog compiled into the binary, so it can never go stale.
+
+**Testing**
+- New `about` suite: the summary parser, and a check that the newest
+  changelog entry matches the version being built.
+
 ## v0.4.96 (build 36) — 2026-10-05
 
 **CAM**
