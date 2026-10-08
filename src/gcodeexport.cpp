@@ -56,13 +56,21 @@ static double depthToZ(const QJsonValue &v, bool *ok = nullptr)
 }
 
 
+// The vectors a toolpath machines. Construction geometry never is, and
+// sketch points only mark holes, so only drilling and keyhole take them.
 static QVector<const Element *> referenced(Document &doc, const QJsonObject &tp)
 {
+    const QString type = tp.value("type").toString();
+    const bool takesPoints = type == QLatin1String("drilling_toolpath")
+                             || type == QLatin1String("keyhole_toolpath");
     QVector<const Element *> out;
     for (const QJsonValue &ev : tp.value("elements").toArray()) {
         const QString id = ev.toObject().value("uuid").toString();
-        if (const Element *e = doc.elementById(id))
+        if (const Element *e = doc.elementById(id)) {
+            if (Element::isConstruction(*e) || (Element::isPoint(*e) && !takesPoints))
+                continue;
             out.append(e);
+        }
     }
     return out;
 }

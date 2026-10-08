@@ -309,6 +309,19 @@ QIcon vecIcon(const QString &kind)
             const double a = M_PI / 2 + i * 2 * M_PI / 6;
             p.drawEllipse(QPointF(10 + 6.5 * std::cos(a), 10 - 6.5 * std::sin(a)), 2.2, 2.2);
         }
+    } else if (kind == "pathpattern") {
+        QPen faint = p.pen();
+        faint.setStyle(Qt::DotLine);
+        p.setPen(faint);
+        QPainterPath curve(QPointF(2, 16));
+        curve.cubicTo(6, 2, 14, 2, 18, 16);
+        p.drawPath(curve);
+        p.setPen(QPen(ink, 1.4));
+        p.setBrush(ink);
+        p.drawRect(QRectF(1, 13.5, 4, 4));
+        p.setBrush(Qt::NoBrush);
+        for (const QPointF &o : {QPointF(8, 4.5), QPointF(16, 13.5)})
+            p.drawRect(QRectF(o, QSizeF(4, 4)));
     } else if (kind == "rotate") {
         p.drawArc(QRectF(3, 3, 14, 14), 30 * 16, 270 * 16);
         p.setBrush(ink);
@@ -435,6 +448,9 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     QAction *circAct = add(m, QStringLiteral("&Circular array…"), QKeySequence(), m_needOne,
         [this] { circularArrayDialog(); },
         QStringLiteral("Copy the selection around a center point"));
+    QAction *pathAct = add(m, QStringLiteral("&Pattern on path…"), QKeySequence(), m_needTwo,
+        [this] { patternOnPathDialog(); },
+        QStringLiteral("Copy the selection along the vector selected last"));
     m->addSeparator();
     QMenu *mod = m->addMenu(QStringLiteral("&Modify"));
     QAction *rotAct = add(mod, QStringLiteral("&Rotate…"), A(Qt::Key_R), m_needOne,
@@ -467,6 +483,7 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     mirrorV->setIcon(vecIcon(QStringLiteral("mirrorv")));
     gridAct->setIcon(vecIcon(QStringLiteral("grid")));
     circAct->setIcon(vecIcon(QStringLiteral("circular")));
+    pathAct->setIcon(vecIcon(QStringLiteral("pathpattern")));
 
     // Icon toolbar for the everyday ones.
     unionAct->setIcon(vecIcon(QStringLiteral("union")));
@@ -481,7 +498,7 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     for (QAction *a : {unionAct, subAct, interAct, offsetAct, centerAct})
         tb->addAction(a);
     tb->addSeparator();
-    for (QAction *a : {mirrorH, mirrorV, gridAct, circAct})
+    for (QAction *a : {mirrorH, mirrorV, gridAct, circAct, pathAct})
         tb->addAction(a);
     tb->addSeparator();
     for (QAction *a : {rotAct, scaleAct, moveAct, filletAct, chamferAct})
@@ -758,7 +775,21 @@ void VectorActions::circularArray(QPointF center, int count, double spanDeg, boo
                joinToolpaths, tr("circular array of %1").arg(count));
 }
 
-// The two array dialogs share their tail: the toolpath option and the buttons.
+void VectorActions::patternOnPath(int count, double spacing, bool orient, bool joinToolpaths)
+{
+    QVector<Element> els = orderedSelection();
+    if (els.size() < 2)
+        return;
+    const Element path = els.takeLast();
+    const QVector<QTransform> t = vec::pathTransforms(path.painterPath, count, spacing, orient);
+    if (t.isEmpty()) {
+        emit m_canvas->statusHint(tr("Nothing to place: the path is too short for a second item"));
+        return;
+    }
+    pushCopies(els, t, joinToolpaths, tr("pattern of %1 on a path").arg(t.size() + 1));
+}
+
+// The array dialogs share their tail: the toolpath option and the buttons.
 static QCheckBox *finishArrayDialog(QDialog &dlg, QFormLayout *form)
 {
     auto *join = new QCheckBox(QObject::tr("Add the copies to the originals' toolpaths"), &dlg);
@@ -868,6 +899,42 @@ void VectorActions::circularArrayDialog()
         return;
     circularArray(QPointF(cx->value(), cy->value()), count->value(), span->value(),
                   rotate->isChecked(), join->isChecked());
+}
+
+void VectorActions::patternOnPathDialog()
+{
+    const QVector<Element> els = orderedSelection();
+    if (els.size() < 2)
+        return;
+    const Element &path = els.last();
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Pattern on path"));
+    auto *form = new QFormLayout;
+    auto *pathLabel = new QLabel(tr("%1 (the vector selected last); %2 other vector(s) are copied")
+                                     .arg(path.geometryType).arg(els.size() - 1), &dlg);
+    pathLabel->setWordWrap(true);
+    form->addRow(tr("Path"), pathLabel);
+    auto *count = new QSpinBox(&dlg);
+    count->setRange(2, 1000);
+    count->setValue(5);
+    count->setToolTip(tr("Number of items including the original"));
+    auto *fit = new QCheckBox(tr("Spread over the whole path"), &dlg);
+    fit->setChecked(true);
+    auto *spacing = mmBox(&dlg, 0.01, 100000, 20.0);
+    spacing->setToolTip(tr("Distance along the path from one item to the next"));
+    spacing->setEnabled(false);
+    connect(fit, &QCheckBox::toggled, spacing, [spacing](bool on) { spacing->setEnabled(!on); });
+    auto *orient = new QCheckBox(tr("Turn the copies with the path"), &dlg);
+    orient->setChecked(true);
+    form->addRow(tr("Items"), count);
+    form->addRow(QString(), fit);
+    form->addRow(tr("Spacing"), spacing);
+    form->addRow(QString(), orient);
+    QCheckBox *join = finishArrayDialog(dlg, form);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    patternOnPath(count->value(), fit->isChecked() ? 0.0 : spacing->value(),
+                  orient->isChecked(), join->isChecked());
 }
 
 // ---- modify: rotate, scale, move / copy, fillet, chamfer --------------------

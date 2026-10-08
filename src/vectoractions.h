@@ -38,6 +38,9 @@ public:
     void gridArray(int cols, int rows, double gapX, double gapY, bool joinToolpaths);
     void circularArray(QPointF center, int count, double spanDeg, bool rotate,
                        bool joinToolpaths);
+    // Pattern on path: the vector selected last is the path, the rest are
+    // copied along it (see vec::pathTransforms).
+    void patternOnPath(int count, double spacing, bool orient, bool joinToolpaths);
     // Fusion's Modify tools, dialog-free. Rotate and scale work about the
     // selection's center; moveCopy moves it by (dx, dy), or with copies > 0
     // leaves it in place and adds that many copies, each one (dx, dy)
@@ -60,6 +63,7 @@ private:
     void distribute(vec::Axis axis);
     void gridArrayDialog();
     void circularArrayDialog();
+    void patternOnPathDialog();
     void rotateDialog();
     void scaleDialog();
     void moveCopyDialog();

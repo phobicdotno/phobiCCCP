@@ -540,6 +540,60 @@ QVector<QTransform> circularTransforms(const QRectF &box, QPointF center, int co
     return out;
 }
 
+QVector<QTransform> pathTransforms(const QPainterPath &path, int count, double spacing,
+                                   bool orient)
+{
+    QVector<QTransform> out;
+    if (count < 2)
+        return out;
+    // The path's first subpath, flattened finely (Qt's own flattening is
+    // coarse at millimetre scale).
+    const double k = 100.0;
+    QList<QPolygonF> polys = path.toSubpathPolygons(QTransform::fromScale(k, k));
+    if (polys.isEmpty() || polys.first().size() < 2)
+        return out;
+    QPolygonF poly = polys.first();
+    for (QPointF &p : poly)
+        p /= k;
+    QVector<double> acc{0.0};
+    for (int i = 1; i < poly.size(); ++i)
+        acc.append(acc.last() + QLineF(poly.at(i - 1), poly.at(i)).length());
+    const double total = acc.last();
+    if (total < 1e-9)
+        return out;
+    const bool closed = QLineF(poly.first(), poly.last()).length() < 1e-6;
+    // Point and direction (degrees) at arc length s.
+    auto at = [&](double s, QPointF *pt, double *deg) {
+        int i = int(std::lower_bound(acc.begin(), acc.end(), s) - acc.begin());
+        i = qBound(1, i, int(poly.size()) - 1);
+        while (i < poly.size() - 1 && acc.at(i) - acc.at(i - 1) < 1e-12)
+            ++i;
+        const QLineF seg(poly.at(i - 1), poly.at(i));
+        const double len = acc.at(i) - acc.at(i - 1);
+        *pt = len > 1e-12 ? seg.pointAt(qBound(0.0, (s - acc.at(i - 1)) / len, 1.0)) : seg.p2();
+        *deg = std::atan2(seg.dy(), seg.dx()) * 180.0 / M_PI;
+    };
+    QPointF p0;
+    double d0 = 0;
+    at(0, &p0, &d0);
+    for (int i = 1; i < count; ++i) {
+        const double s = spacing > 0 ? i * spacing
+                       : closed ? total * i / count : total * i / (count - 1);
+        if (s > total + 1e-9)
+            break;
+        QPointF p;
+        double d = 0;
+        at(s, &p, &d);
+        QTransform t;
+        t.translate(p.x(), p.y());
+        if (orient)
+            t.rotate(d - d0);
+        t.translate(-p0.x(), -p0.y());
+        out.append(t);
+    }
+    return out;
+}
+
 QVector<Element> copyElements(const QVector<Element> &els, const QTransform &t)
 {
     QHash<QString, QString> groups;
