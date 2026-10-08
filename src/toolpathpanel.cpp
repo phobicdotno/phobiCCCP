@@ -148,6 +148,11 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
                 "Adaptive clearing: pocket the selected shapes with a light, "
                 "steady bite at a deep stepdown — "
                 "phobiCCCP-only type; Carbide Create does not read it"));
+        } else if (k.type == QLatin1String("thread_toolpath")) {
+            a->setToolTip(QStringLiteral(
+                "Thread milling: a helix of one pitch per turn around each selected "
+                "circle (the thread's major diameter), inside or outside — "
+                "phobiCCCP-only type; Carbide Create does not read it"));
         }
         const QString type = k.type;
         connect(a, &QAction::triggered, this, [this, type] { newToolpath(type); });

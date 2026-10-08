@@ -706,7 +706,15 @@ namespace {
 struct Job {
     QList<QPolygonF> rings;
     bool closed = true;      // false: open engrave line (retract to repeat)
-    QPointF start() const { return rings.first().first(); }
+    // Contour lead-in / lead-out (Fusion's linking arcs): a quarter circle
+    // centred at `c` from `a` onto the ring's first point, and another from
+    // there off to `b`, both on the air side. Single closed ring jobs only.
+    struct Lead {
+        bool on = false;
+        QPointF a, c, b;
+        bool cw = false;
+    } lead;
+    QPointF start() const { return lead.on ? lead.a : rings.first().first(); }
 };
 
 struct CutParams {
@@ -749,6 +757,87 @@ static void ringFillJob(const QPainterPath &area, double firstDelta, double step
         job.rings.append(shells.at(k));
     if (!job.rings.isEmpty())
         jobs.append(job);
+}
+
+// Lead arcs for a closed tool-centre ring: quarter circles of radius
+// `radius` (halved until they fit, down to an eighth) tangent to the ring at
+// its first point, on whichever side `allowed` accepts every sampled point
+// of. The ring's own region decides that: outside a contour the arcs must
+// stay out of the outset region, inside one within the inset region, so the
+// cutter never touches the finished edge on its way in or out.
+// The same closed ring started at the middle of its longest edge: a lead
+// arc tangent to a straight run has room on the air side, where one at a
+// convex corner would swing back across the cut it is about to make.
+static QPolygonF startMidLongestEdge(const QPolygonF &ring)
+{
+    if (ring.size() < 4 || ring.first() != ring.last())
+        return ring;
+    int best = 0;
+    double bestLen = -1;
+    for (int i = 0; i + 1 < ring.size(); ++i) {
+        const double len = QLineF(ring.at(i), ring.at(i + 1)).length();
+        if (len > bestLen) {
+            bestLen = len;
+            best = i;
+        }
+    }
+    QPolygonF out;
+    out << (ring.at(best) + ring.at(best + 1)) / 2;
+    for (int k = 1; k < ring.size(); ++k)
+        out << ring.at((best + k) % (ring.size() - 1));
+    out << out.first();
+    return out;
+}
+
+static Job::Lead makeLead(const QPolygonF &ring, double radius,
+                          const std::function<bool(const QPointF &)> &allowed)
+{
+    Job::Lead lead;
+    if (ring.size() < 3 || radius <= 0.01)
+        return lead;
+    const QPointF s = ring.first();
+    QPointF t;
+    for (int i = 1; i < ring.size(); ++i) {
+        const QPointF d = ring.at(i) - s;
+        const double len = std::hypot(d.x(), d.y());
+        if (len > 1e-6) {
+            t = d / len;
+            break;
+        }
+    }
+    if (t.isNull())
+        return lead;
+    const QPointF left(-t.y(), t.x());
+    for (double r = radius; r >= radius / 8 - 1e-12; r /= 2) {
+        for (const int side : {1, -1}) {
+            const QPointF n = left * side;
+            const QPointF c = s + n * r;
+            // Left of travel turns counter-clockwise onto the ring.
+            const bool cw = side < 0;
+            bool fits = true;
+            for (int k = 0; k <= 16 && fits; ++k) {
+                // Both quarter arcs make up the half circle from a through
+                // the tangent point to b (which way round the cutter turns
+                // does not change where it goes). The tangent point itself
+                // sits on the ring and is skipped.
+                if (k == 8)
+                    continue;
+                const double a = (k - 8) * (M_PI / 2) / 8;
+                const QPointF u = -n * std::cos(a) + t * std::sin(a);
+                fits = allowed(c + u * r);
+            }
+            fits = fits && allowed(c);
+            if (fits) {
+                lead.on = true;
+                lead.c = c;
+                lead.a = c - t * r;
+                lead.b = c + t * r;
+                lead.cw = cw;
+                return lead;
+            }
+        }
+    }
+    return lead;
 }
 
 class Emitter
@@ -937,8 +1026,36 @@ public:
         m_y = to.y();
     }
 
+    // A closed contour with lead arcs: each pass drops in at the lead's
+    // start (on the air side), arcs onto the ring, goes round, arcs off
+    // again, and feeds back across the lead circle to drop for the next
+    // pass. Ramping takes the place of the leads (see makeLead's caller).
+    void runLeadJob(const Job &job, const CutParams &cp)
+    {
+        const Job::Lead &l = job.lead;
+        const QPolygonF &ring = job.rings.first();
+        rapidTo(l.a);
+        double z = cp.zTop;
+        bool more = true;
+        while (more) {
+            z = qMax(cp.zBot, z - cp.stepdown);
+            more = z > cp.zBot + 1e-9;
+            plungeTo(l.a, z);
+            arcTo(ring.first(), z, l.c, l.cw);
+            followRing(ring, z, cp);
+            arcTo(l.b, z, l.c, l.cw);
+            if (more)
+                feedAt(l.a, z, m_feed);
+        }
+        retract();
+    }
+
     void runJob(const Job &job, const CutParams &cp)
     {
+        if (job.lead.on && job.closed && job.rings.size() == 1) {
+            runLeadJob(job, cp);
+            return;
+        }
         rapidTo(job.start());
         double z = cp.zTop;
         bool first = true;
@@ -1169,9 +1286,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         const bool bore = (t.type == QLatin1String("bore_toolpath"));
         const bool chamfer = (t.type == QLatin1String("chamfer_toolpath"));
         const bool adaptive = (t.type == QLatin1String("adaptive_toolpath"));
+        const bool thread = (t.type == QLatin1String("thread_toolpath"));
         if (!contour && !pocket && !cutout && !drilling && !keyhole && !texture
             && !vcarve && !engrave && !rough3d && !finish3d && !face && !bore && !chamfer
-            && !adaptive) {
+            && !adaptive && !thread) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -1404,6 +1522,98 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 em.feedAt(ctr, cp.zBot, feed);   // off the wall before lifting
                 em.retract();
                 lastPos = ctr;
+            }
+        } else if (thread) {
+            // THREAD (phobiCCCP type, Fusion's 2D Thread): a thread mill
+            // runs a helix of one `pitch` per turn around each circle, which
+            // is the thread's major (nominal) diameter. Internal threads are
+            // cut out to it from the hole's middle, external ones down to the
+            // minor diameter from outside the boss; `thread_depth` is the
+            // radial depth (0: ISO's 0.6134 x pitch), split over `passes`.
+            // The tool's diameter is the cutter's. Climb (counter-clockwise
+            // inside, clockwise outside) unless climb is false; which way the
+            // helix climbs follows from that and the hand, so a right-hand
+            // internal thread is cut from the bottom up. The helix covers
+            // whole turns from end_depth up, carried on into the air above
+            // the top rather than past the bottom.
+            const double pitch = numOr(j.value("pitch"), 1.5);
+            const bool external = j.value("side").toString() == QLatin1String("external");
+            const bool climb = j.value("climb").toBool(true);
+            const bool leftHand = j.value("left_hand").toBool(false);
+            const int passes = qBound(1, int(numOr(j.value("passes"), 1)), 20);
+            double td = numOr(j.value("thread_depth"), 0);
+            if (td <= 0)
+                td = 0.6134 * pitch;
+            const double length = cp.zTop - cp.zBot;
+            if (!(pitch > 0.05) || !(td < 50) || length <= 1e-6) {
+                res.skipped << QStringLiteral("%1 (needs a pitch and a depth)").arg(name);
+                continue;
+            }
+            const int turns = qMax(1, int(std::ceil(length / pitch - 1e-9)));
+            if (turns > 10000) {
+                res.skipped << QStringLiteral("%1 (too many turns)").arg(name);
+                continue;
+            }
+            const bool ccw = external ? !climb : climb;
+            const bool up = (ccw ? 1 : -1) * (leftHand ? -1 : 1) > 0;
+            const double zLow = cp.zBot, zHigh = cp.zBot + turns * pitch;
+            int tooSmall = 0;
+            QList<Job> holes;
+            for (const Element *e : elems) {
+                if (e->geometryType != QLatin1String("circle"))
+                    continue;
+                const QJsonArray c = e->raw.value("center").toArray();
+                const QPointF ctr(c.at(0).toDouble(), c.at(1).toDouble());
+                const double R = numOr(e->raw.value("radius"), 0);
+                // The first (smallest-bite) pass radius must leave room.
+                const double first = external ? R + toolR - td / passes
+                                              : R - toolR - td + td / passes;
+                if (!external && first < 0.05) {
+                    ++tooSmall;
+                    continue;
+                }
+                if (external && R - td <= 0.05) {
+                    ++tooSmall;
+                    continue;
+                }
+                Job h;
+                h.rings.append(QPolygonF() << ctr << QPointF(R, 0));
+                holes.append(h);
+            }
+            if (tooSmall)
+                res.skipped << QStringLiteral("%1 (%2 circle(s) too small for the thread or tool)")
+                                   .arg(name).arg(tooSmall);
+            if (holes.isEmpty()) {
+                if (!tooSmall)
+                    res.skipped << QStringLiteral("%1 (no circles to thread)").arg(name);
+                continue;
+            }
+            for (const Job &h : orderJobs(holes, lastPos)) {
+                const QPointF ctr = h.rings.first().at(0);
+                const double R = h.rings.first().at(1).x();
+                // Where each pass starts and ends its radial move: the
+                // hole's center, or just clear of the boss.
+                const QPointF home = external ? ctr + QPointF(R + 2 * toolR + 1, 0) : ctr;
+                em.rapidTo(home);
+                for (int k = 1; k <= passes; ++k) {
+                    const double pr = external ? R + toolR - td * k / passes
+                                               : R - toolR - td + td * k / passes;
+                    const QPointF s0 = ctr + QPointF(pr, 0), s1 = ctr - QPointF(pr, 0);
+                    double z = up ? zLow : zHigh;
+                    em.plungeTo(home, z);
+                    em.feedAt(s0, z, feed);
+                    bool atS0 = true;
+                    for (int half = 0; half < 2 * turns; ++half) {
+                        z += (up ? pitch : -pitch) / 2;
+                        const QPointF from = atS0 ? s0 : s1, to = atS0 ? s1 : s0;
+                        body.append(Op::arcTo(to.x(), to.y(), z, ctr.x() - from.x(),
+                                              ctr.y() - from.y(), !ccw, feed));
+                        atS0 = !atS0;
+                    }
+                    em.feedAt(home, z, feed);   // off the wall before moving on
+                }
+                em.retract();
+                lastPos = home;
             }
         } else if (adaptive) {
             // ADAPTIVE (phobiCCCP type, Fusion's 2D Adaptive): the closed
@@ -1858,9 +2068,21 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             const double leave = contour ? qMax(0.0, numOr(j.value("stock_to_leave"), 0)) : 0.0;
             const QList<QPolygonF> rings = inside ? insetRings(region, toolR + leave)
                                                   : outsetRings(region, toolR + leave);
+            // Lead-in / lead-out arcs (phobiCCCP key, contours only). Ramping
+            // is an entry of its own, so it wins when both are asked for.
+            const double leadR = contour && cp.rampAngle <= 0
+                                     ? qMax(0.0, numOr(j.value("lead_radius"), 0)) : 0.0;
+            const QPainterPath centres = leadR > 0 ? regionFromRings(rings) : QPainterPath();
+            auto allowed = [&](const QPointF &p) { return centres.contains(p) == inside; };
             for (const QPolygonF &p : rings) {
                 Job job;
                 job.rings.append(p);
+                if (leadR > 0) {
+                    const QPolygonF moved = startMidLongestEdge(p);
+                    job.lead = makeLead(moved, leadR, allowed);
+                    if (job.lead.on)
+                        job.rings.first() = moved;
+                }
                 jobs.append(job);
             }
         } else { // pocket

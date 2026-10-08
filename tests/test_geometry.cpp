@@ -803,6 +803,97 @@ int main(int argc, char *argv[])
         check(gn.done.isEmpty() && gn.skipped.size() == 1, "adaptive in a slot narrower than the tool is reported once");
     }
 
+    // --- contour lead-in / lead-out: arcs on the air side ------------------------
+    {
+        const double R = 6.35 / 2;
+        for (const int dir : {1, -1}) {   // outside, inside
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({40, 30}, 40, 20, layer));
+            r.addToolpath("contour", {{"ofset_dir", dir}, {"lead_radius", 3.0},
+                                      {"end_depth", "4.000"}, {"stepdown", 2.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1 && g.skipped.isEmpty(), "lead contour exports");
+            // Every cut point keeps the tool off the finished edge, and each
+            // pass drops in at the lead's start, clear of the cut.
+            auto edgeDist = [&](double x, double y) {
+                if (dir > 0)
+                    return std::hypot(std::max({20 - x, x - 60, 0.0}), std::max({20 - y, y - 40, 0.0}));
+                return std::min({x - 20, 60 - x, y - 20, 40 - y});
+            };
+            bool clear = true;
+            for (const CutPoint &p : cutPoints(g.gcode))
+                if (p.z < -1e-6)
+                    clear = clear && edgeDist(p.x, p.y) >= R - 1e-3;
+            check(clear, dir > 0 ? "outside leads stay off the part" : "inside leads stay in the hole");
+            int plunges = 0, offRing = 0;
+            double px = 0, py = 0, pz = 10;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind == c2d::Op::Feed && approx(op.x, px) && approx(op.y, py) && op.z < pz - 1e-9) {
+                    ++plunges;
+                    offRing += edgeDist(op.x, op.y) > R + 0.5 ? 1 : 0;
+                }
+                if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                    px = op.x; py = op.y; pz = op.z;
+                }
+            }
+            check(plunges == 2 && offRing == 2, "each pass drops in at the lead's start, off the cut");
+        }
+        // Ramping wins: no lead arcs, same as before.
+        Rig a, b;
+        for (Rig *r : {&a, &b})
+            r->addShape(c2d::Element::makeRectangle({40, 30}, 40, 20, layer));
+        a.addToolpath("contour", {{"ofset_dir", 1}, {"enable_ramping", true}});
+        b.addToolpath("contour", {{"ofset_dir", 1}, {"enable_ramping", true}, {"lead_radius", 3.0}});
+        check(c2d::exportGcode(a.doc).gcode == c2d::exportGcode(b.doc).gcode,
+              "ramping replaces the leads");
+    }
+
+    // --- thread milling: helix of one pitch per turn ------------------------------
+    {
+        const double R = 6.35 / 2;
+        for (const bool external : {false, true}) {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({30, 30}, 8, layer));
+            r.addToolpath("thread_toolpath",
+                          {{"end_depth", "6.000"}, {"pitch", 1.5},
+                           {"side", external ? "external" : "internal"}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1 && g.skipped.isEmpty(), "thread exports");
+            const double td = 0.6134 * 1.5;
+            const double wallR = external ? 8 + R - td : 8 - R;
+            int arcs = 0;
+            bool onWall = true, steady = true, rising = true, ccw = true;
+            double lastZ = 0, minZ = 0, maxZ = -100;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind == c2d::Op::Arc) {
+                    if (arcs > 0) {
+                        steady = steady && approx(std::fabs(op.z - lastZ), 0.75, 1e-9);
+                        rising = rising && op.z > lastZ;
+                    }
+                    ++arcs;
+                    onWall = onWall && approx(std::hypot(op.x - 30, op.y - 30), wallR, 1e-6);
+                    ccw = ccw && !op.cw;
+                    minZ = std::min(minZ, op.z);
+                    maxZ = std::max(maxZ, op.z);
+                    lastZ = op.z;
+                }
+            }
+            check(arcs == 8 && onWall, external ? "external thread: 4 turns on the minor diameter"
+                                                : "internal thread: 4 turns on the major diameter");
+            check(steady, "thread: half the pitch per half turn");
+            // Right-hand climb: internal goes up counter-clockwise, external
+            // down clockwise; neither goes below the end depth.
+            check(external ? (!rising && !ccw) : (rising && ccw), "right-hand climb direction");
+            check(minZ >= -6 - 1e-9 && approx(maxZ - minZ, 5.25, 1e-9) && (external ? approx(minZ, -6) : approx(maxZ, 0)), "thread covers the length, never deeper");
+        }
+        Rig small;
+        small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
+        small.addToolpath("thread_toolpath", {{"end_depth", "5.000"}, {"pitch", 1.0}});
+        const c2d::GcodeResult gs = c2d::exportGcode(small.doc);
+        check(gs.done.isEmpty() && gs.skipped.size() == 1 && gs.skipped.first().contains("too small"),
+              "a hole too small to thread is reported once");
+    }
+
     // --- the factory makes all four with working defaults --------------------
     {
         c2d::Document doc;
@@ -817,11 +908,13 @@ int main(int argc, char *argv[])
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("bore_toolpath"), {hole.id}));
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("chamfer_toolpath"), {box.id}));
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("adaptive_toolpath"), {box.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("thread_toolpath"), {hole.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("contour"), {box.id}));
         check(c2d::toolpathLabel("chamfer_toolpath") == QLatin1String("2D Chamfer"),
               "2D Chamfer is in the New menu");
         const c2d::GcodeResult g = c2d::exportGcode(doc);
-        check(g.done.size() == 4 && g.skipped.isEmpty(),
-              "face, bore, chamfer and adaptive defaults all export");
+        check(g.done.size() == 6 && g.skipped.isEmpty(),
+              "face, bore, chamfer, adaptive, thread and lead contour defaults all export");
         const c2d::Toolpath ch = doc.toolpaths().at(2);
         check(ch.json.value("tool").toObject().value("angle").toDouble() > 0,
               "chamfer gets a V-bit from the library");
