@@ -1,4 +1,5 @@
 #include "sketchgeom.h"
+#include "sketch.h"
 
 #include <QtMath>
 #include <cmath>
@@ -34,16 +35,9 @@ double dot(const QPointF &a, const QPointF &b) { return a.x() * b.x() + a.y() * 
 
 Circle circleThrough3(const QPointF &a, const QPointF &b, const QPointF &c)
 {
+    // One implementation of the circumcircle: the arc tool's, in sketch.cpp.
     Circle r;
-    const double d = 2.0 * (a.x() * (b.y() - c.y()) + b.x() * (c.y() - a.y())
-                            + c.x() * (a.y() - b.y()));
-    if (std::abs(d) < 1e-9)
-        return r;
-    const double a2 = dot(a, a), b2 = dot(b, b), c2 = dot(c, c);
-    r.center = QPointF((a2 * (b.y() - c.y()) + b2 * (c.y() - a.y()) + c2 * (a.y() - b.y())) / d,
-                       (a2 * (c.x() - b.x()) + b2 * (a.x() - c.x()) + c2 * (b.x() - a.x())) / d);
-    r.radius = QLineF(r.center, a).length();
-    r.valid = r.radius > 1e-9;
+    r.valid = circleThrough(a, b, c, &r.center, &r.radius) && r.radius > 1e-9;
     return r;
 }
 

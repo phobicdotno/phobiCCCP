@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.4.98 (build 38) — 2026-10-08
+
+**Tidying**
+- One circumcircle: the Circle drop-down's 3-Point mode now uses the same
+  construction as the 3-point arc, and the hints left over from the old
+  separate 3-point circle tool are gone.
+- About's "What's new" summarises a release without section titles by its
+  first item's name ("Trim (X)") instead of a sentence cut off mid-way.
+
 ## v0.4.97 (build 37) — 2026-10-08
 
 **About**

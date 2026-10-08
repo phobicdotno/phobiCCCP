@@ -984,13 +984,12 @@ void Canvas::clickToolPress(const QPointF &pos)
             m_preview = m_scene->addPath(QPainterPath(), pen);
         }
         m_preview->setPath(clickPreview(pos));
-        const QString what = m_tool == DrawSlot ? tr("Slot: click the second center")
-                           : m_tool == DrawArc  ? tr("Arc: click the end point")
-                                                : tr("3-point circle: click the second point");
-        emit statusHint(m_clicks.size() == 1 ? what
-                        : m_tool == DrawSlot ? tr("Slot: click to set the width")
-                        : m_tool == DrawArc  ? tr("Arc: click a point the arc passes through")
-                                             : tr("3-point circle: click the third point"));
+        // Only slot and arc are click tools; 3-point circles are a Circle mode.
+        const bool slot = m_tool == DrawSlot;
+        emit statusHint(m_clicks.size() == 1
+                        ? (slot ? tr("Slot: click the second center") : tr("Arc: click the end point"))
+                        : (slot ? tr("Slot: click to set the width")
+                                : tr("Arc: click a point the arc passes through")));
         viewport()->update();
         return;
     }

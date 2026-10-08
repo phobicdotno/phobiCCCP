@@ -17,19 +17,37 @@ QVector<ReleaseSummary> summarizeChangelog(const QString &markdown)
     static const QRegularExpression section(QStringLiteral(R"(^\*\*(.+?)\*\*\s*$)"));
     QVector<ReleaseSummary> out;
     QString firstBullet;   // fallback summary for a release without sections
+    bool inFirstBullet = false;
     auto closeRelease = [&] {
         if (!out.isEmpty() && out.last().areas.isEmpty() && !firstBullet.isEmpty()) {
-            QString t = firstBullet;
+            QString t = firstBullet.simplified();
             t.remove(QRegularExpression(QStringLiteral("[*`]")));
-            if (t.size() > 70)
-                t = t.left(t.lastIndexOf(QLatin1Char(' '), 68)) + QStringLiteral(" …");
+            // "Trim (X): click a piece …" -> "Trim (X)"; else the first
+            // sentence, cut at a word boundary.
+            const int colon = t.indexOf(QStringLiteral(": "));
+            if (colon > 0 && colon <= 40)
+                t = t.left(colon);
+            else {
+                const int dot = t.indexOf(QStringLiteral(". "));
+                if (dot > 0)
+                    t = t.left(dot);
+                if (t.size() > 60)
+                    t = t.left(t.lastIndexOf(QLatin1Char(' '), 58)) + QStringLiteral(" …");
+            }
             out.last().areas.append(t);
         }
         firstBullet.clear();
     };
     for (const QString &line : markdown.split(QLatin1Char('\n'))) {
-        if (line.startsWith(QLatin1String("- ")) && firstBullet.isEmpty() && !out.isEmpty())
-            firstBullet = line.mid(2).trimmed();
+        if (line.startsWith(QLatin1String("- ")) && !out.isEmpty()) {
+            inFirstBullet = firstBullet.isEmpty();
+            if (inFirstBullet)
+                firstBullet = line.mid(2).trimmed();
+        } else if (inFirstBullet && line.startsWith(QLatin1String("  "))) {
+            firstBullet += QLatin1Char(' ') + line.trimmed();   // wrapped continuation
+        } else {
+            inFirstBullet = false;
+        }
         const QRegularExpressionMatch h = head.match(line);
         if (h.hasMatch()) {
             closeRelease();
