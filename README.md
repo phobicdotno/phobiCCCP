@@ -152,20 +152,29 @@ Linux, built on the reverse-engineered format documentation in
   | Y | Unlock (`$X`) |
 
   Starting a program is deliberately *not* on the pad: a bumped button must
-  never begin a cut. Clones number their buttons differently, so every press
-  is logged to the machine console with its number — press a button, read the
-  number, and override it in the settings under `gamepad/<number>` with one of
-  `x+ x- y+ y- z+ z- step hold stop zeroxy zeroz unlock`, or `none` to ignore
-  it. A joystick reporting fewer than two buttons is ignored, which is how a
+  never begin a cut. Clones number their buttons differently, so **Map
+  buttons…** in the Jog box opens a mapping dialog: press a button on the pad
+  to find its row, pick what it does, save (or reset to the defaults above).
+  The pad does nothing else while the dialog is open. Every press is also
+  logged to the machine console with its number, and the mapping is stored
+  in the settings under `gamepad/<number>` as one of
+  `x+ x- y+ y- z+ z- step hold stop zeroxy zeroz unlock`, or `none`. A joystick reporting fewer than two buttons is ignored, which is how a
   MacBook's lid accelerometer (also a `js` device) is kept away from the jog.
 - **Air-cut mode**: rehearse any program with all spindle commands stripped
   and every Z lifted by a chosen amount; every run shows a stats +
   spindle-warning confirmation first.
+- **Rehearse tool change** (BitSetter box): runs one tool change on its own,
+  spindle off and nothing cut: park at the tool-change spot, prompt, measure
+  on the BitSetter, apply the offset, back to safe Z. It goes through the same
+  streamer and panel code a job's tool change does, and ends with the offset
+  it measured (with the same tool still in, that should be about zero).
+  Needs a reference tool first (Zero Z with the BitSetter enabled).
 - Verification status: connection, jogging, zeroing and streaming are
   hardware-verified on a Shapeoko 5 Pro; the BitSetter measurement and the
   automatic tool-change flow have so far been verified against
-  `tools/grblsim.py` only (`tools/flowtest.sh`). Do an air-cut run with a real
-  tool change before trusting them on a job.
+  `tools/grblsim.py` only (`tools/flowtest.sh`). Use **Rehearse tool change**
+  on the machine, then an air-cut run with a real tool change, before
+  trusting them on a job.
 
 **Isometric preview** (Preview tab): the generated route drawn in 3D over the
 stock — rapids dashed, cuts coloured by depth — with orbit / zoom, and an
@@ -199,6 +208,10 @@ Clipper2 is fetched at configure time (disable with
 Boost.Polygon Voronoi builder for the medial-axis v-carve; without it the
 build falls back to depth-graded ring approximation.
 
+Tests: `ctest --test-dir build` (set `QT_QPA_PLATFORM=offscreen` without a
+display). GitHub Actions runs the same build and suite on every push and pull
+request (`.github/workflows/ci.yml`).
+
 ## CLI
 
 ```sh
@@ -209,6 +222,7 @@ phobicccp --shot file.c2d out.png [preview]  # render the GUI to a PNG
 phobicccp --grbl-check /dev/ttyACM0     # safe GRBL handshake (no motion)
 phobicccp --grbl-probe /dev/ttyACM0 -20 -20 [safeZ]   # BitSetter measurement (machine XY)
 phobicccp --grbl-run /dev/ttyACM0 job.nc [bsX bsY]    # stream with automatic tool changes
+phobicccp --grbl-rehearse /dev/ttyACM0 -20 -20 [safeZ] # reference + one tool change, spindle off
 python3 tools/grblsim.py                 # GRBL 1.1h simulator on a pty for testing
 ```
 

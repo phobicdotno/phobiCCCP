@@ -1,12 +1,29 @@
 #pragma once
+#include <QHash>
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 
+class QSettings;
 class QSocketNotifier;
 class QTimer;
 
 namespace c2d {
+
+// Pad button number (the pad's own numbering) -> action name.
+using GamepadMap = QHash<int, QString>;
+
+// The button mapping, kept apart from the reader so the Machine panel, the
+// mapping dialog and the tests all agree on it. Stored in QSettings under
+// "gamepad/<number>"; a default button set to "none" is switched off.
+namespace gamepadmap {
+QStringList actions();                       // x+ x- y+ y- z+ z- step hold ...
+QString label(const QString &action);        // "Jog X+", "Hold / resume", ...
+GamepadMap defaults();                       // SNES-style layout
+GamepadMap load(QSettings &s);               // defaults + the user's overrides
+void save(QSettings &s, const GamepadMap &map);
+} // namespace gamepadmap
 
 // A USB gamepad, read straight from the Linux joystick device.
 //

@@ -1,0 +1,50 @@
+name: CI
+
+# Build and run the whole ctest suite on every push and pull request, the same
+# way README's "Building" section does it by hand.
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      # The canvas, panel and export suites create real widgets; there is no
+      # display on the runner.
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build qt6-base-dev qt6-base-dev-tools \
+            libqt6sql6-sqlite qt6-serialport-dev zlib1g-dev libgl1-mesa-dev \
+            libboost-dev python3
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # The grblsim / machine-flow suites are RUN_SERIAL in CMakeLists.txt, so
+      # running the rest in parallel does not starve their wall-clock deadlines.
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --parallel 4 --timeout 600
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctest-log
+          path: build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
