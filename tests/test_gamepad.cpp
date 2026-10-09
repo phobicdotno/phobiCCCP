@@ -6,10 +6,14 @@
 // physical button a given clone calls "A" — that needs the hardware.
 
 #include "../src/gamepad.h"
+#include "../src/gamepadmapdialog.h"
 
-#include <QCoreApplication>
+#include <QApplication>
+#include <QComboBox>
 #include <QElapsedTimer>
+#include <QSettings>
 #include <QSignalSpy>
+#include <QTableWidget>
 #include <QTemporaryDir>
 
 #include <fcntl.h>
@@ -51,9 +55,102 @@ static void writeEvent(int fd, quint8 type, quint8 number, qint16 value)
     check(n == sizeof(e), "wrote one event record");
 }
 
+// The action shown in the mapping dialog's row for `button`, or "" if no row.
+static QString dialogAction(const c2d::GamepadMapDialog &dlg, int button)
+{
+    const auto *t = dlg.findChild<QTableWidget *>();
+    for (int r = 0; t && r < t->rowCount(); ++r)
+        if (t->item(r, 0)->data(Qt::UserRole).toInt() == button)
+            return qobject_cast<QComboBox *>(t->cellWidget(r, 1))->currentData().toString();
+    return QString();
+}
+
+static void setDialogAction(c2d::GamepadMapDialog &dlg, int button, const QString &action)
+{
+    auto *t = dlg.findChild<QTableWidget *>();
+    for (int r = 0; r < t->rowCount(); ++r)
+        if (t->item(r, 0)->data(Qt::UserRole).toInt() == button) {
+            auto *c = qobject_cast<QComboBox *>(t->cellWidget(r, 1));
+            c->setCurrentIndex(c->findData(action));
+            return;
+        }
+    check(false, "the row to change exists");
+}
+
+static void mappingTests(const QTemporaryDir &dir, c2d::Gamepad &pad, int writer)
+{
+    using namespace c2d;
+    const QString ini = dir.filePath(QStringLiteral("map.ini"));
+
+    // Nothing stored: the SNES defaults.
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        check(gamepadmap::load(s) == gamepadmap::defaults(), "no settings loads the defaults");
+    }
+    // Every default action is one the panel knows how to perform.
+    for (const QString &a : gamepadmap::defaults())
+        check(gamepadmap::actions().contains(a), "default actions are real actions");
+    check(!gamepadmap::actions().contains(QStringLiteral("run"))
+              && !gamepadmap::actions().contains(QStringLiteral("start")),
+          "starting a program is never a pad action");
+
+    // Round trip, including a default button switched off: it must stay off,
+    // not come back from the defaults on the next load.
+    GamepadMap m = gamepadmap::defaults();
+    m.remove(1);                                  // B no longer stops
+    m.insert(1 + 10, QStringLiteral("stop"));     // button 11 does
+    m.insert(0, QStringLiteral("x+"));            // A jogs instead of zeroing
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        gamepadmap::save(s, m);
+    }
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        check(gamepadmap::load(s) == m, "a saved mapping loads back unchanged");
+        check(s.value(QStringLiteral("gamepad/1")).toString() == QLatin1String("none"),
+              "an unmapped default button is stored as none");
+    }
+    // Saving again replaces, rather than merges with, the old mapping.
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        gamepadmap::save(s, gamepadmap::defaults());
+    }
+    {
+        QSettings s(ini, QSettings::IniFormat);
+        check(gamepadmap::load(s) == gamepadmap::defaults(), "re-saving drops old entries");
+    }
+
+    // The dialog: it shows the mapping it was given and hands it back as is.
+    GamepadMapDialog dlg(m, &pad);
+    check(dlg.mapping() == m, "the dialog returns the mapping it was given");
+    check(dialogAction(dlg, 0) == QLatin1String("x+"), "and shows each button's action");
+
+    // Pressing a pad button that has no row adds one, mapped to nothing until
+    // an action is picked, so finding a button never changes the mapping.
+    writeEvent(writer, JS_EVENT_BUTTON, 13, 1);
+    QElapsedTimer t;
+    t.start();
+    while (dialogAction(dlg, 13).isEmpty() && t.elapsed() < 2000)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    check(dialogAction(dlg, 13) == QLatin1String("none"), "a pad press adds a row for its button");
+    check(dlg.mapping() == m, "which maps to nothing until an action is chosen");
+    setDialogAction(dlg, 13, QStringLiteral("unlock"));
+    check(dlg.mapping().value(13) == QLatin1String("unlock"), "choosing an action maps it");
+    setDialogAction(dlg, 0, QStringLiteral("none"));
+    check(!dlg.mapping().contains(0), "choosing nothing unmaps a button");
+
+    // A hand-edited setting that is not an action is shown, not rewritten.
+    GamepadMap odd;
+    odd.insert(7, QStringLiteral("launch"));
+    GamepadMapDialog dlg2(odd, nullptr);
+    check(dlg2.mapping() == odd, "an unknown action survives a trip through the dialog");
+}
+
 int main(int argc, char *argv[])
 {
-    QCoreApplication app(argc, argv);
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication app(argc, argv);
     QTemporaryDir dir;
     check(dir.isValid(), "scratch directory");
     const QString fifo = dir.filePath(QStringLiteral("js-test"));
@@ -111,6 +208,8 @@ int main(int argc, char *argv[])
         writeEvent(w, JS_EVENT_BUTTON, i, 1);
     pump(buttons, before + 8);
     check(buttons.count() == before + 8, "a burst of events is drained in one go");
+
+    mappingTests(dir, pad, w);
 
     // Unplugging is not an error: the writer closing looks exactly like it.
     ::close(w);

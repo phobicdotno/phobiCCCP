@@ -1,6 +1,7 @@
 #include "machinepanel.h"
 
 #include "gamepad.h"
+#include "gamepadmapdialog.h"
 
 #include "exportprogress.h"
 #include "c2ddocument.h"
@@ -146,6 +147,10 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_padLabel = new QLabel(QStringLiteral("gamepad: none"), jogBox);
     m_padLabel->setEnabled(false);
     side->addRow(QString(), m_padLabel);
+    auto *padMap = new QPushButton(QStringLiteral("Map buttons…"), jogBox);
+    padMap->setToolTip(QStringLiteral("Choose what each gamepad button does"));
+    side->addRow(QString(), padMap);
+    connect(padMap, &QPushButton::clicked, this, [this] { editGamepadMapping(); });
     jogRow->addLayout(side);
     lay->addWidget(jogBox);
 
@@ -250,6 +255,13 @@ MachinePanel::MachinePanel(QWidget *parent)
     bsBtns->addWidget(m_measureBtn);
     bsBtns->addWidget(clearRef);
     bf->addRow(bsBtns);
+    auto *rehearse = new QPushButton(QStringLiteral("Rehearse tool change"), m_bsGroup);
+    rehearse->setToolTip(QStringLiteral(
+        "Run one tool change on its own, spindle off: park at the tool-change spot, "
+        "prompt, measure on the BitSetter, apply the offset. The same sequence a job "
+        "runs, to check it on the machine before trusting it with a cut."));
+    bf->addRow(rehearse);
+    connect(rehearse, &QPushButton::clicked, this, [this] { rehearseToolChange(); });
     connect(m_measureBtn, &QPushButton::clicked, this, [this] { measureTool(Phase::MeasureManual); });
     connect(clearRef, &QPushButton::clicked, this, [this] {
         m_haveRef = false;
@@ -379,9 +391,13 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_grbl, &GrblStreamer::macroFinished, this, [this](bool ok) { onMacroFinished(ok); });
     connect(m_grbl, &GrblStreamer::toolChangeRequested, this, [this](int t) { onToolChange(t); });
     connect(m_grbl, &GrblStreamer::streamFinished, this, [this](bool ok) {
+        const bool rehearsal = m_rehearsal;
+        const bool measured = m_toolMeasured;
         log(ok ? QStringLiteral("== program finished ==")
                : QStringLiteral("== program stopped =="));
         resetFlow();
+        if (rehearsal)
+            finishRehearsal(ok, measured);
     });
 
     // Press-and-hold: after the hold delay a step-click turns into a
@@ -585,6 +601,7 @@ void MachinePanel::resetFlow()
     m_phase = Phase::Idle;
     m_pendingTool = -1;
     m_toolMeasured = false;
+    m_rehearsal = false;
     m_onIdle = nullptr;
     m_held = false;
     m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
@@ -593,42 +610,38 @@ void MachinePanel::resetFlow()
 
 // ---- gamepad -----------------------------------------------------------------
 //
-// Default mapping for a SNES-style pad. Clones number their buttons
-// differently, so every press is logged with its number and any of these can be
-// overridden in QSettings under "gamepad/<number>" with one of the action
-// names below. Program start is deliberately NOT on the pad: a bumped button
-// must never begin a cut. Hold and Stop are, because those are the ones worth
-// being able to hit without looking.
+// The mapping lives in gamepad.cpp (gamepadmap::defaults / load / save) and is
+// edited from the "Map buttons…" dialog. Every press is still logged with its
+// number, so a clone with an odd layout can be worked out without the dialog.
 void MachinePanel::loadGamepadMapping()
 {
-    m_padMap = {
-        {4, QStringLiteral("z-")},        // L
-        {5, QStringLiteral("z+")},        // R
-        {8, QStringLiteral("step")},      // Select: cycle the jog step
-        {9, QStringLiteral("hold")},      // Start:  hold / resume
-        {1, QStringLiteral("stop")},      // B
-        {0, QStringLiteral("zeroxy")},    // A
-        {3, QStringLiteral("zeroz")},     // X
-        {2, QStringLiteral("unlock")},    // Y
-    };
     QSettings s;
-    s.beginGroup(QStringLiteral("gamepad"));
-    for (const QString &key : s.childKeys()) {
-        bool ok = false;
-        const int n = key.toInt(&ok);
-        const QString action = s.value(key).toString().trimmed().toLower();
-        if (!ok)
-            continue;
-        if (action.isEmpty() || action == QLatin1String("none"))
-            m_padMap.remove(n);
-        else
-            m_padMap.insert(n, action);
-    }
-    s.endGroup();
+    m_padMap = gamepadmap::load(s);
+}
+
+void MachinePanel::editGamepadMapping()
+{
+    // Pressing a button to find it in the table must not also jog, zero or
+    // stop the machine, so the pad is ignored here while the dialog is open.
+    stopHoldJog();
+    m_padAxisDir[0] = m_padAxisDir[1] = 0;
+    m_padMapping = true;
+    GamepadMapDialog dlg(m_padMap, m_pad, this);
+    const bool save = dlg.exec() == QDialog::Accepted;
+    m_padMapping = false;
+    if (!save)
+        return;
+    QSettings s;
+    gamepadmap::save(s, dlg.mapping());
+    loadGamepadMapping();
+    log(QStringLiteral("gamepad: button mapping saved (%1 button(s) mapped)")
+            .arg(m_padMap.size()));
 }
 
 void MachinePanel::gamepadAxis(int number, int value)
 {
+    if (m_padMapping)
+        return;
     if (number > 1 || !m_grbl->isConnected())
         return;
     // A D-pad reports its rest position as 0 and a direction as full scale;
@@ -648,6 +661,8 @@ void MachinePanel::gamepadAxis(int number, int value)
 
 void MachinePanel::gamepadButton(int number, bool pressed)
 {
+    if (m_padMapping)
+        return;
     const QString action = m_padMap.value(number);
     if (action.isEmpty()) {
         if (pressed)
@@ -924,9 +939,13 @@ void MachinePanel::onMacroFinished(bool ok)
         }
         whenIdle([this] {
             const bool bs = m_bsGroup->isChecked();
-            const QString msg = QStringLiteral("Insert tool T%1 and tighten the collet.\n\n%2")
-                .arg(m_pendingTool)
-                .arg(bs ? QStringLiteral("OK measures it on the BitSetter, then the program continues.")
+            const QString ask = m_rehearsal
+                ? QStringLiteral("Rehearsal: change the tool now, or leave the same one "
+                                 "in to check the measurement repeats.")
+                : QStringLiteral("Insert tool T%1 and tighten the collet.").arg(m_pendingTool);
+            const QString msg = QStringLiteral("%1\n\n%2")
+                .arg(ask,
+                     bs ? QStringLiteral("OK measures it on the BitSetter, then the program continues.")
                         : QStringLiteral("BitSetter is off: re-zero Z by hand if the tool length "
                                          "changed, then press OK to continue."));
             const auto r = QMessageBox::question(this, QStringLiteral("Tool change"), msg,
@@ -986,6 +1005,79 @@ void MachinePanel::onMacroFinished(bool ok)
             whenIdle([this] { m_grbl->continueAfterToolChange(); });
         return;
     }
+}
+
+// A real tool change with nothing around it: the rehearsal program goes through
+// startStream() like a job, so onToolChange(), the prompt, the BitSetter
+// measurement, the G43.1 and the continue are the code a job runs, not a copy.
+// Only the prompt wording and the summary at the end know it is a rehearsal.
+void MachinePanel::rehearseToolChange()
+{
+    if (!m_grbl->isConnected()) {
+        QMessageBox::information(this, QStringLiteral("Rehearse tool change"),
+                                 QStringLiteral("Connect to the controller first."));
+        return;
+    }
+    if (!m_bsGroup->isChecked()) {
+        QMessageBox::information(this, QStringLiteral("Rehearse tool change"),
+                                 QStringLiteral("Enable the BitSetter and set its button "
+                                                "position first."));
+        return;
+    }
+    // Without a reference, the measurement would quietly become the reference
+    // and the rehearsal would prove nothing about the offset.
+    if (!m_haveRef) {
+        QMessageBox::information(this, QStringLiteral("Rehearse tool change"),
+                                 QStringLiteral("There is no reference tool yet. Zero Z with "
+                                                "the BitSetter enabled (or press Measure tool) "
+                                                "first, then rehearse."));
+        return;
+    }
+    if (m_grbl->isStreaming() || !m_grbl->canSendCommand()) {
+        log(QStringLiteral("!! busy — cannot rehearse a tool change now"));
+        return;
+    }
+    const QString q = QStringLiteral(
+        "The machine will:\n"
+        "  1. turn the spindle off and rise to safe Z (machine %1)\n"
+        "  2. move to the tool-change spot (machine X%2 Y%3) and ask for the tool\n"
+        "  3. measure it on the BitSetter (machine X%4 Y%5) and apply the offset\n"
+        "  4. return to safe Z\n\n"
+        "The spindle never starts and nothing is cut. Keep a hand near the "
+        "e-stop the first time.\n\nStart the rehearsal?")
+        .arg(m_bsSafeZ->value(), 0, 'f', 1)
+        .arg(m_tcX->value(), 0, 'f', 1).arg(m_tcY->value(), 0, 'f', 1)
+        .arg(m_bsX->value(), 0, 'f', 1).arg(m_bsY->value(), 0, 'f', 1);
+    if (QMessageBox::question(this, QStringLiteral("Rehearse tool change"), q,
+                              QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+        != QMessageBox::Yes)
+        return;
+    log(QStringLiteral("== tool-change rehearsal (spindle off, no cut) =="));
+    m_held = false;
+    m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+    m_rehearsal = true;
+    m_grbl->startStream(GrblStreamer::toolChangeRehearsalLines(bitSetter(), 1));
+}
+
+void MachinePanel::finishRehearsal(bool ok, bool measured)
+{
+    const double tlo = m_grbl->toolLengthOffset();
+    QString msg;
+    if (ok && measured) {
+        msg = QStringLiteral("The tool change ran end to end: parked, measured, offset "
+                             "applied, continued.\n\nLength offset now G43.1 Z%1 against "
+                             "the reference tool. With the same tool still in, this should "
+                             "be within a few hundredths of a millimetre of zero.")
+                  .arg(tlo, 0, 'f', 3);
+        log(QStringLiteral("rehearsal OK: G43.1 Z%1").arg(tlo, 0, 'f', 3));
+    } else {
+        msg = QStringLiteral("The rehearsal did not complete%1. Check the console, fix "
+                             "the cause and rehearse again before running a job with "
+                             "tool changes.")
+                  .arg(ok ? QStringLiteral(" (the tool was not measured)") : QString());
+        log(QStringLiteral("!! rehearsal did not complete"));
+    }
+    QMessageBox::information(this, QStringLiteral("Rehearse tool change"), msg);
 }
 
 // ---- program -------------------------------------------------------------------

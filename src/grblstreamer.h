@@ -99,6 +99,12 @@ public slots:
     // The same script as a line list, to prefix with e.g. zeroing commands.
     static QStringList measureToolLines(const BitSetterConfig &cfg, bool returnHome,
                                         double returnX = 0, double returnY = 0);
+    // A program that is nothing but one tool change: spindle off, up to safe
+    // Z, the `M0 ;T<tool>` marker the post emits, and up to safe Z again. Run
+    // through startStream() it takes the exact park / measure / G43.1 /
+    // continue path a real job does, with no spindle and no cut, so the
+    // tool-change flow can be checked on the machine before a job relies on it.
+    static QStringList toolChangeRehearsalLines(const BitSetterConfig &cfg, int tool);
     // G43.1 dynamic tool-length offset. Remembered; sent when the line is
     // free (never injected into a running program) and re-applied after a
     // reset, $X and $H (GRBL clears it on reset, refuses it in Alarm).

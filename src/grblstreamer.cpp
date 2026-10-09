@@ -401,6 +401,15 @@ QStringList GrblStreamer::measureToolLines(const BitSetterConfig &cfg, bool retu
     return m;
 }
 
+QStringList GrblStreamer::toolChangeRehearsalLines(const BitSetterConfig &cfg, int tool)
+{
+    // No M2: there is no job to end, and the offset the measurement applied
+    // should be left exactly as it is for the operator to look at.
+    const QString safe = QStringLiteral("G53 G0 Z%1").arg(cfg.safeZ, 0, 'f', 3);
+    return {QStringLiteral("M5"), QStringLiteral("G90"), safe,
+            QStringLiteral("M0 ;T%1").arg(tool), safe, QStringLiteral("M5")};
+}
+
 void GrblStreamer::measureTool(const BitSetterConfig &cfg, bool returnHome,
                                double returnX, double returnY)
 {
