@@ -153,6 +153,15 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
                 "Thread milling: a helix of one pitch per turn around each selected "
                 "circle (the thread's major diameter), inside or outside — "
                 "phobiCCCP-only type; Carbide Create does not read it"));
+        } else if (k.type == QLatin1String("slot_toolpath")) {
+            a->setToolTip(QStringLiteral(
+                "2D Slot: ramp down the centreline of each selected slot (or open "
+                "vector), cleaning the walls when the slot is wider than the tool — "
+                "phobiCCCP-only type; Carbide Create does not read it"));
+        } else if (k.type == QLatin1String("circular_toolpath")) {
+            a->setToolTip(QStringLiteral(
+                "Circular: clear a round pocket, or a boss, on each selected circle "
+                "in full laps — phobiCCCP-only type; Carbide Create does not read it"));
         }
         const QString type = k.type;
         connect(a, &QAction::triggered, this, [this, type] { newToolpath(type); });

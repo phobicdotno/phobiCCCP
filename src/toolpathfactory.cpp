@@ -23,6 +23,8 @@ const QVector<ToolpathKind> &toolpathKinds()
         {QStringLiteral("chamfer_toolpath"), QStringLiteral("2D Chamfer")},
         {QStringLiteral("adaptive_toolpath"), QStringLiteral("Adaptive")},
         {QStringLiteral("thread_toolpath"), QStringLiteral("Thread")},
+        {QStringLiteral("slot_toolpath"), QStringLiteral("2D Slot")},
+        {QStringLiteral("circular_toolpath"), QStringLiteral("Circular")},
     };
     return kinds;
 }
@@ -194,6 +196,8 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
     const bool chamfer = type == QLatin1String("chamfer_toolpath");
     const bool adaptive = type == QLatin1String("adaptive_toolpath");
     const bool thread = type == QLatin1String("thread_toolpath");
+    const bool slot = type == QLatin1String("slot_toolpath");
+    const bool circular = type == QLatin1String("circular_toolpath");
     const ToolPick tp = pickTool(doc, (vcarve || chamfer) ? VBit : engrave ? Engraver : Flat);
 
     QJsonObject j;
@@ -232,17 +236,34 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         // off. Carbide Create ignores it.
         j.insert(QStringLiteral("lead_radius"),
                  0.5 * tp.tool.value("diameter").toDouble(6.35));
+        // phobiCCCP keys (Fusion's finishing passes): finish_passes extra
+        // rings finish_stepover apart at the final depth, the roughing ring
+        // left that far off; spring_pass repeats the last one.
+        j.insert(QStringLiteral("finish_passes"), 0);
+        j.insert(QStringLiteral("finish_stepover"), 0.25);
+        j.insert(QStringLiteral("spring_pass"), false);
     } else if (type == QLatin1String("pocket_toolpath")) {
         j.insert(QStringLiteral("angle"), 0);
         j.insert(QStringLiteral("enable_rest"), false);
         j.insert(QStringLiteral("rest_diameter"), tp.tool.value("diameter").toDouble(6.35));
         j.insert(QStringLiteral("stepover"), tp.stepover);
         j.insert(QStringLiteral("stock_to_leave"), 0);
+        // phobiCCCP keys (Fusion's helical entry): each depth starts on a
+        // helix_diameter circle of the tool centre at helix_angle degrees
+        // instead of a straight plunge.
+        j.insert(QStringLiteral("helix_entry"), true);
+        j.insert(QStringLiteral("helix_diameter"), tp.tool.value("diameter").toDouble(6.35));
+        j.insert(QStringLiteral("helix_angle"), 2);
     } else if (type == QLatin1String("drilling_toolpath")) {
         stem = QStringLiteral("Drilling Toolpath");
         j.insert(QStringLiteral("angle"), 0);
         j.insert(QStringLiteral("drill_type"), 0);
         j.insert(QStringLiteral("peck_distance"), 3.175);
+        // phobiCCCP keys: dwell seconds at the bottom; chip_break pecks back
+        // off chip_retract mm instead of leaving the hole.
+        j.insert(QStringLiteral("dwell"), 0);
+        j.insert(QStringLiteral("chip_break"), false);
+        j.insert(QStringLiteral("chip_retract"), 0.5);
         j.insert(QStringLiteral("stepover"), tp.stepover);
         j.insert(QStringLiteral("stock_to_leave"), 0.508);
     } else if (type == QLatin1String("keyhole_toolpath")) {
@@ -367,6 +388,24 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("left_hand"), false);
         j.insert(QStringLiteral("passes"), 1);
         j.insert(QStringLiteral("climb"), true);
+    } else if (slot) {
+        // Down each slot's centreline (closed stadiums or open vectors),
+        // ramping along its length every stepdown.
+        stem = QStringLiteral("Slot");
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.insert(QStringLiteral("stock_to_leave"), 0);
+    } else if (circular) {
+        // Round pocket ("inside") or boss ("outside") on each circle in
+        // full laps `stepover` apart; bosses start `boss_clearance` out.
+        stem = QStringLiteral("Circular");
+        const double dia = tp.tool.value("diameter").toDouble(6.35);
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.insert(QStringLiteral("side"), QStringLiteral("inside"));
+        j.insert(QStringLiteral("stepover"), 0.4 * dia);
+        j.insert(QStringLiteral("stock_to_leave"), 0);
+        j.insert(QStringLiteral("climb"), true);
+        j.insert(QStringLiteral("boss_clearance"), dia);
+        j.insert(QStringLiteral("ramp_angle"), 3);
     }
     j.insert(QStringLiteral("name"), nextName(doc, type, stem));
 

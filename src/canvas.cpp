@@ -690,6 +690,7 @@ void Canvas::setTool(Tool t)
     case DrawRect:    resetSketch(); sketchHint(); break;
     case DrawEllipse: emit statusHint(tr("Ellipse — drag across its bounding box; hold Ctrl to drag from the center")); break;
     case DrawSlot:
+    case DrawConic:
     case DrawArc:     emit statusHint(clickHint()); break;
     case DrawPoint:   emit statusHint(tr("Point — click to place a sketch point (drilling toolpaths drill at it)")); break;
     case DrawSpline:  emit statusHint(tr("Spline — click the points it passes through; Enter or double-click finishes, click near the start closes, Esc cancels")); break;
@@ -1022,6 +1023,10 @@ QString Canvas::clickHint() const
                           : tr("Arc slot: click to set the width");
         }
     }
+    if (m_tool == DrawConic)
+        return n == 0 ? tr("Conic — click the start")
+             : n == 1 ? tr("Conic: click the end")
+                      : tr("Conic: click the apex its end tangents meet at (rho sets the fullness)");
     return n == 0 ? tr("Polygon (edge) — click one end of an edge")
          : n == 1 ? tr("Polygon: click the other end of the edge")
                   : tr("Polygon: click the side it goes on");
@@ -1052,6 +1057,10 @@ bool Canvas::clickShape(const QVector<QPointF> &pts, Element *out) const
               : m_slotMode == SlotCenterPoint ? sketch::slotCenterPoint(a, b, w)
                                               : sketch::slot(a, b, w);
         }
+    } else if (m_tool == DrawConic) {
+        if (QLineF(a, b).length() < 1e-6)
+            return false;
+        m = sketch::conic(a, b, pts.at(2), m_conicRho);
     } else if (m_tool == DrawArc) {
         m = m_arcMode == ArcCenter  ? sketch::arcCenter(a, b, pts.at(2), m_arcTurn >= 0)
           : m_arcMode == ArcTangent ? sketch::arcTangent(a, m_tanDir, b)
@@ -1083,6 +1092,11 @@ QPainterPath Canvas::clickPreview(const QPointF &cur) const
         p = e.painterPath;
         if (m_tool == DrawSlot && m_slotMode != SlotArc3Point) {
             p.moveTo(pts.at(0));   // the line clicked, for reference
+            p.lineTo(pts.at(1));
+        }
+        if (m_tool == DrawConic) {   // the two end tangents through the apex
+            p.moveTo(pts.at(0));
+            p.lineTo(pts.at(2));
             p.lineTo(pts.at(1));
         }
         return p;

@@ -376,6 +376,18 @@ int main(int argc, char *argv[])
         check(std::fabs(b.width() - 30) < 1.0 && b.top() > 39 && b.bottom() > 54,
               "spline runs through its points");
 
+        // Conic: start, end, apex; rho 0.5 peaks halfway to the apex.
+        canvas.setTool(c2d::Canvas::DrawConic);
+        canvas.setConicRho(0.5);
+        click(&canvas, {250, 40});
+        click(&canvas, {290, 40});
+        check(doc.elements().size() == m + 6, "conic waits for the apex");
+        click(&canvas, {270, 70});
+        check(doc.elements().size() == m + 7, "conic added");
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 40) < 1.0 && std::fabs(b.height() - 15) < 1.0,
+              "conic spans start to end, halfway up to the apex");
+
         canvas.setTool(c2d::Canvas::Select);
     }
 

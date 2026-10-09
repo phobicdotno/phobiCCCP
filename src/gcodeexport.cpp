@@ -722,6 +722,19 @@ struct Job {
         QPointF a, c, b;
         bool cw = false;
     } lead;
+    // Contour finishing (Fusion's multiple finishing passes and spring
+    // pass): rings cut once each at the final depth after the roughing
+    // ring, nearest the finished edge last, each with its own lead when
+    // the rough ring has one.
+    QList<QPolygonF> finish;
+    QList<Lead> finishLeads;
+    // Helical entry (pockets): each depth is entered on a helix of radius r
+    // about c, sinking at `angle` degrees, instead of plunging.
+    struct Helix {
+        bool on = false;
+        QPointF c;
+        double r = 0, angle = 2;
+    } helix;
     QPointF start() const { return lead.on ? lead.a : rings.first().first(); }
 };
 
@@ -773,6 +786,165 @@ static void ringFillJob(const QPainterPath &area, double firstDelta, double step
 // of. The ring's own region decides that: outside a contour the arcs must
 // stay out of the outset region, inside one within the inset region, so the
 // cutter never touches the finished edge on its way in or out.
+// Shortest distance from p to the polyline.
+static double distToPoly(const QPointF &p, const QPolygonF &poly)
+{
+    double best = std::numeric_limits<double>::max();
+    for (int i = 0; i + 1 < poly.size(); ++i) {
+        const QPointF a = poly.at(i), b = poly.at(i + 1), d = b - a;
+        const double l2 = d.x() * d.x() + d.y() * d.y();
+        const double t = l2 > 1e-18 ? qBound(0.0, ((p.x() - a.x()) * d.x() + (p.y() - a.y()) * d.y()) / l2, 1.0) : 0.0;
+        best = qMin(best, QLineF(p, a + d * t).length());
+    }
+    return best;
+}
+
+// A closed outline that is a slot (a stadium: every point half the width
+// from the segment c1-c2 between the two end centres). Found from its
+// farthest pair of points, then checked point by point. Circles and
+// anything else are not slots.
+static bool asStadium(const QPolygonF &polyIn, QPointF *c1, QPointF *c2, double *width)
+{
+    QPolygonF poly;
+    const int step = qMax(1, int(polyIn.size() / 600));
+    for (int i = 0; i < polyIn.size(); i += step)
+        poly << polyIn.at(i);
+    if (poly.size() < 8)
+        return false;
+    QPointF a, b;
+    double far = -1;
+    for (int i = 0; i < poly.size(); ++i)
+        for (int k = i + 1; k < poly.size(); ++k) {
+            const double d = QLineF(poly.at(i), poly.at(k)).length();
+            if (d > far) {
+                far = d;
+                a = poly.at(i);
+                b = poly.at(k);
+            }
+        }
+    if (far < 1e-6)
+        return false;
+    const QPointF u = (b - a) / far;
+    double half = 0;
+    for (const QPointF &p : poly)
+        half = qMax(half, qAbs((p.x() - a.x()) * u.y() - (p.y() - a.y()) * u.x()));
+    if (far - 2 * half < 0.01)
+        return false;                   // round: a circle, not a slot
+    const QPointF s1 = a + u * half, s2 = b - u * half;
+    const double tol = qMax(0.02, 0.002 * 2 * half);
+    for (const QPointF &p : polyIn)
+        if (qAbs(distToPoly(p, QPolygonF() << s1 << s2) - half) > tol)
+            return false;
+    *c1 = s1;
+    *c2 = s2;
+    *width = 2 * half;
+    return true;
+}
+
+// The closed ring restarted at the point on it nearest to p (inserted there
+// as a vertex), so a cut that ends at p carries straight on to it.
+static QPolygonF startNearest(const QPolygonF &ring, const QPointF &p)
+{
+    if (ring.size() < 4 || ring.first() != ring.last())
+        return ring;
+    int best = 0;
+    QPointF at = ring.first();
+    double bestD = std::numeric_limits<double>::max();
+    for (int i = 0; i + 1 < ring.size(); ++i) {
+        const QPointF a = ring.at(i), d = ring.at(i + 1) - a;
+        const double l2 = d.x() * d.x() + d.y() * d.y();
+        const double t = l2 > 1e-18 ? qBound(0.0, ((p.x() - a.x()) * d.x() + (p.y() - a.y()) * d.y()) / l2, 1.0) : 0.0;
+        const QPointF q = a + d * t;
+        const double dd = QLineF(p, q).length();
+        if (dd < bestD) {
+            bestD = dd;
+            best = i;
+            at = q;
+        }
+    }
+    QPolygonF out;
+    out << at;
+    const int n = ring.size() - 1;
+    for (int k = 1; k <= n; ++k) {
+        const QPointF v = ring.at((best + k) % n);
+        if (QLineF(v, out.last()).length() > 1e-9)
+            out << v;
+    }
+    if (QLineF(out.last(), at).length() > 1e-9)
+        out << at;
+    else
+        out.last() = at;
+    return out;
+}
+
+// The ring of `level` that runs `dist` from the point p of a finishing
+// ring: the same loop offset further, or none when it vanished or merged.
+static int parallelRing(const QList<QPolygonF> &level, const QPointF &p, double dist, double tol)
+{
+    int best = -1;
+    double bestErr = tol;
+    for (int i = 0; i < level.size(); ++i) {
+        const double err = qAbs(distToPoly(p, level.at(i)) - dist);
+        if (err <= bestErr) {
+            bestErr = err;
+            best = i;
+        }
+    }
+    return best;
+}
+
+// A helix that fits in the tool-centre region bounded by `rings` (even-odd,
+// so islands are holes in it): about the point farthest inside it (sampled
+// on a grid, then refined around the best), radius `want` or less. Off
+// when nothing useful fits.
+static Job::Helix helixIn(const QList<QPolygonF> &rings, double want, double angle)
+{
+    Job::Helix h;
+    if (rings.isEmpty() || want <= 0)
+        return h;
+    const QPainterPath region = regionFromRings(rings);
+    auto clearance = [&](const QPointF &p) {
+        double d = std::numeric_limits<double>::max();
+        for (const QPolygonF &r : rings)
+            d = qMin(d, distToPoly(p, r));
+        return d;
+    };
+    const QRectF b = region.boundingRect();
+    QPointF best;
+    double bestD = -1;
+    QPointF lo = b.topLeft();
+    QSizeF span = b.size();
+    for (int round = 0; round < 3; ++round) {
+        const int n = 24;
+        const QPointF centre = best;
+        if (round > 0) {
+            span = span / 6.0;
+            lo = centre - QPointF(span.width() / 2, span.height() / 2);
+        }
+        for (int i = 0; i <= n; ++i)
+            for (int k = 0; k <= n; ++k) {
+                const QPointF p = lo + QPointF(span.width() * i / n, span.height() * k / n);
+                if (!region.contains(p))
+                    continue;
+                const double d = clearance(p);
+                if (d > bestD) {
+                    bestD = d;
+                    best = p;
+                }
+            }
+        if (bestD < 0)
+            return h;
+    }
+    const double r = qMin(want, 0.95 * bestD);
+    if (r < 0.05)
+        return h;
+    h.on = true;
+    h.c = best;
+    h.r = r;
+    h.angle = angle;
+    return h;
+}
+
 // The same closed ring started at the middle of its longest edge: a lead
 // arc tangent to a straight run has room on the air side, where one at a
 // convex corner would swing back across the cut it is about to make.
@@ -1055,6 +1227,73 @@ public:
             if (more)
                 feedAt(l.a, z, m_feed);
         }
+        for (int i = 0; i < job.finish.size(); ++i) {
+            const QPolygonF &fr = job.finish.at(i);
+            const Job::Lead &fl = job.finishLeads.value(i);
+            if (fl.on) {
+                feedAt(fl.a, z, m_feed);
+                arcTo(fr.first(), z, fl.c, fl.cw);
+                followRing(fr, z, cp);
+                arcTo(fl.b, z, fl.c, fl.cw);
+            } else {
+                feedAt(fr.first(), z, m_feed);
+                followRing(fr, z, cp);
+            }
+        }
+        retract();
+    }
+
+    // A pocket job entered on a helix at every depth: drop to the floor
+    // just cleared over the helix start, spiral down to the new depth, take
+    // one flat lap, then cut the rings innermost first. The helix sits in
+    // the innermost ring, which is clear of the walls by the tool radius.
+    void runHelixJob(const Job &job, const CutParams &cp)
+    {
+        const Job::Helix &h = job.helix;
+        const QPointF p0 = h.c + QPointF(h.r, 0), p1 = h.c - QPointF(h.r, 0);
+        // Depth lost per half turn, never so small the helix spins for ever.
+        const double drop = qMax(0.02, M_PI * h.r * qTan(qDegreesToRadians(qBound(0.5, h.angle, 45.0))));
+        rapidTo(p0);
+        double z = cp.zTop;
+        bool first = true, more = true;
+        while (more) {
+            const double zPrev = z;
+            z = qMax(cp.zBot, z - cp.stepdown);
+            more = z > cp.zBot + 1e-9;
+            if (!first) {
+                retract();
+                rapidTo(p0);
+            }
+            first = false;
+            plungeTo(p0, zPrev);
+            double hz = zPrev;
+            bool atP0 = true;
+            for (int k = 0; k < 100000 && hz > z + 1e-9; ++k) {
+                hz = qMax(z, hz - drop);
+                arcTo(atP0 ? p1 : p0, hz, h.c, false);
+                atP0 = !atP0;
+            }
+            arcTo(atP0 ? p1 : p0, z, h.c, false);   // flat lap at depth
+            arcTo(atP0 ? p0 : p1, z, h.c, false);
+            for (int i = 0; i < job.rings.size(); ++i) {
+                const QPolygonF &ring = job.rings.at(i);
+                const QPointF rs = ring.first();
+                if (QLineF(pos(), rs).length() > 1e-6) {
+                    // The first ring was chosen as the one nearest the helix
+                    // (pocket branch): straight across to it, whatever the
+                    // distance.
+                    if (i == 0 || (QLineF(pos(), rs).length() <= cp.linkDist
+                        && (!cp.linkOk || cp.linkOk(pos(), rs)))) {
+                        feedAt(rs, z, m_feed);
+                    } else {
+                        retract();
+                        rapidTo(rs);
+                        plungeTo(rs, z);
+                    }
+                }
+                followRing(ring, z, cp);
+            }
+        }
         retract();
     }
 
@@ -1062,6 +1301,10 @@ public:
     {
         if (job.lead.on && job.closed && job.rings.size() == 1) {
             runLeadJob(job, cp);
+            return;
+        }
+        if (job.helix.on && job.closed) {
+            runHelixJob(job, cp);
             return;
         }
         rapidTo(job.start());
@@ -1117,6 +1360,12 @@ public:
                 followRing(ring, z, cp);
             }
             forward = !forward;
+        }
+        // Finishing rings at the final depth, each started next to where
+        // the last cut ended (see the contour branch).
+        for (const QPolygonF &fr : job.finish) {
+            feedAt(fr.first(), z, m_feed);
+            followRing(fr, z, cp);
         }
         retract();
     }
@@ -1295,9 +1544,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         const bool chamfer = (t.type == QLatin1String("chamfer_toolpath"));
         const bool adaptive = (t.type == QLatin1String("adaptive_toolpath"));
         const bool thread = (t.type == QLatin1String("thread_toolpath"));
+        const bool slotTp = (t.type == QLatin1String("slot_toolpath"));
+        const bool circular = (t.type == QLatin1String("circular_toolpath"));
         if (!contour && !pocket && !cutout && !drilling && !keyhole && !texture
             && !vcarve && !engrave && !rough3d && !finish3d && !face && !bore && !chamfer
-            && !adaptive && !thread) {
+            && !adaptive && !thread && !slotTp && !circular) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -1623,6 +1874,191 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 em.retract();
                 lastPos = home;
             }
+        } else if (slotTp) {
+            // SLOT (phobiCCCP type, Fusion's 2D Slot): each slot is cut
+            // along its centreline, ramping down the length of the slot to
+            // the next depth and back along the floor. Closed slots (straight
+            // stadiums) as drawn by the Slot tool; open vectors are
+            // centrelines cut as they are. A tool narrower than the slot also
+            // runs round the wall at every depth, up to three tool diameters
+            // wide; wider slots want a pocket.
+            const double leave = qMax(0.0, numOr(j.value("stock_to_leave"), 0));
+            struct SlotCut { QPolygonF line; QPolygonF wall; };
+            QList<SlotCut> cuts;
+            int notSlots = 0, tooNarrow = 0, tooWide = 0;
+            for (const Element *e : elems) {
+                if (!vec::isClosed(*e)) {
+                    for (const QPolygonF &p : finePolygons(e->painterPath))
+                        if (p.size() >= 2)
+                            cuts.append({p, {}});
+                    continue;
+                }
+                const QList<QPolygonF> polys = finePolygons(e->painterPath);
+                QPointF c1, c2;
+                double w = 0;
+                if (polys.size() != 1 || !asStadium(polys.first(), &c1, &c2, &w)) {
+                    ++notSlots;
+                    continue;
+                }
+                const double half = w / 2 - leave;
+                if (toolR > half + 1e-6) {
+                    ++tooNarrow;
+                    continue;
+                }
+                if (half > 3 * toolR + 1e-6) {
+                    ++tooWide;
+                    continue;
+                }
+                SlotCut c{QPolygonF() << c1 << c2, {}};
+                if (half - toolR > 0.01) {
+                    const QList<QPolygonF> wall = insetRings(e->painterPath, toolR + leave);
+                    if (!wall.isEmpty())
+                        c.wall = startNearest(wall.first(), c1);
+                }
+                cuts.append(c);
+            }
+            if (notSlots)
+                res.skipped << QStringLiteral("%1 (%2 closed vector(s) are not slots)").arg(name).arg(notSlots);
+            if (tooNarrow)
+                res.skipped << QStringLiteral("%1 (%2 slot(s) narrower than the tool)").arg(name).arg(tooNarrow);
+            if (tooWide)
+                res.skipped << QStringLiteral("%1 (%2 slot(s) over three tool diameters wide: pocket them)")
+                                   .arg(name).arg(tooWide);
+            if (cuts.isEmpty()) {
+                if (!notSlots && !tooNarrow && !tooWide)
+                    res.skipped << QStringLiteral("%1 (no slots)").arg(name);
+                continue;
+            }
+            QList<Job> order;
+            for (int i = 0; i < cuts.size(); ++i) {
+                Job k;
+                k.rings.append(QPolygonF() << cuts.at(i).line.first() << QPointF(i, 0));
+                order.append(k);
+            }
+            for (const Job &k : orderJobs(order, lastPos)) {
+                const SlotCut &c = cuts.at(int(k.rings.first().at(1).x()));
+                const QPolygonF &line = c.line;
+                double total = 0;
+                for (int i = 1; i < line.size(); ++i)
+                    total += QLineF(line.at(i - 1), line.at(i)).length();
+                em.rapidTo(line.first());
+                em.plungeTo(line.first(), cp.zTop);
+                double z = cp.zTop;
+                while (z > cp.zBot + 1e-9) {
+                    const double zNew = qMax(cp.zBot, z - cp.stepdown);
+                    // Down along the slot to the far end, then back on the floor.
+                    double run = 0;
+                    for (int i = 1; i < line.size(); ++i) {
+                        run += QLineF(line.at(i - 1), line.at(i)).length();
+                        const double f = total > 1e-9 ? run / total : 1.0;
+                        em.feedAt(line.at(i), z + (zNew - z) * f, feed);
+                    }
+                    if (total <= 1e-9)
+                        em.feedAt(line.first(), zNew, plunge);
+                    for (int i = line.size() - 2; i >= 0; --i)
+                        em.feedAt(line.at(i), zNew, feed);
+                    z = zNew;
+                    if (!c.wall.isEmpty()) {
+                        em.feedAt(c.wall.first(), z, feed);
+                        em.followFitted(c.wall, z);
+                        em.feedAt(line.first(), z, feed);
+                    }
+                }
+                em.retract();
+                lastPos = line.first();
+            }
+        } else if (circular) {
+            // CIRCULAR (phobiCCCP type, Fusion's Circular): round pockets
+            // and bosses on the selected circles. Inside, each depth is
+            // entered on a small helix in the middle and cleared outwards in
+            // full circles `stepover` apart to the wall; outside, the tool
+            // drops beside the boss and works inwards from
+            // `boss_clearance` out to the wall. Climb (counter-clockwise in a
+            // pocket, clockwise round a boss) unless climb is false.
+            const double leave = qMax(0.0, numOr(j.value("stock_to_leave"), 0));
+            const bool outside = j.value("side").toString() == QLatin1String("outside");
+            const bool climb = j.value("climb").toBool(true);
+            const bool ccw = outside ? !climb : climb;
+            const double stepover = qBound(0.05, numOr(j.value("stepover"), toolR), 2 * toolR);
+            const double clearance = qMax(0.0, numOr(j.value("boss_clearance"), 2 * toolR));
+            const double slope = qTan(qDegreesToRadians(qBound(0.5, numOr(j.value("ramp_angle"), 3), 45.0)));
+            int tooSmall = 0;
+            QList<Job> holes;
+            for (const Element *e : elems) {
+                if (e->geometryType != QLatin1String("circle"))
+                    continue;
+                const QJsonArray c = e->raw.value("center").toArray();
+                const QPointF ctr(c.at(0).toDouble(), c.at(1).toDouble());
+                const double R = numOr(e->raw.value("radius"), 0);
+                if (!outside && R - toolR - leave < 0.05) {
+                    ++tooSmall;
+                    continue;
+                }
+                Job h;
+                h.rings.append(QPolygonF() << ctr << QPointF(R, 0));
+                holes.append(h);
+            }
+            if (tooSmall)
+                res.skipped << QStringLiteral("%1 (%2 circle(s) no wider than the tool)").arg(name).arg(tooSmall);
+            if (holes.isEmpty()) {
+                if (!tooSmall)
+                    res.skipped << QStringLiteral("%1 (no circles)").arg(name);
+                continue;
+            }
+            auto lap = [&](const QPointF &ctr, double r, double z) {
+                const QPointF s0 = ctr + QPointF(r, 0), s1 = ctr - QPointF(r, 0);
+                em.arcTo(s1, z, ctr, !ccw);
+                em.arcTo(s0, z, ctr, !ccw);
+            };
+            for (const Job &h : orderJobs(holes, lastPos)) {
+                const QPointF ctr = h.rings.first().at(0);
+                const double R = h.rings.first().at(1).x();
+                QVector<double> radii;   // in cutting order
+                if (outside) {
+                    const double rb = R + toolR + leave, ro = rb + clearance;
+                    const int n = qMax(0, int(std::ceil((ro - rb) / stepover - 1e-9)));
+                    for (int k = 0; k <= n; ++k)
+                        radii << (n == 0 ? rb : ro - (ro - rb) * k / n);
+                } else {
+                    const double rf = R - toolR - leave;
+                    const double r1 = qMin(stepover, rf);
+                    const int n = qMax(0, int(std::ceil((rf - r1) / stepover - 1e-9)));
+                    for (int k = 0; k <= n; ++k)
+                        radii << (n == 0 ? rf : r1 + (rf - r1) * k / n);
+                }
+                const QPointF home = outside ? ctr + QPointF(radii.first() + toolR + 1, 0)
+                                             : ctr + QPointF(radii.first(), 0);
+                em.rapidTo(home);
+                em.plungeTo(home, cp.zTop);
+                double z = cp.zTop;
+                while (z > cp.zBot + 1e-9) {
+                    const double zNew = qMax(cp.zBot, z - cp.stepdown);
+                    if (outside) {
+                        em.plungeTo(home, zNew);   // beside the boss, clear of its wall
+                    } else {
+                        // Helix down at the first radius, half a turn at a time.
+                        const double drop = qMax(0.02, M_PI * radii.first() * slope);
+                        double hz = z;
+                        bool atS0 = true;
+                        const QPointF s0 = ctr + QPointF(radii.first(), 0), s1 = ctr - QPointF(radii.first(), 0);
+                        for (int k = 0; k < 100000 && hz > zNew + 1e-9; ++k) {
+                            hz = qMax(zNew, hz - drop);
+                            em.arcTo(atS0 ? s1 : s0, hz, ctr, !ccw);
+                            atS0 = !atS0;
+                        }
+                        if (!atS0)
+                            em.arcTo(s0, zNew, ctr, !ccw);
+                    }
+                    z = zNew;
+                    for (double r : radii) {
+                        em.feedAt(ctr + QPointF(r, 0), z, feed);
+                        lap(ctr, r, z);
+                    }
+                    em.feedAt(home, z, feed);
+                }
+                em.retract();
+                lastPos = home;
+            }
         } else if (adaptive) {
             // ADAPTIVE (phobiCCCP type, Fusion's 2D Adaptive): the closed
             // vectors cleared without the cutter ever taking much more than
@@ -1789,6 +2225,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 job.rings.append(QPolygonF() << ctr);
                 pts.append(job);
             }
+            // Drilling cycles (phobiCCCP keys): `dwell` seconds at the bottom
+            // of each hole, and `chip_break` pecks that back off only
+            // `chip_retract` mm between pecks instead of leaving the hole.
+            const double dwell = drilling ? qBound(0.0, numOr(j.value("dwell"), 0), 60.0) : 0.0;
+            const bool chipBreak = drilling && j.value("chip_break").toBool(false);
+            const double chipBack = qBound(0.05, numOr(j.value("chip_retract"), 0.5), 10.0);
             for (const Job &h : orderJobs(pts, lastPos)) {
                 const QPointF ctr = h.start();
                 em.rapidTo(ctr);
@@ -1797,10 +2239,17 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     while (z > cp.zBot + 1e-9) {
                         z = qMax(cp.zBot, z - peck);
                         em.plungeTo(ctr, z);
-                        em.retract();
+                        if (z <= cp.zBot + 1e-9 && dwell > 0)
+                            body.append(Op::dwell(dwell));
+                        if (chipBreak && z > cp.zBot + 1e-9)
+                            em.rapidAt(ctr, z + chipBack);
+                        else
+                            em.retract();
                     }
                 } else {
                     em.plungeTo(ctr, cp.zBot);
+                    if (dwell > 0)
+                        body.append(Op::dwell(dwell));
                     if (keyhole) {
                         // Slide the keyhole bit out and back at depth.
                         const QPointF end = ctr + slotLen
@@ -2074,8 +2523,21 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // stock_to_leave keeps the cut that much further from the vector
             // on the material side (cutouts never leave stock).
             const double leave = contour ? qMax(0.0, numOr(j.value("stock_to_leave"), 0)) : 0.0;
-            const QList<QPolygonF> rings = inside ? insetRings(region, toolR + leave)
-                                                  : outsetRings(region, toolR + leave);
+            auto ringsAt = [&](double d) {
+                return inside ? insetRings(region, d) : outsetRings(region, d);
+            };
+            const QList<QPolygonF> rings = ringsAt(toolR + leave);
+            // Finishing passes (phobiCCCP keys, contours only): the roughing
+            // ring stays finish_passes x finish_stepover off the final one;
+            // then, at the final depth, one ring per finish_stepover closer,
+            // and spring_pass repeats the last. A loop whose offsets vanish
+            // or merge with a neighbour's is just cut as before.
+            const int nFin = contour ? qBound(0, int(numOr(j.value("finish_passes"), 0)), 10) : 0;
+            const double fs = qBound(0.01, numOr(j.value("finish_stepover"), 0.25), 2 * toolR);
+            const bool spring = contour && j.value("spring_pass").toBool(false);
+            QVector<QList<QPolygonF>> levels;   // levels[k - 1]: k x fs further out
+            for (int k = 1; k <= nFin; ++k)
+                levels.append(ringsAt(toolR + leave + k * fs));
             // Lead-in / lead-out arcs (phobiCCCP key, contours only). Ramping
             // is an entry of its own, so it wins when both are asked for.
             const double leadR = contour && cp.rampAngle <= 0
@@ -2084,12 +2546,43 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             auto allowed = [&](const QPointF &p) { return centres.contains(p) == inside; };
             for (const QPolygonF &p : rings) {
                 Job job;
-                job.rings.append(p);
+                QPolygonF rough = p;
+                QList<QPolygonF> finish;
+                if (nFin > 0) {
+                    const double tol = 0.3 * fs + 0.02;
+                    const int r = parallelRing(levels.at(nFin - 1), p.first(), nFin * fs, tol);
+                    QList<QPolygonF> mids;
+                    bool ok = r >= 0;
+                    for (int k = nFin - 1; ok && k >= 1; --k) {
+                        const int m = parallelRing(levels.at(k - 1), p.first(), k * fs, tol);
+                        ok = m >= 0;
+                        if (ok)
+                            mids << levels.at(k - 1).at(m);
+                    }
+                    if (ok) {
+                        rough = levels.at(nFin - 1).at(r);
+                        finish = mids;
+                        finish << p;
+                    }
+                }
+                if (spring)
+                    finish << (finish.isEmpty() ? rough : finish.last());
+                job.rings.append(rough);
                 if (leadR > 0) {
-                    const QPolygonF moved = startMidLongestEdge(p);
+                    const QPolygonF moved = startMidLongestEdge(rough);
                     job.lead = makeLead(moved, leadR, allowed);
                     if (job.lead.on)
                         job.rings.first() = moved;
+                }
+                // Each finishing ring starts beside where the cut before it
+                // ended, so stepping across is a short radial move.
+                QPointF at = job.rings.first().first();
+                for (const QPolygonF &f : finish) {
+                    const QPolygonF fr = startNearest(f, at);
+                    job.finish << fr;
+                    if (job.lead.on)
+                        job.finishLeads << makeLead(fr, leadR, allowed);
+                    at = fr.first();
                 }
                 jobs.append(job);
             }
@@ -2102,12 +2595,40 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             const double prevR = numOr(j.value("rest_diameter"), 0) / 2.0;
             const bool useRest = j.value("enable_rest").toBool(false) && prevR > toolR + 1e-6;
 
+            // Helical entry (phobiCCCP keys): helix_entry, helix_diameter (of
+            // the tool centre's circle) and helix_angle. Rest regions and
+            // pockets too narrow for a helix keep the plunge or ramp.
+            const bool helix = j.value("helix_entry").toBool(false) && !useRest;
+            const double helixWant = qMax(0.0, numOr(j.value("helix_diameter"), 2 * toolR)) / 2;
+            const double helixAngle = numOr(j.value("helix_angle"), 2);
             for (const QPainterPath &comp : components(regionOf(elems))) {
                 if (useRest) {
                     for (const QPainterPath &rc : restRegions(comp, toolR, prevR, leave))
                         ringFillJob(rc, 0.0, stepover, jobs);
                 } else {
+                    const int before = jobs.size();
                     ringFillJob(comp, toolR + leave, stepover, jobs);
+                    if (helix && jobs.size() > before) {
+                        Job &job = jobs.last();
+                        job.helix = helixIn(insetRings(comp, toolR + leave), helixWant, helixAngle);
+                        if (job.helix.on) {
+                            // Leave the helix for the ring nearest it, at its
+                            // nearest point: no ring lies across that short
+                            // move, so it never runs over an island.
+                            const QPointF from = job.helix.c + QPointF(job.helix.r, 0);
+                            int near = 0;
+                            double nd = std::numeric_limits<double>::max();
+                            for (int i = 0; i < job.rings.size(); ++i) {
+                                const double d = distToPoly(from, job.rings.at(i));
+                                if (d < nd) {
+                                    nd = d;
+                                    near = i;
+                                }
+                            }
+                            const QPolygonF first = startNearest(job.rings.takeAt(near), from);
+                            job.rings.prepend(first);
+                        }
+                    }
                 }
             }
         }

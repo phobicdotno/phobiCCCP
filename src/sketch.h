@@ -57,6 +57,13 @@ QVector<QPointF> polygonEdge(QPointF p1, QPointF p2, QPointF side, int sides,
 // direction of their last span; closed wraps round.
 PathModel fitSpline(const QVector<QPointF> &pts, bool closed);
 
+// Conic curve (Fusion's): from `start` to `end`, tangent at both ends to the
+// lines through `apex`, its fullness set by rho (0.5 a parabola, below an
+// ellipse arc, above a hyperbola; clamped to 0.05..0.95). The rational
+// quadratic is split into cubics fitted to its ends and tangents. A
+// (nearly) collinear apex gives the straight line start -> end.
+PathModel conic(QPointF start, QPointF end, QPointF apex, double rho);
+
 // ---- trim / break / extend ---------------------------------------------------
 // Fusion's sketch Trim, Break and Extend on node models. A position along a
 // subpath is a global parameter g = segment index + t (0..segmentCount).

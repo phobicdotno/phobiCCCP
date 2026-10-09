@@ -21,10 +21,10 @@ class Canvas : public QGraphicsView
 public:
     enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
                 DrawEllipse, DrawSlot, DrawArc, Trim, Extend, Break, Measure,
-                DrawPoint, DrawSpline };
+                DrawPoint, DrawSpline, DrawConic };
     // The three-click tools (slot, 3-point arc): the first
     // two clicks fix two points, the third finishes the shape.
-    static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc; }
+    static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc || t == DrawConic; }
     // Trim / Extend / Break: hover shows what a click would do to the curve
     // under the cursor, bounded by every other curve in the drawing.
     static bool isModifyTool(Tool t) { return t == Trim || t == Extend || t == Break; }
@@ -43,6 +43,9 @@ public:
     void setTool(Tool t);
     Tool tool() const { return m_tool; }
     void setPolygonSides(int n) { m_polySides = qBound(3, n, 64); }
+    // The conic tool's rho (0.5 parabola, lower flatter, higher fuller).
+    void setConicRho(double rho) { m_conicRho = qBound(0.05, rho, 0.95); }
+    double conicRho() const { return m_conicRho; }
     void setCircleMode(CircleMode m);
     void setRectMode(RectMode m);
     void setArcMode(ArcMode m);
@@ -134,6 +137,7 @@ private:
     QUndoStack *m_undo;
     Tool m_tool = Select;
     int m_polySides = 6;
+    double m_conicRho = 0.5;
     bool m_snap = false;
     bool m_drawing = false;
     QPointF m_anchor;                       // scene coords (CC mm)
