@@ -8,4 +8,6 @@ CMakeFiles/
 *.autosave
 .cache/
 compile_commands.json
-/.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/hooks/
