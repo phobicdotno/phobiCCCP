@@ -11,9 +11,9 @@
 namespace c2d {
 
 struct Op {
-    enum Kind { Rapid, Feed, Arc, Spindle, Tool, Comment } kind;
+    enum Kind { Rapid, Feed, Arc, Spindle, Tool, Comment, Dwell } kind;
     double x = 0, y = 0, z = 0;   // Rapid/Feed/Arc target (mm)
-    double feed = 0;              // Feed rate (mm/min) for Feed/Arc
+    double feed = 0;              // Feed rate (mm/min) for Feed/Arc; seconds for Dwell
     int ival = 0;                 // Spindle rpm, or Tool number
     QString text;                 // Comment text
     double ci = 0, cj = 0;        // Arc: center offset from start (I, J)
@@ -26,6 +26,8 @@ struct Op {
     static Op spindle(int rpm) { Op o; o.kind = Spindle; o.ival = rpm; return o; }
     static Op tool(int n)      { Op o; o.kind = Tool;    o.ival = n;   return o; }
     static Op comment(const QString &t) { Op o; o.kind = Comment; o.text = t; return o; }
+    // Pause in place (G4), e.g. at the bottom of a drilled hole.
+    static Op dwell(double sec) { Op o; o.kind = Dwell; o.feed = sec; return o; }
 };
 
 // Aggregate statistics over an op list: work extents, cut/rapid distance and a

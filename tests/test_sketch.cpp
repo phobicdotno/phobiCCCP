@@ -329,6 +329,37 @@ int main(int argc, char **argv)
         check(sketch::fitSpline({{0, 0}, {5, 0}}, false).subs.first().nodes.size() == 2, "two points: a line");
     }
 
+    // --- conic ------------------------------------------------------------------------
+    {
+        const PathModel par = sketch::conic({0, 0}, {40, 0}, {20, 30}, 0.5);
+        check(par.subs.size() == 1 && !par.subs.first().closed, "conic: one open subpath");
+        const SubPath &s = par.subs.first();
+        check(nearPt(s.nodes.first().p, {0, 0}, 1e-12) && nearPt(s.nodes.last().p, {40, 0}, 1e-12),
+              "conic: runs start to end");
+        const QPointF t0 = s.nodes.at(0).out - s.nodes.at(0).p;
+        const QPointF t1 = s.nodes.last().p - s.nodes.last().in;
+        check(std::fabs(t0.x() * 30 - t0.y() * 20) < 1e-9 && t0.x() > 0
+                  && std::fabs(t1.x() * -30 - t1.y() * 20) < 1e-9 && t1.x() > 0,
+              "conic: tangent to the apex lines at both ends");
+        check(nearPt(s.nodes.at(s.nodes.size() / 2).p, {20, 15}, 1e-9),
+              "conic: rho 0.5 is a parabola, its shoulder halfway to the apex");
+        const double fuller = sketch::conic({0, 0}, {40, 0}, {20, 30}, 0.8).painterPath().boundingRect().height();
+        const double flatter = sketch::conic({0, 0}, {40, 0}, {20, 30}, 0.2).painterPath().boundingRect().height();
+        check(fuller > 20 && flatter < 10, "conic: rho sets the fullness");
+        // A quarter circle is the conic with rho = w / (1 + w), w = cos 45.
+        const double w = std::sqrt(0.5);
+        const PathModel q = sketch::conic({10, 0}, {0, 10}, {10, 10}, w / (1 + w));
+        double worst = 0;
+        for (int seg = 0; seg < q.subs.first().segmentCount(); ++seg)
+            for (double t : {0.25, 0.5, 0.75}) {
+                const QPointF p = q.subs.first().pointAt(seg, t);
+                worst = std::max(worst, std::fabs(std::hypot(p.x(), p.y()) - 10));
+            }
+        check(worst < 1e-3, "conic: the cubic pieces follow the true curve");
+        const PathModel line = sketch::conic({0, 0}, {10, 0}, {5, 0}, 0.5);
+        check(line.subs.size() == 1 && line.subs.first().nodes.size() == 2, "conic: collinear apex gives a line");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

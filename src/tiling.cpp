@@ -205,6 +205,10 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
 
     for (const Op &op : ops) {
         switch (op.kind) {
+        case Op::Dwell:
+            // A pause belongs to where the tool is; tiles re-link their own
+            // pieces, so it is simply dropped rather than repeated in each.
+            break;
         case Op::Comment:
         case Op::Spindle:
         case Op::Tool:

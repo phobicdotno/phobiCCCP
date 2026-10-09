@@ -9,6 +9,7 @@
 #include "../src/element.h"
 #include "../src/gcodeexport.h"
 #include "../src/setupsheet.h"
+#include "../src/sketch.h"
 #include "../src/post_grbl.h"
 #include "../src/toollibrary.h"
 #include "../src/toolpathfactory.h"
@@ -940,6 +941,199 @@ int main(int argc, char *argv[])
               "a toolpath on construction geometry alone is reported, not cut");
     }
 
+    // --- contour finishing passes and spring pass ----------------------------------
+    {
+        auto contourWidthAt = [&](const QJsonObject &extra, double z, int *nAtBottom) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({50, 40}, 40, 20, layer));
+            QJsonObject x{{"end_depth", "2.000"}, {"stepdown", 1.0}, {"ofset_dir", 1},
+                          {"lead_radius", 0}};
+            for (const QString &k : extra.keys())
+                x.insert(k, extra.value(k));
+            r.addToolpath("contour", x);
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            double lo = 1e30, hi = -1e30;
+            *nAtBottom = 0;
+            for (const CutPoint &p : cutPoints(g.gcode)) {
+                if (approx(p.z, z, 1e-6)) {
+                    lo = std::min(lo, p.x);
+                    hi = std::max(hi, p.x);
+                }
+                if (approx(p.z, -2, 1e-6))
+                    ++*nAtBottom;
+            }
+            return hi - lo;
+        };
+        int nPlain = 0, nFin = 0, nSpring = 0, dummy = 0;
+        const double plain = contourWidthAt({}, -2, &nPlain);
+        const double rough = contourWidthAt({{"finish_passes", 2}, {"finish_stepover", 0.5}}, -1, &nFin);
+        const double last = contourWidthAt({{"finish_passes", 2}, {"finish_stepover", 0.5}}, -2, &dummy);
+        contourWidthAt({{"finish_passes", 2}, {"finish_stepover", 0.5}, {"spring_pass", true}}, -2, &nSpring);
+        check(approx(std::fabs(rough - plain), 2.0, 0.05),
+              "finishing: the roughing ring stays passes x stepover off the wall");
+        check(approx(last, std::max(plain, rough), 0.05) && nFin > nPlain,
+              "finishing: extra rings at the final depth");
+        check(nSpring > nFin, "spring pass repeats the last ring");
+    }
+
+    // --- helical pocket entry ------------------------------------------------------
+    {
+        auto pocketOps = [&](bool helix) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({50, 40}, 40, 30, layer));
+            r.addToolpath("pocket_toolpath", {{"end_depth", "2.000"}, {"stepdown", 1.0},
+                                              {"stepover", 2.5}, {"helix_entry", helix},
+                                              {"helix_diameter", 6.35}, {"helix_angle", 2}});
+            return c2d::exportGcode(r.doc);
+        };
+        auto deepestPlunge = [](const c2d::GcodeResult &g) {
+            double px = 0, py = 0, pz = 0, deepest = 0;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind != c2d::Op::Rapid && op.kind != c2d::Op::Feed && op.kind != c2d::Op::Arc)
+                    continue;
+                if (op.kind == c2d::Op::Feed && approx(op.x, px, 1e-9) && approx(op.y, py, 1e-9)
+                    && op.z < pz - 1e-9)
+                    deepest = std::min(deepest, op.z);
+                px = op.x; py = op.y; pz = op.z;
+            }
+            return deepest;
+        };
+        const c2d::GcodeResult h = pocketOps(true), s = pocketOps(false);
+        check(h.done.size() == 1 && h.skipped.isEmpty(), "helix pocket exports");
+        check(deepestPlunge(s) < -1 - 1e-6, "a plain pocket plunges straight to depth");
+        check(deepestPlunge(h) >= -1 - 1e-6,
+              "helix entry: straight drops only to levels already cut");
+        int down = 0;
+        bool inside = true;
+        double pz = 0;
+        for (const c2d::Op &op : h.ops) {
+            if (op.kind == c2d::Op::Arc) {
+                if (op.z < pz - 1e-9)
+                    ++down;
+                inside = inside && op.x > 30 + 3.17 && op.x < 70 - 3.17 && op.y > 25 + 3.17 && op.y < 55 - 3.17;
+            }
+            if (op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc)
+                pz = op.z;
+        }
+        check(down >= 4 && inside, "helix entry: descending arcs inside the pocket");
+    }
+
+    // --- drilling dwell and chip breaking -----------------------------------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({20, 20}, 2, layer));
+        r.addToolpath("drilling_toolpath", {{"end_depth", "6.000"}, {"peck_distance", 2.0},
+                                            {"dwell", 0.5}, {"chip_break", true},
+                                            {"chip_retract", 0.3}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.gcode.contains("G4P0.50"), "drilling: dwell at the bottom");
+        int dwells = 0, backoffs = 0;
+        double maxBetween = -100;
+        bool started = false;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Dwell)
+                ++dwells;
+            if (op.kind == c2d::Op::Feed && op.z < -1e-6)
+                started = true;
+            if (started && op.kind == c2d::Op::Rapid && op.z < -1e-6) {
+                ++backoffs;
+                maxBetween = std::max(maxBetween, op.z);
+            }
+        }
+        check(dwells == 1, "drilling: one dwell per hole");
+        check(backoffs == 2 && maxBetween < -1.5,
+              "chip breaking: back off a little between pecks, staying in the hole");
+    }
+
+    // --- 2D slot ------------------------------------------------------------------
+    {
+        const double R = 6.35 / 2;
+        Rig r;
+        r.addShape(c2d::Element::makeBezierPath(c2d::sketch::slot({20, 30}, {60, 30}, 6.35), layer));
+        r.addToolpath("slot_toolpath", {{"end_depth", "3.000"}, {"stepdown", 1.0}});
+        c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "slot exports");
+        double minZ;
+        QRectF bb = cutBounds(g.gcode, &minZ);
+        check(approx(bb.left(), 20, 0.01) && approx(bb.right(), 60, 0.01) && approx(bb.height(), 0, 0.01)
+              && approx(minZ, -3), "slot: a tool-width slot runs its centreline to depth");
+        bool ramps = true;
+        double px = 0, pz = 0;
+        for (const CutPoint &p : cutPoints(g.gcode)) {
+            if (p.z < pz - 1e-6 && approx(p.x, px, 1e-6))
+                ramps = false;   // a straight plunge below the top
+            px = p.x;
+            pz = p.z;
+        }
+        check(ramps, "slot: every depth is ramped along the slot");
+
+        Rig w;
+        w.addShape(c2d::Element::makeBezierPath(c2d::sketch::slot({20, 30}, {60, 30}, 10), layer));
+        w.addToolpath("slot_toolpath", {{"end_depth", "1.000"}, {"stepdown", 1.0}});
+        g = c2d::exportGcode(w.doc);
+        bb = cutBounds(g.gcode, &minZ);
+        check(g.done.size() == 1 && approx(bb.height(), 10 - 2 * R, 0.02)
+              && approx(bb.left(), 15 + R, 0.1), "slot: a wider slot also cleans its walls");
+        // (left edge: arc moves only report their endpoints, which sit
+        // near, not on, the end's leftmost point)
+
+        Rig bad;
+        bad.addShape(c2d::Element::makeRectangle({40, 30}, 40, 20, layer));
+        bad.addShape(c2d::Element::makeBezierPath(c2d::sketch::slot({20, 60}, {60, 60}, 4), layer));
+        QJsonArray both;
+        for (const c2d::Element &e : bad.doc.elements())
+            both.append(QJsonObject{{"uuid", e.id}});
+        bad.addToolpath("slot_toolpath", {{"elements", both}});
+        g = c2d::exportGcode(bad.doc);
+        check(g.done.isEmpty() && g.skipped.size() == 2
+                  && g.skipped.join(' ').contains("not slots")
+                  && g.skipped.join(' ').contains("narrower than the tool"),
+              "slot: rectangles and too-narrow slots are reported");
+    }
+
+    // --- circular pocket and boss -------------------------------------------------
+    {
+        const double R = 6.35 / 2;
+        for (const bool outside : {false, true}) {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({40, 40}, 12, layer));
+            r.addToolpath("circular_toolpath", {{"end_depth", "2.000"}, {"stepdown", 1.0},
+                                                {"side", outside ? "outside" : "inside"},
+                                                {"stepover", 2.5}, {"boss_clearance", 5.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1 && g.skipped.isEmpty(), "circular exports");
+            double px = 0, py = 0, rMin = 1e9, rMax = 0;
+            bool ccwAll = true, cwAll = true, centred = true;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind == c2d::Op::Arc) {
+                    centred = centred && approx(px + op.ci, 40, 1e-6) && approx(py + op.cj, 40, 1e-6);
+                    const double rr = std::hypot(op.x - 40, op.y - 40);
+                    rMin = std::min(rMin, rr);
+                    rMax = std::max(rMax, rr);
+                    ccwAll = ccwAll && !op.cw;
+                    cwAll = cwAll && op.cw;
+                }
+                if (op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc) {
+                    px = op.x;
+                    py = op.y;
+                }
+            }
+            check(centred, "circular: every lap is round the circle's centre");
+            if (outside)
+                check(approx(rMin, 12 + R, 1e-6) && approx(rMax, 12 + R + 5, 1e-6) && cwAll,
+                      "circular boss: clockwise laps from the clearance in to the wall");
+            else
+                check(approx(rMax, 12 - R, 1e-6) && rMin <= 2.5 + 1e-6 && ccwAll,
+                      "circular pocket: counter-clockwise laps out to the wall");
+        }
+        Rig small;
+        small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
+        small.addToolpath("circular_toolpath", {});
+        const c2d::GcodeResult gs = c2d::exportGcode(small.doc);
+        check(gs.done.isEmpty() && gs.skipped.size() == 1 && gs.skipped.first().contains("no wider"),
+              "circular: a hole no wider than the tool is reported");
+    }
+
     // --- setup sheet ---------------------------------------------------------------
     {
         Rig r;
@@ -972,11 +1166,22 @@ int main(int argc, char *argv[])
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("adaptive_toolpath"), {box.id}));
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("thread_toolpath"), {hole.id}));
         doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("contour"), {box.id}));
+        const c2d::Element slot = c2d::Element::makeBezierPath(
+            c2d::sketch::slot({30, 20}, {80, 20}, 8), layer);
+        doc.addElement(slot);
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("slot_toolpath"), {slot.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("circular_toolpath"), {hole.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("pocket_toolpath"), {box.id}));
+        doc.addToolpath(c2d::makeToolpath(doc, QStringLiteral("drilling_toolpath"), {hole.id}));
         check(c2d::toolpathLabel("chamfer_toolpath") == QLatin1String("2D Chamfer"),
               "2D Chamfer is in the New menu");
+        check(c2d::toolpathLabel("slot_toolpath") == QLatin1String("2D Slot")
+                  && c2d::toolpathLabel("circular_toolpath") == QLatin1String("Circular"),
+              "2D Slot and Circular are in the New menu");
         const c2d::GcodeResult g = c2d::exportGcode(doc);
-        check(g.done.size() == 6 && g.skipped.isEmpty(),
-              "face, bore, chamfer, adaptive, thread and lead contour defaults all export");
+        check(g.done.size() == 10 && g.skipped.isEmpty(),
+              "face, bore, chamfer, adaptive, thread, lead contour, slot, circular, "
+              "helix pocket and drilling defaults all export");
         const c2d::Toolpath ch = doc.toolpaths().at(2);
         check(ch.json.value("tool").toObject().value("angle").toDouble() > 0,
               "chamfer gets a V-bit from the library");

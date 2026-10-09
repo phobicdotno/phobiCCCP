@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.4.101 (build 41) — 2026-10-09
+
+**CAM (more of Fusion's 2D and 2.5D)**
+- **Finishing passes** on contours: `finish_passes` extra rings,
+  `finish_stepover` apart, cut at the final depth. The roughing ring stays
+  that far off the wall at every depth. **Spring pass** repeats the last ring
+  to take off what the tool sprang away from. Both are off by default.
+- **Helical entry** into pockets (on by default for new pockets): every depth
+  starts on a small helix (`helix_diameter`, `helix_angle`) in clear floor,
+  away from any island, instead of a straight plunge. Shapes too small for a
+  helix fall back to the plunge.
+- **Drilling cycles**: `dwell` seconds at the bottom of each hole (G4), and
+  `chip_break` pecks that back off only `chip_retract` mm between pecks
+  instead of leaving the hole.
+- **2D Slot** toolpath: ramps down each slot's centreline (slots drawn with
+  the Slot tool, or open vectors), back along the floor at each depth. A
+  slot wider than the tool also gets its walls cleaned, up to three tool
+  diameters wide. Rectangles, too-narrow and too-wide slots are reported.
+- **Circular** toolpath: round pockets (helix in at the middle, then laps out
+  to the wall) and bosses (laps from `boss_clearance` out in to the wall) on
+  the selected circles, climb by default.
+- All new keys and both new types are phobiCCCP-only; Carbide Create ignores
+  them.
+
+**Sketch**
+- **Conic** curve (Q): click the start, the end, then the apex where the end
+  tangents meet. Rho in the options bar sets the fullness (0.5 a parabola,
+  lower an ellipse arc, higher a hyperbola).
+
+**Testing**
+- New checks for the finishing rings and spring pass, helix entry (no straight
+  plunge below cleared floor, arcs inside the pocket), dwell and chip-break
+  output, slot ramping, walls and refusals, circular pocket and boss laps, the
+  conic's ends, tangents and accuracy, and the conic click tool.
+
 ## v0.4.100 (build 40) — 2026-10-09
 
 **Machine control**

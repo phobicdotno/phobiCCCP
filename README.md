@@ -40,7 +40,7 @@ Linux, built on the reverse-engineered format documentation in
 - Original tools still there:
 - Tools: Select (V), Circle (C: center, 2-point, 3-point, 2- and 3-tangent),
   Rectangle (R: 2-point, 3-point, center), Polygon (P: inscribed,
-  circumscribed, edge), Path/polyline (L), fit-point **Spline** (K), **Point**
+  circumscribed, edge), Path/polyline (L), fit-point **Spline** (K), **Conic** (Q), **Point**
   (O), Text (T), Ellipse (E, Ctrl-drag from the center), Slot (S: center to
   center, overall, center point, 3-point arc), Arc (A: 3-point, center point,
   tangent); **Construction** (Shift+X) makes vectors dashed reference
@@ -62,6 +62,10 @@ Linux, built on the reverse-engineered format documentation in
   bevel along edges, inside or outside), Fusion-style
 - **Lead-in / lead-out** arcs on contours, so the cutter enters and leaves
   the cut on the air side instead of plunging on the wall
+- **Finishing passes** and a **spring pass** on contours, **helical entry**
+  into pockets, and drilling **dwell** and **chip-breaking** pecks
+- **2D Slot** (ramped down each slot's centreline) and **Circular** (round
+  pockets and bosses in full laps), Fusion-style
 - **Setup sheet** (File menu): a printable page of the stock, tools and
   every toolpath with its depths, feeds and estimated time
 - **Adaptive clearing** (Fusion's 2D Adaptive): pockets with a light, steady

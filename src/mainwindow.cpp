@@ -45,6 +45,7 @@
 #include <QPainter>
 #include <QPolygonF>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QToolBar>
 #include <QUndoStack>
 #include <QtMath>
@@ -126,6 +127,15 @@ static QIcon toolIcon(const QString &kind)
         p.setBrush(QColor(0xd8, 0xdc, 0xe4));
         for (const QPointF &v : {QPointF(2.5, 14), QPointF(10, 10), QPointF(17.5, 6)})
             p.drawEllipse(v, 1.5, 1.5);
+    } else if (kind == "conic") {
+        p.save();
+        p.setPen(QPen(QColor(0x8a, 0x90, 0x9c), 1, Qt::DashLine));
+        p.drawLine(QLineF(3, 16, 10, 4));
+        p.drawLine(QLineF(10, 4, 17, 16));
+        p.restore();
+        QPainterPath pp(QPointF(3, 16));
+        pp.cubicTo(6, 9, 14, 9, 17, 16);
+        p.drawPath(pp);
     } else if (kind == "path") {
         QPainterPath pp(QPointF(3, 16));
         pp.lineTo(8, 6);
@@ -517,6 +527,8 @@ MainWindow::MainWindow(QWidget *parent)
              [this](int m) { m_canvas->setArcMode(Canvas::ArcMode(m)); });
     addTool(QStringLiteral("Spline"), QStringLiteral("spline"), Canvas::DrawSpline, Qt::Key_K,
             QStringLiteral("Fit-point spline: click the points it passes through; Enter finishes, click near start closes  (K)"));
+    addTool(QStringLiteral("Conic"), QStringLiteral("conic"), Canvas::DrawConic, Qt::Key_Q,
+            QStringLiteral("Conic curve: click the start, the end, then the apex its tangents meet at; rho in the options bar  (Q)"));
     addTool(QStringLiteral("Point"), QStringLiteral("point"), Canvas::DrawPoint, Qt::Key_O,
             QStringLiteral("Point: click to place a sketch point that drilling toolpaths drill at  (O)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
@@ -548,14 +560,24 @@ MainWindow::MainWindow(QWidget *parent)
     QAction *sidesAct = tb->addWidget(sides);
     connect(sides, &QSpinBox::valueChanged, this,
             [this](int n) { m_canvas->setPolygonSides(n); });
+    auto *rho = new QDoubleSpinBox(tb);
+    rho->setRange(0.05, 0.95);
+    rho->setSingleStep(0.05);
+    rho->setDecimals(2);
+    rho->setValue(0.5);
+    rho->setPrefix(QStringLiteral("rho "));
+    rho->setToolTip(QStringLiteral("Conic fullness: 0.5 parabola, lower an ellipse arc, higher a hyperbola"));
+    QAction *rhoAct = tb->addWidget(rho);
+    connect(rho, &QDoubleSpinBox::valueChanged, this,
+            [this](double v) { m_canvas->setConicRho(v); });
     QAction *sidesSep = tb->addSeparator();
 
-    // The side count only means something while drawing polygons, so show it
-    // (and its separator) only when the Polygon tool is active.
-    auto showSides = [sidesAct, sidesSep](Canvas::Tool t) {
-        const bool on = (t == Canvas::DrawPolygon);
-        sidesAct->setVisible(on);
-        sidesSep->setVisible(on);
+    // The side count only means something while drawing polygons and rho
+    // while drawing conics, so each shows (with the separator) only then.
+    auto showSides = [sidesAct, rhoAct, sidesSep](Canvas::Tool t) {
+        sidesAct->setVisible(t == Canvas::DrawPolygon);
+        rhoAct->setVisible(t == Canvas::DrawConic);
+        sidesSep->setVisible(t == Canvas::DrawPolygon || t == Canvas::DrawConic);
     };
     showSides(m_canvas->tool());
     connect(m_canvas, &Canvas::toolChanged, this, showSides);

@@ -51,6 +51,8 @@ JobStats computeStats(const QVector<Op> &ops)
         s.minZ = qMin(s.minZ, z); s.maxZ = qMax(s.maxZ, z);
     };
     for (const Op &op : ops) {
+        if (op.kind == Op::Dwell)
+            s.timeSec += qMax(0.0, op.feed);
         if (op.kind != Op::Rapid && op.kind != Op::Feed && op.kind != Op::Arc)
             continue;
         grow(op.x, op.y, op.z);
@@ -192,6 +194,11 @@ QString GrblPost::generate(const QVector<Op> &ops) const
             }
             break;
         }
+        case Op::Dwell:
+            // GRBL's G4 P is in seconds.
+            if (op.feed > 0)
+                line(QStringLiteral("G4P") + QString::number(op.feed, 'f', 2));
+            break;
         case Op::Rapid:
             line(block({G.fmt(0), X.fmt(scale(op.x)), Y.fmt(scale(op.y)), Z.fmt(scale(op.z))}));
             break;

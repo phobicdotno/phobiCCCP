@@ -333,6 +333,50 @@ PathModel fitSpline(const QVector<QPointF> &pts, bool closed)
     return m;
 }
 
+PathModel conic(QPointF start, QPointF end, QPointF apex, double rho)
+{
+    const QPointF u = end - start, v = apex - start;
+    const double chord = std::hypot(u.x(), u.y());
+    if (chord < 1e-9)
+        return PathModel();
+    if (std::fabs(u.x() * v.y() - u.y() * v.x()) < 1e-6 * chord * chord)
+        return straight(start, end);
+    const double r = std::clamp(rho, 0.05, 0.95);
+    const double w = r / (1 - r);
+    // C(t) = N(t) / D(t), the rational quadratic with weight w on the apex.
+    auto num = [&](double t) {
+        const double a = (1 - t) * (1 - t), b = 2 * w * t * (1 - t), c = t * t;
+        return a * start + b * apex + c * end;
+    };
+    auto den = [&](double t) { return (1 - t) * (1 - t) + 2 * w * t * (1 - t) + t * t; };
+    auto dnum = [&](double t) {
+        return -2 * (1 - t) * start + 2 * w * (1 - 2 * t) * apex + 2 * t * end;
+    };
+    auto dden = [&](double t) { return -2 * (1 - t) + 2 * w * (1 - 2 * t) + 2 * t; };
+    auto at = [&](double t) { return num(t) / den(t); };
+    auto deriv = [&](double t) {
+        const double d = den(t);
+        return (dnum(t) * d - num(t) * dden(t)) / (d * d);
+    };
+    // Each piece as the cubic Hermite with the conic's own end derivatives;
+    // 16 pieces keep it well inside 0.001 mm on drawing-sized curves.
+    const int n = 16;
+    SubPath s;
+    for (int i = 0; i <= n; ++i) {
+        const double t = double(i) / n;
+        const QPointF h = deriv(t) / (3.0 * n);
+        PathNode node;
+        node.p = i == 0 ? start : i == n ? end : at(t);
+        node.in = i == 0 ? node.p : node.p - h;
+        node.out = i == n ? node.p : node.p + h;
+        node.kind = (i == 0 || i == n) ? PathNode::Corner : PathNode::Smooth;
+        s.nodes.append(node);
+    }
+    PathModel m;
+    m.subs.append(s);
+    return m;
+}
+
 // ---- trim / break / extend ---------------------------------------------------
 
 namespace {
