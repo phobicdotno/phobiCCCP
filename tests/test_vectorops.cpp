@@ -491,6 +491,34 @@ int main(int argc, char **argv)
         check(k == 0, "a single line has no corners");
     }
 
+    // --- pattern on path -------------------------------------------------------
+    {
+        QPainterPath line(QPointF(0, 0));
+        line.lineTo(100, 0);
+        QVector<QTransform> t = vec::pathTransforms(line, 5, 0, true);
+        check(t.size() == 4, "pattern on path: count - 1 copies");
+        check(approx(t.last().map(QPointF(0, 5)).x(), 100, 1e-6) && approx(t.at(0).map(QPointF(0, 5)).x(), 25, 1e-6),
+              "spread over an open path, the last on its end");
+        t = vec::pathTransforms(line, 10, 30, true);
+        check(t.size() == 3, "by spacing, nothing past the end");
+        // Round a closed square: evenly spaced, turning with it.
+        QPainterPath sq;
+        sq.addRect(0, 0, 40, 40);
+        t = vec::pathTransforms(sq, 4, 0, true);
+        check(t.size() == 3, "closed path: evenly round, no duplicate at the end");
+        const QPointF p1 = t.at(0).map(QPointF(0, 0)), p2 = t.at(1).map(QPointF(0, 0));
+        check(QLineF(p1, QPointF(0, 40)).length() < 1e-6 || QLineF(p1, QPointF(40, 0)).length() < 1e-6,
+              "a quarter of the way round is the next corner");
+        check(QLineF(p2, QPointF(40, 40)).length() < 1e-6, "half way round is the opposite corner");
+        // An object beside the start turns with the path at the corner.
+        const QPointF off = t.at(0).map(QPointF(0, -2)) - p1;
+        check(approx(std::hypot(off.x(), off.y()), 2, 1e-6) && approx(std::fabs(off.x()) + std::fabs(off.y()), 2, 1e-6),
+              "copies keep their offset, turned");
+        t = vec::pathTransforms(sq, 4, 0, false);
+        check(approx(t.at(0).m11(), 1) && approx(t.at(0).m12(), 0), "unoriented copies only move");
+        check(vec::pathTransforms(QPainterPath(), 3, 0, true).isEmpty(), "no path: nothing");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

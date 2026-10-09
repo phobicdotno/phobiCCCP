@@ -244,6 +244,91 @@ int main(int argc, char **argv)
         check(!sketch::extend(closed, {5, 0}, 1, top), "closed paths have no ends");
     }
 
+    // --- center-point arc: radius from the start, direction chosen ---------------
+    {
+        const PathModel ccw = sketch::arcCenter({0, 0}, {10, 0}, {0, 5}, true);
+        check(ccw.subs.size() == 1, "center arc: one subpath");
+        const SubPath &a = ccw.subs.first();
+        check(nearPt(a.nodes.first().p, {10, 0}, 1e-9) && nearPt(a.nodes.last().p, {0, 10}, 1e-9),
+              "center arc runs from the start to the end ray at the start's radius");
+        check(roundness(ccw.painterPath(), {0, 0}, 10) < 0.003, "center arc is round");
+        check(ccw.painterPath().boundingRect().width() < 10.01, "counter-clockwise: the quarter turn");
+        const PathModel cw = sketch::arcCenter({0, 0}, {10, 0}, {0, 5}, false);
+        check(cw.painterPath().boundingRect().width() > 19.9, "clockwise: the three-quarter turn");
+        check(sketch::arcCenter({0, 0}, {0, 0}, {1, 1}, true).isEmpty(), "zero radius: nothing");
+    }
+
+    // --- tangent arc: leaves the end along its direction ---------------------------
+    {
+        const PathModel m = sketch::arcTangent({0, 0}, {1, 0}, {10, 10});
+        const SubPath &a = m.subs.first();
+        check(nearPt(a.nodes.first().p, {0, 0}, 1e-9) && nearPt(a.nodes.last().p, {10, 10}, 1e-9),
+              "tangent arc ends where clicked");
+        const QPointF h = a.nodes.first().out - a.nodes.first().p;
+        check(h.x() > 0 && approx(h.y(), 0, 1e-9), "tangent arc leaves along the curve's direction");
+        check(roundness(m.painterPath(), {0, 10}, 10) < 0.003, "quarter circle about (0, 10)");
+        const PathModel ahead = sketch::arcTangent({0, 0}, {1, 0}, {7, 0});
+        check(ahead.subs.first().nodes.size() == 2 && !ahead.subs.first().nodes.first().hasOut(),
+              "straight ahead: a line");
+        check(sketch::arcTangent({0, 0}, {1, 0}, {-5, 0}).isEmpty(), "straight back: nothing");
+    }
+
+    // --- slot modes ----------------------------------------------------------------
+    {
+        QRectF b = sketch::slotOverall({0, 0}, {50, 0}, 10).painterPath().boundingRect();
+        check(nearRect(b, QRectF(0, -5, 50, 10), 1e-3), "overall slot: the clicks are its ends");
+        b = sketch::slotCenterPoint({25, 0}, {45, 0}, 10).painterPath().boundingRect();
+        check(nearRect(b, QRectF(0, -5, 50, 10), 1e-3), "center point slot: mirrored about the middle");
+        b = sketch::slotOverall({0, 0}, {6, 0}, 10).painterPath().boundingRect();
+        check(nearRect(b, QRectF(-2, -5, 10, 10), 1e-3), "overall slot shorter than wide: a circle");
+        // Arc slot round a half circle of radius 20, 4 mm wide: half an annulus
+        // plus two end caps (a whole 2 mm circle).
+        const PathModel as = sketch::arcSlot({20, 0}, {-20, 0}, {0, 20}, 4);
+        check(as.subs.size() == 1 && as.subs.first().closed, "arc slot is one closed outline");
+        const double want = M_PI * (22 * 22 - 18 * 18) / 2 + M_PI * 2 * 2;
+        check(approx(area(as.painterPath()), want, want * 0.002), "arc slot area");
+        b = as.painterPath().boundingRect();
+        check(nearRect(b, QRectF(-22, -2, 44, 24), 2e-3), "arc slot bounds");
+        check(sketch::arcSlot({20, 0}, {-20, 0}, {0, 20}, 41).isEmpty(), "arc slot wider than its radius: nothing");
+    }
+
+    // --- edge polygon --------------------------------------------------------------
+    {
+        QPointF c;
+        double r = 0, rot = 0;
+        const QVector<QPointF> v = sketch::polygonEdge({0, 0}, {10, 0}, {5, 3}, 6, &c, &r, &rot);
+        check(v.size() == 6 && approx(r, 10, 1e-9), "hexagon on a 10 mm edge has radius 10");
+        check(nearPt(c, {5, 10 * std::sqrt(3.0) / 2}, 1e-9), "edge polygon sits on the clicked side");
+        bool hasP2 = false;
+        for (const QPointF &p : v)
+            hasP2 = hasP2 || nearPt(p, {10, 0}, 1e-9);
+        check(nearPt(v.first(), {0, 0}, 1e-9) && hasP2, "the edge's ends are corners");
+        const Element e = Element::makePolygon(c, r, 6, layer, rot);
+        check(nearRect(e.painterPath.boundingRect(), QRectF(-5, 0, 20, 10 * std::sqrt(3.0)), 1e-6),
+              "makePolygon reproduces it");
+        sketch::polygonEdge({0, 0}, {10, 0}, {5, -3}, 4, &c, &r, &rot);
+        check(nearPt(c, {5, -5}, 1e-9), "the other side");
+    }
+
+    // --- fit-point spline ----------------------------------------------------------
+    {
+        const QVector<QPointF> pts{{0, 0}, {10, 10}, {20, 0}, {30, 10}};
+        const PathModel open = sketch::fitSpline(pts, false);
+        check(open.subs.size() == 1 && !open.subs.first().closed && open.subs.first().nodes.size() == 4,
+              "open spline: a node per point");
+        for (int i = 0; i < pts.size(); ++i)
+            check(nearPt(open.subs.first().nodes.at(i).p, pts.at(i), 1e-12), "spline passes through each point");
+        const PathNode &mid = open.subs.first().nodes.at(1);
+        const QPointF di = mid.p - mid.in, dout = mid.out - mid.p;
+        check(std::fabs(di.x() * dout.y() - di.y() * dout.x()) < 1e-9 && di.x() * dout.x() + di.y() * dout.y() > 0,
+              "smooth through the inner points");
+        const PathModel closed = sketch::fitSpline({{0, 0}, {10, 0}, {10, 10}, {0, 10}}, true);
+        check(closed.subs.first().closed && closed.subs.first().nodes.size() == 4, "closed spline wraps");
+        check(area(closed.painterPath()) > 100, "closed spline bulges out round its points");
+        check(sketch::fitSpline({{1, 1}}, false).isEmpty(), "one point: nothing");
+        check(sketch::fitSpline({{0, 0}, {5, 0}}, false).subs.first().nodes.size() == 2, "two points: a line");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

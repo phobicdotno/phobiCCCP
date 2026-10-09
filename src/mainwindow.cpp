@@ -16,9 +16,13 @@
 #include "toolpathpanel.h"
 #include "vectoractions.h"
 #include "importui.h"
+#include "setupsheet.h"
+#include <QDesktopServices>
+#include <QUrl>
 
 #include <QApplication>
 #include <QFile>
+#include <QDir>
 #include <QCloseEvent>
 #include <QFileInfo>
 #include <QDockWidget>
@@ -111,6 +115,17 @@ static QIcon toolIcon(const QString &kind)
             hex << QPointF(10 + 6.5 * qCos(a), 10 + 6.5 * qSin(a));
         }
         p.drawPolygon(hex);
+    } else if (kind == "point") {
+        p.drawLine(QLineF(5, 5, 15, 15));
+        p.drawLine(QLineF(5, 15, 15, 5));
+    } else if (kind == "spline") {
+        QPainterPath pp(QPointF(2.5, 14));
+        pp.cubicTo(5, 4, 9, 4, 10, 10);
+        pp.cubicTo(11, 16, 15, 16, 17.5, 6);
+        p.drawPath(pp);
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        for (const QPointF &v : {QPointF(2.5, 14), QPointF(10, 10), QPointF(17.5, 6)})
+            p.drawEllipse(v, 1.5, 1.5);
     } else if (kind == "path") {
         QPainterPath pp(QPointF(3, 16));
         pp.lineTo(8, 6);
@@ -352,6 +367,33 @@ MainWindow::MainWindow(QWidget *parent)
             ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
     fileMenu->addAction(QStringLiteral("Export G-code (&tiled)…"), this,
                         &MainWindow::onExportGcodeTiled);
+    fileMenu->addAction(QStringLiteral("Setup S&heet…"), this, [this] {
+        // Fusion's setup sheet: a printable page of the job for the machine.
+        if (m_doc.toolpaths().isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("Setup sheet"),
+                                     QStringLiteral("There are no toolpaths to describe yet."));
+            return;
+        }
+        const QFileInfo fi(m_doc.filePath());
+        const QString title = fi.fileName().isEmpty() ? QStringLiteral("Untitled") : fi.completeBaseName();
+        const QString dest = QFileDialog::getSaveFileName(
+            this, QStringLiteral("Save setup sheet"),
+            (fi.fileName().isEmpty() ? QDir::homePath() : fi.absolutePath())
+                + QLatin1Char('/') + title + QStringLiteral(" setup sheet.html"),
+            QStringLiteral("HTML (*.html)"));
+        if (dest.isEmpty())
+            return;
+        QFile f(dest);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(this, QStringLiteral("Setup sheet"),
+                                 QStringLiteral("Could not write %1").arg(dest));
+            return;
+        }
+        f.write(setupSheetHtml(m_doc, title).toUtf8());
+        f.close();
+        statusBar()->showMessage(QStringLiteral("Setup sheet saved to %1").arg(dest), 6000);
+        QDesktopServices::openUrl(QUrl::fromLocalFile(dest));
+    });
     fileMenu->addSeparator();
     installImageMenus(fileMenu, this, m_canvas, &m_doc, &m_bg);   // backgrounddialog.cpp
     fileMenu->addSeparator();
@@ -377,6 +419,14 @@ MainWindow::MainWindow(QWidget *parent)
     redoAct->setShortcut(QKeySequence::Redo);
     editMenu->addAction(undoAct);
     editMenu->addAction(redoAct);
+    editMenu->addSeparator();
+    QAction *constrAct = editMenu->addAction(QStringLiteral("&Construction"), this, [this] {
+        m_canvas->toggleConstruction(m_canvas->selectedElementIds());
+    });
+    constrAct->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_X));
+    constrAct->setToolTip(QStringLiteral(
+        "Make the selected vectors construction geometry (dashed, never machined), "
+        "or normal again  (Shift+X)"));
 
     // Vector tools: horizontal icon row above the canvas (deliberately not
     // Carbide Create's left-hand column).
@@ -439,14 +489,36 @@ MainWindow::MainWindow(QWidget *parent)
               {QStringLiteral("3-Point Rectangle"), Canvas::Rect3Point},
               {QStringLiteral("Center Rectangle"), Canvas::RectCenter}},
              [this](int m) { m_canvas->setRectMode(Canvas::RectMode(m)); });
-    addTool(QStringLiteral("Polygon"), QStringLiteral("polygon"), Canvas::DrawPolygon, Qt::Key_P,
-            QStringLiteral("Polygon: press at center, drag to radius  (P)"));
+    QAction *polyAct = addTool(QStringLiteral("Polygon"), QStringLiteral("polygon"),
+            Canvas::DrawPolygon, Qt::Key_P,
+            QStringLiteral("Polygon (P) — arrow for Inscribed / Circumscribed / Edge"));
+    addModes(polyAct,
+             {{QStringLiteral("Inscribed Polygon"), Canvas::PolyInscribed},
+              {QStringLiteral("Circumscribed Polygon"), Canvas::PolyCircumscribed},
+              {QStringLiteral("Edge Polygon"), Canvas::PolyEdge}},
+             [this](int m) { m_canvas->setPolygonMode(Canvas::PolygonMode(m)); });
     addTool(QStringLiteral("Ellipse"), QStringLiteral("ellipse"), Canvas::DrawEllipse, Qt::Key_E,
             QStringLiteral("Ellipse: drag across its bounding box, Ctrl from the center  (E)"));
-    addTool(QStringLiteral("Slot"), QStringLiteral("slot"), Canvas::DrawSlot, Qt::Key_S,
-            QStringLiteral("Slot: click both end centers, then click to set the width  (S)"));
-    addTool(QStringLiteral("Arc"), QStringLiteral("arc"), Canvas::DrawArc, Qt::Key_A,
-            QStringLiteral("3-point arc: click start, end, then a point on the arc  (A)"));
+    QAction *slotAct = addTool(QStringLiteral("Slot"), QStringLiteral("slot"), Canvas::DrawSlot,
+            Qt::Key_S,
+            QStringLiteral("Slot (S) — arrow for Center to Center / Overall / Center Point / 3-Point Arc"));
+    addModes(slotAct,
+             {{QStringLiteral("Center to Center Slot"), Canvas::SlotCenterToCenter},
+              {QStringLiteral("Overall Slot"), Canvas::SlotOverall},
+              {QStringLiteral("Center Point Slot"), Canvas::SlotCenterPoint},
+              {QStringLiteral("3-Point Arc Slot"), Canvas::SlotArc3Point}},
+             [this](int m) { m_canvas->setSlotMode(Canvas::SlotMode(m)); });
+    QAction *arcAct = addTool(QStringLiteral("Arc"), QStringLiteral("arc"), Canvas::DrawArc,
+            Qt::Key_A, QStringLiteral("Arc (A) — arrow for 3-Point / Center Point / Tangent"));
+    addModes(arcAct,
+             {{QStringLiteral("3-Point Arc"), Canvas::Arc3Point},
+              {QStringLiteral("Center Point Arc"), Canvas::ArcCenter},
+              {QStringLiteral("Tangent Arc"), Canvas::ArcTangent}},
+             [this](int m) { m_canvas->setArcMode(Canvas::ArcMode(m)); });
+    addTool(QStringLiteral("Spline"), QStringLiteral("spline"), Canvas::DrawSpline, Qt::Key_K,
+            QStringLiteral("Fit-point spline: click the points it passes through; Enter finishes, click near start closes  (K)"));
+    addTool(QStringLiteral("Point"), QStringLiteral("point"), Canvas::DrawPoint, Qt::Key_O,
+            QStringLiteral("Point: click to place a sketch point that drilling toolpaths drill at  (O)"));
     addTool(QStringLiteral("Path"), QStringLiteral("path"), Canvas::DrawPath, Qt::Key_L,
             QStringLiteral("Path: click = corner, click-drag = curve; Enter finishes, click near start closes  (L)"));
     addTool(QStringLiteral("Trim"), QStringLiteral("trim"), Canvas::Trim, Qt::Key_X,

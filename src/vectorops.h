@@ -106,6 +106,16 @@ QVector<QTransform> gridTransforms(const QRectF &box, int cols, int rows,
 QVector<QTransform> circularTransforms(const QRectF &box, QPointF center, int count,
                                        double spanDeg, bool rotate);
 
+// Fusion's pattern on path: `count` items along the first subpath of `path`
+// (the original included, as the first, not returned), each placed where
+// the path has carried its start point: by `spacing` mm of arc length per
+// item, or with spacing <= 0 spread over the whole length (an open path's
+// last item on its end, a closed path's evenly round). With `orient` each
+// copy also turns as the path does. Items that would fall past the end of
+// an open path are left out.
+QVector<QTransform> pathTransforms(const QPainterPath &path, int count, double spacing,
+                                   bool orient);
+
 // Copies of `els` moved by `t`, each with a fresh id. Group membership is
 // kept within the copy: every group id the inputs use maps to one new
 // group id shared by this copy's elements, so copies of a group are groups

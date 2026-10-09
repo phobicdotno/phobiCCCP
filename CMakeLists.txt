@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 0.4.98 LANGUAGES CXX)
+project(phobiCCCP VERSION 0.4.99 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,6 +44,7 @@ add_library(phobicccp_core STATIC
     src/sketch.cpp
     src/adaptive.cpp
     src/sketchgeom.cpp
+    src/setupsheet.cpp
     src/importers.cpp
     src/toollibrary.cpp
     src/toolpathfactory.cpp

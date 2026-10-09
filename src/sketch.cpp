@@ -151,6 +151,188 @@ PathModel arc3(QPointF start, QPointF end, QPointF through)
     return m;
 }
 
+static double ccwTurn(double from, double to)   // counter-clockwise turn in [0, 2pi)
+{
+    double t = std::fmod(to - from, 2 * M_PI);
+    return t < 0 ? t + 2 * M_PI : t;
+}
+
+static PathModel straight(QPointF a, QPointF b)
+{
+    PathModel m;
+    SubPath s;
+    PathNode na, nb;
+    na.p = na.in = na.out = a;
+    nb.p = nb.in = nb.out = b;
+    s.nodes << na << nb;
+    m.subs.append(s);
+    return m;
+}
+
+PathModel arcCenter(QPointF c, QPointF start, QPointF end, bool ccw)
+{
+    PathModel m;
+    const double r = QLineF(c, start).length();
+    if (r < 1e-9 || QLineF(c, end).length() < 1e-9)
+        return m;
+    const double a0 = std::atan2(start.y() - c.y(), start.x() - c.x());
+    const double a1 = std::atan2(end.y() - c.y(), end.x() - c.x());
+    double sweep = ccwTurn(a0, a1);
+    if (sweep < 1e-9)
+        sweep = 2 * M_PI;            // end on the start's ray: a full turn
+    if (!ccw)
+        sweep -= 2 * M_PI;
+    SubPath sp = arc(c, r, a0, sweep);
+    sp.nodes.first().p = start;
+    m.subs.append(sp);
+    return m;
+}
+
+PathModel arcTangent(QPointF start, QPointF dir, QPointF end)
+{
+    PathModel m;
+    const double dl = std::hypot(dir.x(), dir.y());
+    const QPointF d = end - start;
+    const double len = std::hypot(d.x(), d.y());
+    if (dl < 1e-12 || len < 1e-9)
+        return m;
+    const QPointF t = dir / dl;
+    // The chord makes angle phi with the tangent; the arc turns twice that.
+    const double phi = std::atan2(t.x() * d.y() - t.y() * d.x(), t.x() * d.x() + t.y() * d.y());
+    if (std::fabs(std::sin(phi)) < 1e-6 && std::cos(phi) > 0)
+        return straight(start, end);
+    if (std::fabs(std::sin(phi)) < 1e-6)
+        return m;                    // straight back the way it came: no arc
+    const double r = len / (2 * std::fabs(std::sin(phi)));
+    const QPointF n(-t.y(), t.x());  // left of travel
+    const QPointF c = start + n * (phi > 0 ? r : -r);
+    const double a0 = std::atan2(start.y() - c.y(), start.x() - c.x());
+    SubPath sp = arc(c, r, a0, 2 * phi);
+    sp.nodes.first().p = start;
+    sp.nodes.last().p = end;
+    m.subs.append(sp);
+    return m;
+}
+
+PathModel slotOverall(QPointF a, QPointF b, double width)
+{
+    const QPointF d = b - a;
+    const double len = std::hypot(d.x(), d.y());
+    if (width <= 0 || len < 1e-9)
+        return PathModel();
+    if (len <= width)
+        return slot((a + b) / 2, (a + b) / 2, width);
+    const QPointF u = d / len * (width / 2);
+    return slot(a + u, b - u, width);
+}
+
+PathModel slotCenterPoint(QPointF center, QPointF end, double width)
+{
+    return slot(2 * center - end, end, width);
+}
+
+PathModel arcSlot(QPointF start, QPointF end, QPointF through, double width)
+{
+    PathModel m;
+    QPointF o;
+    double r = 0;
+    if (width <= 0 || QLineF(start, end).length() < 1e-9
+        || !circleThrough(start, through, end, &o, &r) || r - width / 2 <= 1e-6)
+        return m;
+    auto ang = [&o](QPointF p) { return std::atan2(p.y() - o.y(), p.x() - o.x()); };
+    const double a0 = ang(start);
+    const double toEnd = ccwTurn(a0, ang(end)), toMid = ccwTurn(a0, ang(through));
+    const double sweep = toMid < toEnd ? toEnd : toEnd - 2 * M_PI;
+    const double a1 = a0 + sweep, h = width / 2, sgn = sweep < 0 ? -1.0 : 1.0;
+    const QPointF pe = polar(o, r, a1), ps = polar(o, r, a0);
+    SubPath s;
+    join(s, arc(o, r + h, a0, sweep));            // outer side
+    join(s, arc(pe, h, a1, sgn * M_PI));          // round the far end
+    join(s, arc(o, r - h, a1, -sweep));           // inner side, back
+    join(s, arc(ps, h, a0 + M_PI, sgn * M_PI));   // round the near end
+    // The last node lands on the first: fold it in.
+    s.nodes.first().in = s.nodes.last().in;
+    s.nodes.removeLast();
+    s.closed = true;
+    m.subs.append(s);
+    return m;
+}
+
+QVector<QPointF> polygonEdge(QPointF p1, QPointF p2, QPointF side, int sides,
+                             QPointF *center, double *radius, double *rotationDeg)
+{
+    QVector<QPointF> out;
+    sides = qMax(3, sides);
+    const QPointF d = p2 - p1;
+    const double len = std::hypot(d.x(), d.y());
+    if (len < 1e-9)
+        return out;
+    QPointF n(-d.y() / len, d.x() / len);
+    if ((side.x() - p1.x()) * n.x() + (side.y() - p1.y()) * n.y() < 0)
+        n = -n;
+    const double apothem = len / (2 * std::tan(M_PI / sides));
+    const double R = len / (2 * std::sin(M_PI / sides));
+    const QPointF c = (p1 + p2) / 2 + n * apothem;
+    const double rot = std::atan2(p1.y() - c.y(), p1.x() - c.x());
+    for (int i = 0; i < sides; ++i)
+        out.append(polar(c, R, rot + 2 * M_PI * i / sides));
+    if (center) *center = c;
+    if (radius) *radius = R;
+    if (rotationDeg) *rotationDeg = rot * 180 / M_PI;
+    return out;
+}
+
+PathModel fitSpline(const QVector<QPointF> &pts, bool closed)
+{
+    PathModel m;
+    QVector<QPointF> p;
+    for (const QPointF &q : pts)
+        if (p.isEmpty() || QLineF(p.last(), q).length() > 1e-9)
+            p.append(q);
+    if (closed && p.size() > 2 && QLineF(p.first(), p.last()).length() < 1e-9)
+        p.removeLast();
+    if (p.size() < 2)
+        return m;
+    if (p.size() == 2 || (closed && p.size() < 3))
+        return straight(p.first(), p.last());
+    const int n = p.size();
+    // Neighbours for the tangent at i: wrapped when closed, mirrored at the
+    // ends when open (a free end that keeps the curve's direction).
+    auto at = [&](int i) {
+        if (closed)
+            return p.at(((i % n) + n) % n);
+        if (i < 0)
+            return 2 * p.first() - p.at(1);
+        if (i >= n)
+            return 2 * p.last() - p.at(n - 2);
+        return p.at(i);
+    };
+    SubPath s;
+    s.closed = closed;
+    for (int i = 0; i < n; ++i) {
+        // Catmull-Rom tangent, each handle scaled to its own neighbouring
+        // chord so uneven spacing does not overshoot.
+        const QPointF tan = at(i + 1) - at(i - 1);
+        const double tl = std::hypot(tan.x(), tan.y());
+        const QPointF u = tl > 1e-12 ? tan / tl : QPointF();
+        const double lin = QLineF(at(i - 1), p.at(i)).length();
+        const double lout = QLineF(p.at(i), at(i + 1)).length();
+        PathNode node;
+        node.p = p.at(i);
+        node.in = p.at(i) - u * (lin / 3);
+        node.out = p.at(i) + u * (lout / 3);
+        node.kind = PathNode::Smooth;
+        s.nodes.append(node);
+    }
+    if (!closed) {
+        s.nodes.first().in = s.nodes.first().p;
+        s.nodes.last().out = s.nodes.last().p;
+        s.nodes.first().kind = s.nodes.last().kind = PathNode::Corner;
+    }
+    m.subs.append(s);
+    return m;
+}
+
 // ---- trim / break / extend ---------------------------------------------------
 
 namespace {

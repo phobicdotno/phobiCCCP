@@ -1,5 +1,65 @@
 # Changelog
 
+## v0.4.99 (build 39) — 2026-10-09
+
+**Drawing tools** (more of Fusion 360's sketch)
+- **Arc** drop-down: **Center Point Arc** (click the center, the start,
+  then the end; it turns whichever way the cursor went) and **Tangent Arc**
+  (click near the end of an open line or curve, then the end point; the arc
+  carries on in the direction the curve was going), next to the 3-point arc.
+- **Polygon** drop-down: **Inscribed** (a corner under the cursor; it used
+  to sit on +X whatever the drag), **Circumscribed** (the middle of an edge
+  under the cursor) and **Edge** (click both ends of one edge, then the
+  side). All stay parametric Carbide Create polygons.
+- **Slot** drop-down: **Overall** (click the slot's two ends), **Center
+  Point** (its middle, then one end's center) and **3-Point Arc** slots,
+  next to center to center.
+- **Spline** (K): a fit-point spline through the points you click. Enter or
+  a double-click finishes it, clicking near the first point closes it.
+- **Point** (O): a sketch point, drawn as a cross. Drilling and keyhole
+  toolpaths drill at it; other toolpaths ignore it. It is saved as a 1 mm
+  circle, which is what Carbide Create shows.
+- **Construction** (Edit menu, Shift+X): selected vectors become dashed
+  reference geometry that trim, extend and the arrays still use but no
+  toolpath ever cuts. Press it again to make them normal. phobiCCCP-only:
+  Carbide Create shows them as ordinary vectors.
+
+**Vector editing**
+- **Pattern on path…** (Edit → Vectors): copies the selection along the
+  vector selected last, spread over its whole length or a set distance
+  apart, turning with the path or not. Copies can join the originals'
+  toolpaths, like the arrays.
+
+**CAM**
+- **Lead-in / lead-out** on contours (Fusion's linking arcs; new
+  `lead_radius` key, half the tool diameter on new contours, 0 for off).
+  Each pass drops in on the air side, arcs onto the cut, goes round and
+  arcs off again, so there is no plunge mark on the wall. The cut starts in
+  the middle of the longest edge, the arcs shrink to fit small holes, and
+  ramping replaces them when it is on. Older files have no key and cut as
+  before.
+- **Thread** milling (Fusion's 2D Thread; a phobiCCCP-only type). A
+  helix of one `pitch` per turn around each selected circle, which is the
+  thread's major diameter: internal threads are cut out to it from the
+  hole's middle, external ones down to the minor diameter from outside.
+  `thread_depth` (0 = ISO's 0.6134 × pitch) can be split over `passes`;
+  `left_hand` and `climb` set the direction, so a right-hand internal
+  thread climbs from the bottom up. The helix never goes below the end
+  depth. Holes too small for the tool are reported, not cut.
+- **Setup Sheet…** (File menu): Fusion's setup sheet as a printable HTML
+  page. It has the stock and material, the job's extents and estimated
+  time, the tools in the order they are loaded, and every toolpath with
+  its tool, depths, stepdown, stepover, feeds and estimated time.
+
+**Testing**
+- `geometry` covers the lead arcs (they stay off the part, inside and
+  outside), the thread helix (radius, pitch, direction, depth), that
+  construction geometry is never cut and points are only drilled, and the
+  setup sheet.
+- `sketch` covers the new arc, slot and polygon modes and the spline;
+  `vectorops` covers pattern on path; `canvas` clicks through the new tools
+  and the construction toggle.
+
 ## v0.4.98 (build 38) — 2026-10-08
 
 **Tidying**

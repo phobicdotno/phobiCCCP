@@ -301,6 +301,81 @@ int main(int argc, char *argv[])
         check(std::fabs(b.width() - 40) < 1.0 && std::fabs(b.height() - 20) < 1.0,
               "arc is the upper half circle");
 
+        // Tangent arc off that arc's end (190, 120), where it arrives heading
+        // down: a half circle on to (170, 120), bulging below.
+        canvas.setArcMode(c2d::Canvas::ArcTangent);
+        int m = doc.elements().size();
+        click(&canvas, {191, 121});
+        click(&canvas, {170, 120});
+        check(doc.elements().size() == m + 1, "tangent arc added");
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 20) < 1.0 && std::fabs(b.height() - 10) < 1.0 && b.bottom() < 121,
+              "tangent arc carries on downward into a half circle");
+        click(&canvas, {300, 10});   // nothing there: no start picked
+        check(doc.elements().size() == m + 1, "tangent arc needs an open end to start from");
+
+        // Center-point arc: center, start (radius 20), a quarter turn on.
+        canvas.setArcMode(c2d::Canvas::ArcCenter);
+        click(&canvas, {100, 60});
+        click(&canvas, {120, 60});
+        QTest::mouseMove(canvas.viewport(), vp(&canvas, {115, 75}));
+        click(&canvas, {100, 80});
+        check(doc.elements().size() == m + 2, "center arc added");
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 20) < 1.0 && std::fabs(b.height() - 20) < 1.0,
+              "center arc: the quarter the cursor swept");
+
+        // Overall slot: the clicks are the slot's ends.
+        canvas.setTool(c2d::Canvas::DrawSlot);
+        canvas.setSlotMode(c2d::Canvas::SlotOverall);
+        click(&canvas, {100, 160});
+        click(&canvas, {150, 160});
+        click(&canvas, {125, 165});
+        check(doc.elements().size() == m + 3, "overall slot added");
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 50) < 1.0 && std::fabs(b.height() - 10) < 1.0,
+              "overall slot: 50 mm end to end, 10 mm wide");
+        canvas.setSlotMode(c2d::Canvas::SlotCenterToCenter);
+
+        // Edge polygon: a hexagon on a 10 mm edge, above it.
+        canvas.setTool(c2d::Canvas::DrawPolygon);
+        canvas.setPolygonMode(c2d::Canvas::PolyEdge);
+        click(&canvas, {100, 100});
+        click(&canvas, {110, 100});
+        click(&canvas, {105, 104});
+        check(doc.elements().size() == m + 4, "edge polygon added");
+        const c2d::Element &hex = doc.elements().last();
+        check(hex.geometryType == "regular_polygon"
+                  && std::fabs(hex.raw["radius"].toDouble() - 10) < 0.5
+                  && hex.painterPath.boundingRect().top() > 99,
+              "edge polygon: a parametric hexagon standing on the edge");
+        canvas.setPolygonMode(c2d::Canvas::PolyInscribed);
+
+        // Point, then make it and the hexagon construction and back.
+        canvas.setTool(c2d::Canvas::DrawPoint);
+        click(&canvas, {60, 60});
+        check(doc.elements().size() == m + 5 && c2d::Element::isPoint(doc.elements().last()),
+              "point tool adds a sketch point");
+        const QString hexId = hex.id;
+        const int before = undo->index();
+        canvas.toggleConstruction({hexId});
+        check(c2d::Element::isConstruction(*doc.elementById(hexId)) && undo->index() == before + 1,
+              "construction toggle: one undo step");
+        undo->undo();
+        check(!c2d::Element::isConstruction(*doc.elementById(hexId)), "undo restores normal geometry");
+
+        // Fit-point spline: three clicks, Enter.
+        canvas.setTool(c2d::Canvas::DrawSpline);
+        click(&canvas, {200, 40});
+        click(&canvas, {215, 55});
+        click(&canvas, {230, 40});
+        check(doc.elements().size() == m + 5, "spline waits for Enter");
+        QTest::keyClick(&canvas, Qt::Key_Return);
+        check(doc.elements().size() == m + 6, "spline added");
+        b = doc.elements().last().painterPath.boundingRect();
+        check(std::fabs(b.width() - 30) < 1.0 && b.top() > 39 && b.bottom() > 54,
+              "spline runs through its points");
+
         canvas.setTool(c2d::Canvas::Select);
     }
 

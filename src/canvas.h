@@ -20,7 +20,8 @@ class Canvas : public QGraphicsView
     Q_OBJECT
 public:
     enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
-                DrawEllipse, DrawSlot, DrawArc, Trim, Extend, Break, Measure };
+                DrawEllipse, DrawSlot, DrawArc, Trim, Extend, Break, Measure,
+                DrawPoint, DrawSpline };
     // The three-click tools (slot, 3-point arc): the first
     // two clicks fix two points, the third finishes the shape.
     static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc; }
@@ -31,6 +32,10 @@ public:
     enum CircleMode { CircleCenterDiameter, Circle2Point, Circle3Point,
                       Circle2Tangent, Circle3Tangent };
     enum RectMode { Rect2Point, Rect3Point, RectCenter };
+    // ... and of the Arc, Polygon and Slot tools.
+    enum ArcMode { Arc3Point, ArcCenter, ArcTangent };
+    enum PolygonMode { PolyInscribed, PolyCircumscribed, PolyEdge };
+    enum SlotMode { SlotCenterToCenter, SlotOverall, SlotCenterPoint, SlotArc3Point };
 
     explicit Canvas(QWidget *parent = nullptr);
     ~Canvas() override;
@@ -40,6 +45,13 @@ public:
     void setPolygonSides(int n) { m_polySides = qBound(3, n, 64); }
     void setCircleMode(CircleMode m);
     void setRectMode(RectMode m);
+    void setArcMode(ArcMode m);
+    void setPolygonMode(PolygonMode m);
+    void setSlotMode(SlotMode m);
+    // Fusion's construction toggle: marks the vectors construction geometry
+    // (dashed, never machined), or back, as one undo step. Mixed selections
+    // all become construction.
+    void toggleConstruction(const QStringList &ids);
     void setSnapEnabled(bool on) { m_snap = on; }
     bool snapEnabled() const { return m_snap; }
     QUndoStack *undoStack() const { return m_undo; }
@@ -146,9 +158,29 @@ private:
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
 
-    // Three-click tools reuse m_clicks (the points clicked so far, CC mm).
+    // Click tools (slot, arc, edge polygon) reuse m_clicks (the points
+    // clicked so far, CC mm); how many points finish a shape depends on
+    // the tool's mode. clickShape builds the shape from a full set.
+    bool clickTool() const;
+    int clicksNeeded() const;
+    QString clickHint() const;
     void clickToolPress(const QPointF &pos);
     QPainterPath clickPreview(const QPointF &cur) const;
+    bool clickShape(const QVector<QPointF> &pts, Element *out) const;
+    ArcMode m_arcMode = Arc3Point;
+    PolygonMode m_polyMode = PolyInscribed;
+    SlotMode m_slotMode = SlotCenterToCenter;
+    // Tangent arc: where it leaves the picked open end, and which way.
+    bool pickOpenEnd(const QPointF &q, QPointF *end, QPointF *dir) const;
+    QPointF m_tanDir;
+    // Center-point arc: the turn swept so far from the start ray (radians,
+    // + counter-clockwise), followed with the mouse so the arc goes the way
+    // the cursor went.
+    double m_arcTurn = 0, m_arcLastAng = 0;
+    void trackArcTurn(const QPointF &cur);
+    // Fit-point spline: the points clicked so far.
+    QVector<QPointF> m_splinePts;
+    void finishSpline(bool closed);
     bool m_fromCenter = false;              // Ctrl held: rectangle / ellipse from the center
 
     // Trim / Extend / Break.

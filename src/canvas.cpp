@@ -39,6 +39,7 @@ static const QColor kAxisY(0x4a, 0x7a, 0x4a);
 static const QColor kElement(0xd8, 0xdc, 0xe4);
 static const QColor kSelected(0xf2, 0xa5, 0x36);   // amber
 static const QColor kPreview(0x5c, 0xc8, 0x8a);
+static const QColor kConstruction(0x8a, 0xa4, 0xc8);   // dashed reference lines
 
 // Element item with CAD-style state rendering: closed shapes get a faint fill
 // (which also makes their interior clickable), hover brightens the outline,
@@ -46,8 +47,10 @@ static const QColor kPreview(0x5c, 0xc8, 0x8a);
 class ElemItem : public QGraphicsPathItem
 {
 public:
-    ElemItem(const QPainterPath &path, bool closed)
-        : QGraphicsPathItem(path), m_closed(closed)
+    ElemItem(const QPainterPath &path, bool closed, bool construction = false,
+             bool point = false)
+        : QGraphicsPathItem(path), m_closed(closed && !construction && !point),
+          m_construction(construction), m_point(point)
     {
         setAcceptHoverEvents(true);
     }
@@ -62,10 +65,21 @@ public:
             pen.setColor(QColor(0x9f, 0xc8, 0xf2));
             pen.setWidthF(1.8);
         } else {
-            pen.setColor(kElement);
+            pen.setColor(m_construction ? kConstruction : kElement);
             pen.setWidthF(1.3);
         }
+        // Construction geometry is dashed (and never filled); a sketch
+        // point is a cross of fixed screen size over its tiny circle.
+        if (m_construction)
+            pen.setStyle(Qt::DashLine);
         p->setPen(pen);
+        if (m_point) {
+            const double k = 5.0 / qMax(1e-9, std::fabs(p->worldTransform().m11()));
+            const QPointF c = path().boundingRect().center();
+            p->drawLine(c - QPointF(k, k), c + QPointF(k, k));
+            p->drawLine(c - QPointF(k, -k), c + QPointF(k, -k));
+            return;
+        }
         if (m_closed) {
             QColor fill = isSelected() ? QColor(kSelected) : QColor(Qt::white);
             fill.setAlpha(isSelected() ? 30 : 14);
@@ -79,6 +93,11 @@ public:
     {
         // Closed shapes select from anywhere inside; open paths keep the
         // stroke-based hit area.
+        if (m_point) {
+            QPainterPath hit;
+            hit.addEllipse(path().boundingRect().center(), 1.5, 1.5);
+            return hit;
+        }
         return m_closed ? path() : QGraphicsPathItem::shape();
     }
 
@@ -88,6 +107,7 @@ protected:
 
 private:
     bool m_closed;
+    bool m_construction, m_point;
     bool m_hover = false;
 };
 
@@ -648,7 +668,8 @@ QPointF Canvas::snap(QPointF p) const
 
 void Canvas::setTool(Tool t)
 {
-    if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool))
+    if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool)
+        || !m_splinePts.isEmpty())
         cancelDrawing();
     m_tool = t;
     m_drawing = false;
@@ -668,13 +689,18 @@ void Canvas::setTool(Tool t)
     case DrawCircle:
     case DrawRect:    resetSketch(); sketchHint(); break;
     case DrawEllipse: emit statusHint(tr("Ellipse — drag across its bounding box; hold Ctrl to drag from the center")); break;
-    case DrawSlot:    emit statusHint(tr("Slot — click the first end's center, then the second's, then click to set the width")); break;
-    case DrawArc:     emit statusHint(tr("Arc — click the start, then the end, then a point the arc passes through")); break;
+    case DrawSlot:
+    case DrawArc:     emit statusHint(clickHint()); break;
+    case DrawPoint:   emit statusHint(tr("Point — click to place a sketch point (drilling toolpaths drill at it)")); break;
+    case DrawSpline:  emit statusHint(tr("Spline — click the points it passes through; Enter or double-click finishes, click near the start closes, Esc cancels")); break;
     case Trim:        emit statusHint(tr("Trim — click the piece of a curve to cut away, up to where other curves cross it")); break;
     case Extend:      emit statusHint(tr("Extend — click near the end of an open curve to run it on to the next curve")); break;
     case Break:       emit statusHint(tr("Break — click a curve to split it where other curves cross it")); break;
     case Measure:     emit statusHint(tr("Measure — drag from one point to another (snaps to the grid when Snap is on)")); break;
-    case DrawPolygon: emit statusHint(tr("Polygon — press at center, drag to radius")); break;
+    case DrawPolygon: emit statusHint(m_polyMode == PolyEdge ? clickHint()
+                                      : m_polyMode == PolyCircumscribed
+                                          ? tr("Polygon (circumscribed) — press at the center, drag to the middle of an edge")
+                                          : tr("Polygon (inscribed) — press at the center, drag to a corner")); break;
     case DrawPath:    emit statusHint(tr("Path — click = corner, click-drag = curve; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
     case NodeEdit:    emit statusHint(tr("Nodes — drag anchors/handles (Alt breaks symmetry), double-click a segment to add, Del removes, right-click a node for its kind")); break;
@@ -726,7 +752,8 @@ void Canvas::rebuild()
         if (!closed)
             for (const auto &v : e.raw.value("point_type").toArray())
                 if (v.toInt() == 4) { closed = true; break; }
-        auto *item = new ElemItem(e.painterPath, closed);
+        auto *item = new ElemItem(e.painterPath, closed, Element::isConstruction(e),
+                                  Element::isPoint(e));
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
         item->setData(0, e.id);                       // scene item -> element
@@ -945,38 +972,198 @@ static double lineDistance(const QPointF &p, const QPointF &a, const QPointF &b)
     return std::fabs(d.x() * (p.y() - a.y()) - d.y() * (p.x() - a.x())) / len;
 }
 
+bool Canvas::clickTool() const
+{
+    return isClickTool(m_tool) || (m_tool == DrawPolygon && m_polyMode == PolyEdge);
+}
+
+int Canvas::clicksNeeded() const
+{
+    if (m_tool == DrawArc)
+        return m_arcMode == ArcTangent ? 2 : 3;
+    if (m_tool == DrawSlot)
+        return m_slotMode == SlotArc3Point ? 4 : 3;
+    return 3;   // edge polygon
+}
+
+QString Canvas::clickHint() const
+{
+    const int n = m_clicks.size();
+    if (m_tool == DrawArc) {
+        switch (m_arcMode) {
+        case Arc3Point:
+            return n == 0 ? tr("Arc (3-point) — click the start")
+                 : n == 1 ? tr("Arc: click the end point")
+                          : tr("Arc: click a point the arc passes through");
+        case ArcCenter:
+            return n == 0 ? tr("Arc (center point) — click the center")
+                 : n == 1 ? tr("Arc: click the start (sets the radius)")
+                          : tr("Arc: move round the way it should go, click the end");
+        case ArcTangent:
+            return n == 0 ? tr("Arc (tangent) — click near the end of an open line or curve")
+                          : tr("Arc: click the end point");
+        }
+    }
+    if (m_tool == DrawSlot) {
+        switch (m_slotMode) {
+        case SlotCenterToCenter:
+            return n == 0 ? tr("Slot (center to center) — click the first end's center")
+                 : n == 1 ? tr("Slot: click the second center") : tr("Slot: click to set the width");
+        case SlotOverall:
+            return n == 0 ? tr("Slot (overall) — click one end of the slot")
+                 : n == 1 ? tr("Slot: click the other end") : tr("Slot: click to set the width");
+        case SlotCenterPoint:
+            return n == 0 ? tr("Slot (center point) — click the slot's middle")
+                 : n == 1 ? tr("Slot: click one end's center") : tr("Slot: click to set the width");
+        case SlotArc3Point:
+            return n == 0 ? tr("Arc slot — click the start of its centerline")
+                 : n == 1 ? tr("Arc slot: click the end of the centerline")
+                 : n == 2 ? tr("Arc slot: click a point the centerline passes through")
+                          : tr("Arc slot: click to set the width");
+        }
+    }
+    return n == 0 ? tr("Polygon (edge) — click one end of an edge")
+         : n == 1 ? tr("Polygon: click the other end of the edge")
+                  : tr("Polygon: click the side it goes on");
+}
+
+bool Canvas::clickShape(const QVector<QPointF> &pts, Element *out) const
+{
+    if (!m_doc || pts.size() < clicksNeeded())
+        return false;
+    const QJsonObject layer = m_doc->defaultLayer();
+    const QPointF a = pts.at(0), b = pts.at(1);
+    PathModel m;
+    if (m_tool == DrawSlot) {
+        const QPointF c = pts.at(2);
+        if (QLineF(a, b).length() < 1e-6)
+            return false;
+        if (m_slotMode == SlotArc3Point) {
+            QPointF o;
+            double r = 0;
+            if (!sketch::circleThrough(a, c, b, &o, &r))
+                return false;
+            m = sketch::arcSlot(a, b, c, 2 * std::fabs(QLineF(o, pts.at(3)).length() - r));
+        } else {
+            const double w = 2 * lineDistance(c, a, b);
+            if (w <= 0.1)
+                return false;
+            m = m_slotMode == SlotOverall     ? sketch::slotOverall(a, b, w)
+              : m_slotMode == SlotCenterPoint ? sketch::slotCenterPoint(a, b, w)
+                                              : sketch::slot(a, b, w);
+        }
+    } else if (m_tool == DrawArc) {
+        m = m_arcMode == ArcCenter  ? sketch::arcCenter(a, b, pts.at(2), m_arcTurn >= 0)
+          : m_arcMode == ArcTangent ? sketch::arcTangent(a, m_tanDir, b)
+                                    : sketch::arc3(a, b, pts.at(2));
+    } else if (m_tool == DrawPolygon) {
+        QPointF ctr;
+        double r = 0, rot = 0;
+        if (sketch::polygonEdge(a, b, pts.at(2), m_polySides, &ctr, &r, &rot).isEmpty()
+            || lineDistance(pts.at(2), a, b) < 1e-9)
+            return false;
+        *out = Element::makePolygon(ctr, r, m_polySides, layer, rot);
+        return true;
+    }
+    if (m.isEmpty())
+        return false;
+    *out = Element::makeBezierPath(m, layer);
+    return true;
+}
+
 QPainterPath Canvas::clickPreview(const QPointF &cur) const
 {
     QPainterPath p;
     if (m_clicks.isEmpty())
         return p;
-    if (m_clicks.size() == 1) {   // the line the first two points will span
-        p.moveTo(m_clicks.first());
-        p.lineTo(cur);
+    QVector<QPointF> pts = m_clicks;
+    pts.append(cur);
+    Element e;
+    if (pts.size() >= clicksNeeded() && clickShape(pts, &e)) {
+        p = e.painterPath;
+        if (m_tool == DrawSlot && m_slotMode != SlotArc3Point) {
+            p.moveTo(pts.at(0));   // the line clicked, for reference
+            p.lineTo(pts.at(1));
+        }
         return p;
     }
-    const QPointF a = m_clicks.at(0), b = m_clicks.at(1);
-    switch (m_tool) {
-    case DrawSlot:
-        p = sketch::slot(a, b, 2 * lineDistance(cur, a, b)).painterPath();
-        p.moveTo(a);   // the centerline, for reference
-        p.lineTo(b);
-        break;
-    case DrawArc:
-        p = sketch::arc3(a, b, cur).painterPath();
-        break;
-    default:
-        break;
-    }
+    if (m_tool == DrawSlot && m_slotMode == SlotArc3Point && pts.size() == 3)
+        return sketch::arc3(pts.at(0), pts.at(1), pts.at(2)).painterPath();
+    if (m_tool == DrawArc && m_arcMode == ArcCenter && pts.size() == 2)
+        p.addEllipse(pts.at(0), QLineF(pts.at(0), cur).length(), QLineF(pts.at(0), cur).length());
+    p.moveTo(pts.first());
+    for (int i = 1; i < pts.size(); ++i)
+        p.lineTo(pts.at(i));
     return p;
 }
 
-void Canvas::clickToolPress(const QPointF &pos)
+void Canvas::trackArcTurn(const QPointF &cur)
 {
+    if (m_tool != DrawArc || m_arcMode != ArcCenter || m_clicks.size() != 2)
+        return;
+    const QPointF c = m_clicks.first();
+    if (QLineF(c, cur).length() < 1e-9)
+        return;
+    const double ang = std::atan2(cur.y() - c.y(), cur.x() - c.x());
+    double d = ang - m_arcLastAng;
+    while (d > M_PI) d -= 2 * M_PI;
+    while (d <= -M_PI) d += 2 * M_PI;
+    m_arcTurn += d;
+    m_arcLastAng = ang;
+}
+
+bool Canvas::pickOpenEnd(const QPointF &q, QPointF *end, QPointF *dir) const
+{
+    if (!m_doc)
+        return false;
+    double best = pxToMm(10);
+    bool found = false;
+    for (const Element &e : m_doc->elements()) {
+        if (Element::isPoint(e))
+            continue;
+        const PathModel m = Element::pathModel(e);
+        for (const SubPath &sp : m.subs) {
+            if (sp.closed || sp.nodes.size() < 2)
+                continue;
+            const int n = sp.nodes.size();
+            const PathNode &f = sp.nodes.first(), &l = sp.nodes.last();
+            // Leaving an end means carrying on the way the curve arrives there.
+            const QPointF outFirst = f.hasOut() ? f.p - f.out : f.p - sp.nodes.at(1).p;
+            const QPointF outLast = l.hasIn() ? l.p - l.in : l.p - sp.nodes.at(n - 2).p;
+            for (const auto &cand : {qMakePair(f.p, outFirst), qMakePair(l.p, outLast)}) {
+                const double d = QLineF(cand.first, q).length();
+                if (d <= best && std::hypot(cand.second.x(), cand.second.y()) > 1e-9) {
+                    best = d;
+                    *end = cand.first;
+                    *dir = cand.second;
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+void Canvas::clickToolPress(const QPointF &posIn)
+{
+    QPointF pos = posIn;
     if (!m_clicks.isEmpty() && QLineF(pos, m_clicks.last()).length() < 1e-6)
         return;   // a double-click's second press, or a click on the same spot
+    if (m_tool == DrawArc && m_arcMode == ArcTangent && m_clicks.isEmpty()) {
+        QPointF end, dir;
+        if (!pickOpenEnd(pos, &end, &dir)) {
+            emit statusHint(tr("No open end there — click near the end of a line or curve"));
+            return;
+        }
+        pos = end;
+        m_tanDir = dir;
+    }
     m_clicks.append(pos);
-    if (m_clicks.size() < 3) {
+    if (m_tool == DrawArc && m_arcMode == ArcCenter && m_clicks.size() == 2) {
+        m_arcTurn = 0;
+        m_arcLastAng = std::atan2(pos.y() - m_clicks.first().y(), pos.x() - m_clicks.first().x());
+    }
+    if (m_clicks.size() < clicksNeeded()) {
         if (!m_preview) {
             QPen pen(kPreview);
             pen.setCosmetic(true);
@@ -984,36 +1171,58 @@ void Canvas::clickToolPress(const QPointF &pos)
             m_preview = m_scene->addPath(QPainterPath(), pen);
         }
         m_preview->setPath(clickPreview(pos));
-        // Only slot and arc are click tools; 3-point circles are a Circle mode.
-        const bool slot = m_tool == DrawSlot;
-        emit statusHint(m_clicks.size() == 1
-                        ? (slot ? tr("Slot: click the second center") : tr("Arc: click the end point"))
-                        : (slot ? tr("Slot: click to set the width")
-                                : tr("Arc: click a point the arc passes through")));
+        emit statusHint(clickHint());
         viewport()->update();
         return;
     }
-    const QPointF a = m_clicks.at(0), b = m_clicks.at(1), c = m_clicks.at(2);
-    const QJsonObject layer = m_doc->defaultLayer();
-    switch (m_tool) {
-    case DrawSlot: {
-        const double w = 2 * lineDistance(c, a, b);
-        if (w > 0.1 && QLineF(a, b).length() > 1e-6)
-            m_undo->push(new AddCmd(this, m_doc,
-                Element::makeBezierPath(sketch::slot(a, b, w), layer)));
-        break;
-    }
-    case DrawArc: {
-        const PathModel m = sketch::arc3(a, b, c);
-        if (!m.isEmpty())
-            m_undo->push(new AddCmd(this, m_doc, Element::makeBezierPath(m, layer)));
-        break;
-    }
-    default:
-        break;
+    trackArcTurn(pos);
+    Element e;
+    if (clickShape(m_clicks, &e))
+        m_undo->push(new AddCmd(this, m_doc, e));
+    cancelDrawing();
+    emit statusHint(clickHint());
+    viewport()->update();
+}
+
+void Canvas::finishSpline(bool closed)
+{
+    while (m_splinePts.size() >= 2
+           && QLineF(m_splinePts.last(), m_splinePts.at(m_splinePts.size() - 2)).length() < 1e-9)
+        m_splinePts.removeLast();
+    if (m_doc && m_splinePts.size() >= 2) {
+        const PathModel m = sketch::fitSpline(m_splinePts, closed && m_splinePts.size() >= 3);
+        if (!m.isEmpty()) {
+            m_undo->push(new AddCmd(this, m_doc, Element::makeBezierPath(m, m_doc->defaultLayer())));
+            emit statusHint(m.subs.first().closed ? tr("Closed spline added") : tr("Spline added"));
+        }
     }
     cancelDrawing();
     viewport()->update();
+}
+
+void Canvas::toggleConstruction(const QStringList &ids)
+{
+    if (!m_doc)
+        return;
+    QVector<Element> els;
+    bool allOn = true;
+    for (const QString &id : ids)
+        if (const Element *e = m_doc->elementById(id)) {
+            els.append(*e);
+            allOn = allOn && Element::isConstruction(*e);
+        }
+    if (els.isEmpty())
+        return;
+    const bool on = !allOn;
+    m_undo->beginMacro(on ? tr("make %1 vector(s) construction").arg(els.size())
+                          : tr("make %1 vector(s) normal").arg(els.size()));
+    for (const Element &e : els)
+        if (Element::isConstruction(e) != on)
+            m_undo->push(new EditCmd(this, m_doc, e, Element::withConstruction(e, on)));
+    m_undo->endMacro();
+    emit statusHint(on ? tr("%1 vector(s) are construction geometry: drawn dashed, never machined")
+                             .arg(els.size())
+                       : tr("%1 vector(s) are normal geometry again").arg(els.size()));
 }
 
 // ---- trim / extend / break ----------------------------------------------------
@@ -1029,7 +1238,8 @@ bool Canvas::modifyTarget(const QPointF &q, QString *id, PathModel *model,
     QVector<PathModel> models;
     const QVector<Element> &els = m_doc->elements();
     for (int i = 0; i < els.size(); ++i) {
-        models.append(Element::pathModel(els.at(i)));   // text: empty, never a target
+        // Text and sketch points: empty, never a target nor a bound.
+        models.append(Element::isPoint(els.at(i)) ? PathModel() : Element::pathModel(els.at(i)));
         int sub;
         double g;
         if (!els.at(i).painterPath.boundingRect().adjusted(-tol, -tol, tol, tol).contains(q))
@@ -1139,6 +1349,18 @@ void Canvas::modifyAt(const QPointF &q)
         m_preview->setPath(modifyPreview(q));
 }
 
+// Polygon by dragging from the center: inscribed puts a corner under the
+// cursor, circumscribed the middle of an edge (Fusion's two center modes).
+static void polygonDrag(QPointF c, QPointF cur, int sides, bool circumscribed,
+                        double *radius, double *rotationDeg)
+{
+    const double d = QLineF(c, cur).length();
+    const double ang = d > 1e-12 ? std::atan2(cur.y() - c.y(), cur.x() - c.x()) : 0.0;
+    const double half = M_PI / qMax(3, sides);
+    *radius = circumscribed ? d / std::cos(half) : d;
+    *rotationDeg = qRadiansToDegrees(circumscribed ? ang + half : ang);
+}
+
 QPainterPath Canvas::previewPath(const QPointF &cur) const
 {
     QPainterPath p;
@@ -1168,9 +1390,10 @@ QPainterPath Canvas::previewPath(const QPointF &cur) const
         break;
     }
     case DrawPolygon: {
-        const double r = QLineF(m_anchor, cur).length();
+        double r = 0, rot = 0;
+        polygonDrag(m_anchor, cur, m_polySides, m_polyMode == PolyCircumscribed, &r, &rot);
         for (int i = 0; i <= m_polySides; ++i) {
-            const double a = 2.0 * M_PI * i / m_polySides;
+            const double a = 2.0 * M_PI * i / m_polySides + qDegreesToRadians(rot);
             const QPointF v = m_anchor + QPointF(r * qCos(a), r * qSin(a));
             if (i == 0) p.moveTo(v); else p.lineTo(v);
         }
@@ -1204,6 +1427,8 @@ void Canvas::cancelDrawing()
     m_tanLines.clear();
     m_penNodes.clear();
     m_penDrag = false;
+    m_splinePts.clear();
+    m_arcTurn = 0;
     if (m_preview) {
         m_scene->removeItem(m_preview);
         delete m_preview;
@@ -1286,6 +1511,38 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_tool == DrawPoint && m_doc && event->button() == Qt::LeftButton) {
+        const QPointF pos = snap(mapToScene(event->pos()));
+        m_undo->push(new AddCmd(this, m_doc, Element::makePoint(pos, m_doc->defaultLayer())));
+        emit statusHint(tr("Point at %1, %2 mm").arg(pos.x(), 0, 'f', 2).arg(pos.y(), 0, 'f', 2));
+        event->accept();
+        return;
+    }
+
+    if (m_tool == DrawSpline && m_doc && event->button() == Qt::LeftButton) {
+        const QPointF raw = mapToScene(event->pos());
+        const QPointF pos = snap(raw);
+        if (m_splinePts.size() >= 3 && QLineF(raw, m_splinePts.first()).length() <= pxToMm(8)) {
+            finishSpline(true);
+            event->accept();
+            return;
+        }
+        if (m_splinePts.isEmpty() || QLineF(pos, m_splinePts.last()).length() > 1e-9)
+            m_splinePts.append(pos);
+        if (!m_preview) {
+            QPen pen(kPreview);
+            pen.setCosmetic(true);
+            pen.setStyle(Qt::DashLine);
+            m_preview = m_scene->addPath(QPainterPath(), pen);
+        }
+        m_preview->setPath(sketch::fitSpline(m_splinePts, false).painterPath());
+        emit statusHint(tr("Spline: %1 point(s) — Enter or double-click finishes, click near the start closes, Esc cancels")
+                            .arg(m_splinePts.size()));
+        viewport()->update();
+        event->accept();
+        return;
+    }
+
     if (m_tool == DrawPath && m_doc && event->button() == Qt::LeftButton) {
         const QPointF pos = snap(mapToScene(event->pos()));
         // Clicking near the start point closes the path.
@@ -1331,8 +1588,11 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         viewport()->update();
     }
 
-    if (isClickTool(m_tool) && m_doc && event->button() == Qt::LeftButton) {
-        clickToolPress(snap(mapToScene(event->pos())));
+    if (clickTool() && m_doc && event->button() == Qt::LeftButton) {
+        // The tangent arc's first click picks a curve end: never snapped.
+        const bool picks = m_tool == DrawArc && m_arcMode == ArcTangent && m_clicks.isEmpty();
+        const QPointF at = mapToScene(event->pos());
+        clickToolPress(picks ? at : snap(at));
         event->accept();
         return;
     }
@@ -1473,10 +1733,19 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
-    if (isClickTool(m_tool) && !m_clicks.isEmpty() && m_preview) {
+    if (m_tool == DrawSpline && !m_splinePts.isEmpty() && m_preview) {
+        m_preview->setPath(sketch::fitSpline(QVector<QPointF>(m_splinePts) << snap(cc), false)
+                               .painterPath());
+        viewport()->update();
+        event->accept();
+        return;
+    }
+
+    if (clickTool() && !m_clicks.isEmpty() && m_preview) {
         const QPointF cur = snap(cc);
+        trackArcTurn(cur);
         m_preview->setPath(clickPreview(cur));
-        if (m_tool == DrawSlot && m_clicks.size() == 2)
+        if (m_tool == DrawSlot && m_slotMode == SlotCenterToCenter && m_clicks.size() == 2)
             emit statusHint(tr("slot %1 mm long, %2 mm wide")
                                 .arg(QLineF(m_clicks.at(0), m_clicks.at(1)).length() + 2 * lineDistance(cur, m_clicks.at(0), m_clicks.at(1)), 0, 'f', 2)
                                 .arg(2 * lineDistance(cur, m_clicks.at(0), m_clicks.at(1)), 0, 'f', 2));
@@ -1611,11 +1880,14 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
                     sketch::ellipse(b.center(), b.width() / 2, b.height() / 2), layer)));
             break;
         }
-        case DrawPolygon:
+        case DrawPolygon: {
+            double pr = 0, rot = 0;
+            polygonDrag(m_anchor, cur, m_polySides, m_polyMode == PolyCircumscribed, &pr, &rot);
             if (r > 0.1)
                 m_undo->push(new AddCmd(this, m_doc,
-                    Element::makePolygon(m_anchor, r, m_polySides, layer)));
+                    Element::makePolygon(m_anchor, pr, m_polySides, layer, rot)));
             break;
+        }
         default:
             break;
         }
@@ -1660,6 +1932,11 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
 {
     if (m_tool == DrawPath && !m_penNodes.isEmpty()) {
         finishPath(false);
+        event->accept();
+        return;
+    }
+    if (m_tool == DrawSpline && !m_splinePts.isEmpty()) {
+        finishSpline(false);
         event->accept();
         return;
     }
@@ -1786,6 +2063,17 @@ void Canvas::keyPressEvent(QKeyEvent *event)
             return;
         }
     }
+    if (m_tool == DrawSpline && !m_splinePts.isEmpty()) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            finishSpline(false);
+            return;
+        }
+        if (event->key() == Qt::Key_Escape) {
+            cancelDrawing();
+            emit statusHint(tr("Spline cancelled"));
+            return;
+        }
+    }
     if (event->key() == Qt::Key_Escape && (m_drawing || m_preview)) {
         cancelDrawing();
         return;
@@ -1832,6 +2120,31 @@ void Canvas::setRectMode(RectMode m)
     if (m_tool == DrawRect) {
         cancelDrawing();
         sketchHint();
+    }
+}
+
+void Canvas::setArcMode(ArcMode m)
+{
+    m_arcMode = m;
+    if (m_tool == DrawArc) {
+        cancelDrawing();
+        emit statusHint(clickHint());
+    }
+}
+
+void Canvas::setPolygonMode(PolygonMode m)
+{
+    m_polyMode = m;
+    if (m_tool == DrawPolygon)
+        setTool(DrawPolygon);   // cancels and shows the mode's hint
+}
+
+void Canvas::setSlotMode(SlotMode m)
+{
+    m_slotMode = m;
+    if (m_tool == DrawSlot) {
+        cancelDrawing();
+        emit statusHint(clickHint());
     }
 }
 
