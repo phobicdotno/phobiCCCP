@@ -22,6 +22,7 @@ const QVector<ToolpathKind> &toolpathKinds()
         {QStringLiteral("bore_toolpath"), QStringLiteral("Bore")},
         {QStringLiteral("chamfer_toolpath"), QStringLiteral("2D Chamfer")},
         {QStringLiteral("adaptive_toolpath"), QStringLiteral("Adaptive")},
+        {QStringLiteral("thread_toolpath"), QStringLiteral("Thread")},
     };
     return kinds;
 }
@@ -192,6 +193,7 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
     const bool bore = type == QLatin1String("bore_toolpath");
     const bool chamfer = type == QLatin1String("chamfer_toolpath");
     const bool adaptive = type == QLatin1String("adaptive_toolpath");
+    const bool thread = type == QLatin1String("thread_toolpath");
     const ToolPick tp = pickTool(doc, (vcarve || chamfer) ? VBit : engrave ? Engraver : Flat);
 
     QJsonObject j;
@@ -225,6 +227,11 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("stock_to_leave"), 0);
         j.insert(QStringLiteral("tab_height"), 3);
         j.insert(QStringLiteral("tab_width"), 12);
+        // phobiCCCP key (Fusion's lead-in / lead-out): quarter-circle arcs of
+        // this radius onto and off the cut, on the air side; 0 turns them
+        // off. Carbide Create ignores it.
+        j.insert(QStringLiteral("lead_radius"),
+                 0.5 * tp.tool.value("diameter").toDouble(6.35));
     } else if (type == QLatin1String("pocket_toolpath")) {
         j.insert(QStringLiteral("angle"), 0);
         j.insert(QStringLiteral("enable_rest"), false);
@@ -347,6 +354,19 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("stock_to_leave"), 0);
         j.insert(QStringLiteral("climb"), true);
         j.insert(QStringLiteral("ramp_angle"), 2);
+    } else if (thread) {
+        // Thread mill around each circle (the major diameter): `pitch` per
+        // turn, `thread_depth` radially (0 = 0.6134 x pitch), `side`
+        // "internal" or "external", over `passes` radial steps.
+        stem = QStringLiteral("Thread");
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.insert(QStringLiteral("end_depth"), depthString(doc, 10.0));
+        j.insert(QStringLiteral("pitch"), 1.5);
+        j.insert(QStringLiteral("thread_depth"), 0);
+        j.insert(QStringLiteral("side"), QStringLiteral("internal"));
+        j.insert(QStringLiteral("left_hand"), false);
+        j.insert(QStringLiteral("passes"), 1);
+        j.insert(QStringLiteral("climb"), true);
     }
     j.insert(QStringLiteral("name"), nextName(doc, type, stem));
 

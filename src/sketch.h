@@ -29,6 +29,34 @@ bool circleThrough(QPointF a, QPointF b, QPointF c, QPointF *center, double *rad
 // 3-point arc). Collinear points give the straight line start -> end.
 PathModel arc3(QPointF start, QPointF end, QPointF through);
 
+// Arc around `c` from `start` (which sets the radius) to the ray through
+// `end`, counter-clockwise or clockwise (Fusion's center-point arc).
+PathModel arcCenter(QPointF c, QPointF start, QPointF end, bool ccw);
+
+// Arc leaving `start` along `dir` and ending at `end` (Fusion's tangent
+// arc). A straight-ahead end gives a line; straight back gives nothing.
+PathModel arcTangent(QPointF start, QPointF dir, QPointF end);
+
+// Fusion's other slot modes: overall (the two outer ends of the slot, a
+// length no more than the width gives a circle), center point (the slot's
+// middle and one end's center) and the 3-point arc slot (its centerline is
+// the arc through start, through and end; nothing when the width would
+// fold the inner side).
+PathModel slotOverall(QPointF a, QPointF b, double width);
+PathModel slotCenterPoint(QPointF center, QPointF end, double width);
+PathModel arcSlot(QPointF start, QPointF end, QPointF through, double width);
+
+// Regular polygon with the edge p1 -> p2 on the side of `side` (Fusion's
+// edge polygon): its vertices, counter-clockwise from p1, plus the
+// center, vertex radius and rotation that Element::makePolygon takes.
+QVector<QPointF> polygonEdge(QPointF p1, QPointF p2, QPointF side, int sides,
+                             QPointF *center, double *radius, double *rotationDeg);
+
+// Fit-point spline (Fusion's): a smooth curve through every point, one
+// cubic per span with Catmull-Rom tangents. Open ends run on in the
+// direction of their last span; closed wraps round.
+PathModel fitSpline(const QVector<QPointF> &pts, bool closed);
+
 // ---- trim / break / extend ---------------------------------------------------
 // Fusion's sketch Trim, Break and Extend on node models. A position along a
 // subpath is a global parameter g = segment index + t (0..segmentCount).

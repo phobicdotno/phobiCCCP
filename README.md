@@ -20,7 +20,9 @@ Linux, built on the reverse-engineered format documentation in
   toolpaths that referenced the inputs follow the results
 - **Mirror** horizontally / vertically, **Grid array** (columns × rows,
   edge-to-edge gap) and **Circular array** (count, center, full turn or arc,
-  rotate copies or not); array copies can join the originals' toolpaths
+  rotate copies or not) and **Pattern on path** (along the vector selected
+  last, spread or by spacing, turning with it); copies can join the
+  originals' toolpaths
 - **Fillet** and **Chamfer** corners, **Rotate**, **Scale** (percent or
   target size) and **Move / Copy** by exact distance (Edit → Vectors →
   Modify); shapes stay circles / rectangles / polygons wherever they can
@@ -37,8 +39,12 @@ Linux, built on the reverse-engineered format documentation in
   blur, despeckle, simplify, smoothing) to closed vector paths
 - Original tools still there:
 - Tools: Select (V), Circle (C: center, 2-point, 3-point, 2- and 3-tangent),
-  Rectangle (R: 2-point, 3-point, center), Polygon (P), Path/polyline (L),
-  Text (T), Ellipse (E, Ctrl-drag from the center), Slot (S), 3-point Arc (A); **Trim** (X), **Extend** (J)
+  Rectangle (R: 2-point, 3-point, center), Polygon (P: inscribed,
+  circumscribed, edge), Path/polyline (L), fit-point **Spline** (K), **Point**
+  (O), Text (T), Ellipse (E, Ctrl-drag from the center), Slot (S: center to
+  center, overall, center point, 3-point arc), Arc (A: 3-point, center point,
+  tangent); **Construction** (Shift+X) makes vectors dashed reference
+  geometry that is never machined; **Trim** (X), **Extend** (J)
   and **Break** (B) at the crossings with other curves; **Measure** (M) — with live preview, grid + snap (G), zoom (wheel / F to fit),
   middle-mouse pan
 - Select / rubber-band, drag to move, drag the amber handle to resize,
@@ -51,8 +57,13 @@ Linux, built on the reverse-engineered format documentation in
 - **Create, duplicate, rename, enable, reorder and delete toolpaths** (the
   Toolpaths panel's New menu covers all seven CC types plus Engrave)
 - **Engrave**: outline, hatch fill (spacing, angle, crosshatch) or both
-- **Face** (flatten the stock), **Bore** (helical, per circle) and **2D
-  Chamfer** (V-bit bevel along edges, inside or outside), Fusion-style
+- **Face** (flatten the stock), **Bore** (helical, per circle), **Thread**
+  milling (internal or external, any pitch and hand) and **2D Chamfer** (V-bit
+  bevel along edges, inside or outside), Fusion-style
+- **Lead-in / lead-out** arcs on contours, so the cutter enters and leaves
+  the cut on the air side instead of plunging on the wall
+- **Setup sheet** (File menu): a printable page of the stock, tools and
+  every toolpath with its depths, feeds and estimated time
 - **Adaptive clearing** (Fusion's 2D Adaptive): pockets with a light, steady
   radial bite at a deep stepdown, helix entries, no slotting
 - **3D modelling** (Model tab): components from vectors (flat / round / angle

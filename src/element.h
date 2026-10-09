@@ -79,6 +79,18 @@ public:
                                  const QJsonObject &layer);
     static Element makePolygon(QPointF center, double radius, int numSides,
                                const QJsonObject &layer, double rotationDeg = 0);
+    // Sketch point (Fusion's Point): a small circle of kPointRadius marked
+    // `sketch_point`, drawn as a cross. Drilling and keyhole toolpaths drill
+    // at it; every other toolpath ignores it. Carbide Create shows it as the
+    // circle it is.
+    static constexpr double kPointRadius = 0.5;
+    static Element makePoint(QPointF at, const QJsonObject &layer);
+    static bool isPoint(const Element &e);
+    // Construction geometry (Fusion's construction lines): `construction`
+    // marks a vector that is drawn dashed and still serves
+    // trim, extend, arrays and mirrors as a reference, but is never machined.
+    static bool isConstruction(const Element &e);
+    static Element withConstruction(const Element &src, bool on);
     // Straight-segment path from clicked vertices (absolute mm coordinates,
     // position [0,0] as CC writes paths). `closed` appends the return-to-start
     // and close rows.

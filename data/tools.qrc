@@ -2,5 +2,7 @@
 <RCC version="1.0">
   <qresource prefix="/data">
     <file>tool-library.json</file>
+    <file alias="CHANGELOG.md">../CHANGELOG.md</file>
+    <file alias="logo.svg">../desktop/phobicccp.svg</file>
   </qresource>
 </RCC>

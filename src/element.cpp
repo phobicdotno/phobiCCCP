@@ -716,6 +716,15 @@ Element Element::makeBezierPath(const PathModel &model, const QJsonObject &layer
     return fromJson(o);
 }
 
+// phobiCCCP's sketch flags (construction, sketch point) travel with the
+// element's identity through every rebuild.
+static void copySketchFlags(QJsonObject &o, const QJsonObject &src)
+{
+    for (const char *k : {"construction", "sketch_point"})
+        if (src.contains(QLatin1String(k)))
+            o.insert(QLatin1String(k), src.value(QLatin1String(k)));
+}
+
 Element Element::withPathModel(const Element &src, const PathModel &model)
 {
     Element e = makeBezierPath(model, src.raw.value("layer").toObject());
@@ -723,6 +732,7 @@ Element Element::withPathModel(const Element &src, const PathModel &model)
     o.insert("id", src.raw.value("id"));
     o.insert("group_id", src.raw.value("group_id"));
     o.insert("tabs", src.raw.value("tabs"));
+    copySketchFlags(o, src.raw);
     return fromJson(o);
 }
 
@@ -761,12 +771,40 @@ QVector<Element> Element::toPaths(const Element &src)
             o.insert("id", src.raw.value("id"));
             o.insert("group_id", src.raw.value("group_id"));
             o.insert("tabs", src.raw.value("tabs"));
+            copySketchFlags(o, src.raw);
             e = fromJson(o);
             first = false;
         }
         out.append(e);
     }
     return out;
+}
+
+Element Element::makePoint(QPointF at, const QJsonObject &layer)
+{
+    QJsonObject o = makeCircle(at, kPointRadius, layer).raw;
+    o.insert("sketch_point", true);
+    return fromJson(o);
+}
+
+bool Element::isConstruction(const Element &e)
+{
+    return e.raw.value("construction").toBool(false);
+}
+
+bool Element::isPoint(const Element &e)
+{
+    return e.raw.value("sketch_point").toBool(false) && e.geometryType == QLatin1String("circle");
+}
+
+Element Element::withConstruction(const Element &src, bool on)
+{
+    QJsonObject o = src.raw;
+    if (on)
+        o.insert("construction", true);
+    else
+        o.remove("construction");
+    return fromJson(o);
 }
 
 Element Element::regen(const Element &src, const QHash<QString, double> &p)
@@ -798,6 +836,7 @@ Element Element::regen(const Element &src, const QHash<QString, double> &p)
     o.insert("id", r.value("id"));
     o.insert("group_id", r.value("group_id"));
     o.insert("tabs", r.value("tabs"));
+    copySketchFlags(o, r);
     return fromJson(o);
 }
 
