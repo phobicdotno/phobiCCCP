@@ -3,6 +3,7 @@
 #include "grblstreamer.h"
 #include <QVector>
 #include <QHash>
+#include <QElapsedTimer>
 #include <QWidget>
 #include <functional>
 
@@ -201,6 +202,7 @@ private:
     bool m_homed = false;
     bool m_homingStarted = false;
     bool m_resumeCheck = false;          // first status after connecting
+    QElapsedTimer m_busyClock;           // throttles the busy file
     QVariantList m_savedHomedAt;         // last homed position written to settings
     bool requireHomed(const QString &what);
     bool insideTravel(double x, double y) const;

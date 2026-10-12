@@ -1126,22 +1126,9 @@ QPushButton *MachinePanel::jogButton(const QString &text, char axis, int dir)
     b->setFocusPolicy(Qt::NoFocus);          // keep keyboard jogging on the panel
     connect(b, &QPushButton::pressed, this, [this, axis, dir] {
         setFocus();                       // arrow keys jog from here on
-        stopHoldJog();
-        m_holdAxis = axis;
-        m_holdDir = dir;
-        m_holdJogging = false;
-        m_holdTimer->start();
+        beginHoldJog(axis, dir);
     });
-    connect(b, &QPushButton::released, this, [this] {
-        m_holdTimer->stop();
-        m_holdRepeat->stop();
-        if (m_holdJogging)
-            { m_grbl->jogCancel(); forgetJogPlan(); }
-        else if (m_holdAxis)
-            jogStep(m_holdAxis, m_holdDir);
-        m_holdAxis = 0;
-        m_holdJogging = false;
-    });
+    connect(b, &QPushButton::released, this, [this] { endHoldJog(); });
     return b;
 }
 
@@ -1253,11 +1240,9 @@ void MachinePanel::beginHoldJog(char axis, int dir)
     m_holdAxis = axis;
     m_holdDir = dir;
     m_holdJogging = false;
-    // The step starts on the press, not the release, so letting go always
-    // stops the machine: a 100 mm step released after 40 mm ends there.
-    // Held past the delay the jog turns continuous behind it; the release
-    // cancels whatever is left of either.
-    jogStep(axis, dir);
+    // Nothing moves on the press. Let go before the hold delay: one step of
+    // the set distance (a tap). Hold past it: continuous at the set speed,
+    // stopped dead on release (endHoldJog) - never "the rest of the step".
     m_holdTimer->start();
 }
 
@@ -1265,10 +1250,28 @@ void MachinePanel::endHoldJog()
 {
     m_holdTimer->stop();
     m_holdRepeat->stop();
-    // Jog cancel (0x85) stops the current $J= move at once and throws away
-    // every queued one, so nothing accumulates across quick taps either.
-    if (m_holdAxis)
-        { m_grbl->jogCancel(); forgetJogPlan(); }
+    if (m_holdAxis && !m_holdJogging) {
+        jogStep(m_holdAxis, m_holdDir);       // a tap: one step
+    } else if (m_holdAxis) {
+        // Held: stop now. Jog cancel (0x85) empties GRBL's planner, but a $J=
+        // still waiting unread in its serial buffer is read after the cancel
+        // and would start moving again - the "rest of the step" after letting
+        // go. So cancel again once every jog sent has been answered.
+        m_grbl->jogCancel();
+        forgetJogPlan();
+        auto *t = new QTimer(this);
+        t->setInterval(15);
+        auto waited = std::make_shared<int>(0);
+        connect(t, &QTimer::timeout, this, [this, t, waited] {
+            if (m_grbl->pendingCommands() > 0 && ++*waited < 70)
+                return;
+            m_grbl->jogCancel();
+            forgetJogPlan();
+            t->stop();
+            t->deleteLater();
+        });
+        t->start();
+    }
     m_holdAxis = 0;
     m_holdJogging = false;
 }
@@ -2030,6 +2033,16 @@ void MachinePanel::setStatePill(const QString &text, const QString &border)
 void MachinePanel::onStatus(const MachineStatus &st)
 {
     m_machineState = st.state;
+    // Busy file: touched every 10 s while the machine works, so a
+    // screensaver (or anything else) can stay out of the way.
+    if (isBusy() && (!m_busyClock.isValid() || m_busyClock.elapsed() > 10000)) {
+        m_busyClock.restart();
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        QDir().mkpath(dir);
+        QFile f(dir + QStringLiteral("/busy"));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(QDateTime::currentDateTime().toString(Qt::ISODate).toUtf8());
+    }
     // Reconnecting (the app restarted, the cable was replugged): GRBL keeps
     // its position as long as it was not reset or power-cycled - and then it
     // boots in Alarm. Not in Alarm, and exactly where the last homed session

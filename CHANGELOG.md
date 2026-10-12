@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.0.7 (build 49) — 2026-10-12
+
+> Jog: tap moves one step, hold moves until you let go
+
+**Machine page**
+- Jog buttons, keys and the gamepad work alike: a tap moves one step, holding
+  moves at the set speed and stops dead on release, without finishing a step.
+- While the machine works, phobiCCCP touches ~/.cache/phobicdotno/phobiCCCP/busy
+  every 10 s, so a screensaver can keep out of the way.
+
+## v1.0.6 (build 48) — 2026-10-12
+
+> Opens and imports DXF, SVG, HPGL, PDF, AI, EPS and PS
+
+**Design**
+- File › Open takes vector files too: they open as a new design with the
+  drawing imported. File › Import vectors takes the same list.
+- New formats: HPGL plotter files (.plt .hpgl), PDF and Illustrator (.ai),
+  EPS and PostScript (first page, through Poppler and Ghostscript).
+- DXF files with old Mac line endings (bare CR) import.
+
 ## v1.0.5 (build 47) — 2026-10-12
 
 > Cancel job; into a job from the top; no re-Initialize after a restart

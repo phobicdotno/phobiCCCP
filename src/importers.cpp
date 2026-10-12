@@ -2,6 +2,9 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QHash>
 #include <QJsonArray>
 #include <QRegularExpression>
@@ -1072,7 +1075,10 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
     // Group code / value pairs. Codes are on odd lines, values on even ones.
     QVector<Pair> pairs;
     {
-        const QString text = QString::fromLatin1(data);
+        // Any line ending: LF, CRLF, or the bare CR of old Mac exports.
+        QString text = QString::fromLatin1(data);
+        text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
         const QStringList lines = text.split(QLatin1Char('\n'));
         for (int i = 0; i + 1 < lines.size(); i += 2) {
             bool ok = false;
@@ -1190,10 +1196,182 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
 // File dispatch
 // ---------------------------------------------------------------------------
 
+QStringList importableSuffixes()
+{
+    return {QStringLiteral("svg"), QStringLiteral("dxf"), QStringLiteral("plt"),
+            QStringLiteral("hpgl"), QStringLiteral("hpg"), QStringLiteral("hgl"),
+            QStringLiteral("pdf"), QStringLiteral("ai"), QStringLiteral("eps"),
+            QStringLiteral("ps")};
+}
+
 bool isImportableFile(const QString &path)
 {
+    return importableSuffixes().contains(QFileInfo(path).suffix().toLower());
+}
+
+QString importFileFilter()
+{
+    return QStringLiteral("Vector files (*.svg *.dxf *.plt *.hpgl *.hpg *.hgl *.pdf *.ai *.eps *.ps);;"
+                          "SVG (*.svg);;DXF (*.dxf);;HPGL plotter files (*.plt *.hpgl *.hpg *.hgl);;"
+                          "PDF / Illustrator (*.pdf *.ai);;EPS / PostScript (*.eps *.ps)");
+}
+
+// ---------------------------------------------------------------------------
+// HPGL (plotter / vinyl cutter files): PU/PD pen moves, PA/PR absolute or
+// relative, CI circles; 40 plotter units per millimetre, Y up like CC.
+// ---------------------------------------------------------------------------
+
+ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
+                            const QString &sourceName)
+{
+    ImportResult res;
+    constexpr double kUnit = 1.0 / 40.0;      // mm per plotter unit
+    QPainterPath path;
+    QPointF pos(0, 0);
+    bool penDown = false, relative = false, open = false;
+    QHash<QString, int> skipped;
+    const QString text = QString::fromLatin1(data);
+    static const QRegularExpression cmdRe(QStringLiteral("([A-Za-z]{2})([^A-Za-z;]*)"));
+    auto it = cmdRe.globalMatch(text);
+    while (it.hasNext()) {
+        const QRegularExpressionMatch m = it.next();
+        const QString cmd = m.captured(1).toUpper();
+        QVector<double> nums;
+        for (const QString &n : m.captured(2).split(QRegularExpression(QStringLiteral("[,\\s]+")),
+                                                    Qt::SkipEmptyParts)) {
+            bool ok = false;
+            const double v = n.toDouble(&ok);
+            if (ok)
+                nums << v;
+        }
+        auto moveThrough = [&](bool draw) {
+            for (int i = 0; i + 1 < nums.size(); i += 2) {
+                const QPointF p = relative ? pos + QPointF(nums[i], nums[i + 1]) * kUnit
+                                           : QPointF(nums[i], nums[i + 1]) * kUnit;
+                if (draw) {
+                    if (!open) {
+                        path.moveTo(pos);
+                        open = true;
+                    }
+                    path.lineTo(p);
+                } else {
+                    open = false;
+                }
+                pos = p;
+            }
+        };
+        if (cmd == QLatin1String("PU")) {
+            penDown = false;
+            open = false;
+            moveThrough(false);
+        } else if (cmd == QLatin1String("PD")) {
+            penDown = true;
+            moveThrough(true);
+        } else if (cmd == QLatin1String("PA")) {
+            relative = false;
+            moveThrough(penDown);
+        } else if (cmd == QLatin1String("PR")) {
+            relative = true;
+            moveThrough(penDown);
+        } else if (cmd == QLatin1String("CI") && !nums.isEmpty()) {
+            appendCircle(path, pos, std::abs(nums[0]) * kUnit);
+            open = false;
+        } else if (cmd == QLatin1String("IN") || cmd == QLatin1String("SP")
+                   || cmd == QLatin1String("LT") || cmd == QLatin1String("VS")
+                   || cmd == QLatin1String("IP") || cmd == QLatin1String("SC")) {
+            // set-up commands with nothing to draw
+        } else {
+            addSkipped(res, skipped, cmd);
+        }
+    }
+    flushSkipped(res, skipped);
+    if (path.isEmpty() && res.skipped == 0) {
+        res.error = QStringLiteral("%1: no pen-down moves found").arg(sourceName);
+        return res;
+    }
+    finish(res, path, opt);
+    return res;
+}
+
+// ---------------------------------------------------------------------------
+// PDF, Illustrator, EPS, PostScript: converted to SVG by the tools every
+// Linux desktop has (Poppler's pdftocairo; Ghostscript for PostScript), then
+// read by the SVG importer. First page only.
+// ---------------------------------------------------------------------------
+
+static bool runTool(const QString &program, const QStringList &args, QString *err)
+{
+    const QString exe = QStandardPaths::findExecutable(program);
+    if (exe.isEmpty()) {
+        *err = QStringLiteral("%1 is not installed").arg(program);
+        return false;
+    }
+    QProcess p;
+    p.start(exe, args);
+    if (!p.waitForFinished(60000) || p.exitStatus() != QProcess::NormalExit || p.exitCode() != 0) {
+        *err = QStringLiteral("%1 failed: %2").arg(program,
+                   QString::fromLocal8Bit(p.readAllStandardError()).trimmed().left(300));
+        return false;
+    }
+    return true;
+}
+
+static ImportResult importViaSvg(const QString &path, const ImportOptions &opt)
+{
+    ImportResult res;
+    const QString name = QFileInfo(path).fileName();
     const QString s = QFileInfo(path).suffix().toLower();
-    return s == QLatin1String("svg") || s == QLatin1String("dxf");
+    QTemporaryDir tmp;
+    if (!tmp.isValid()) {
+        res.error = QStringLiteral("%1: no temporary directory").arg(name);
+        return res;
+    }
+    QString pdf = path, err;
+    const bool postscript = s == QLatin1String("eps") || s == QLatin1String("ps");
+    const QString svg = tmp.filePath(QStringLiteral("page.svg"));
+    auto toSvg = [&](const QString &in) {
+        return runTool(QStringLiteral("pdftocairo"),
+                       {QStringLiteral("-svg"), QStringLiteral("-f"), QStringLiteral("1"),
+                        QStringLiteral("-l"), QStringLiteral("1"), in, svg}, &err);
+    };
+    auto psToPdf = [&]() {
+        pdf = tmp.filePath(QStringLiteral("page.pdf"));
+        return runTool(QStringLiteral("gs"),
+                       {QStringLiteral("-q"), QStringLiteral("-dNOPAUSE"), QStringLiteral("-dBATCH"),
+                        QStringLiteral("-dSAFER"), QStringLiteral("-dEPSCrop"),
+                        QStringLiteral("-sDEVICE=pdfwrite"),
+                        QStringLiteral("-sOutputFile=") + pdf, path}, &err);
+    };
+    bool ok;
+    if (postscript)
+        ok = psToPdf() && toSvg(pdf);
+    else
+        ok = toSvg(pdf) || (s == QLatin1String("ai") && psToPdf() && toSvg(pdf));  // old PS-based .ai
+    if (!ok) {
+        res.error = QStringLiteral("%1: could not convert it to vectors (%2)").arg(name, err);
+        return res;
+    }
+    QFile f(svg);
+    if (!f.open(QIODevice::ReadOnly)) {
+        res.error = QStringLiteral("%1: the converted page is missing").arg(name);
+        return res;
+    }
+    // pdftocairo writes the page size without units, but it is in points
+    // (1/72 in); left bare, the SVG reader takes it as 96 dpi pixels and the
+    // drawing comes in at three quarters of its size.
+    QByteArray svgData = f.readAll();
+    QString text = QString::fromUtf8(svgData);
+    const int rootEnd = text.indexOf(QLatin1Char('>'), text.indexOf(QStringLiteral("<svg")));
+    if (rootEnd > 0) {
+        QString root = text.left(rootEnd);
+        root.replace(QRegularExpression(QStringLiteral("\\b(width|height)=\"([0-9.]+)\"")),
+                     QStringLiteral("\\1=\"\\2pt\""));
+        text = root + text.mid(rootEnd);
+        svgData = text.toUtf8();
+    }
+    res = importSvgData(svgData, opt, name);
+    res.notes.prepend(QStringLiteral("converted from %1 (first page)").arg(s.toUpper()));
+    return res;
 }
 
 ImportResult importFile(const QString &path, const ImportOptions &opt)
@@ -1217,14 +1395,21 @@ ImportResult importFile(const QString &path, const ImportOptions &opt)
                         .arg(kMaxImportBytes / (1024 * 1024));
         return res;
     }
-    const QByteArray data = f.readAll();
     const QString name = QFileInfo(path).fileName();
     const QString s = QFileInfo(path).suffix().toLower();
+    if (s == QLatin1String("pdf") || s == QLatin1String("ai") || s == QLatin1String("eps")
+        || s == QLatin1String("ps"))
+        return importViaSvg(path, opt);
+    const QByteArray data = f.readAll();
     if (s == QLatin1String("svg"))
         return importSvgData(data, opt, name);
     if (s == QLatin1String("dxf"))
         return importDxfData(data, opt, name);
-    res.error = QStringLiteral("%1: unsupported file type (expected .svg or .dxf)").arg(name);
+    if (s == QLatin1String("plt") || s == QLatin1String("hpgl") || s == QLatin1String("hpg")
+        || s == QLatin1String("hgl"))
+        return importHpglData(data, opt, name);
+    res.error = QStringLiteral("%1: unsupported file type (expected %2)")
+                    .arg(name, importableSuffixes().join(QStringLiteral(", ")));
     return res;
 }
 

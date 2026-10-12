@@ -119,7 +119,7 @@ void importVectorFile(QWidget *parent, Canvas *canvas, Document *doc,
     QString path = pathIn;
     if (path.isEmpty()) {
         const QString filter = filterIn.isEmpty()
-            ? QStringLiteral("Vector files (*.svg *.dxf);;SVG (*.svg);;DXF (*.dxf);;All files (*)")
+            ? importFileFilter() + QStringLiteral(";;All files (*)")
             : filterIn + QStringLiteral(";;All files (*)");
         path = QFileDialog::getOpenFileName(parent, QStringLiteral("Import vector file"), {},
                                             filter);

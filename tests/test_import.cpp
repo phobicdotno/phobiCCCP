@@ -16,6 +16,9 @@
 #include <QJsonObject>
 
 #include <cmath>
+#include <QStandardPaths>
+#include <QTemporaryDir>
+#include <QFile>
 #include <cstdio>
 #include <cstdlib>
 
@@ -319,6 +322,44 @@ int main(int argc, char **argv)
         check(back.elements().size() == doc.elements().size(), "all imported elements round-trip");
         std::printf("wrote %s (%d elements)\n", argv[2], int(back.elements().size()));
     }
+
+    // HPGL: a 40 x 40 mm square (40 plotter units per mm) and a circle.
+    {
+        const c2d::ImportResult r = c2d::importHpglData(
+            "IN;SP1;PU0,0;PD1600,0,1600,1600,0,1600,0,0;PU2400,800;CI400;PU;", opts(0, 0), "t.plt");
+        check(r.ok && r.elements.size() == 2, "HPGL: square and circle imported");
+        check(r.ok && std::abs(r.bounds.width() - 70.0) < 0.1 && std::abs(r.bounds.height() - 40.0) < 0.1,
+              "HPGL: 40 units per mm");
+    }
+    // DXF with bare CR line endings (old Mac exports).
+    {
+        const QByteArray dxf = "0\rSECTION\r2\rENTITIES\r0\rLINE\r8\r0\r10\r0\r20\r0\r11\r25\r21\r0\r"
+                               "0\rENDSEC\r0\rEOF\r";
+        const c2d::ImportResult r = c2d::importDxfData(dxf, opts(0, 0), "cr.dxf");
+        check(r.ok && r.elements.size() == 1 && std::abs(r.bounds.width() - 25.0) < 0.01,
+              "DXF: bare CR line endings");
+    }
+    // EPS through Ghostscript + pdftocairo: a 50 x 30 mm rectangle.
+    if (!QStandardPaths::findExecutable(QStringLiteral("gs")).isEmpty()
+        && !QStandardPaths::findExecutable(QStringLiteral("pdftocairo")).isEmpty()) {
+        QTemporaryDir dir;
+        const QString eps = dir.filePath(QStringLiteral("rect.eps"));
+        QFile f(eps);
+        f.open(QIODevice::WriteOnly);
+        f.write("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 200\n"
+                "newpath 28.3465 28.3465 moveto 170.0787 28.3465 lineto 170.0787 113.3858 lineto "
+                "28.3465 113.3858 lineto closepath 0.5 setlinewidth stroke showpage\n");
+        f.close();
+        const c2d::ImportResult r = c2d::importFile(eps, opts(0, 0));
+        check(r.ok && !r.elements.isEmpty(), "EPS: converted and imported");
+        check(r.ok && std::abs(r.bounds.width() - 50.0) < 0.5 && std::abs(r.bounds.height() - 30.0) < 0.5,
+              "EPS: 50 x 30 mm, the size it was drawn");
+    } else {
+        std::printf("test_import: gs/pdftocairo missing, EPS/PDF import not tested\n");
+    }
+    check(c2d::isImportableFile(QStringLiteral("a.PLT")) && c2d::isImportableFile(QStringLiteral("b.ai"))
+              && c2d::isImportableFile(QStringLiteral("c.pdf")) && !c2d::isImportableFile(QStringLiteral("d.c2d")),
+          "importable suffixes");
 
     std::printf("test_import: %d checks OK\n", g_checks);
     return 0;

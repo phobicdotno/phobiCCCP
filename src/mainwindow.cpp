@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "importers.h"
 #include "shopdialog.h"
 #include "aboutdialog.h"
 #include "brandlogo.h"
@@ -660,10 +661,9 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("Save &As…"), this, &MainWindow::onSaveAs)
             ->setShortcut(QKeySequence::SaveAs);
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral("Import &SVG…"), this, [this] {
-        importVectorFile(this, m_canvas, &m_doc, {}, QStringLiteral("SVG (*.svg)")); });
-    fileMenu->addAction(QStringLiteral("Import &DXF…"), this, [this] {
-        importVectorFile(this, m_canvas, &m_doc, {}, QStringLiteral("DXF (*.dxf)")); });
+    fileMenu->addAction(QStringLiteral("&Import vectors…"), this, [this] {
+        importVectorFile(this, m_canvas, &m_doc, {}, {}); })
+            ->setToolTip(QStringLiteral("SVG, DXF, HPGL (.plt), PDF, Illustrator (.ai), EPS, PostScript"));
     installImportDropHandler(this, m_canvas, &m_doc, [this](const QString &p) { openFile(p); });
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
@@ -1527,8 +1527,10 @@ void MainWindow::onNew()
 void MainWindow::onOpen()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open Carbide Create file"), {},
-        QStringLiteral("Carbide Create (*.c2d);;All files (*)"));
+        this, QStringLiteral("Open"), {},
+        QStringLiteral("Designs and vectors (*.c2d *.svg *.dxf *.plt *.hpgl *.hpg *.hgl *.pdf *.ai *.eps *.ps);;"
+                       "Carbide Create (*.c2d);;") + importFileFilter()
+            + QStringLiteral(";;All files (*)"));
     if (!path.isEmpty())
         openFile(path);
 }
@@ -1650,6 +1652,16 @@ void MainWindow::closeEvent(QCloseEvent *e)
 
 void MainWindow::openFile(const QString &path)
 {
+    // A vector file opens as a new design (the machine's bed) with the
+    // drawing imported into it; Save asks for a name.
+    if (isImportableFile(path)) {
+        if (!confirmDiscard(QStringLiteral("Save before opening another file?")))
+            return;
+        m_dirty = false;
+        newUntitled();
+        importVectorFile(this, m_canvas, &m_doc, path);
+        return;
+    }
     openPath(path, false);
 }
 

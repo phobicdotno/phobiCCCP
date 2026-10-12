@@ -45,14 +45,20 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                            const QString &sourceName = QString());
 ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
                            const QString &sourceName = QString());
+ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
+                            const QString &sourceName = QString());
 
-// Read the file and dispatch on the extension (.svg / .dxf, case-insensitive).
+// Read the file and dispatch on the extension, case-insensitive: .svg, .dxf,
+// HPGL (.plt .hpgl .hpg .hgl), and .pdf .ai .eps .ps through pdftocairo /
+// Ghostscript to SVG (first page).
 // Largest vector file we will read into memory. An ASCII DXF costs several
 // times its size to parse, so this is a memory bound, not a disk bound.
 constexpr qint64 kMaxImportBytes = 128LL * 1024 * 1024;
 
 ImportResult importFile(const QString &path, const ImportOptions &opt);
 bool isImportableFile(const QString &path);
+QStringList importableSuffixes();          // svg dxf plt hpgl hpg hgl pdf ai eps ps
+QString importFileFilter();                // for file dialogs
 
 // Building blocks (exposed for tests):
 // One CC `path` element per subpath of `p` (mm, Y-up). A subpath whose last
