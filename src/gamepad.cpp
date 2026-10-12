@@ -1,0 +1,255 @@
+#include "gamepad.h"
+
+#include <QDir>
+#include <QFile>
+#include <QSettings>
+#include <QSocketNotifier>
+#include <QTimer>
+
+#include <cerrno>
+#include <cstring>
+
+#ifdef __linux__
+#include <fcntl.h>
+#include <linux/joystick.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
+
+namespace c2d {
+
+namespace gamepadmap {
+
+QStringList actions()
+{
+    return {QStringLiteral("x+"), QStringLiteral("x-"), QStringLiteral("y+"),
+            QStringLiteral("y-"), QStringLiteral("z+"), QStringLiteral("z-"),
+            QStringLiteral("step+"), QStringLiteral("step-"), QStringLiteral("hold"), QStringLiteral("stop"),
+            QStringLiteral("zeroxy"), QStringLiteral("zeroz"), QStringLiteral("unlock"),
+            QStringLiteral("home")};
+}
+
+QString label(const QString &action)
+{
+    static const QHash<QString, QString> names = {
+        {QStringLiteral("x+"), QStringLiteral("Jog X+")},
+        {QStringLiteral("x-"), QStringLiteral("Jog X−")},
+        {QStringLiteral("y+"), QStringLiteral("Jog Y+")},
+        {QStringLiteral("y-"), QStringLiteral("Jog Y−")},
+        {QStringLiteral("z+"), QStringLiteral("Jog Z+ (up)")},
+        {QStringLiteral("z-"), QStringLiteral("Jog Z− (down)")},
+        {QStringLiteral("step+"), QStringLiteral("Jog step up")},
+        {QStringLiteral("step-"), QStringLiteral("Jog step down")},
+        {QStringLiteral("hold"), QStringLiteral("Hold / resume")},
+        {QStringLiteral("stop"), QStringLiteral("Stop")},
+        {QStringLiteral("zeroxy"), QStringLiteral("Zero XY")},
+        {QStringLiteral("zeroz"), QStringLiteral("Zero Z")},
+        {QStringLiteral("unlock"), QStringLiteral("Unlock ($X)")},
+        {QStringLiteral("home"), QStringLiteral("Initialize / home ($H)")},
+    };
+    return names.value(action, action);
+}
+
+// Default mapping for a SNES-style pad. Program start is deliberately not an
+// action at all: a bumped button must never begin a cut. Hold and Stop are,
+// because those are the ones worth being able to hit without looking.
+GamepadMap defaults()
+{
+    return {
+        {4, QStringLiteral("z-")},        // L
+        {5, QStringLiteral("z+")},        // R
+        {8, QStringLiteral("step+")},     // Select: next larger jog step
+        {9, QStringLiteral("hold")},      // Start:  hold / resume
+        {1, QStringLiteral("stop")},      // B
+        {0, QStringLiteral("zeroxy")},    // A
+        {3, QStringLiteral("zeroz")},     // X
+        {2, QStringLiteral("unlock")},    // Y
+    };
+}
+
+GamepadMap load(QSettings &s)
+{
+    GamepadMap map = defaults();
+    s.beginGroup(QStringLiteral("gamepad"));
+    for (const QString &key : s.childKeys()) {
+        bool ok = false;
+        const int n = key.toInt(&ok);
+        QString action = s.value(key).toString().trimmed().toLower();
+        if (action == QLatin1String("step"))      // the old cycling action
+            action = QStringLiteral("step+");
+        if (!ok)
+            continue;
+        if (action.isEmpty() || action == QLatin1String("none"))
+            map.remove(n);
+        else
+            map.insert(n, action);
+    }
+    s.endGroup();
+    return map;
+}
+
+// Writes the whole mapping rather than a diff against the defaults, so a later
+// change of defaults never silently remaps a pad someone has already set up.
+// Default buttons left unmapped are written as "none", or load() would bring
+// them back.
+void save(QSettings &s, const GamepadMap &map)
+{
+    s.beginGroup(QStringLiteral("gamepad"));
+    s.remove(QString());
+    const GamepadMap def = defaults();
+    for (auto it = def.cbegin(); it != def.cend(); ++it)
+        if (!map.contains(it.key()))
+            s.setValue(QString::number(it.key()), QStringLiteral("none"));
+    for (auto it = map.cbegin(); it != map.cend(); ++it)
+        s.setValue(QString::number(it.key()), it.value());
+    s.endGroup();
+}
+
+} // namespace gamepadmap
+
+namespace {
+constexpr int kScanIntervalMs = 1500;   // hotplug poll; nothing is urgent here
+constexpr int kMaxJsNodes = 32;
+}
+
+Gamepad::Gamepad(QObject *parent)
+    : QObject(parent), m_scan(new QTimer(this))
+{
+    m_scan->setInterval(kScanIntervalMs);
+    connect(m_scan, &QTimer::timeout, this, &Gamepad::poll);
+}
+
+Gamepad::~Gamepad()
+{
+    // closeDevice() announces `disconnected`, and during teardown whatever is
+    // listening (the Machine panel's label) may already be gone.
+    blockSignals(true);
+    closeDevice();
+}
+
+void Gamepad::start()
+{
+    poll();                 // try immediately, then keep looking
+    m_scan->start();
+}
+
+void Gamepad::stop()
+{
+    m_scan->stop();
+    closeDevice();
+}
+
+void Gamepad::closeDevice()
+{
+#ifdef __linux__
+    if (m_notifier) {
+        m_notifier->setEnabled(false);
+        m_notifier->deleteLater();
+        m_notifier = nullptr;
+    }
+    if (m_fd >= 0) {
+        ::close(m_fd);
+        m_fd = -1;
+        m_name.clear();
+        m_path.clear();
+        emit disconnected();
+    }
+#endif
+}
+
+bool Gamepad::openPath(const QString &path, bool checkButtons)
+{
+#ifdef __linux__
+    if (m_fd >= 0)
+        return false;
+    const int fd = ::open(path.toLocal8Bit().constData(), O_RDONLY | O_NONBLOCK);
+    if (fd < 0)
+        return false;
+
+    QString name = QStringLiteral("gamepad");
+    if (checkButtons) {
+        // A joystick with no buttons is not a gamepad. The `applesmc` lid
+        // accelerometer on a MacBook is exactly that, and it is usually js0.
+        unsigned char buttons = 0;
+        if (::ioctl(fd, JSIOCGBUTTONS, &buttons) < 0 || buttons < 2) {
+            ::close(fd);
+            return false;
+        }
+        char buf[128] = {0};
+        if (::ioctl(fd, JSIOCGNAME(sizeof(buf) - 1), buf) >= 0 && buf[0])
+            name = QString::fromLocal8Bit(buf).trimmed();
+    }
+
+    m_fd = fd;
+    m_path = path;
+    m_name = name;
+    m_notifier = new QSocketNotifier(m_fd, QSocketNotifier::Read, this);
+    connect(m_notifier, &QSocketNotifier::activated, this, &Gamepad::readEvents);
+    emit connected(m_name);
+    return true;
+#else
+    Q_UNUSED(path);
+    Q_UNUSED(checkButtons);
+    return false;
+#endif
+}
+
+void Gamepad::poll()
+{
+#ifdef __linux__
+    if (m_fd >= 0)
+        return;
+    for (int i = 0; i < kMaxJsNodes; ++i) {
+        const QString path = QStringLiteral("/dev/input/js%1").arg(i);
+        if (!QFile::exists(path)) {
+            m_rejected.remove(path);      // gone; judge it afresh if it returns
+            continue;
+        }
+        if (m_rejected.contains(path))
+            continue;
+        if (openPath(path))
+            return;
+        m_rejected.insert(path);
+    }
+#endif
+}
+
+void Gamepad::readEvents()
+{
+#ifdef __linux__
+    if (m_fd < 0)
+        return;
+    js_event e;
+    for (;;) {
+        const ssize_t n = ::read(m_fd, &e, sizeof(e));
+        if (n == sizeof(e)) {
+            // JS_EVENT_INIT events are the driver reporting the resting state
+            // when the device is opened. Acting on them would fire a button
+            // press for every button the moment the pad is plugged in.
+            const bool synthetic = (e.type & JS_EVENT_INIT) != 0;
+            const int type = e.type & ~JS_EVENT_INIT;
+            if (synthetic)
+                continue;
+            if (type == JS_EVENT_BUTTON)
+                emit buttonChanged(e.number, e.value != 0);
+            else if (type == JS_EVENT_AXIS)
+                emit axisChanged(e.number, e.value);
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            return;                       // drained
+        if (n == 0 || n < 0) {
+            // Unplugged, or the pipe a test was feeding us closed. Not an
+            // error: go back to looking for a device.
+            closeDevice();
+            return;
+        }
+        // A short read of a fixed-size record: the stream is out of step and
+        // there is nothing sane to do with the remainder.
+        closeDevice();
+        return;
+    }
+#endif
+}
+
+} // namespace c2d

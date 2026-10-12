@@ -1,0 +1,1290 @@
+# Changelog
+
+## v1.0.5 (build 47) — 2026-10-12
+
+> Cancel job; into a job from the top; no re-Initialize after a restart
+
+**Machine page**
+- Reconnecting (app restart, cable replugged) keeps the machine homed when
+  the controller is not in Alarm and still exactly where the last homed
+  session left it; a reset or power-cycled controller still needs Initialize.
+- Starting a program: Z goes all the way up, then across in X/Y, then down
+  into the job. Every rapid that descends travels first and then goes down
+  (after tool changes too); one that climbs goes up first.
+- Cancel job: holds the machine, asks, then ends the job standing still
+  (position kept), spindle off, Z up to the top. Stop stays the instant reset.
+- The window refuses to close while the machine runs a program, probes,
+  homes, jogs or holds; it says so instead of dropping the link mid-move.
+
+## v1.0.4 (build 46) — 2026-10-12
+
+> One-line release notes in About
+
+**General**
+- About shows one line per release: the "> summary" under each changelog
+  heading (older releases without one still list their sections).
+
+## v1.0.3 (build 45) — 2026-10-12
+
+> Machine safety: homing before machine moves, hard limits on, real jog limits
+
+**Machine page**
+- Machine positions need a homed machine: Park, Go to X0 Y0, BitZero,
+  BitSetter measuring, the rehearsal and Run refuse until Initialize has homed
+  on this connection, and again after Unlock or any alarm that loses position.
+  "Use here" refuses too, and a BitSetter or tool-change spot outside the
+  machine is refused before anything moves.
+- "Initialize first" says why the position is unknown: not homed since
+  connecting, an end stop fired, reset while moving, or Unlock without homing.
+- End stops stop everything: the app turns hard limits on ($21=1), and resets
+  the controller itself if an end stop comes on during any move. Not homed,
+  "up to the top" means up until the Z end stop fires.
+- Reads the controller's settings ($$) at connect, so the jog limits use the
+  real travel ($130–$132) instead of a 75 mm guess for Z.
+- Jogs stay inside the machine's travel: clear of each home switch by the
+  pull-off plus 1 mm ($27 + 1, so hard limits never trip), and 1 mm off the
+  far ends of X and Y. Z has no floor in manual: it may go as low as the
+  operator wants. Z no longer grinds against its top stop.
+- After BitZero probing, Z rises all the way to the top before any sideways
+  move (back over the corner, to the BitSetter, or when done), instead of
+  skimming over the plate a couple of millimetres up.
+- Popups size their text properly; long messages no longer get cut off.
+
+**General**
+- The open file's name is in the top bar, next to the version, instead of in
+  the status line at the bottom.
+- The version number goes up with every change that reaches the shop PC.
+
+## v1.0.2 (build 44) — 2026-10-12
+
+> Touch popups, gamepad dialog, Delete button, tool drawings, R4 bit, PVC
+
+**Machine page**
+- Run program, tool change, "tool not measured" and the rehearsal popups use
+  the Machine page's look: dark card, big touch buttons, amber or red notes.
+  The "Preparing program" progress popup matches.
+- New gamepad dialog: a big drawing of the pad (NES or SNES) with a line from
+  every button to its action, and buttons that light up while pressed.
+- Gamepad: "step up" and "step down" replace "cycle step", and stop at the
+  ends instead of wrapping. NES pads get their own icon.
+- The app registers with the desktop's accessibility bus, so the on-screen
+  keyboard (Onboard, auto-show) can pop up for text fields.
+
+**Design and Toolpaths**
+- Delete button (bin icon) on the toolbar and Edit › Delete, for touch
+  screens with no Delete key. Greyed out until something is selected.
+- Tool library: R4 corner-rounding bit (ICT4F-R4.0-H10, 4 flutes, 10 mm
+  shank), entered by its 2 mm cutting tip; run it as an outside Contour,
+  4 mm deep (3 mm is enough). Feeds are conservative guesses.
+- Tool library shows a line drawing of each tool type beside its numbers,
+  with its own shank Ø, cutting Ø, cut length and angle or radius marked;
+  every row in the list gets the small outline as its icon.
+- PVC is a material, with feeds for every tool: 5000 mm/min at 18000 rpm for
+  the 6 mm-class end mills (confirmed on the shop machine), the rest scaled
+  down and marked as guesses. Softwood and MDF also run at 5000 mm/min with
+  the 6 mm-class end mills.
+
+## v1.0.1 (build 43) — 2026-10-12
+
+> Machine page fits 1080p, park front right, bigger speed buttons
+
+**Machine page**
+- Fits a 1920 × 1080 screen at 150 % GUI scale with no scrolling, on the job,
+  BitSetter and BitZero pages: the right-hand card is only as tall as the page
+  on show, the big X / Y / Z readings shrink to fit their column, and the
+  BitSetter and BitZero pages are more compact (plate and on/off toggles beside
+  Back, the BitZero modes in one row, BitSetter buttons two to a row).
+- Initialize and Park go to the front right again, and the button says so.
+- The log lives in the Connect card; its Log button stays put when it opens.
+- Jog speed buttons are bigger and show their feed (mm/min) under the name;
+  rapid is 5000, the machine's real maximum ($110).
+- Probing recovers by itself: G38.3 fast search, probe alarms auto-unlock,
+  Z only allows for the 2.8 mm lip, the panel closes after probing.
+- End of job: retract to safe Z, then stop the spindle.
+- Two-finger pinch zoom in the 3D views; machine log saved to machine.log.
+
+## v1.0.0 (build 42) — 2026-10-11
+
+> Four-mode shop-floor interface and BitZero probing
+
+**Shop-floor interface**
+- Four modes instead of a column of panel tabs: **Design → Toolpaths →
+  Simulate → Machine** (Ctrl+1…4, switch at the top right, remembered).
+  Simulate and Machine are full pages.
+- **Machine page** rebuilt for the touchscreen: status in words, big X / Y / Z
+  readout with a Zero per axis, 84 px jog pad with STOP in the middle, step
+  as a toggle row, one amber Start. BitZero probing, BitSetter settings,
+  feed override and air cut live in pages and folds of the right-hand card
+  instead of pop-ups. Nothing was removed.
+- Header with logo, name and version; **About** directly on the bar; a note
+  appears when GitHub has a newer version. Full screen also as the [ + ]
+  button at the top right.
+- Settings dialog (GUI scale 100–200 %, every Shapeoko model), blank design
+  at machine size on start, rearrangeable tool bar, press-and-hold tool
+  variants, scroll bars and splitters that follow the GUI scale.
+
+**Machine**
+- **Initialize machine** like Carbide Motion: home, then park front right at
+  rapid speed. Park button.
+- **BitZero V2 and V1** work probing: corner (X, Y, Z), Z only, X only,
+  Y only, with a live probe-contact check before anything moves. V2 finds the
+  bore centre (the stock corner); V1 touches the block's top, left and front
+  from outside, with tool diameter and lip width.
+- Jog: a step starts on the press and **release stops it at once** (jog
+  cancel), so a 100 mm step let go after 40 mm ends there.
+- Gamepad: pad-only button mapper, "home" action; no crash on exit with a
+  pad plugged in.
+
+## v0.4.101 (build 41) — 2026-10-09
+
+**CAM (more of Fusion's 2D and 2.5D)**
+- **Finishing passes** on contours: `finish_passes` extra rings,
+  `finish_stepover` apart, cut at the final depth. The roughing ring stays
+  that far off the wall at every depth. **Spring pass** repeats the last ring
+  to take off what the tool sprang away from. Both are off by default.
+- **Helical entry** into pockets (on by default for new pockets): every depth
+  starts on a small helix (`helix_diameter`, `helix_angle`) in clear floor,
+  away from any island, instead of a straight plunge. Shapes too small for a
+  helix fall back to the plunge.
+- **Drilling cycles**: `dwell` seconds at the bottom of each hole (G4), and
+  `chip_break` pecks that back off only `chip_retract` mm between pecks
+  instead of leaving the hole.
+- **2D Slot** toolpath: ramps down each slot's centreline (slots drawn with
+  the Slot tool, or open vectors), back along the floor at each depth. A
+  slot wider than the tool also gets its walls cleaned, up to three tool
+  diameters wide. Rectangles, too-narrow and too-wide slots are reported.
+- **Circular** toolpath: round pockets (helix in at the middle, then laps out
+  to the wall) and bosses (laps from `boss_clearance` out in to the wall) on
+  the selected circles, climb by default.
+- All new keys and both new types are phobiCCCP-only; Carbide Create ignores
+  them.
+
+**Sketch**
+- **Conic** curve (Q): click the start, the end, then the apex where the end
+  tangents meet. Rho in the options bar sets the fullness (0.5 a parabola,
+  lower an ellipse arc, higher a hyperbola).
+
+**Testing**
+- New checks for the finishing rings and spring pass, helix entry (no straight
+  plunge below cleared floor, arcs inside the pocket), dwell and chip-break
+  output, slot ramping, walls and refusals, circular pocket and boss laps, the
+  conic's ends, tangents and accuracy, and the conic click tool.
+
+## v0.4.100 (build 40) — 2026-10-09
+
+**Machine control**
+- **Rehearse tool change** in the BitSetter box runs a single tool change with
+  the spindle off and nothing cut. The machine parks at the tool-change spot
+  and asks for the tool. It then measures the tool on the BitSetter, applies
+  the offset and goes back to safe Z. The rehearsal is a tiny program streamed
+  like a job, so it runs the same park, measure, offset and continue code a
+  real tool change does. It ends by showing the offset it measured. Until now
+  that flow had only been checked against the simulator; this is the
+  supervised first check on the machine. It needs a reference tool first.
+- **Map buttons…** in the Jog box opens a gamepad mapping dialog. Press a
+  button on the pad to find its row, pick what it should do, and save. Reset
+  to defaults is there too. The pad is ignored while the dialog is open, so
+  finding the Stop button does not stop the machine. Saving writes the whole
+  mapping, with switched-off default buttons stored as `none`.
+
+**CLI**
+- `--grbl-rehearse <port> <bsX> <bsY> [safeZ]` measures a reference tool,
+  then runs the rehearsal program through the real streamer.
+
+**Testing**
+- GitHub Actions now builds and runs the whole ctest suite on Ubuntu 24.04
+  on every push and pull request, with the widget suites on Qt's offscreen
+  platform.
+- New `rehearsal` suite: the rehearsal program never starts the spindle,
+  never feeds or probes, and only rapids straight up to safe Z.
+- `machine_flow` now runs the rehearsal against the simulator and expects an
+  offset of 0.000 with the same tool in.
+- `gamepad` covers saving and loading the mapping, a switched-off default
+  staying off, and the dialog: a pad press adds a row without changing the
+  mapping until an action is picked.
+
+## v0.4.99 (build 39) — 2026-10-09
+
+**Drawing tools** (more of Fusion 360's sketch)
+- **Arc** drop-down: **Center Point Arc** (click the center, the start,
+  then the end; it turns whichever way the cursor went) and **Tangent Arc**
+  (click near the end of an open line or curve, then the end point; the arc
+  carries on in the direction the curve was going), next to the 3-point arc.
+- **Polygon** drop-down: **Inscribed** (a corner under the cursor; it used
+  to sit on +X whatever the drag), **Circumscribed** (the middle of an edge
+  under the cursor) and **Edge** (click both ends of one edge, then the
+  side). All stay parametric Carbide Create polygons.
+- **Slot** drop-down: **Overall** (click the slot's two ends), **Center
+  Point** (its middle, then one end's center) and **3-Point Arc** slots,
+  next to center to center.
+- **Spline** (K): a fit-point spline through the points you click. Enter or
+  a double-click finishes it, clicking near the first point closes it.
+- **Point** (O): a sketch point, drawn as a cross. Drilling and keyhole
+  toolpaths drill at it; other toolpaths ignore it. It is saved as a 1 mm
+  circle, which is what Carbide Create shows.
+- **Construction** (Edit menu, Shift+X): selected vectors become dashed
+  reference geometry that trim, extend and the arrays still use but no
+  toolpath ever cuts. Press it again to make them normal. phobiCCCP-only:
+  Carbide Create shows them as ordinary vectors.
+
+**Vector editing**
+- **Pattern on path…** (Edit → Vectors): copies the selection along the
+  vector selected last, spread over its whole length or a set distance
+  apart, turning with the path or not. Copies can join the originals'
+  toolpaths, like the arrays.
+
+**CAM**
+- **Lead-in / lead-out** on contours (Fusion's linking arcs; new
+  `lead_radius` key, half the tool diameter on new contours, 0 for off).
+  Each pass drops in on the air side, arcs onto the cut, goes round and
+  arcs off again, so there is no plunge mark on the wall. The cut starts in
+  the middle of the longest edge, the arcs shrink to fit small holes, and
+  ramping replaces them when it is on. Older files have no key and cut as
+  before.
+- **Thread** milling (Fusion's 2D Thread; a phobiCCCP-only type). A
+  helix of one `pitch` per turn around each selected circle, which is the
+  thread's major diameter: internal threads are cut out to it from the
+  hole's middle, external ones down to the minor diameter from outside.
+  `thread_depth` (0 = ISO's 0.6134 × pitch) can be split over `passes`;
+  `left_hand` and `climb` set the direction, so a right-hand internal
+  thread climbs from the bottom up. The helix never goes below the end
+  depth. Holes too small for the tool are reported, not cut.
+- **Setup Sheet…** (File menu): Fusion's setup sheet as a printable HTML
+  page. It has the stock and material, the job's extents and estimated
+  time, the tools in the order they are loaded, and every toolpath with
+  its tool, depths, stepdown, stepover, feeds and estimated time.
+
+**Testing**
+- `geometry` covers the lead arcs (they stay off the part, inside and
+  outside), the thread helix (radius, pitch, direction, depth), that
+  construction geometry is never cut and points are only drilled, and the
+  setup sheet.
+- `sketch` covers the new arc, slot and polygon modes and the spline;
+  `vectorops` covers pattern on path; `canvas` clicks through the new tools
+  and the construction toggle.
+
+## v0.4.98 (build 38) — 2026-10-08
+
+**Tidying**
+- One circumcircle: the Circle drop-down's 3-Point mode now uses the same
+  construction as the 3-point arc, and the hints left over from the old
+  separate 3-point circle tool are gone.
+- About's "What's new" summarises a release without section titles by its
+  first item's name ("Trim (X)") instead of a sentence cut off mid-way.
+
+## v0.4.97 (build 37) — 2026-10-08
+
+**About**
+- Help → About shows the logo, the version and build number, and a short
+  "What's new": one line per release with the areas it touched, read from
+  this changelog compiled into the binary, so it can never go stale.
+
+**Testing**
+- New `about` suite: the summary parser, and a check that the newest
+  changelog entry matches the version being built.
+
+## v0.4.96 (build 36) — 2026-10-05
+
+**CAM**
+- **Adaptive** toolpath (Fusion 360's 2D Adaptive; a phobiCCCP-only type
+  that Carbide Create does not read). It clears the selected closed shapes
+  without the cutter ever taking much more than `stepover` of radial bite,
+  so `stepdown` can be about a tool diameter instead of slotting at a
+  fraction of it. Each part of the region is entered on a helix at its
+  widest spot (`ramp_angle`, default 2°). From there the cleared area grows
+  outward pass by pass. Where a pass would bury more of the cutter than the
+  limit (1.5× the straight-front engagement, at least +10°), as at the
+  junctions between the growing front and a wall, the step shrinks, down to
+  an eighth of the stepover. Passes run climb unless `climb` is off and
+  leave `stock_to_leave` on the walls. Between passes the tool stays down
+  over cleared ground, hops just over the last level's floor (around
+  islands along their outline), or goes up to safe Z only when nothing else
+  is clear. Areas narrower than the tool are reported, not cut. New defaults:
+  stepover a tenth of the tool, stepdown one tool diameter.
+
+## v0.4.95 (build 35) — 2026-10-05
+
+**CAM** (Fusion 360's 2D Face, Bore and 2D Chamfer; phobiCCCP-only toolpath
+types like Engrave, which Carbide Create does not read)
+- **Face**: zig-zag passes that flatten the whole stock, or the box around
+  the vectors you give it, to the end depth. Rows run edge to edge, no
+  further apart than the stepover, and each run goes a tool radius plus
+  1 mm past both ends, so the edges come out clean and every plunge is in
+  the air beside the stock.
+- **Bore**: a helical cut down the wall of each selected circle, `stepdown`
+  per turn, a flat lap at the bottom and a move to the center before lifting.
+  It climbs (counter-clockwise) unless `climb` is off, and leaves
+  `stock_to_leave` on the wall. Circles no wider than the tool are reported
+  rather than plunged. Only the wall is cut, so a blind hole much wider than
+  the tool wants a pocket for its middle.
+- **2D Chamfer**: a V-bit bevels the selected edges `chamfer_width` wide. Its
+  tip runs `tip_offset` off the edge on the air side, outside a part's edge
+  or inside a hole's rim (`side`), and the depth is worked out from the bit
+  angle. It refuses an end mill. Open vectors are traced as they are.
+- All three are in the Toolpaths panel's New menu; a new chamfer picks a
+  V-bit from the tool library.
+
+**Drawing tools**
+- **Measure** (M): drag between two points to read the distance, ΔX, ΔY
+  and angle in the status bar. Nothing is added to the drawing.
+
+**Testing**
+- `geometry` checks each toolpath's g-code: face coverage, overrun and
+  plunges off the stock; bore arcs on the wall, sinking half the pitch per
+  half turn; chamfer offsets and depth on both sides; and the factory
+  defaults exporting cleanly.
+
+## v0.4.94 (build 34) — 2026-10-05
+
+**Drawing tools** (Fusion 360 sketch Trim, Extend and Break)
+- **Trim** (X): click a piece of any curve and it is cut away up to the
+  nearest curves crossing it on either side. Hovering shows the piece in red
+  first. A curve nothing crosses is removed whole; trimming a circle, a
+  rectangle or a polygon leaves an open path.
+- **Extend** (J): click near the end of an open curve and it runs on to the
+  next curve ahead, previewed as a dashed red line. A straight end segment
+  simply grows; a curved end gets a straight continuation along its tangent.
+- **Break** (B): split a curve where other curves cross it, either side of
+  the click, into separate elements you can select, delete or machine on
+  their own. A circle crossed once opens at that point.
+- Crossings include every other vector in the drawing and the curve's own
+  self-crossings. They are found on a fine polyline and then polished on the
+  true curves, so cut ends sit exactly on both curves. Each click is one undo
+  step.
+
+**Testing**
+- `sketch` covers crossings (line, circle, curve-on-curve, self-crossing),
+  trim, break and extend, including the cases that do nothing.
+- `canvas` clicks through all three tools.
+
+## v0.4.93 (build 33) — 2026-10-05
+
+**Drawing tools** (Fusion 360 sketch Create tools)
+- **Ellipse** (E): drag across its bounding box.
+- **Slot** (S): click the centers of both rounded ends, then click once more
+  to set the width; the status bar shows the overall length and width.
+- **3-point arc** (A): click the start, the end, then any point the arc
+  passes through; it bends whichever way that point says, and three points
+  in a line give a straight line.
+- **Ellipse from the center**: hold Ctrl while dragging. (3-point circles
+  and center rectangles come from the Circle and Rectangle drop-downs of
+  v0.4.90.)
+- Esc abandons a half-clicked slot or arc. Ellipses, slots and arcs
+  are bezier paths (one cubic per quarter turn, round to 0.03%), so the node
+  editor, offsets and booleans all work on them.
+
+**Testing**
+- New `sketch` suite: exact end points, roundness, areas and the degenerate
+  cases (collinear points, zero width, coincident centers).
+- `canvas` drives every new tool with real mouse clicks and drags.
+
+## v0.4.92 (build 32) — 2026-10-05
+
+**Vector editing** (Fusion 360 sketch Modify tools)
+- **Fillet corners…** (Ctrl+Alt+E) rounds every sharp corner between two
+  straight edges of the selected vectors with a tangent arc of the given
+  radius; **Chamfer corners…** (Ctrl+Alt+K) bevels them instead. A corner
+  whose edges are too short is cut as far as they allow, sharing an edge
+  evenly with its neighbour, so a 10 mm square filleted at 5 mm or more comes
+  out round. Corners next to a curve and the ends of open paths are left as
+  they are, and circles and text have no corners to cut.
+- **Rotate…** (Ctrl+Alt+R) by any angle about the selection's center, plus
+  one-click 90° turns either way.
+- **Scale…** (Ctrl+Alt+S) about the selection's center, by percent or to a
+  width and height in mm, proportions locked or free. A circle scaled evenly
+  stays a circle with a new radius, a rectangle scaled on either axis stays a
+  rectangle, a regular polygon scaled evenly keeps its sides; only a shape
+  stretched out of its kind (a circle into an ellipse) becomes a path.
+- **Move / Copy…** moves the selection by an exact X / Y distance, or leaves
+  it in place and adds a row of copies, each one step further on, joined to
+  the originals' toolpaths like the arrays.
+- All five are in Edit → Vectors → Modify and on the Vectors icon bar; ids are
+  kept, so toolpaths keep machining what they did, and each is one undo step.
+
+**Testing**
+- `vectorops` checks the geometry: fillet arcs round to 2 microns, the area
+  each fillet and chamfer removes, oversized fillets, open paths, and which
+  shapes stay parametric under rotate and scale.
+- `vectoractions` runs each one through the real actions and undo stack.
+
+## v0.4.91 (build 31) — 2026-10-05
+
+**Vector editing**
+- **Mirror** the selection horizontally (Ctrl+Alt+M) or vertically
+  (Ctrl+Alt+F), about its own center. Shapes stay what they were wherever
+  the result allows: a circle or an axis-aligned rectangle only moves, a
+  regular polygon gets a new rotation, and text stays editable text with the
+  flip kept in its transform. Paths are flipped node by node and walked
+  backwards, so their winding is the same as before. Ids are kept, so
+  toolpaths keep machining the mirrored vectors.
+- **Grid array…**: copies of the selection in columns and rows, with the gap
+  between copies given edge to edge and the overall size shown as you type.
+- **Circular array…**: copies around a center point, either evenly over a
+  full turn or spread over an arc from first to last, rotating with the ring
+  or keeping their orientation. Positive angles are counter-clockwise.
+- Both arrays can add the copies to every toolpath that machines the
+  originals (on by default), so arraying a drilled hole drills all of them.
+  A copied group becomes a new group of its own. Each array, and each mirror,
+  is one undo step.
+- All four are in Edit → Vectors and on the Vectors icon bar.
+
+**Testing**
+- `vectorops` covers the transforms themselves: what stays parametric, the
+  winding after a reflection, text, grid and arc spacing, and group ids on
+  copies.
+- New `vectoractions` suite runs mirror and both arrays through the real
+  actions on an offscreen canvas: one undo step each, toolpaths extended (or
+  not), undo and redo restoring both the vectors and the toolpaths.
+## v0.4.90 (build 30) — 2026-10-05
+
+**Sketch tools (Fusion 360 parity)**
+- Circle and Rectangle buttons get a drop-down with Fusion's variants; the
+  button reuses the last one picked, and the status bar says what to click
+  next. Every mode takes clicks; the two-point ones still accept a drag.
+- Circles: Center Diameter, 2-Point, 3-Point, 2-Tangent (pick two lines, move
+  to choose the corner and size) and 3-Tangent (pick three lines, click near
+  the in- or excircle you want).
+- Rectangles: 2-Point, 3-Point (first edge, then height; may be tilted) and
+  Center.
+- A tilted 3-point rectangle is saved as a closed path: phobiCCCP writes
+  rectangles without a rotation, and how Carbide Create treats a rotated one
+  has not been checked against a specimen yet.
+- Picking a curved edge for a tangent circle uses the tangent at the clicked
+  spot, so the circle touches the curve there but is not solved against it.
+
+**Layout**
+- Panel tabs (Toolpaths, Document, Machine, Preview, Simulation, Model) now
+  sit above their panels, bold, each with an icon; Properties has one too.
+- The divider beside the panels can be dragged wider again — the Document
+  panel's 340 px cap was holding the whole column narrow — and the dividers
+  are thicker and highlight on hover.
+
+**Testing**
+- New `sketchgeom` suite for the circle and rectangle construction maths; the
+  `canvas` suite draws every new mode through synthetic clicks and drags.
+
+## v0.4.89 (build 29) — 2026-10-05
+
+**Files**
+- File → New (Ctrl+N) starts a design from scratch. It asks for the stock
+  width, height and thickness, then where to save, and opens the empty design
+  ready to draw on. Until now every tool needed an existing `.c2d` to open
+  first, and with nothing open the canvas silently ignored every click.
+- The new file is a minimal container in the same layout the loader and save
+  expect, with one toolpath group so toolpaths can be added straight away.
+  Carbide Create itself has not yet been tried on a file started this way.
+
+**Look**
+- New icon: a gold star drawn as a vector path, node handles on every corner
+  over its dashed construction lines, on a red tile.
+
+**Testing**
+- New `newdoc` suite: a blank file loads empty with the stock size it was
+  given, takes an element, saves, and reloads with the element intact.
+
+## v0.4.88 (build 28) — 2026-09-09
+
+**Machine control**
+- A USB gamepad now jogs the machine. A SNES-style pad — or anything else the
+  kernel exposes as a joystick — drives X and Y from the D-pad, Z from the
+  shoulder buttons, and Hold, Stop, the jog step and the work-zero buttons
+  from the face buttons. It works from wherever you are standing, with the
+  window unfocused, which is the point.
+- Read straight from `/dev/input/js*`. Those nodes are world-readable on a
+  stock desktop while the `event*` ones are not, so a pad works when it is
+  plugged in, with no udev rule to install and no group to join.
+- Plug in or unplug at any time. A pad is found within a second or two of
+  being connected, and unplugging one mid-jog cancels the motion rather than
+  leaving the machine running toward a release that will never arrive.
+- Starting a program is deliberately not on the pad. A bumped button must
+  never begin a cut; Hold and Stop are there, because those are the ones worth
+  being able to hit without looking.
+- A joystick reporting fewer than two buttons is ignored. A MacBook's lid
+  accelerometer is also a `js` device — two axes, no buttons, usually `js0` —
+  and jogging a machine from the lid sensor would be a memorable way to lose a
+  part.
+- Every button press is logged with the number the pad gave it, and any button
+  can be remapped in the settings under `gamepad/<number>`. Clones disagree
+  about numbering, and some report the D-pad as four buttons rather than two
+  axes, so the direction actions work either way.
+
+**Testing**
+- New `gamepad` suite drives the reader through a fifo carrying synthetic
+  joystick records: real open, real notifier, real parsing, no hardware. It
+  covers the driver's initial state replay being ignored (otherwise every
+  button appears pressed the moment a pad is plugged in), bursts being drained
+  in one wake-up, and unplugging being reported rather than treated as an
+  error.
+
+## v0.4.81 (build 27) — 2026-09-07
+
+**Long exports**
+- Fixes a regression in v0.4.79: every g-code export was reported as
+  cancelled, so nothing was ever written and the preview never updated.
+  `QProgressDialog` turns any close into a cancel — `closeEvent()` calls
+  `cancel()`, which emits `canceled()` — so dismissing the dialog once the
+  export had finished set the flag that says the result must be thrown away.
+  The dialog is now disconnected before it is closed.
+
+**Testing**
+- New `exportjob` suite drives the threaded export itself and checks it is
+  byte-for-byte identical to the synchronous one over repeated runs, and that
+  the caller's document is untouched. It found the regression above on its
+  first run. Also run by hand under ThreadSanitizer: five warnings, none of
+  them with any of this project's code in the conflicting frames — every one
+  is inside Qt's own thread teardown or libdbus, neither of which is built
+  with the sanitizer.
+
+## v0.4.79 (build 26) — 2026-09-07
+
+**Long exports**
+- A long export no longer freezes the window. Exporting g-code, exporting
+  tiles, pressing Run, and refreshing the toolpath or 3D preview all run the
+  export on a worker thread behind a progress dialog with a Cancel button.
+  Measured on a 100 mm relief at the modeller's finest cell: 83 seconds with a
+  3.2 mm ball, 4.5 minutes with a 12.7 mm one — that whole time the window was
+  unresponsive, with nothing to look at and no way to stop it. This does not
+  make the export faster; it makes it visible, interruptible, and something
+  the rest of the application can be used around.
+- A cancelled export is never written and never replaces what is on screen.
+  The result it returns is only the toolpaths that finished, so writing it
+  would leave a program that cuts partway and stops.
+- The export the worker runs is a snapshot. The document is copied and the 3D
+  relief is composited on the interface thread before the worker starts,
+  because the relief is cached in state the modelling panel's own rebuild
+  writes — reaching it from a background export would have been a race.
+- A g-code export that cannot be written is reported instead of announced as
+  successful. The plain export never checked its write or flush, so a full
+  disk or a stick pulled mid-write left a program ending in the middle of a
+  block, with no retract and no spindle stop, and the status bar said it had
+  been exported. Tiled export was fixed in v0.4.71; this is the same defect in
+  the other half.
+
+**Testing**
+- The `hardening` suite covers cancellation: that an export asked to stop
+  reports it and keeps only the finished toolpaths, that stopping at once
+  emits nothing, that a cancelled tiled export writes no tiles, and that an
+  export nobody interrupts is byte-for-byte what it always was (625 checks).
+
+## v0.4.74 (build 25) — 2026-09-06
+
+**Toolpaths and G-code**
+- Texture toolpaths no longer take minutes on a large sheet. The generator
+  asked "is this point inside the shape?" every 0.5 mm along the diagonal, for
+  every hatch line, so its cost grew with the sheet's area times the outline's
+  complexity: on a 1220 mm Shapeoko XXL panel with mounting holes that was
+  about three million of Qt's most expensive test, 25 seconds with the window
+  frozen, to emit a few hundred strokes. It now computes where each hatch line
+  crosses the boundary, the same way the engrave fill already did — measured
+  25.0 s to 0.35 s on that panel, and the self-check over it went from 77 s to
+  2 s.
+- Texture strokes reach the true edge of the shape. The old sampling rounded
+  every run to the nearest half millimetre and dropped anything shorter, so
+  strokes stopped short of the outline and narrow areas came out bare.
+
+**Testing**
+- The `hardening` suite covers the texture cost against the shape that showed
+  it up — many separate outlines spread across a large sheet, where the stroke
+  limit never trips and every hatch line is scanned in full (614 checks).
+
+## v0.4.71 (build 24) — 2026-09-06
+
+A second review pass, four parallel audits by failure class rather than by
+file, plus the whole suite under AddressSanitizer/UBSan and a bit-flip fuzzer
+over the document pipeline. Every finding below was reproduced before it was
+fixed, and each has a regression test.
+
+**Toolpaths and G-code**
+- A cut depth that cannot be read no longer produces a program. The depth
+  reader was the one number in the exporter that checked neither that the
+  text parsed nor that the result was finite, so `"nan"` put a literal
+  `G1Znan` in the file; a comma decimal or `"19.05mm"` became zero and traced
+  the shape on the surface, cutting nothing — and both were reported as a
+  successful export. Such a toolpath is now skipped, with the reason.
+- A cut depth of `"inf"`, `"1e400"` or even a finite `"1e15"` no longer hangs
+  the app. The pass loop steps down until it reaches the bottom, which for
+  those never happens; because the export runs on the interface thread, the
+  window froze with no way out. Depths needing more than 100,000 passes are
+  refused instead.
+
+**Saving**
+- A save that fails to commit is no longer reported as "Saved". The commit is
+  the statement that actually writes the file out — where a full disk, or a
+  lock held by a second window or a backup scanner, actually shows up — and
+  its result was the one that was thrown away. The staged copy, still holding
+  the *unmodified* original, was renamed over the document and the afternoon's
+  edits were gone, with the title bar clean so nothing warned on the way out.
+- The 3D relief and the background image are written into the container after
+  the document itself, and both of them could fail silently the same way. They
+  now report it, and the document stays dirty so the next save retries.
+- The toolpath count is no longer left disagreeing with the file when the
+  statement that updates it fails. Carbide Create trusts that count.
+
+**Opening**
+- A file that cannot be read to the end is refused instead of being shown as
+  a complete document. A cursor that died part-way through the table looked
+  exactly like the end of the table, so a truncated or damaged container
+  opened as a partial drawing with no warning — and the next Ctrl+S deleted
+  and rewrote only the part that had been read, making the loss permanent.
+- A failed Open leaves the document you already had open alone. Loading
+  cleared the document before it validated anything, so picking a file that
+  turned out not to be a container left the canvas, the panels and the undo
+  stack showing a document with nothing in it: the next drag rebuilt an empty
+  drawing, and the next save wrote it out.
+- Redo no longer indexes off the end of the shape list after the document
+  underneath it has been replaced.
+
+**Machine control**
+- A hard or soft limit ends the program instead of wedging the sender. On a
+  limit GRBL stops, answers nothing but a status request until it is reset,
+  and — unlike a reset — never reboots, so the acks for everything already in
+  its buffer never arrive. The stream stayed "running" for ever: progress
+  frozen, and because unlock, homing and jog are all refused while a program
+  is streaming, every one of those buttons silently did nothing.
+- A line the controller rejects stops the program. GRBL throws the rejected
+  block away and carries straight on with what is already buffered, so a
+  refused retract was followed by a rapid across the part with the tool still
+  at cutting depth — reproduced: 50 mm at 3 mm below the surface. The machine
+  is now held where it is, with the failing line named.
+- A line longer than the character-counting window no longer deadlocks the
+  sender. It could never fit, so the wait for room never ended: nothing was
+  sent, no ack could come back, and the job stopped dead with the spindle
+  running. Reproduced exactly at 120 characters.
+
+**Editing**
+- Deleting a toolpath deletes the one that is selected. Marking which
+  toolpaths machine the selected shape wrote to every row, and each write ran
+  the user-edit handler, which moved the selection to the last row — so on a
+  freshly opened file, with nothing touched, Delete removed the wrong
+  toolpath. The same desync sent parameter edits to the wrong toolpath and
+  wrote foreign keys into the saved file.
+- Editing a value in the toolpath table no longer breaks keyboard navigation:
+  the edit was applied while the table was still unwinding the change, which
+  closed the editor from under itself.
+- Removing a 3D component no longer marks the document modified twice over
+  and schedules two full recomposites for nothing.
+
+**Tiling**
+- A tile that cannot be written is reported instead of being counted as
+  exported. Writes were unchecked and unflushed, so a full disk or a stick
+  pulled mid-export left a tile ending mid-block — no retract, no spindle
+  stop — and the app listed it as successfully written.
+- Tiles left over from an earlier, longer export under the same base name are
+  now pointed out. They stay in the folder, still look like part of the job
+  and still say "(tile 4/5)" inside, and the save dialog only ever asked about
+  a file that is never written.
+
+**Importing**
+- A vector file too large to parse is refused with its size instead of taking
+  the process down with it. Parsing an ASCII DXF costs several times the file
+  in memory, and the element budget cannot help: it only starts counting once
+  the whole file is already parsed.
+
+**Testing**
+- New `machine_faults` suite: an over-long line, a rejected line and a
+  critical alarm, each driven through the real streamer against the
+  simulator. All three used to hang it.
+- The `hardening` suite covers the new depth and tiling cases (310 checks).
+  Also run this pass and clean: the whole suite under AddressSanitizer and
+  UndefinedBehaviorSanitizer, and 450 bit-flipped documents through load,
+  export and tiled export.
+
+## v0.4.52 (build 23) — 2026-09-06
+
+An independent review of the whole codebase, in five parallel passes. Thirty
+findings; the ones that could cut wrong, hang, or lose work are fixed below,
+each with a regression test in the new `hardening` suite.
+
+**Toolpaths and G-code**
+- Contour toolpaths honour their tabs. Tabs were read for cutouts only, so a
+  contour taken to the full stock thickness released the part on its last pass
+  with the spindle still running — even though new contours are created with
+  tabs switched on.
+- Tabs are no longer wider than the part they hold. Three 30 mm tabs tiled the
+  whole 80 mm perimeter of a 20 mm square: the cut never went below the tab
+  top, the part was never released, and the pass then ended by plunging to
+  full depth inside a tab. Tab width is now capped at a third of the loop.
+- V-carve flat-bottom clearing steps down instead of plunging straight to full
+  depth and taking the whole depth in one lap. The medial pass only carves the
+  skeleton, so those rings run through virgin stock.
+- Ramped entry no longer cuts into the part. When the ramp reached depth it
+  went straight back to the start of the loop — a chord across the inside of
+  the ring, gouging up to 0.67 mm on a rounded corner, once per pass. It now
+  finishes the lap.
+- A depth per pass written as text ("0.500", which is how Carbide Create
+  stores some values) was silently replaced by 1.0 mm — twice the requested
+  cut. Every numeric cut parameter now accepts both forms.
+- The rest of the exporter reads the same way: stepover and its variation,
+  stock to leave, rest diameter, hatch spacing and angle, peck distance,
+  keyhole length and angle, and the V-bit angle. Only the depth keys were
+  covered before, and which keys Carbide writes as text varies by build.
+- The 3D roughing and finishing parameters read the same way too — feed,
+  plunge, depth per pass, stock to leave, boundary offset and raster angle.
+  The 2D exporter and the 3D one parse the same rows and now agree.
+- A tool whose diameter cannot be read falls back to 3.175 mm instead of
+  becoming a zero-width cutter that offsets nothing.
+- An unreadable `retract` value became a safe Z of zero, rapiding across the
+  stock with the tip at its surface. It falls back to 2.54 mm.
+- A near-circular ring is only machined as a true circle when it really is
+  one. The tolerance grew with the radius, so a 200 mm ring wobbling ±0.35 mm
+  was replaced by a perfect circle up to 0.7 mm off on diameter.
+- V-carving a rotated or curved shape no longer invents dozens of spurious
+  spokes. The boundary is split into 1 mm pieces internally, and each joint
+  read as a sharp corner: a 20 mm square rotated 17° came out as 72 chains and
+  243 mm of medial axis instead of 4 and 56.6, each false spur a full-depth
+  plunge dragged out to the surface.
+
+**Tiling**
+- Tiled export retracts to a real clearance. It read the retract height
+  straight from the document without the guard the plain exporter has, so a
+  value it could not parse — an empty one, or a comma decimal from another
+  locale — made every move between tiles a rapid at the stock surface. Both
+  exporters now read it through the same function.
+- A cut lying exactly on the top edge of the last tile is machined. Stock
+  whose height was a multiple of the tile height lost its top edge from every
+  tile — silently replaced by a rapid.
+- A cut a nanometre off horizontal is no longer split across two tiles, with a
+  physical stock re-index in the middle of it.
+
+**Saving**
+- Saving is atomic. The file is written beside the destination and moved into
+  place only once it is complete, so a failure — a full disk, a document on a
+  stick that has been pulled — leaves the previous file untouched. Before, the
+  destination was deleted first and a failed save reported after it was gone.
+- Save As retargets the document. Afterwards Ctrl+S wrote back into the file
+  that was opened, overwriting the original the user was keeping while the new
+  file stayed frozen at the Save As snapshot.
+- A 3D model that could not be read is no longer deleted by the next save. The
+  relief rows were cleared before being rewritten from a model that had loaded
+  as empty, so one truncated row cost the whole model on Ctrl+S.
+- A component whose mesh or heightmap will not decode keeps its bytes, the way
+  undecodable toolpath rows already did.
+- `num_toolpaths` counts the rows that are actually in the file, including the
+  ones this build could not decode.
+
+**Damaged and hostile files**
+- A DXF can no longer hang the app. An arc with an absurd start angle spun
+  for ever, a block array could ask for 10^18 copies, and a spline could
+  declare degree 99999.
+- A compressed block that expands without limit is rejected instead of filling
+  memory, and a nonsense uncompressed size no longer reserves a gigabyte.
+- A zero cell size, a zero tolerance and a zero-diameter tool are rejected
+  where they used to produce NaN geometry or a depth of -1e9 mm.
+
+**Machine control**
+- A controller reset in the middle of a program stops the program. The app
+  carried on streaming to a controller that had lost its modal state and tool
+  offset, and because the acks in flight never arrived it then hung at 100 %
+  for ever — no completion, and jog, unlock and zeroing all refused.
+- Continue during a tool change waits for the probe to finish. Pressing it
+  while the machine was still moving put two writers on the serial line, past
+  the controller's buffer.
+- A pulled cable disconnects. A serial error was written to the console while
+  the app went on believing it was connected and running.
+- Continuing with a tool that failed to measure now says what will happen: the
+  previous tool's length offset is still in force, so the program cuts as deep
+  as the two tools differ.
+- Press-and-hold jog stops queueing faster than the machine can move, which
+  could overflow the controller's buffer and corrupt a jog command.
+
+**Editing**
+- Opening another file, picking one from Open Recent, dropping a file on the
+  window or closing it all ask before discarding unsaved changes.
+- Union, Subtract and Intersect no longer delete open paths in the selection.
+  They never took part in the result but were removed with the inputs.
+- Subtract says when the first selected vector is open, instead of reporting
+  "vectors do not overlap" about shapes that plainly do.
+- Trace image inserts what the preview showed. Typing a value and pressing
+  Enter accepted the dialog inside the 120 ms redraw delay, inserting the
+  paths from the previous settings.
+- A simulation cancelled because the drawing changed no longer shows its
+  half-finished result as if it were the current program.
+- A drag shorter than half a grid cell with snap on no longer leaves the shape
+  in one place on screen and another in the document.
+
+**Command line**
+- `--help`, `-h` and `--version`, and an unrecognised or mis-typed option now
+  prints them and exits instead of opening the GUI on a file called
+  "--export" — which on a headless box was an invisible modal dialog.
+- `--export` leaves an existing program alone when there is nothing to export,
+  instead of overwriting it with an empty one and then reporting the failure.
+- `--shot` checks the document before opening the window, and cannot hang.
+- `--grbl-aircut` rejects a lift that is not a number of at least 1 mm; a typo
+  used to rehearse the program at its programmed depth.
+- The build is warning-clean again.
+
+**Testing**
+- The GRBL simulator reports `Run` from the moment a line is acked, instead of
+  staying `Idle` until the execution loop picks the block up. Real controllers
+  do the same, and anything that waited for `Idle` before reading position or
+  the probe input could see the previous move's state — which made the
+  simulator's own self-test fail about one run in eight, on a different check
+  each time.
+- New `hardening` suite (284 checks), run by CTest with the other fifteen.
+
+## v0.4.12 (build 22) — 2026-09-06
+- Clicking a shape on the canvas now hands the selection over: the toolpath
+  row deselects and its outline clears, instead of both panes staying lit and
+  the row looking stuck. The toolpath stays *current*, so the parameter table
+  and "Assign selected vectors" still act on the one you were editing, and
+  clicking the row again brings its outline back.
+- The type and vectors columns are no longer editable. Double-clicking them
+  opened a text editor whose result was silently discarded on the next
+  refresh — the type is what the toolpath is, and the count follows its
+  element list. The name is still renamed by double-click.
+
+## v0.4.10 (build 21) — 2026-09-05
+- Selecting a toolpath now outlines the shapes it machines on the canvas, in
+  the same amber as the selected row. The vectors column only ever said how
+  many shapes a toolpath referenced, never which ones.
+- The vectors count carries a tooltip naming them — "Cuts: 2 x circle,
+  1 x rectangle" — and reports any reference whose shape has since been
+  deleted as missing, which was previously invisible until export.
+- Selecting a shape on the canvas bolds every toolpath row that machines it,
+  so a shape can be traced back to its toolpaths as well as the other way
+  round.
+
+## v0.4.7 (build 20) — 2026-09-05
+- Toolpath list and parameter table columns can be dragged to any width and
+  reordered. They were pinned with `Stretch` / `ResizeToContents`, which locks
+  the dividers outright, so the "vectors" column was clipped and long parameter
+  names such as `enable_finish_allowance` were truncated with no way to widen
+  them. Widths and order are remembered between sessions.
+- Model component table columns are draggable and remembered the same way; they
+  had the identical pinned-header defect.
+- File > Open Recent lists the last five documents opened, most recent first,
+  with Alt+1..5 to reach them from the keyboard and the full path as a tooltip.
+  Files that have since been moved or deleted drop off the list, and Clear list
+  empties it.
+
+## v0.4.4 (build 19) — 2026-09-05
+- Selecting an item no longer un-maximises the window and removes its maximise
+  button. The panels demanded so much height that the window's minimum grew
+  past a 1280x800 screen — selecting a text element pushed it from 594 to 762
+  pixels, more than fits once the titlebar and desktop panel are subtracted,
+  so the window manager could no longer maximise it. The Properties form and
+  the Model controls now scroll, and the 3D views may shrink, which keeps the
+  minimum at 517 whatever is selected.
+
+## v0.4.3 (build 18) — 2026-09-05
+Fixes from an independent review of the 3D modelling, 3D machining, toolpath
+lifecycle and engraving work, plus robustness hardening:
+- Saving no longer deletes toolpath rows this build could not decode. They are
+  skipped when loading (so they are never shown or machined) but kept in the
+  file, instead of being thrown away on the next save.
+- Opening a truncated or corrupt file now says so instead of showing an empty
+  design: SQLite opens a zero-byte file as a valid empty database, so the
+  loader checks that the container really holds a Carbide Create document.
+  The background loader reports an unreadable container too.
+- Editing vectors under a 3D model no longer composites the relief twice,
+  once of them on the interface thread; the background rebuild always runs now
+  and the views refresh when it lands.
+- A model rebuild that finished just as another document was opened can no
+  longer install the old document's relief into the new one.
+- Renaming or enabling a toolpath no longer rebuilds the list from inside the
+  list's own change notification.
+- STL import checks its cancel flag once every few thousand triangles as
+  intended, rather than on every one.
+- `tests/test_robustness.cpp` (CTest `robustness`): damaged documents (missing
+  or emptied tables, null / corrupt / mis-sized payloads, five truncation
+  points) and malformed vector imports (unterminated SVG, NaN and 1e400
+  coordinates, a DXF claiming 999999999 vertices, a block that inserts itself)
+  must fail cleanly or salvage what they can — never crash, hang or allocate
+  on a bad file's word.
+- The integration suite reports itself as skipped, not passed, when its sample
+  file is missing.
+
+## v0.4.2 (build 17) — 2026-09-05
+- Node edit: fixed a redraw that was accidentally made conditional while
+  removing dead state in v0.4.1.
+- Build is warning-clean again under -Wall -Wextra.
+
+## v0.4.1 (build 16) — 2026-09-05
+- Node edit tool: clicking a shape now selects it. The tool fell through into
+  the shape-drawing branch, which swallowed the click before the canvas saw
+  it, so nothing could be picked unless it had been selected with another tool
+  first.
+- Convert to path no longer deletes an element whose outline is empty (a text
+  of spaces, or a font that renders nothing).
+- Background images: saving never overwrites a background the loader could not
+  decode, and a document that never had one no longer gains an empty
+  background row and its parameters.
+- DXF import: a spline carrying fit-point X codes with no matching Y codes is
+  dropped instead of crashing the import.
+- Simulation: editing the program while a simulation runs cancels it, so a
+  result computed for the previous program is no longer shown as current.
+- Tiled export: each tile keeps only the toolpath blocks it actually cuts, so
+  a tile no longer changes tools and starts the spindle for work that happens
+  in another tile; a tile with nothing to cut comes out empty.
+- `tests/test_integration.cpp` (CTest `integration`): cross-feature checks that
+  the per-module tests cannot catch — a relief built by the modeller reaches
+  the 3D toolpaths through the real provider and the simulated cut follows it;
+  the same document saved, closed and reloaded still machines the same relief;
+  an imported SVG welded with a boolean pockets correctly.
+- Verified that saving preserves Carbide Create's binary MODEL row, the
+  document params and every item row (only the SVG previews and the encrypted
+  g-code are blanked, which CC regenerates).
+
+## v0.4.0 (build 15) — 2026-09-05
+Carbide Create parity wave 2 — toolpath lifecycle, engraving, 3D modelling and 3D machining:
+- 3D modelling (Carbide Create Pro's "Model" tab): new right-side "Model"
+  tab after Simulation. Relief components are composited in list order into
+  the document's HeightModel (src/heightmodel.h: z ≤ 0 from the stock top,
+  peak at 0, baseZ = −relief height, untouched cells NoModel) and served to
+  the 3D toolpaths through `heightModelFor(doc)` (`installModelProvider()`,
+  lazy rebuild when components or vectors change).
+- Components from vectors: the selected closed vectors become a relief with a
+  Flat, Round (circular cross-section), Angle (slope in degrees, capped at the
+  height), Smooth (S-curve) or Dome (parabolic) profile; height, base height,
+  combine mode Add / Subtract / Merge (max) / Multiply (fade), enable, rename,
+  reorder. Profiles are a function of the exact Euclidean distance to the
+  outline (Felzenszwalb two-pass transform on the rasterised mask), so a round
+  profile is right for any shape, text included.
+- Image heightmaps: PNG/JPG → luma (white high, black low; invert, Gaussian
+  blur, amplitude, base), placed like the background image (one pixel =
+  1/96 in at natural size, or a width in mm), and textures: an image tiled at
+  a chosen tile width over the selected vectors (or the whole model) with an
+  add/subtract amplitude.
+- STL import (binary and ASCII, auto-detected): triangles rasterised from
+  above into a z-buffer at the model resolution (vertices stamped too, so tiny
+  triangles never leave holes); dialog for file units (mm / inch), fit to a
+  width, position and model height (0 = the mesh's own scaled height).
+- Model tab: component table (on, name, kind, height, combine) with
+  add/remove/reorder, per-kind property editor, resolution selector (Auto keeps
+  the grid at ≤ 4 M cells and ≥ 0.1 mm; Fine/Normal/Coarse/Draft), shaded relief
+  view (light from the upper left, floor-to-peak tint, wheel zoom, drag pan,
+  cursor X/Y/Z readout with height above the floor), debounced automatic
+  rebuild on a worker thread with progress and cancel, plus a manual Rebuild.
+- Persistence: the components (parameters, referenced vector uuids) are stored
+  in the .c2d as `sqlar/phobi_model3d.json`, embedded image/STL bytes as
+  `sqlar/phobi_model3d/<component id>` (raw rows, like background.png); the
+  grid is recomputed on load. Carbide Create's own binary `MODEL` item is left
+  untouched (its sample layout is undocumented), so CC still opens the file.
+- `--shot <file.c2d> out.png model` raises the Model tab and composites
+  synchronously before the grab; `tests/test_model3d.cpp` (CTest `model3d`):
+  distance transform, round/angle/flat profiles, subtract/merge/base height,
+  image gradient + invert + blur, texture tiling, STL pyramid (ASCII + binary,
+  inch units, fit to width), auto resolution, render, persistence round trip,
+  provider registration.
+
+## v0.3.1 (build 14) — 2026-09-05
+Fixes from an independent code review of the machine-control work:
+- Zero X/Y/Z/all sent a G10 line without coordinates (never zeroed). Fixed.
+- V-carve: rounded slots, ellipses and round-ended strokes collapsed to a
+  single plunge after spur pruning. The pruning now stops at the axis.
+- BitSetter settings and the reference tool were overwritten with defaults on
+  every start. Fixed.
+- A tool-length offset could be injected into a running program (Clear
+  reference / Unlock). It is now queued until the line is free, and it is
+  re-applied after reset, Unlock and Home.
+- A lost ack on the wake-up line (Arduino boards reset on open) blocked every
+  stream and macro silently. The wake-up is no longer counted and a stuck
+  ad-hoc command is dropped after 3 s of Idle.
+- G-code after a tool change repeated no modal words, so the first moves
+  inherited the probe's slow feed. Every word is re-emitted after `M0 ;T`.
+- Port list kept the wrong device after a rescan; the port name (not its
+  description) is now tracked and persisted.
+- Disconnecting mid tool-change no longer leaves a prompt armed for the next
+  connection; a lost key release or focus change now cancels hold-to-jog.
+- A program ending in a tool marker no longer reports "finished" while parked.
+- Toolpath lifecycle (Toolpaths panel): **New ▾** creates a Contour, Pocket,
+  Drill, Texture, V-Carve, Keyhole, Cutout or Engrave toolpath for the vectors
+  selected on the canvas (or empty, with a hint), using Carbide Create's own
+  default parameter set for the type — the exact key names and value types CC
+  853 writes (depths as 3-decimal strings in the file's sign convention, rates
+  as numbers, `ofset_dir` spelt CC's way), named "Contour Toolpath N" etc.,
+  in the file's first toolpath group. The tool is the document's last-used
+  cutter of the right kind (flat / V-bit / engraver, `tool_pocket` included),
+  else the embedded library's #201 / #301 / #501 with the material's feeds.
+- **Duplicate**, **Delete**, **Rename** (double-click the name, F2 or the
+  context menu), an **enabled** checkbox per row, and **Move up / down** —
+  the list order is the machining order. All undoable (Ctrl+Z), via new
+  document-level commands (`src/toolpathcommands.h`).
+- `Document::insertToolpath / removeToolpath / moveToolpath / toolpathIndex`,
+  `toolpathGroups()` / `defaultToolpathGroup()` (group rows are now read).
+  `save()` rewrites the toolpath rows like the element rows — DELETE + INSERT
+  in memory order — so deletions and reorders actually reach the .c2d (the
+  old in-place UPDATE could neither delete nor reorder); `params.num_toolpaths`
+  is kept equal to the row count, `items.name` mirrors the type as CC does.
+- New toolpath type **Engrave** (`engrave_toolpath`): `mode` = `outline`
+  (trace the vectors exactly, no offset), `fill` (parallel hatch of the closed
+  regions at `line_spacing` mm and `angle`°, clipped to the region inset by
+  the tool radius — for a V / engraving cutter the radius it has at the cut
+  depth — then an outline pass on that inset boundary) or `both` (fill plus
+  the exact trace); `crosshatch` adds a second hatch at angle + 90°;
+  `end_depth` / `stepdown` as usual. The hatch is an analytic line/edge
+  clip; runs on neighbouring lines are chained into one zigzag by walking the
+  inset boundary between their ends, so the engraver stays down (a 10 × 10 mm
+  square at 1 mm spacing is one continuous move, not 9 plunges). Exported to
+  g-code, counted in the job stats, drawn in the on-canvas preview and the 3D
+  views like every other type. **Carbide Create has no engraving type in its
+  file format** — phobiCCCP's loader keeps `engrave_toolpath` rows (any type
+  string round-trips), but CC itself will ignore or refuse a file containing
+  one: delete the engrave toolpath before opening the file in CC.
+- `src/toolpathfactory.h`: `makeToolpath(doc, type, ids)`,
+  `duplicateToolpath()`, `toolpathKinds()`, `depthString()` (core library).
+- tests/test_geometry.cpp: engrave outline follows a rectangle exactly; fill
+  at 1 mm on a 10 × 10 square gives 9 hatch runs inside the inset region with
+  fewer than 9 retracts; a minimal CC-schema container round-trips three
+  factory toolpaths (names, group, defaults, engrave type) and keeps count,
+  order and `num_toolpaths` after delete + move + save + reload.
+
+- 3D roughing and finishing over the modeller's relief (Carbide Create Pro's
+  "3D Rough Machining" / "3D Finish Machining"): `3d_rough_toolpath` clears
+  the model level by level with the pocket ring machinery (stay-down links
+  checked against the relief), `3d_finish_toolpath` rasters the
+  tool-compensated surface (ball, flat and V-bit footprints) at a chosen
+  angle, stepover (mm or %), zigzag/climb/conventional, optional cross pass,
+  with an optional boundary vector and offset. 3D jobs are never pooled with
+  the 2D ring jobs around them.
+- `tests/test_cam3d.cpp` (CTest `cam3d`): verifies against the material
+  simulation that roughing stops at the model plus stock-to-leave and that a
+  3 mm ball finish reproduces a 20 mm hemisphere to within 0.043 mm without
+  ever cutting below it.
+## v0.3.0 (build 13) — 2026-09-05
+Carbide Create parity wave 1 — six features merged from parallel branches:
+- Material-removal simulation (Carbide Create's "3D Simulation"): new
+  right-side "Simulation" tab after Preview. The stock is a heightmap (cell
+  size chosen so the map stays ≤ 4 M cells, never finer than the selected
+  fine/normal/coarse setting) and every cutting move stamps the tool's swept
+  footprint — flat end mill disc, ball sphere, V-bit cone, bull-nose corner
+  radius; arcs tessellated to ≤ 0.2 mm chords, ramps split to ≤ 0.05 mm drops,
+  rapids ignored. Runs on a worker thread with progress and cancel.
+- Simulation view: shaded top-down image (light from the upper left, uncut
+  stock light, deeper floors darker, through-cuts in slate blue), wheel zoom,
+  drag pan, live X/Y/Z readout under the cursor, through-cut / unknown-tool
+  warnings in the status line. `SimPanel::image()` / `heightMap()` expose the
+  result for the isometric preview.
+- `toolGeometry(const Document&)` (gcodeexport.h): tool table keyed by tool
+  number, built from the toolpaths' embedded `tool` / `tool_pocket` JSON
+  (diameter, V-bit angle, corner radius, CC type code).
+- `--shot <file.c2d> out.png simulation` raises the Simulation tab and runs the
+  simulation synchronously before the grab.
+- `tests/test_simulation.cpp` (CTest `simulation`): pocket floor depth ± 0.01,
+  untouched stock outside, 90° V-bit surface width ≈ 4 mm at −2 mm, ball
+  profile, arc tessellation, through-cut flag, cancellation, tool table,
+  100k-segment throughput on a 2000×2000 map.
+- Edit → Vectors: Carbide Create's Booleans — **Union (Weld)** (Ctrl+Shift+U),
+  **Subtract** (Ctrl+Shift+D; first-selected minus the others — click order,
+  or the largest bounding box when several were selected at once) and
+  **Intersect** (Ctrl+Shift+I). Computed with Clipper2 on the vectors
+  flattened at 0.005 mm; each element is filled even-odd (text counters
+  survive), elements weld non-zero. Results replace the inputs as closed
+  `path` elements in CC's exact JSON shape, one per ring (holes are separate
+  nested paths), on the first input's layer.
+- Edit → Vectors → **Offset…** (Ctrl+Shift+O): distance, inside/outside, keep
+  original. Closed vectors offset as one even-odd region with round joins;
+  open paths become the outline of a stroke of width 2·d.
+- Edit → Vectors → **Align** (left/right/top/bottom/centers to the selection's
+  bounding box, Ctrl+Shift+arrows / H / V), **Center on stock** (H, V, both;
+  Ctrl+Shift+C) and **Distribute** (even center spacing, Ctrl+Alt+H / V).
+  Union / Subtract / Intersect / Offset / Center also sit on a small icon bar.
+- All vector operations are single undo steps; the results are selected
+  afterwards. Toolpaths that referenced consumed inputs are re-pointed at the
+  result elements (and restored on undo), so `elements[].uuid` never dangles.
+- `tests/test_vectorops.cpp` (CTest `vectorops`): union/intersect/subtract
+  areas, hole rings, offset bbox growth, stroke outlines, alignment maths.
+- Canvas no longer fires `selectionChanged` into a half-destroyed view when
+  closed with a selection active (crash at exit).
+- File → Import SVG… / Import DXF… (Carbide Create's "Import DXF and SVG"),
+  plus drag-and-drop of .svg/.dxf (imported) and .c2d (opened) onto the main
+  window. Imports are one undo step. Geometry lands in mm, Y-up; if it does
+  not already fit inside the stock its bounding box is moved so the bottom-left
+  corner sits at (10, 10) mm. Curves stay cubic beziers in the CC path schema
+  (`point_type` 3 + `cp1`/`cp2`); the result is written in the same row model
+  as `Element::makePath`, so the saved file still opens in Carbide Create.
+- SVG reader (`src/importers.cpp`, QXmlStreamReader, no QtSvg): path with the
+  full `d` grammar (M/L/H/V/C/S/Q/T/A/Z, absolute and relative, arcs converted
+  to beziers), rect (rx/ry), circle, ellipse, line, polyline, polygon, nested
+  `g` transforms (translate/scale/rotate/skewX/skewY/matrix), viewBox with
+  width/height in px (96 dpi), mm, cm, in, pt, pc and preserveAspectRatio;
+  `display:none` and `defs`/`symbol`/`clipPath`/`mask` content is not drawn.
+  text, image, use and gradients are ignored and counted in the summary.
+- DXF reader (ASCII R12–2018 group codes): LINE, LWPOLYLINE and
+  POLYLINE/VERTEX/SEQEND with bulge arcs, CIRCLE, ARC, ELLIPSE, SPLINE
+  (NURBS evaluated by de Boor and flattened to 0.02 mm; fit-point-only
+  splines interpolated with Catmull-Rom cubics), INSERT/BLOCK expansion with
+  insertion point, scale, rotation and column/row arrays, mirrored extrusion
+  (230 = -1), `$INSUNITS` scaling (unitless = mm). POINT is ignored silently;
+  TEXT/MTEXT/HATCH/DIMENSION and 3D polylines are skipped and reported.
+- New CTest target `test_import` (`tests/test_import.cpp`) with hand-written
+  fixtures in `tests/data/` asserting element counts, bounding boxes in mm,
+  the CC row schema, unit scaling and the placement rule (333 checks).
+  `test_import <in.c2d> <out.c2d>` also writes a document with every fixture
+  imported for a `--shot` visual check.
+- Tool library / speeds and feeds: `data/tool-library.json` (embedded as a Qt
+  resource) carries the Carbide 3D cutter catalogue (#101/#102/#111/#112/#122/
+  #201/#202/#251/#278/#301/#302/#321/#322/#501/#502/#602) with per-material
+  rpm / feed / plunge / depth-per-pass / stepover for MDF-plywood, soft wood,
+  hard wood, acrylic, HDPE and aluminium; unverified catalogue numbers and
+  non-CC-default (conservative) feeds are flagged in the data and the dialog.
+  `ToolLibrary` loads it; the Toolpaths panel's new "Tool library…" button
+  (searchable list, material selector, preview of the numbers) writes the
+  chosen tool into the selected toolpath's `tool` / `speeds` objects and its
+  `stepdown` / `depth_per_pass` / `stepover` using CC's own key names, as an
+  embedded user tool, so the file still opens in Carbide Create.
+- Pocket rest machining: `enable_rest` with a `rest_diameter` larger than the
+  tool ring-fills only the corners and channels the previous cutter could not
+  reach (tool-centre region inset by the tool, minus the centres whose whole
+  disc lies in the opening the big cutter already cleared), with one tool
+  radius of overlap into the cleared floor. Geometry test: 40×20 pocket, Ø6.35
+  after Ø12.7 → four corner rings, a fraction of the full pocket's cut length.
+- Toolpath tiling: File → Export G-code (tiled)… and `--export-tiled in.c2d
+  outbase [tile_height]` write `<outbase>_tile1.nc`, `_tile2.nc`, … — tile k
+  holds the motion with Y in [k·h, (k+1)·h) shifted by −k·h, moves crossing a
+  boundary are split there (arcs tessellated first), each cut is made exactly
+  once and every tile is a complete program (header, tool changes, spindle,
+  retract-and-re-enter around every split, M02). The plain export offers
+  tiling when the document has `tiling_enabled` and the job exceeds
+  `tile_height`. New `test_tiling` (CTest `tiling`) checks a synthetic 3-tile
+  job and a document export: every tile's Y ⊆ [0, h], nothing lost or doubled.
+- Background images (Carbide Create compatible): File → Background image →
+  Set… / Clear / Adjust… places a picture under the grid at millimetre scale
+  (X/Y, width with aspect kept, rotation, opacity, lock). Stored the way CC
+  stores it — `params.background_*` plus `sqlar/background.png` — so the same
+  file shows the picture in Carbide Create.
+- Trace image (File → Trace image…, Ctrl+Shift+T): threshold/invert, blur,
+  despeckle (min area mm²), target width, Douglas–Peucker simplify and
+  corner-preserving Bézier smoothing with a live preview; inserts closed
+  path elements (outer outlines and holes separately) as one undoable step.
+  Pure Qt contour tracing; a 2000×2000 px picture traces in well under a
+  second.
+- New `trace` CTest (tests/test_trace.cpp): circle/ring contour areas and
+  bounds, simplification, smoothing schema, background round-trip.
+- Path tool draws splines pen-style: click = corner node, click-drag pulls out
+  symmetric tangent handles, live curve preview, Enter finishes open, clicking
+  the start closes. Written in Carbide Create's path schema (cp1 = previous
+  out-handle, cp2 = own in-handle per anchor, point_type 1/3 per segment,
+  duplicate-start + close rows), so CC renders the same curve.
+- Node edit tool (N, palette icon): anchors as squares (diamonds for smooth
+  nodes) and handles as circles on tangent lines; drag anchors/handles
+  (Alt/Shift-drag breaks handle symmetry), double-click a segment to insert a
+  node (de Casteljau split, curve preserved), Delete removes the selected node,
+  right-click a node for Corner / Smooth / Symmetric / straight lines. Works on
+  open and closed paths; every drag/insert/delete/kind change is one undo step.
+  Editing a node of a rectangle/circle/polygon converts it to a path.
+- Right-click → Convert to path (Select or Nodes tool, also a Properties
+  button): rectangles/circles/polygons become one editable path keeping their
+  id; text becomes one closed path per glyph contour.
+- Text along arcs: `arc_enabled` / `arc_radius` / `arc_center` /
+  `arc_angle_offset` / `arc_text_on_bottom` are honoured when text is
+  (re)rendered — glyphs placed along the circle with the baseline on the arc,
+  centred on the top (or the bottom, upright, extending inwards) turned by the
+  offset angle. The `rendered` outlines stored in the element are the arc
+  layout, so toolpaths cut what is shown. Text without `rendered` is laid out
+  on load.
+- Properties panel for text: string, font family, height, bold/italic, arc
+  on/off, arc radius, angle offset, text on bottom — all undoable and
+  rewriting `font` / `qtfont` / `rendered` like CC.
+- `font_height` now scales the font so its ascent equals the value (matches
+  CC's Helvetica specimen: cap height = 0.93 × font_height).
+- Selection survives document rebuilds (property edits no longer blank the
+  Properties panel).
+- Tests: `test_paths` (bezier JSON round trip, node insert/delete, node kinds,
+  arc text centring/span/side/offset, conversions) and `test_canvas` (pen and
+  node tools driven with synthetic events, undo steps) wired into CTest;
+  `--shot` honours `PHOBICCCP_SHOT_SELECT=<geometryType>` and
+  `PHOBICCCP_SHOT_TOOL=nodes` for headless screenshots.
+
+## v0.2.4 (build 12) — 2026-09-05
+- CLI modes (`--export`, `--selftest`, `--grbl-*`, `--shot`) run without a
+  display: the offscreen Qt platform is selected automatically when no
+  DISPLAY / WAYLAND_DISPLAY is set instead of aborting.
+- `tools/flowtest.sh` injects the longer second tool right after the reference
+  measurement instead of racing the second probe.
+
+## v0.2.3 (build 11) — 2026-09-05
+- Hold-to-jog now streams short `$J=` increments (2 ticks of travel every
+  120 ms) instead of one long jog, so motion stops by itself within a fraction
+  of a second if the release event is ever lost; release still jog-cancels.
+- Jog buttons give the Machine panel keyboard focus, so arrow / PgUp / PgDn
+  jogging works right after clicking the pad.
+- Zeroing sends `Z0` (no stray space); dead code removed from `zero()`.
+- README: verification status of the BitSetter / tool-change flow (simulator
+  only so far).
+
+## v0.2.2 (build 10) — 2026-09-05
+- G-code export honours `stock_to_leave`: contours offset by tool radius +
+  stock (inside or outside), pockets inset their walls by tool radius + stock.
+  Cutouts never leave stock.
+- Geometry test updated for arc output and for every Carbide Create toolpath
+  type now being supported; all 24 checks and all three CTest tests pass.
+
+## v0.2.1 (build 9) — 2026-09-05
+- V-carve: medial-axis spurs at flattening vertices are pruned (a vertex where
+  the boundary turns < 20° is a curve, not a corner), so circles carve as one
+  plunge and curved letters no longer get one spoke per polygon vertex. The
+  v-carve now uses the same fine curve flattening as the other toolpaths.
+  All-types specimen: v-carve motion 16702 → 6592 mm, same coverage.
+- Removed the dead pre-streamer machine dialog (`machinedialog.*`,
+  `grblsender.*`).
+- Build split into a `phobicccp_core` library + app; `tests/test_geometry.cpp`
+  is built again (`test_geometry`) and wired into CTest together with the
+  simulator self-test and the machine flow test: `ctest --test-dir build`.
+- Self-test's g-code stage checks every toolpath in the file instead of a
+  hard-coded count, so it also passes on the all-types specimen.
+
+## v0.2.0 (build 8) — 2026-09-04
+- Machine dock rewritten: work + machine position display (WCO tracking),
+  jog speeds and press-and-hold continuous jogging with jog-cancel, keyboard
+  jogging, Zero X/Y/Z/XY/all, go-to X0Y0, editable port with USB description.
+- BitSetter tool-length probing: configurable button position (machine
+  coords), safe Z, fast/slow feeds, tool-change spot; reference tool taken
+  when zeroing Z; later measurements apply `G43.1` offsets, re-applied after
+  reset/unlock; settings persisted.
+- Automatic tool-change flow while streaming: `M0 ;T<n>` parks the machine,
+  prompts, measures the new tool, applies the offset, continues. Ad-hoc
+  commands, macros and the program stream no longer confuse each other's acks.
+- Isometric animated 3D preview tab of the machining route with live machine
+  position.
+- CLI: `--grbl-probe`, `--grbl-run` (headless tool-change flow) and
+  `tools/grblsim.py`, a GRBL 1.1h simulator on a pty for testing without a
+  machine.
+
+## v0.1.6 (build 7) — 2026-09-04
+- G-code export: fixed a 0.12 mm undersize on every offset toolpath. Element
+  curves were flattened at Qt's default tolerance (a Ø6.6 circle became a
+  ~16-gon) before Clipper offset them, so rings shrank by 0.06 mm at a 3 mm
+  tool radius. Curves are now flattened at 0.005 mm; the baseplate holes come
+  out Ø6.60 / Ø12.70 instead of Ø6.48 / Ø12.58. V-carve keeps the coarse
+  input on purpose (its medial axis grows one spoke per polygon vertex).
+
+## v0.1.5 (build 6) — 2026-09-04
+- G-code export: consecutive toolpaths that use the same tool (pocket /
+  contour / cutout) are now pooled and ordered per site, so e.g. a hole's
+  counterbore and through-hole are both finished before the spindle travels
+  to the next hole, instead of running each toolpath's full tour separately.
+  An earlier toolpath's job always runs before a later one that overlaps it,
+  so document order is preserved wherever it matters (pocket before the
+  cutout around it). One tool change and one spindle start per pool.
+
+## v0.1.4 (build 5) — 2026-09-04
+- Rename completed everywhere: binary/CMake target `phobicccp`, launcher
+  `phobicccp.desktop`, icon `phobicccp`, MIME file `phobicccp-c2d.xml`,
+  window title and Qt application name `phobiCCCP`, CMake option
+  `PHOBICCCP_WITH_CLIPPER2`. Old `phobiccc` install files must be removed by
+  hand on machines that had the previous version.
+
+## v0.1.3 (build 4) — 2026-09-04
+- Vector tool palette (Select/Circle/Rect/Polygon/Path/Text) moved from a
+  vertical column on the left to a horizontal row above the canvas, ahead of
+  the options bar.
+- Canvas: the first fit-to-board now waits for the viewport to be laid out
+  (resizeEvent) instead of fitting into the pre-layout placeholder size, which
+  could leave a freshly opened file at 0% zoom.
+
+## v0.1.2 (build 3) — 2026-09-04
+- Project renamed to **phobiCCCP — Phobic Carbide Create Clone Project**
+  (GitHub repo `phobicdotno/phobiCCCP`, was `phobicCC-linux`). Binary,
+  launcher and CMake target stay `phobiccc`.
+
+## v0.1.1 (build 2) — 2026-09-04
+- Toolbar: the polygon "sides" spinner is now only shown while the Polygon
+  tool (P) is active, instead of permanently. Canvas gained a `toolChanged`
+  signal for this.
+
+## v0.1.0 (build 1) — 2026-09-02
+- `cmake --install` now installs desktop integration, not just the binary:
+  app-menu launcher (`phobicCC`, Graphics/Engineering), SVG icon, and an
+  `application/x-carbide-create` MIME type so `.c2d` files open on double-click.
+- Project now carries a version (`project(... VERSION 0.1.0)`, `VERSION` file).

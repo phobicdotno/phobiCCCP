@@ -1,0 +1,10 @@
+/build/
+/build-*/
+*.user
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.so
+*.autosave
+.cache/
+compile_commands.json

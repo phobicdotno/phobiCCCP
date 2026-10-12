@@ -1,0 +1,1301 @@
+#include "mainwindow.h"
+#include "shopdialog.h"
+#include "gamepadmapdialog.h"
+#include "toollibrary.h"
+#include "toollibrarydialog.h"
+#include "model3d.h"
+#include "gcodeexport.h"
+#include "grblstreamer.h"
+#include "tiling.h"
+#include "vcarve.h"
+#include <QSet>
+#include <QApplication>
+#include <QDebug>
+#include <QFile>
+#include <QElapsedTimer>
+#include <QJsonArray>
+#include <QRegularExpression>
+#include <QTimer>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <functional>
+#include <QPalette>
+#include <QStyleFactory>
+#include <QProxyStyle>
+#include <QSettings>
+#include "settingsdialog.h"
+
+// Tool buttons with variants open their menu after a 500 ms press-and-hold
+// (Fusion's default is 600 ms); a plain click uses the current variant.
+// Scrollbars and splitter handles are thicker than Fusion's so a finger can
+// hold them on the shop PC's touchscreen. All of it is in logical pixels, so
+// it grows with the GUI scale like everything else.
+class PhobicStyle : public QProxyStyle
+{
+public:
+    using QProxyStyle::QProxyStyle;
+    int pixelMetric(PixelMetric m, const QStyleOption *opt, const QWidget *w) const override
+    {
+        switch (m) {
+        case PM_ScrollBarExtent:    return 22;   // Fusion: 14
+        case PM_ScrollBarSliderMin: return 40;
+        case PM_SplitterWidth:      return 12;
+        default:                    return QProxyStyle::pixelMetric(m, opt, w);
+        }
+    }
+    int styleHint(StyleHint hint, const QStyleOption *opt, const QWidget *w,
+                  QStyleHintReturn *ret) const override
+    {
+        if (hint == SH_ToolButton_PopupDelay)
+            return 500;
+        // Plain OK / Cancel: no tick and cross icons on dialog buttons.
+        if (hint == SH_DialogButtonBox_ButtonsHaveIcons)
+            return 0;
+        return QProxyStyle::styleHint(hint, opt, w, ret);
+    }
+};
+
+// Fusion + a hand-tuned dark palette; small QSS pass for spacing/accents.
+static void applyDarkTheme(QApplication &app)
+{
+    app.setStyle(new PhobicStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
+
+    QPalette p;
+    const QColor bg(0x1e, 0x21, 0x27), base(0x16, 0x18, 0x1d),
+        text(0xd8, 0xdc, 0xe4), disabled(0x6a, 0x71, 0x7d),
+        accent(0xf2, 0xa5, 0x36), button(0x2a, 0x2e, 0x36);
+    p.setColor(QPalette::Window, bg);
+    p.setColor(QPalette::WindowText, text);
+    p.setColor(QPalette::Base, base);
+    p.setColor(QPalette::AlternateBase, bg);
+    p.setColor(QPalette::Text, text);
+    p.setColor(QPalette::Button, button);
+    p.setColor(QPalette::ButtonText, text);
+    p.setColor(QPalette::BrightText, Qt::white);
+    p.setColor(QPalette::Highlight, accent);
+    p.setColor(QPalette::HighlightedText, QColor(0x1a, 0x1a, 0x1a));
+    p.setColor(QPalette::ToolTipBase, base);
+    p.setColor(QPalette::ToolTipText, text);
+    p.setColor(QPalette::PlaceholderText, disabled);
+    p.setColor(QPalette::Disabled, QPalette::Text, disabled);
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, disabled);
+    p.setColor(QPalette::Disabled, QPalette::WindowText, disabled);
+    app.setPalette(p);
+
+    app.setStyleSheet(QStringLiteral(R"(
+        QMenuBar { font-size: 14px; background: transparent; }
+        QMenuBar::item { padding: 7px 10px; border-radius: 6px; }
+        QMenuBar::item:selected { background: #333945; }
+        QMenu { font-size: 14px; }
+        QMenu::item { padding: 6px 28px 6px 12px; }
+        QToolBar { spacing: 4px; padding: 4px; border: 0; }
+        QToolButton { padding: 4px 8px; border-radius: 4px; }
+        QToolButton:checked { background: #3a4150; }
+        QToolButton:hover { background: #333945; }
+        QStatusBar { background: #16181d; }
+        QPlainTextEdit { font-family: monospace; font-size: 12px; border: 0; }
+        QDockWidget::title { background: #23262e; padding: 7px; font-size: 13px; }
+        QSpinBox { padding: 2px 4px; }
+    )"));
+}
+
+// --selftest <in.c2d> <out.c2d>: headless create/save/reload check — loads the
+// input, adds one circle + rectangle + hexagon via the factories, saves, then
+// reloads the output and reports the element count. Exits 0 on success.
+static int selftest(const QString &in, const QString &out)
+{
+    c2d::Document doc;
+    QString err;
+    if (!doc.load(in, &err)) { qWarning() << "load failed:" << err; return 1; }
+    const int before = doc.elements().size();
+
+    const QJsonObject layer = doc.defaultLayer();
+    doc.addElement(c2d::Element::makeCircle({100, 100}, 25, layer));
+    doc.addElement(c2d::Element::makeRectangle({200, 100}, 60, 40, layer));
+    doc.addElement(c2d::Element::makePolygon({300, 100}, 30, 6, layer));
+    doc.addElement(c2d::Element::makePath({{400, 80}, {430, 130}, {460, 80}}, false, layer));
+    doc.addElement(c2d::Element::makePath({{500, 80}, {530, 130}, {560, 80}}, true, layer));
+    doc.addElement(c2d::Element::makeText(QStringLiteral("phobiCCCP"), {600, 80}, 15,
+                                          QStringLiteral("Helvetica"), layer));
+
+    if (!doc.save(out, &err)) { qWarning() << "save failed:" << err; return 2; }
+
+    c2d::Document check;
+    if (!check.load(out, &err)) { qWarning() << "reload failed:" << err; return 3; }
+    qInfo() << "selftest: before =" << before
+            << "after reload =" << check.elements().size()
+            << "toolpaths =" << check.toolpaths().size();
+    if (check.elements().size() != before + 6)
+        return 4;
+
+    // Text must round-trip with non-empty rendered glyph contours.
+    bool textOk = false;
+    for (const c2d::Element &e : check.elements())
+        if (e.geometryType == QLatin1String("text"))
+            textOk = !e.painterPath.isEmpty()
+                     && e.raw.value("rendered").toArray().size() > 3
+                     && e.raw.value("text").toString() == QLatin1String("phobiCCCP");
+    qInfo() << "selftest text:" << (textOk ? "OK" : "FAILED");
+    if (!textOk)
+        return 10;
+
+    // Parametric edit: regen must change geometry but keep the identity.
+    bool regenOk = false;
+    for (const c2d::Element &e : check.elements()) {
+        if (e.geometryType == QLatin1String("circle")
+            && e.raw.value("center").toArray().at(1).toDouble() == 100.0) {
+            const c2d::Element r =
+                c2d::Element::regen(e, {{QStringLiteral("radius"), 30.0}});
+            regenOk = r.id == e.id
+                      && r.raw.value("radius").toDouble() == 30.0
+                      && r.painterPath.boundingRect().width() > 59.0;
+            break;
+        }
+    }
+    qInfo() << "selftest regen:" << (regenOk ? "OK" : "FAILED");
+    if (!regenOk)
+        return 5;
+
+    // Toolpath edit round-trip: change end_depth (a string in CC's schema),
+    // save in place, reload, verify it stuck and the tool payload survived.
+    if (check.toolpaths().isEmpty()) { qWarning() << "no toolpaths"; return 6; }
+    c2d::Toolpath tp = check.toolpaths().first();
+    QJsonObject j = tp.json;
+    j.insert("end_depth", QStringLiteral("-5.000"));
+    tp.json = j;
+    check.replaceToolpath(tp);
+    if (!check.save(out, &err)) { qWarning() << "tp save failed:" << err; return 7; }
+    c2d::Document check2;
+    if (!check2.load(out, &err)) { qWarning() << "tp reload failed:" << err; return 8; }
+    const c2d::Toolpath *tp2 = check2.toolpathByUuid(tp.uuid);
+    const bool tpOk = tp2
+        && tp2->json.value("end_depth").toString() == QLatin1String("-5.000")
+        && tp2->json.value("tool").toObject().contains("diameter")
+        && tp2->json.value("elements").toArray().size()
+               == tp.json.value("elements").toArray().size();
+    qInfo() << "selftest toolpath edit:" << (tpOk ? "OK" : "FAILED");
+    if (!tpOk)
+        return 9;
+
+    // G-code export: turn one pocket into a no-offset contour so the exporter
+    // has something it supports, then check for real motion + dialect markers.
+    c2d::Toolpath ct = check2.toolpaths().first();
+    QJsonObject cj = ct.json;
+    cj.insert("type", QStringLiteral("contour"));
+    cj.insert("ofset_dir", 0);
+    ct.json = cj;
+    ct.type = QStringLiteral("contour");
+    check2.replaceToolpath(ct);
+    const c2d::GcodeResult g = c2d::exportGcode(check2);
+    const bool gOk = g.done.size() == check2.toolpaths().size() && g.skipped.isEmpty()
+        && g.gcode.contains(QLatin1String("G90")) && g.gcode.contains(QLatin1String("G21"))
+        && g.gcode.contains(QLatin1String("M03S")) && g.gcode.contains(QLatin1String("M02"))
+        && g.gcode.count(QLatin1String("G1")) > 50
+        && (g.gcode.contains(QLatin1String("G2X")) || g.gcode.contains(QLatin1String("G3X")));
+    qInfo() << "selftest gcode:" << (gOk ? "OK" : "FAILED")
+            << "lines =" << g.gcode.count(QChar('\n'))
+            << "skipped =" << g.skipped;
+    if (!gOk)
+        return 11;
+
+    // Fabricate the three newly supported types from the pocket payload and
+    // make sure each produces motion.
+    const c2d::Toolpath base = check2.toolpaths().first();
+    auto fab = [&](const char *type, std::function<void(QJsonObject &)> tweak) {
+        c2d::Toolpath x = base;
+        QJsonObject o = x.json;
+        o.insert("type", QLatin1String(type));
+        o.insert("uuid", QStringLiteral("{fab-%1}").arg(QLatin1String(type)));
+        tweak(o);
+        x.json = o;
+        x.type = QLatin1String(type);
+        x.uuid = o.value("uuid").toString();
+        check2.addToolpath(x);
+    };
+    fab("keyhole_toolpath", [](QJsonObject &o) {
+        o.insert("name", QStringLiteral("kh"));
+        o.insert("angle", 90);
+        o.insert("length", 12.7);
+        o.insert("end_depth", QStringLiteral("-2.5"));
+    });
+    fab("texture_toolpath", [](QJsonObject &o) {
+        o.insert("name", QStringLiteral("tx"));
+        o.insert("angle", 30);
+        o.insert("min_length", 5);
+        o.insert("max_length", 12);
+        o.insert("min_depth", QStringLiteral("-0.5"));
+        o.insert("max_depth", QStringLiteral("-1.5"));
+        o.insert("stepover", 2.0);
+    });
+    fab("advanced_vcarve_toolpath", [](QJsonObject &o) {
+        o.insert("name", QStringLiteral("vc"));
+        o.insert("end_depth", QStringLiteral("-3.0"));
+        o.insert("stepover", 0.5);
+        QJsonObject tool = o.value("tool").toObject();
+        tool.insert("angle", 60);
+        tool.insert("type", 2);
+        o.insert("tool", tool);
+    });
+    const c2d::GcodeResult g2 = c2d::exportGcode(check2);
+    const bool g2Ok = g2.done.contains(QStringLiteral("kh"))
+        && g2.done.contains(QStringLiteral("tx"))
+        && g2.done.contains(QStringLiteral("vc"))
+        && g2.gcode.size() > g.gcode.size();
+    qInfo() << "selftest keyhole/texture/vcarve:" << (g2Ok ? "OK" : "FAILED")
+            << "done =" << g2.done << "skipped =" << g2.skipped;
+    if (!g2Ok)
+        return 12;
+
+    // Air-cut transform + job stats: spindle lines must vanish, the deepest Z
+    // must rise by exactly the lift, and the stats must see real cutting.
+    const c2d::JobStats st = c2d::computeStats(g2.ops);
+    const QStringList plain = g2.gcode.split(QChar('\n'), Qt::SkipEmptyParts);
+    const QStringList aired = c2d::airCutTransform(plain, 10.0);
+    auto minZof = [](const QStringList &ls) {
+        static const QRegularExpression re(QStringLiteral("Z(-?[0-9]+\\.?[0-9]*)"));
+        double mn = 1e18;
+        for (const QString &l : ls) {
+            if (l.startsWith(QChar('(')))
+                continue;
+            auto it = re.globalMatch(l);
+            while (it.hasNext())
+                mn = qMin(mn, it.next().captured(1).toDouble());
+        }
+        return mn;
+    };
+    const double dz = minZof(aired) - minZof(plain);
+    const bool airOk = aired.filter(QStringLiteral("M03")).isEmpty()
+        && aired.filter(QStringLiteral("M05")).isEmpty()
+        && qAbs(dz - 10.0) < 1e-3
+        && st.hasBounds && st.cutLen > 100 && st.timeSec > 10;
+    qInfo() << "selftest aircut/stats:" << (airOk ? "OK" : "FAILED")
+            << "dz =" << dz << "cut mm =" << st.cutLen << "est s =" << st.timeSec;
+    if (!airOk)
+        return 13;
+
+    // Arc fitting: an outside contour around the stage-1 rectangle gets
+    // round-joined corners from the offsetter; the fitter must emit them as a
+    // few G2/G3 arcs, not 1 mm G1 chatter.
+    QString rectId;
+    for (const c2d::Element &e : check2.elements())
+        if (e.geometryType == QLatin1String("rectangle"))
+            rectId = e.id;
+    c2d::Toolpath rp = base;
+    QJsonObject ro = rp.json;
+    ro.insert("type", QStringLiteral("contour"));
+    ro.insert("ofset_dir", 1);
+    ro.insert("uuid", QStringLiteral("{fab-rect-outside}"));
+    ro.insert("name", QStringLiteral("rp"));
+    ro.insert("end_depth", QStringLiteral("-2.0"));
+    ro.insert("elements", QJsonArray{QJsonObject{{QStringLiteral("uuid"), rectId}}});
+    rp.json = ro;
+    rp.type = QStringLiteral("contour");
+    rp.uuid = ro.value("uuid").toString();
+    check2.addToolpath(rp);
+    const c2d::GcodeResult g4 = c2d::exportGcode(check2);
+    int nArc = 0, nFeed = 0;
+    bool inSection = false;
+    for (const c2d::Op &op : g4.ops) {
+        if (op.kind == c2d::Op::Comment) {
+            inSection = (op.text == QLatin1String("rp"));
+            continue;
+        }
+        if (!inSection)
+            continue;
+        if (op.kind == c2d::Op::Arc)  ++nArc;
+        if (op.kind == c2d::Op::Feed) ++nFeed;
+    }
+    const bool fitOk = !rectId.isEmpty() && g4.done.contains(QStringLiteral("rp"))
+        && nArc >= 4 && nFeed < nArc * 8;
+    qInfo() << "selftest arcfit:" << (fitOk ? "OK" : "FAILED")
+            << "arcs =" << nArc << "feeds =" << nFeed;
+    if (!fitOk)
+        return 14;
+
+    // Medial-axis v-carve over the text element: chains must ride at many
+    // distinct depths (clearance varies along a glyph) and stay inside the
+    // glyph bounds. On builds without the Voronoi backend the ring fallback
+    // still passes the depth-variety check, just with fewer levels.
+    QString textId;
+    QRectF textBB;
+    for (const c2d::Element &e : check2.elements())
+        if (e.geometryType == QLatin1String("text")) {
+            textId = e.id;
+            textBB = e.painterPath.boundingRect().adjusted(-2, -2, 2, 2);
+        }
+    c2d::Toolpath vt = base;
+    QJsonObject vo = vt.json;
+    vo.insert("type", QStringLiteral("advanced_vcarve_toolpath"));
+    vo.insert("uuid", QStringLiteral("{fab-text-vcarve}"));
+    vo.insert("name", QStringLiteral("vtx"));
+    vo.insert("end_depth", QStringLiteral("-6.0"));
+    vo.insert("elements", QJsonArray{QJsonObject{{QStringLiteral("uuid"), textId}}});
+    QJsonObject vtool = vo.value("tool").toObject();
+    vtool.insert("angle", 60);
+    vtool.insert("type", 2);
+    vo.insert("tool", vtool);
+    vt.json = vo;
+    vt.type = QStringLiteral("advanced_vcarve_toolpath");
+    vt.uuid = vo.value("uuid").toString();
+    check2.addToolpath(vt);
+    const c2d::GcodeResult g5 = c2d::exportGcode(check2);
+    QSet<int> zLevels;
+    int nOut = 0, nMoves = 0;
+    inSection = false;
+    for (const c2d::Op &op : g5.ops) {
+        if (op.kind == c2d::Op::Comment) {
+            inSection = (op.text == QLatin1String("vtx"));
+            continue;
+        }
+        if (!inSection || op.kind == c2d::Op::Spindle || op.kind == c2d::Op::Tool)
+            continue;
+        ++nMoves;
+        if (!qIsFinite(op.x) || !qIsFinite(op.y) || !qIsFinite(op.z)
+            || (op.z < 1.0 && !textBB.contains(QPointF(op.x, op.y))))
+            ++nOut;
+        if (op.kind == c2d::Op::Feed && op.z < -1e-6)
+            zLevels.insert(int(op.z * 100));   // 0.01 mm buckets
+    }
+    const bool vOk = !textId.isEmpty() && g5.done.contains(QStringLiteral("vtx"))
+        && nMoves > 50 && nOut == 0 && zLevels.size() >= 5;
+    qInfo() << "selftest medial vcarve:" << (vOk ? "OK" : "FAILED")
+            << "moves =" << nMoves << "zLevels =" << zLevels.size()
+            << "outOfBounds =" << nOut
+            << "medial =" << c2d::medialAxisAvailable();
+    if (!vOk)
+        return 15;
+
+    // New-toolpath persistence: the fabricated toolpaths have no container
+    // row yet — save must INSERT them, and a reload must bring them all back
+    // (the inlay-male generator depends on this).
+    const QString out2 = out + QStringLiteral(".tp.c2d");
+    if (!check2.save(out2, &err)) {
+        qWarning() << "tp-insert save failed:" << err;
+        return 16;
+    }
+    c2d::Document check3;
+    if (!check3.load(out2, &err)) {
+        qWarning() << "tp-insert reload failed:" << err;
+        return 16;
+    }
+    const c2d::Toolpath *vtx2 = check3.toolpathByUuid(QStringLiteral("{fab-text-vcarve}"));
+    const bool insOk = check3.toolpaths().size() == check2.toolpaths().size()
+        && vtx2
+        && vtx2->json.value("end_depth").toString() == QLatin1String("-6.0");
+    qInfo() << "selftest toolpath insert:" << (insOk ? "OK" : "FAILED")
+            << "toolpaths =" << check3.toolpaths().size();
+    return insOk ? 0 : 16;
+}
+
+// Every CLI mode below is dispatched on an exact argument count, so a typo or a
+// missing operand would otherwise fall all the way through to the GUI and try to
+// open a file called "--export". Print this instead, and exit non-zero.
+static void printUsage()
+{
+    std::printf(
+        "phobiCCCP " PHOBICCCP_VERSION " - Carbide Create .c2d CAD/CAM and GRBL sender\n"
+        "\n"
+        "  phobicccp [file.c2d]                          open the GUI, optionally on a file\n"
+        "\n"
+        "Headless:\n"
+        "  --export <in.c2d> <out.nc>                    export g-code\n"
+        "  --export-tiled <in.c2d> <outbase> [tile_mm]   one complete program per tile\n"
+        "  --selftest <in.c2d> <out.c2d>                 create/save/export self-check\n"
+        "  --shot <in.c2d> <out.png> [preview|machine|simulation|model]\n"
+        "                                                render the GUI to a PNG\n"
+        "\n"
+        "Machine (GRBL over serial; <port> is e.g. /dev/ttyACM0):\n"
+        "  --grbl-check <port>                           handshake only, no motion\n"
+        "  --grbl-jog-z1 <port>                          unlock, jog Z up 1 mm\n"
+        "  --grbl-probe <port> <bsX> <bsY> [safeZ]       BitSetter measurement (machine XY)\n"
+        "  --grbl-run <port> <job.nc> [bsX bsY]          stream, with automatic tool changes\n"
+        "  --grbl-rehearse <port> <bsX> <bsY> [safeZ]    reference + one tool change, spindle off\n"
+        "  --grbl-aircut <port> <template.c2d> [lift_mm] rehearse a program in the air\n"
+        "  --grbl-circle <port> [feed]                   sweep the largest circle that fits\n"
+        "\n"
+        "  --version                                     print the version and exit\n"
+        "  --help, -h                                    this text\n");
+}
+
+int main(int argc, char *argv[])
+{
+    // Asked for outright: answer before Qt is constructed, so this works with
+    // no display, no fonts and no serial port.
+    if (argc > 1) {
+        const QByteArray first(argv[1]);
+        if (first == "--help" || first == "-h") {
+            printUsage();
+            return 0;
+        }
+        if (first == "--version") {
+            std::printf("phobiCCCP %s\n", PHOBICCCP_VERSION);
+            return 0;
+        }
+    }
+
+    // CLI modes (--export, --selftest, --grbl-*, --shot) must work on a box
+    // with no display — CI, ssh, a headless shop PC: fall back to the
+    // offscreen platform plugin there instead of aborting in QApplication.
+    if (argc > 1 && QByteArray(argv[1]).startsWith("--")
+        && qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")
+        && qEnvironmentVariableIsEmpty("DISPLAY")
+        && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    // GUI scale from Settings. It has to be in the environment before
+    // QApplication exists; an explicit QT_SCALE_FACTOR wins, and the CLI
+    // modes (--shot included) always render at 100 %.
+    if (!(argc > 1 && QByteArray(argv[1]).startsWith("--"))
+        && qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
+        QSettings s(QStringLiteral("phobicdotno"), QStringLiteral("phobiCCCP"));
+        const int pct = c2d::appsettings::uiScalePercent(s);
+        if (pct != 100)
+            qputenv("QT_SCALE_FACTOR", QByteArray::number(pct / 100.0));
+    }
+    // Register with AT-SPI whatever the desktop's accessibility switch says,
+    // so an on-screen keyboard in auto-show mode (Onboard) pops up when a
+    // text field or spin box gets focus on the shop PC's touch screen.
+    if (qEnvironmentVariableIsEmpty("QT_LINUX_ACCESSIBILITY_ALWAYS_ON"))
+        qputenv("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1");
+    QApplication app(argc, argv);
+    c2d::installModelProvider();   // heightModelFor(doc) reads the 3D model stored in the .c2d
+    QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
+    QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));
+    applyDarkTheme(app);
+
+    if (argc == 4 && QByteArray(argv[1]) == "--selftest")
+        return selftest(QString::fromLocal8Bit(argv[2]),
+                        QString::fromLocal8Bit(argv[3]));
+
+    // --grbl-check <port>: SAFE hardware handshake through the real streamer —
+    // opens the port, reports the banner and live status, asks for $I build
+    // info, disconnects. Sends NO motion, unlock, homing or spindle commands.
+    if (argc == 3 && QByteArray(argv[1]) == "--grbl-check") {
+        c2d::GrblStreamer grbl;
+        bool sawStatus = false, sawOk = false;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [&](const QString &l) {
+            qInfo().noquote() << "RX:" << l;
+            if (l == QLatin1String("ok"))
+                sawOk = true;
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport,
+                         [&](const QString &st, double x, double y, double z) {
+            if (!sawStatus)
+                qInfo().noquote() << QStringLiteral("STATUS: %1  MPos X%2 Y%3 Z%4")
+                                         .arg(st).arg(x).arg(y).arg(z);
+            sawStatus = true;
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        qInfo().noquote() << "connected to" << argv[2];
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$I")); });
+        int rc = 1;
+        QTimer::singleShot(5000, &app, [&] {
+            rc = (sawStatus && sawOk) ? 0 : 1;
+            qInfo().noquote() << (rc == 0 ? "GRBL_CHECK_OK" : "GRBL_CHECK_FAILED");
+            grbl.disconnectPort();
+            QCoreApplication::exit(rc);
+        });
+        return app.exec();
+    }
+
+    // --grbl-probe <port> <bsX> <bsY> [safeZ]: BitSetter measurement through the
+    // real streamer macro: park at safe Z, go to the button (MACHINE coords),
+    // fast + slow G38.2, report the contact Z. Exit 0 on a triggered probe.
+    if ((argc == 5 || argc == 6) && QByteArray(argv[1]) == "--grbl-probe") {
+        c2d::GrblStreamer grbl;
+        c2d::BitSetterConfig cfg;
+        cfg.enabled = true;
+        cfg.x = QByteArray(argv[3]).toDouble();
+        cfg.y = QByteArray(argv[4]).toDouble();
+        if (argc == 6)
+            cfg.safeZ = QByteArray(argv[5]).toDouble();
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::probeResult,
+                         [](double x, double y, double z, bool ok) {
+            qInfo().noquote() << QStringLiteral("PRB: X%1 Y%2 Z%3 %4")
+                                     .arg(x).arg(y).arg(z).arg(ok ? "contact" : "MISS");
+        });
+        int rc = 1;
+        QObject::connect(&grbl, &c2d::GrblStreamer::macroFinished, [&](bool ok) {
+            rc = (ok && grbl.lastProbeOk()) ? 0 : 1;
+            qInfo().noquote() << (rc == 0
+                ? QStringLiteral("PROBE_OK contactZ=%1").arg(grbl.lastProbeZ(), 0, 'f', 3)
+                : QStringLiteral("PROBE_FAILED"));
+            QTimer::singleShot(500, &app, [&] { grbl.disconnectPort(); QCoreApplication::exit(rc); });
+        });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        QTimer::singleShot(1500, &grbl, [&] { grbl.measureTool(cfg, true, grbl.status().mx, grbl.status().my); });
+        QTimer::singleShot(120000, &app, [&] { qInfo() << "PROBE_TIMEOUT"; QCoreApplication::exit(2); });
+        return app.exec();
+    }
+
+    // --grbl-run <port> <file.nc> [bsX bsY]: stream a program with the full
+    // tool-change flow: park at each `M0 ;T<n>`, (optionally) measure on the
+    // BitSetter, apply the G43.1 offset relative to the first measurement,
+    // continue. No operator prompt — meant for the simulator.
+    if ((argc == 4 || argc == 6) && QByteArray(argv[1]) == "--grbl-run") {
+        QFile f(QString::fromLocal8Bit(argv[3]));
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            qWarning() << "cannot read" << argv[3];
+            return 1;
+        }
+        const QStringList lines = QString::fromLatin1(f.readAll()).split(QChar('\n'), Qt::SkipEmptyParts);
+        c2d::GrblStreamer grbl;
+        c2d::BitSetterConfig cfg;
+        cfg.enabled = (argc == 6);
+        if (cfg.enabled) {
+            cfg.x = QByteArray(argv[4]).toDouble();
+            cfg.y = QByteArray(argv[5]).toDouble();
+        }
+        bool haveRef = false;
+        double refZ = 0;
+        int changes = 0;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { if (!l.startsWith(QLatin1String("ok"))) qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::toolChangeRequested, [&](int t) {
+            ++changes;
+            qInfo().noquote() << QStringLiteral("TOOLCHANGE T%1 parked (acked so far ok)").arg(t);
+            if (cfg.enabled)
+                grbl.measureTool(cfg, false);
+            else
+                QTimer::singleShot(300, &grbl, [&] { grbl.continueAfterToolChange(); });
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::macroFinished, [&](bool ok) {
+            if (!ok || !grbl.lastProbeOk()) {
+                qInfo() << "RUN_FAILED (probe)";
+                QCoreApplication::exit(1);
+                return;
+            }
+            if (!haveRef) {
+                haveRef = true;
+                refZ = grbl.lastProbeZ();
+                grbl.applyToolLengthOffset(0);
+                qInfo().noquote() << QStringLiteral("REF contactZ=%1").arg(refZ, 0, 'f', 3);
+            } else {
+                const double tlo = grbl.lastProbeZ() - refZ;
+                grbl.applyToolLengthOffset(tlo);
+                qInfo().noquote() << QStringLiteral("TLO %1 (contactZ=%2)").arg(tlo, 0, 'f', 3).arg(grbl.lastProbeZ(), 0, 'f', 3);
+            }
+            grbl.continueAfterToolChange();
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            qInfo().noquote() << (ok ? QStringLiteral("RUN_OK toolchanges=%1 tlo=%2").arg(changes).arg(grbl.toolLengthOffset(), 0, 'f', 3)
+                                     : QStringLiteral("RUN_FAILED"));
+            QTimer::singleShot(300, &app, [&, ok] { grbl.disconnectPort(); QCoreApplication::exit(ok ? 0 : 1); });
+        });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        QTimer::singleShot(1500, &grbl, [&] { grbl.startStream(lines); });
+        QTimer::singleShot(15 * 60 * 1000, &app, [&] { qInfo() << "RUN_TIMEOUT"; QCoreApplication::exit(2); });
+        return app.exec();
+    }
+
+    // --grbl-rehearse <port> <bsX> <bsY> [safeZ]: measure a reference tool, then
+    // stream the Machine panel's tool-change rehearsal program through the real
+    // streamer: park, measure, G43.1, continue. No spindle, no cut, no prompt.
+    // REHEARSE_OK reports the offset; with the same tool in it should be ~0.
+    if ((argc == 5 || argc == 6) && QByteArray(argv[1]) == "--grbl-rehearse") {
+        c2d::GrblStreamer grbl;
+        c2d::BitSetterConfig cfg;
+        cfg.enabled = true;
+        cfg.x = QByteArray(argv[3]).toDouble();
+        cfg.y = QByteArray(argv[4]).toDouble();
+        if (argc == 6)
+            cfg.safeZ = QByteArray(argv[5]).toDouble();
+        bool haveRef = false;
+        double refZ = 0;
+        int changes = 0;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { if (!l.startsWith(QLatin1String("ok"))) qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::toolChangeRequested, [&](int t) {
+            ++changes;
+            qInfo().noquote() << QStringLiteral("TOOLCHANGE T%1 parked").arg(t);
+            grbl.measureTool(cfg, false);
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::macroFinished, [&](bool ok) {
+            if (!ok || !grbl.lastProbeOk()) {
+                qInfo() << "REHEARSE_FAILED (probe)";
+                QCoreApplication::exit(1);
+                return;
+            }
+            if (!haveRef) {
+                haveRef = true;
+                refZ = grbl.lastProbeZ();
+                grbl.applyToolLengthOffset(0);
+                qInfo().noquote() << QStringLiteral("REF contactZ=%1").arg(refZ, 0, 'f', 3);
+                grbl.startStream(c2d::GrblStreamer::toolChangeRehearsalLines(cfg, 1));
+                return;
+            }
+            const double tlo = grbl.lastProbeZ() - refZ;
+            grbl.applyToolLengthOffset(tlo);
+            qInfo().noquote() << QStringLiteral("TLO %1 (contactZ=%2)").arg(tlo, 0, 'f', 3).arg(grbl.lastProbeZ(), 0, 'f', 3);
+            grbl.continueAfterToolChange();
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            ok = ok && changes == 1;
+            qInfo().noquote() << (ok ? QStringLiteral("REHEARSE_OK tlo=%1").arg(grbl.toolLengthOffset(), 0, 'f', 3)
+                                     : QStringLiteral("REHEARSE_FAILED"));
+            QTimer::singleShot(300, &app, [&, ok] { grbl.disconnectPort(); QCoreApplication::exit(ok ? 0 : 1); });
+        });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        QTimer::singleShot(1500, &grbl, [&] { grbl.measureTool(cfg, false); });
+        QTimer::singleShot(5 * 60 * 1000, &app, [&] { qInfo() << "REHEARSE_TIMEOUT"; QCoreApplication::exit(2); });
+        return app.exec();
+    }
+
+    // --grbl-jog-z1 <port>: the first authorized MOTION test — unlock ($X)
+    // and jog Z UP by exactly 1 mm at a gentle F200 via the same $J= command
+    // the Machine panel's jog button emits. Verifies motion end-to-end by
+    // watching MPos change. Spindle untouched.
+    if (argc == 3 && QByteArray(argv[1]) == "--grbl-jog-z1") {
+        c2d::GrblStreamer grbl;
+        double firstZ = 0, lastZ = 0;
+        bool haveFirst = false;
+        QString lastState;
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
+                         [](const QString &l) { qInfo().noquote() << "RX:" << l; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport,
+                         [&](const QString &st, double, double, double z) {
+            if (!haveFirst) { firstZ = z; haveFirst = true; }
+            lastZ = z;
+            if (st != lastState) {
+                lastState = st;
+                qInfo().noquote() << "STATE:" << st << " Z =" << z;
+            }
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        qInfo().noquote() << "connected — unlocking, then jog Z+1 @ F200";
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$X")); });
+        QTimer::singleShot(3500, &grbl, [&] {
+            grbl.sendCommand(QStringLiteral("$J=G91 Z1 F200"));
+        });
+        QTimer::singleShot(9000, &app, [&] {
+            const double dz = lastZ - firstZ;
+            qInfo().noquote() << QStringLiteral("Z start %1  end %2  moved %3 mm")
+                                     .arg(firstZ, 0, 'f', 3).arg(lastZ, 0, 'f', 3)
+                                     .arg(dz, 0, 'f', 3);
+            const bool ok = qAbs(dz - 1.0) < 0.05;
+            qInfo().noquote() << (ok ? "JOG_TEST_OK" : "JOG_TEST_INCONCLUSIVE");
+            grbl.disconnectPort();
+            QCoreApplication::exit(ok ? 0 : 2);
+        });
+        return app.exec();
+    }
+
+    // --grbl-aircut <port> <template.c2d> [lift_mm]: the first full-program
+    // hardware stream, as a rehearsal. Builds a compact two-pocket demo from
+    // the template's container (elements replaced, extra toolpaths disabled),
+    // exports real g-code, applies the air-cut transform (spindle stripped,
+    // every Z lifted), then: home -> jog to a known clear spot -> zero there
+    // -> stream. The whole program spans <90 mm XY and rides 7-13 mm ABOVE
+    // work zero, which itself sits 30 mm below the homed Z top — safe air
+    // everywhere on any Shapeoko. Spindle is never started.
+    if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--grbl-aircut") {
+        const QString port = QString::fromLocal8Bit(argv[2]);
+        const QString tmpl = QString::fromLocal8Bit(argv[3]);
+        // The lift is the entire safety of this mode. toDouble() gives 0 for a
+        // typo, which would rehearse the demo at its programmed depth, and it
+        // accepts negatives, which would drive below it.
+        double lift = 10.0;
+        if (argc == 5) {
+            bool liftOk = false;
+            lift = QByteArray(argv[4]).toDouble(&liftOk);
+            if (!liftOk || !std::isfinite(lift) || lift < 1.0) {
+                qWarning() << "air-cut lift must be a number of at least 1 mm, got"
+                           << argv[4];
+                return 2;
+            }
+        }
+
+        c2d::Document doc;
+        QString err;
+        if (!doc.load(tmpl, &err)) { qWarning() << "load failed:" << err; return 1; }
+        if (doc.toolpaths().isEmpty()) { qWarning() << "template has no toolpaths"; return 1; }
+        while (!doc.elements().isEmpty())
+            doc.removeElementById(doc.elements().first().id);
+        const QJsonObject layer = doc.defaultLayer();
+        doc.addElement(c2d::Element::makeCircle({20, 20}, 8, layer));
+        doc.addElement(c2d::Element::makeRectangle({60, 25}, 30, 20, layer));
+        {
+            const QVector<c2d::Toolpath> tps = doc.toolpaths();
+            for (int i = 0; i < tps.size(); ++i) {
+                c2d::Toolpath t = tps.at(i);
+                QJsonObject j = t.json;
+                if (i == 0) {
+                    j.insert("name", QStringLiteral("aircut_demo"));
+                    j.insert("end_depth", QStringLiteral("-3.0"));
+                    QJsonArray refs;
+                    for (const c2d::Element &e : doc.elements())
+                        refs.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
+                    j.insert("elements", refs);
+                    j.insert("enabled", true);
+                } else {
+                    j.insert("enabled", false);
+                }
+                t.json = j;
+                doc.replaceToolpath(t);
+            }
+        }
+        const c2d::GcodeResult r = c2d::exportGcode(doc);
+        if (r.done.isEmpty()) { qWarning() << "nothing exported:" << r.skipped; return 1; }
+        QStringList lines = c2d::airCutTransform(
+            r.gcode.split(QChar('\n'), Qt::SkipEmptyParts), lift);
+        for (int i = lines.size() - 1; i >= 0; --i)   // headless: no M0 pauses
+            if (lines.at(i).startsWith(QLatin1String("M0 ")))
+                lines.removeAt(i);
+        qInfo().noquote() << QStringLiteral("program: %1 lines, Z lift %2 mm, spindle stripped")
+                                 .arg(lines.size()).arg(lift);
+        qInfo().noquote() << c2d::statsSummary(c2d::computeStats(r.ops));
+
+        c2d::GrblStreamer grbl;
+        // One line in flight at a time: burst writes through usbip have been
+        // seen to stall the link; an air rehearsal doesn't need throughput.
+        grbl.setConservative(true);
+        // Phases: 0 boot, 1 homing, 2 jog Z-30, 3 jog X-100 Y-100, 4 zero,
+        // 5 streaming. Transitions on repeated Idle status after a dwell.
+        int phase = 0;
+        int idleStreak = 0;
+        int lastPct = -1;
+        QElapsedTimer phaseTimer;
+        phaseTimer.start();
+        QString lastState;
+        double mpx = 0, mpy = 0, mpz = 0;
+        auto advance = [&](int p, const QString &msg) {
+            phase = p;
+            idleStreak = 0;
+            phaseTimer.restart();
+            qInfo().noquote() << msg;
+        };
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine, &app,
+                         [](const QString &l) {
+            if (l != QLatin1String("ok"))
+                qInfo().noquote() << "RX:" << l;
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred, &app,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::progressChanged, &app,
+                         [&](int a, int t) {
+            const int pct = t > 0 ? a * 100 / t : 0;
+            if (pct / 10 != lastPct / 10) {
+                lastPct = pct;
+                qInfo().noquote() << QStringLiteral("progress %1%% (%2/%3)  MPos %4,%5,%6")
+                                         .arg(pct).arg(a).arg(t)
+                                         .arg(mpx, 0, 'f', 1).arg(mpy, 0, 'f', 1)
+                                         .arg(mpz, 0, 'f', 1);
+            }
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, &app,
+                         [&](bool okStream) {
+            qInfo().noquote() << QStringLiteral("final MPos %1,%2,%3")
+                                     .arg(mpx, 0, 'f', 3).arg(mpy, 0, 'f', 3)
+                                     .arg(mpz, 0, 'f', 3);
+            qInfo().noquote() << (okStream ? "AIRCUT_OK" : "AIRCUT_FAILED");
+            grbl.disconnectPort();
+            QCoreApplication::exit(okStream ? 0 : 2);
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport, &app,
+                         [&](const QString &stt, double x, double y, double z) {
+            mpx = x; mpy = y; mpz = z;
+            if (stt != lastState) {
+                lastState = stt;
+                qInfo().noquote() << QStringLiteral("STATE: %1  MPos %2,%3,%4")
+                                         .arg(stt).arg(x, 0, 'f', 2)
+                                         .arg(y, 0, 'f', 2).arg(z, 0, 'f', 2);
+            }
+            idleStreak = (stt == QLatin1String("Idle")) ? idleStreak + 1 : 0;
+            switch (phase) {
+            case 1:   // homing: reports pause during $H; Idle again = done
+                if (phaseTimer.elapsed() > 5000 && idleStreak >= 3) {
+                    advance(2, QStringLiteral("homed — jog Z-30 for headroom"));
+                    grbl.sendCommand(QStringLiteral("$J=G91 Z-30 F500"));
+                }
+                break;
+            case 2:
+                if (phaseTimer.elapsed() > 1500 && idleStreak >= 3) {
+                    advance(3, QStringLiteral("jog X-100 Y-100 into the work area"));
+                    grbl.sendCommand(QStringLiteral("$J=G91 X-100 Y-100 F2000"));
+                }
+                break;
+            case 3:
+                if (phaseTimer.elapsed() > 1500 && idleStreak >= 3) {
+                    advance(4, QStringLiteral("zeroing work coordinates here"));
+                    grbl.sendCommand(QStringLiteral("G10 L20 P1 X0 Y0 Z0"));
+                    QTimer::singleShot(800, &grbl, [&] {
+                        advance(5, QStringLiteral("== streaming air-cut program =="));
+                        grbl.startStream(lines);
+                    });
+                }
+                break;
+            default:
+                break;
+            }
+        });
+        if (!grbl.connectPort(port))
+            return 1;
+        qInfo().noquote() << "connected — unlock, then home";
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$X")); });
+        QTimer::singleShot(3000, &grbl, [&] {
+            advance(1, QStringLiteral("homing ($H)…"));
+            grbl.sendCommand(QStringLiteral("$H"));
+        });
+        // Ack-stall watchdog: if GRBL goes silent mid-stream, abort loudly
+        // instead of hanging forever.
+        auto *stallTimer = new QTimer(&app);
+        stallTimer->setInterval(2000);
+        QObject::connect(stallTimer, &QTimer::timeout, &app, [&] {
+            // A giant arc's ok only arrives once the WHOLE arc has squeezed
+            // through the 15-block planner — minutes for a metre-scale G2. A
+            // late ack is a stall only when the machine isn't moving either.
+            if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000
+                && lastState != QLatin1String("Run")
+                && lastState != QLatin1String("Hold")) {
+                qWarning().noquote() << "STALL: no ack for 10 s while idle — aborting";
+                grbl.stopStream();
+                QCoreApplication::exit(4);
+            }
+        });
+        stallTimer->start();
+        QTimer::singleShot(15 * 60 * 1000, &app, [&] {
+            qWarning() << "timeout — soft reset";
+            grbl.stopStream();
+            QCoreApplication::exit(3);
+        });
+        return app.exec();
+    }
+
+    // --grbl-circle <port> [feed]: sweep the largest circle that fits the
+    // machine's actual travel. Homes, reads $130/$131 (X/Y max travel) from
+    // the controller itself, zeroes at the home pull-off, then runs one full
+    // G2 circle (two half arcs) centered in the envelope with a 15 mm rail
+    // margin. Z never moves — the whole sweep happens at the homed Z top.
+    if ((argc == 3 || argc == 4) && QByteArray(argv[1]) == "--grbl-circle") {
+        const QString port = QString::fromLocal8Bit(argv[2]);
+        const double feed = argc == 4 ? QByteArray(argv[3]).toDouble() : 3000.0;
+        const double kMargin = 15.0;
+
+        c2d::GrblStreamer grbl;
+        grbl.setConservative(true);
+        int phase = 0;
+        int idleStreak = 0;
+        QElapsedTimer phaseTimer;
+        phaseTimer.start();
+        QString lastState;
+        double mpx = 0, mpy = 0, mpz = 0;
+        double travelX = 0, travelY = 0;
+        double zeroMx = 0, zeroMy = 0;   // MPos where work zero was set
+        auto advance = [&](int p, const QString &msg) {
+            phase = p;
+            idleStreak = 0;
+            phaseTimer.restart();
+            qInfo().noquote() << msg;
+        };
+        QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine, &app,
+                         [&](const QString &l) {
+            if (l == QLatin1String("ok"))
+                return;
+            qInfo().noquote() << "RX:" << l;
+            if (l.startsWith(QLatin1String("$130=")))
+                travelX = l.mid(5).toDouble();
+            else if (l.startsWith(QLatin1String("$131=")))
+                travelY = l.mid(5).toDouble();
+            else if (l.startsWith(QLatin1String("Grbl ")) && phase >= 3) {
+                qWarning().noquote() << "controller RESET mid-program — aborting";
+                grbl.stopStream();
+                grbl.disconnectPort();
+                QCoreApplication::exit(6);
+            }
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred, &app,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, &app,
+                         [&](bool okStream) {
+            if (!okStream) {
+                qInfo().noquote() << "CIRCLE_FAILED";
+                grbl.disconnectPort();
+                QCoreApplication::exit(2);
+                return;
+            }
+            // Acks mean queued, not done — disconnecting now would toggle DTR
+            // and reset the controller mid-sweep. Wait for Idle instead.
+            advance(6, QStringLiteral("program buffered — sweeping…"));
+        });
+        QObject::connect(&grbl, &c2d::GrblStreamer::statusReport, &app,
+                         [&](const QString &stt, double x, double y, double z) {
+            mpx = x; mpy = y; mpz = z;
+            if (stt != lastState) {
+                lastState = stt;
+                qInfo().noquote() << QStringLiteral("STATE: %1  MPos %2,%3,%4")
+                                         .arg(stt).arg(x, 0, 'f', 2)
+                                         .arg(y, 0, 'f', 2).arg(z, 0, 'f', 2);
+            }
+            idleStreak = (stt == QLatin1String("Idle")) ? idleStreak + 1 : 0;
+            switch (phase) {
+            case 1:   // homing done -> ask the controller for its travel
+                if (phaseTimer.elapsed() > 5000 && idleStreak >= 3) {
+                    advance(2, QStringLiteral("homed — reading $$ settings"));
+                    grbl.sendCommand(QStringLiteral("$$"));
+                }
+                break;
+            case 2:
+                if (phaseTimer.elapsed() > 2500) {
+                    if (travelX < 100 || travelY < 100) {
+                        qWarning().noquote()
+                            << QStringLiteral("could not read travel ($130=%1 $131=%2)")
+                                   .arg(travelX).arg(travelY);
+                        grbl.disconnectPort();
+                        QCoreApplication::exit(5);
+                        return;
+                    }
+                    zeroMx = mpx;
+                    zeroMy = mpy;
+                    advance(3, QStringLiteral("travel %1 x %2 mm — zeroing at pull-off")
+                                   .arg(travelX).arg(travelY));
+                    grbl.sendCommand(QStringLiteral("G10 L20 P1 X0 Y0 Z0"));
+                    QTimer::singleShot(800, &grbl, [&] {
+                        // Envelope in work coords: MPos in [-travel, 0] and
+                        // work = MPos - zeroM, so center and radius are:
+                        const double cx = -travelX / 2.0 - zeroMx;
+                        const double cy = -travelY / 2.0 - zeroMy;
+                        const double r =
+                            qMin(travelX, travelY) / 2.0 - kMargin;
+                        qInfo().noquote()
+                            << QStringLiteral("circle: center %1,%2  radius %3 mm "
+                                              "(diameter %4) at F%5")
+                                   .arg(cx, 0, 'f', 1).arg(cy, 0, 'f', 1)
+                                   .arg(r, 0, 'f', 1).arg(2 * r, 0, 'f', 1)
+                                   .arg(feed, 0, 'f', 0);
+                        auto n3 = [](double v) {
+                            return QString::number(v, 'f', 3);
+                        };
+                        // Eight 45° arcs, not two half-circles: the controller
+                        // was seen hard-resetting when a second metre-scale G2
+                        // arrived while the planner was saturated. Smaller
+                        // tangent-continuous arcs keep the sweep one smooth
+                        // circle with a steady ack cadence.
+                        QStringList lines;
+                        lines << QStringLiteral("G90") << QStringLiteral("G21")
+                              << QStringLiteral("G0X%1Y%2")
+                                     .arg(n3(cx + r), n3(cy));
+                        for (int k = 1; k <= 8; ++k) {
+                            const double a0 = -(k - 1) * M_PI / 4.0;
+                            const double a1 = -k * M_PI / 4.0;
+                            const double sx = cx + r * qCos(a0);
+                            const double sy = cy + r * qSin(a0);
+                            const double ex = cx + r * qCos(a1);
+                            const double ey = cy + r * qSin(a1);
+                            QString ln = QStringLiteral("G2X%1Y%2I%3J%4")
+                                             .arg(n3(ex), n3(ey),
+                                                  n3(cx - sx), n3(cy - sy));
+                            if (k == 1)
+                                ln += QStringLiteral("F%1").arg(n3(feed));
+                            lines << ln;
+                        }
+                        lines << QStringLiteral("G0X%1Y%2").arg(n3(cx), n3(cy))
+                              << QStringLiteral("M02");
+                        advance(5, QStringLiteral("== sweeping the circle =="));
+                        grbl.startStream(lines);
+                    });
+                }
+                break;
+            case 6:   // motion drain: Idle again = the sweep is done
+                if (phaseTimer.elapsed() > 2000 && idleStreak >= 3) {
+                    phase = 7;
+                    qInfo().noquote() << QStringLiteral("final MPos %1,%2,%3")
+                                             .arg(mpx, 0, 'f', 3)
+                                             .arg(mpy, 0, 'f', 3)
+                                             .arg(mpz, 0, 'f', 3);
+                    qInfo().noquote() << "CIRCLE_OK";
+                    grbl.disconnectPort();
+                    QCoreApplication::exit(0);
+                }
+                break;
+            default:
+                break;
+            }
+        });
+        if (!grbl.connectPort(port))
+            return 1;
+        qInfo().noquote() << "connected — unlock, then home";
+        QTimer::singleShot(2000, &grbl, [&] { grbl.sendCommand(QStringLiteral("$X")); });
+        QTimer::singleShot(3000, &grbl, [&] {
+            advance(1, QStringLiteral("homing ($H)…"));
+            grbl.sendCommand(QStringLiteral("$H"));
+        });
+        auto *stallTimer = new QTimer(&app);
+        stallTimer->setInterval(2000);
+        QObject::connect(stallTimer, &QTimer::timeout, &app, [&] {
+            // A giant arc's ok only arrives once the WHOLE arc has squeezed
+            // through the 15-block planner — minutes for a metre-scale G2. A
+            // late ack is a stall only when the machine isn't moving either.
+            if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000
+                && lastState != QLatin1String("Run")
+                && lastState != QLatin1String("Hold")) {
+                qWarning().noquote() << "STALL: no ack for 10 s while idle — aborting";
+                grbl.stopStream();
+                QCoreApplication::exit(4);
+            }
+        });
+        stallTimer->start();
+        QTimer::singleShot(10 * 60 * 1000, &app, [&] {
+            qWarning() << "timeout — soft reset";
+            grbl.stopStream();
+            QCoreApplication::exit(3);
+        });
+        return app.exec();
+    }
+
+    // --shot <in.c2d> <out.png>: open the full GUI, render one frame to a PNG
+    // and exit — headless visual smoke test of the whole window (offscreen ok).
+    if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--shot") {
+        // Check the document here, not through the window: openFile() reports a
+        // failure with QMessageBox::warning, whose exec() spins its own event
+        // loop on an invisible offscreen surface - a headless smoke test would
+        // wedge for ever with nothing on screen to dismiss.
+        {
+            c2d::Document probe;
+            QString perr;
+            if (!probe.load(QString::fromLocal8Bit(argv[2]), &perr)) {
+                qWarning() << "load failed:" << perr;
+                return 1;
+            }
+        }
+        // Belt and braces: nothing in this mode may outlive a minute.
+        QTimer *watchdog = new QTimer(&app);
+        watchdog->setSingleShot(true);
+        QObject::connect(watchdog, &QTimer::timeout, [] {
+            qWarning() << "SHOT_TIMEOUT";
+            std::exit(5);
+        });
+        watchdog->start(60000);
+        c2d::MainWindow w;
+        // PHOBIC_SHOT_SIZE=WxH picks the window size (default 1680x980; the
+        // shop PC is 1280x800 logical at 150 %).
+        {
+            const QList<QByteArray> wh = qgetenv("PHOBIC_SHOT_SIZE").split('x');
+            if (wh.size() == 2 && wh[0].toInt() > 200 && wh[1].toInt() > 200)
+                w.resize(wh[0].toInt(), wh[1].toInt());
+            else
+                w.resize(1680, 980);
+        }
+        w.show();
+        w.openFile(QString::fromLocal8Bit(argv[2]));
+        // The page to grab; "a:b:c" walks through several, like a user
+        // switching modes, and grabs the last.
+        if (argc == 5) {
+            for (const QByteArray &step : QByteArray(argv[4]).split(':')) {
+                if (step == "preview")
+                    w.showToolpathPreview();
+                else if (step == "design")
+                    w.setMode(c2d::MainWindow::Mode::Design, false);
+                else if (step == "toolpaths")
+                    w.setMode(c2d::MainWindow::Mode::Toolpaths, false);
+                else if (step == "machine")
+                    w.showMachinePanel();
+                else if (step == "bitzero")
+                    w.showMachinePanel(QStringLiteral("bitzero"));
+                else if (step == "bitsetter")
+                    w.showMachinePanel(QStringLiteral("bitsetter"));
+                else if (step == "demo")
+                    w.showMachinePanel(QStringLiteral("demo"));
+                else if (step == "simulation")
+                    w.showSimulation();
+                else if (step == "model")
+                    w.showModel();
+                else if (step == "toollib") {
+                    // The tool library with PHOBIC_TOOL (number) selected.
+                    const QString out = QString::fromLocal8Bit(argv[3]);
+                    static c2d::ToolLibrary lib;
+                    lib.loadDefault();
+                    c2d::ToolLibraryDialog dlg(lib, QStringLiteral("softwood"),
+                                               qEnvironmentVariableIntValue("PHOBIC_TOOL"), &w);
+                    dlg.setWindowModality(Qt::NonModal);
+                    dlg.show();
+                    QTimer::singleShot(800, [&dlg, out] {
+                        dlg.grab().save(out);
+                        QCoreApplication::exit(0);
+                    });
+                    app.exec();
+                    return 0;
+                }
+                else if (step == "padmap") {
+                    // The gamepad dialog with a few buttons held down.
+                    const QString out = QString::fromLocal8Bit(argv[3]);
+                    c2d::GamepadMap gm;
+                    gm.insert(0, QStringLiteral("step-"));
+                    gm.insert(1, QStringLiteral("step+"));
+                    gm.insert(8, QStringLiteral("z+"));
+                    gm.insert(9, QStringLiteral("z-"));
+                    if (qEnvironmentVariableIsSet("PHOBIC_PAD_STYLE"))
+                        QSettings().setValue(QStringLiteral("ui/padStyle"),
+                                             qEnvironmentVariable("PHOBIC_PAD_STYLE"));
+                    c2d::GamepadMapDialog dlg(gm, nullptr, &w);
+                    dlg.setWindowModality(Qt::NonModal);
+                    dlg.show();
+                    dlg.selectButton(1);
+                    dlg.showPressed(1, true);
+                    dlg.showAxis(0, 1);
+                    QTimer::singleShot(800, [&dlg, out] {
+                        dlg.grab().save(out);
+                        QCoreApplication::exit(0);
+                    });
+                    app.exec();
+                    return 0;
+                }
+                else if (step == "asktool" || step == "askrun" || step == "askhome") {
+                    // The Machine page's popups, grabbed on their own.
+                    const QString out = QString::fromLocal8Bit(argv[3]);
+                    QTimer::singleShot(800, [out] {
+                        if (QWidget *d = QApplication::activeModalWidget())
+                            d->grab().save(out);
+                        QCoreApplication::exit(0);
+                    });
+                    c2d::ShopAsk a;
+                    if (step == "askhome") {
+                        a.title = QStringLiteral("Machine");
+                        a.headline = QStringLiteral("Initialize first");
+                        a.body = QStringLiteral("The machine position is not known: an end stop "
+                                                "fired (ALARM:1).\n\nMeasuring on the BitSetter "
+                                                "uses machine positions, so press Initialize to "
+                                                "home, then try again.");
+                        a.cancelText.clear();
+                    } else if (step == "asktool") {
+                        a.title = QStringLiteral("Tool change");
+                        a.headline = QStringLiteral("Insert tool T2");
+                        a.body = QStringLiteral("Tighten the collet before you continue.");
+                        a.note = QStringLiteral("The BitSetter measures it, then the program "
+                                                "carries on.");
+                        a.okText = QStringLiteral("Measure and continue");
+                        a.cancelText = QStringLiteral("Stop the job");
+                    } else {
+                        a.title = QStringLiteral("Run program");
+                        a.headline = QStringLiteral("Stream 1st test.c2d to the machine?");
+                        a.body = QStringLiteral("3 toolpath(s), 6021 lines\n"
+                                                "X 20.0–160.0  Y 30.0–130.0  Z -4.0–5.0 · about 9:45"
+                                                "\n\n1 tool change(s): the machine parks at the "
+                                                "tool-change spot and prompts, then measures on "
+                                                "the BitSetter.");
+                        a.note = QStringLiteral("LIVE RUN: the spindle WILL start.");
+                        a.noteDanger = true;
+                        a.okText = QStringLiteral("▶ Start");
+                        a.defaultOk = false;
+                    }
+                    c2d::shopAsk(&w, a);
+                    return 0;
+                }
+                else if (step.startsWith("resize=")) {
+                    // resize=WxH after a page is up: what full screen or
+                    // maximizing does to a page that was laid out smaller.
+                    const QList<QByteArray> wh = step.mid(7).split('x');
+                    if (wh.size() == 2)
+                        w.resize(wh[0].toInt(), wh[1].toInt());
+                }
+                QCoreApplication::processEvents();
+            }
+        }
+        const QString out = QString::fromLocal8Bit(argv[3]);
+        int rc = 1;
+        QTimer::singleShot(1500, &w, [&] {
+            rc = w.grab().save(out) ? 0 : 1;
+            qInfo().noquote() << (rc == 0 ? QStringLiteral("SHOT_OK %1").arg(out)
+                                          : QStringLiteral("SHOT_FAILED"));
+            QCoreApplication::exit(rc);
+        });
+        app.exec();
+        return rc;
+    }
+
+    // --export-tiled <in.c2d> <outbase> [tile_height_mm]: headless tiled
+    // export, one complete program per tile: <outbase>_tile1.nc, _tile2.nc…
+    // Tile height defaults to the document's tile_height param.
+    if ((argc == 4 || argc == 5) && QByteArray(argv[1]) == "--export-tiled") {
+        c2d::Document doc;
+        QString err;
+        if (!doc.load(QString::fromLocal8Bit(argv[2]), &err)) {
+            qWarning() << "load failed:" << err;
+            return 1;
+        }
+        const double tileH = argc == 5 ? QByteArray(argv[4]).toDouble() : 0.0;
+        const c2d::TiledExport r =
+            c2d::exportTiled(doc, QString::fromLocal8Bit(argv[3]), tileH);
+        if (!r.error.isEmpty()) {
+            qWarning() << "tiled export failed:" << r.error << "skipped:" << r.skipped;
+            return r.done.isEmpty() ? 3 : 2;
+        }
+        qInfo() << "exported:" << r.done << "skipped:" << r.skipped
+                << "tile height:" << r.tileHeight << "tiles:" << r.files;
+        if (!r.stale.isEmpty())
+            qWarning() << "left over from an earlier, longer export, NOT part of "
+                          "this job:" << r.stale;
+        return 0;
+    }
+
+    // --export <in.c2d> <out.nc>: headless g-code export (CLI/scripting).
+    if (argc == 4 && QByteArray(argv[1]) == "--export") {
+        c2d::Document doc;
+        QString err;
+        if (!doc.load(QString::fromLocal8Bit(argv[2]), &err)) {
+            qWarning() << "load failed:" << err;
+            return 1;
+        }
+        const c2d::GcodeResult r = c2d::exportGcode(doc);
+        // exportGcode always returns a syntactically valid program, preamble
+        // and all, even when it machined nothing. Opening the output first
+        // would replace a known-good .nc with an empty one and only then
+        // report the failure.
+        if (r.done.isEmpty()) {
+            qWarning() << "nothing to export; skipped:" << r.skipped;
+            return 3;
+        }
+        const QByteArray bytes = r.gcode.toUtf8();
+        QFile f(QString::fromLocal8Bit(argv[3]));
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            qWarning() << "write failed:" << f.errorString();
+            return 2;
+        }
+        if (f.write(bytes) != bytes.size() || !f.flush()) {
+            qWarning() << "write failed:" << f.errorString();
+            return 2;
+        }
+        qInfo() << "exported:" << r.done << "skipped:" << r.skipped
+                << "lines:" << r.gcode.count(QChar('\n'));
+        return 0;
+    }
+
+    // Anything left starting with "--" is either an unknown mode or a known one
+    // with the wrong number of operands (Qt has already consumed its own
+    // options). Opening the GUI on it would silently do the wrong thing.
+    if (argc > 1 && QByteArray(argv[1]).startsWith("--")) {
+        std::fprintf(stderr, "unrecognised option or wrong number of arguments: %s\n\n",
+                     argv[1]);
+        printUsage();
+        return 2;
+    }
+
+    c2d::MainWindow w;
+    w.showStartupWindow();
+
+    // Open a file passed on the command line, or start on a blank design
+    // the size of the machine.
+    if (argc > 1)
+        w.openFile(QString::fromLocal8Bit(argv[1]));
+    else
+        w.newUntitled();
+
+    return app.exec();
+}

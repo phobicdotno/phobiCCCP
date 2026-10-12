@@ -1,0 +1,660 @@
+#include "grblstreamer.h"
+
+#include <QRegularExpression>
+#include <QSerialPort>
+#include <QSerialPortInfo>
+#include <QTimer>
+
+namespace c2d {
+
+// `M0 ;T<n>` is the tool-change pause the post emits. It is never sent to the
+// controller: the stream parks in front of it, the operator swaps the tool
+// (and the BitSetter measures it), then the stream continues.
+static const QString kToolMarker = QStringLiteral("@TOOL:");
+
+static int toolMarkerNumber(const QString &line)
+{
+    static const QRegularExpression re(QStringLiteral("^M0\\s*;\\s*T(\\d+)"));
+    const QRegularExpressionMatch m = re.match(line);
+    return m.hasMatch() ? m.captured(1).toInt() : -1;
+}
+
+GrblStreamer::GrblStreamer(QObject *parent)
+    : QObject(parent), m_statusTimer(new QTimer(this))
+{
+    qRegisterMetaType<c2d::MachineStatus>("c2d::MachineStatus");
+    m_statusTimer->setInterval(250);
+    connect(m_statusTimer, &QTimer::timeout, this, &GrblStreamer::requestStatus);
+}
+
+GrblStreamer::~GrblStreamer()
+{
+    disconnectPort();
+}
+
+QStringList GrblStreamer::availablePorts()
+{
+    QStringList out;
+    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts())
+        out << info.portName();
+    return out;
+}
+
+QStringList GrblStreamer::availablePortDetails()
+{
+    QStringList out;
+    for (const QSerialPortInfo &info : QSerialPortInfo::availablePorts()) {
+        QString d = info.description();
+        if (!info.manufacturer().isEmpty())
+            d = d.isEmpty() ? info.manufacturer()
+                            : QStringLiteral("%1, %2").arg(d, info.manufacturer());
+        out << (d.isEmpty() ? info.portName()
+                            : QStringLiteral("%1 — %2").arg(info.portName(), d));
+    }
+    return out;
+}
+
+bool GrblStreamer::connectPort(const QString &portName, int baud)
+{
+    disconnectPort();
+    m_port = new QSerialPort(portName, this);
+    m_port->setBaudRate(baud);
+    if (!m_port->open(QIODevice::ReadWrite)) {
+        emit errorOccurred(m_port->errorString());
+        delete m_port;
+        m_port = nullptr;
+        return false;
+    }
+    connect(m_port, &QSerialPort::readyRead, this, &GrblStreamer::onReadyRead);
+    connect(m_port, &QSerialPort::errorOccurred, this,
+            [this](QSerialPort::SerialPortError e) {
+        if (e == QSerialPort::NoError)
+            return;
+        emit errorOccurred(QStringLiteral("serial port error %1 (%2)")
+                               .arg(int(e), 0)
+                               .arg(m_port ? m_port->errorString() : QString()));
+        // The port is gone - cable pulled, adapter reset, permissions lost.
+        // Only reporting it leaves isConnected() true, m_streaming true and
+        // the status timer writing `?` into a dead handle, so the app claims
+        // the program is still running while the machine stalls mid-cut with
+        // the spindle live. Tear the connection down so the panel says so.
+        switch (e) {
+        case QSerialPort::ResourceError:
+        case QSerialPort::DeviceNotFoundError:
+        case QSerialPort::PermissionError:
+        case QSerialPort::NotOpenError:
+            disconnectPort();
+            break;
+        default:
+            break;
+        }
+    });
+    m_rx.clear();
+    m_status = MachineStatus();
+    m_adhocPending = 0;
+    m_statusTimer->start();
+    emit connected(portName);
+    return true;
+}
+
+void GrblStreamer::disconnectPort()
+{
+    m_statusTimer->stop();
+    if (m_port) {
+        m_port->close();
+        m_port->deleteLater();
+        m_port = nullptr;
+        const bool wasProgram = m_streaming, wasMacro = m_macroActive;
+        m_streaming = false;
+        m_waitingTool = -1;
+        m_macroActive = false;
+        m_macroQueue.clear();
+        m_adhocPending = 0;
+        m_adhocLines.clear();
+        m_status = MachineStatus();
+        if (wasMacro)
+            emit macroFinished(false);
+        if (wasProgram)
+            emit streamFinished(false);
+        emit disconnected();
+    }
+}
+
+bool GrblStreamer::isConnected() const
+{
+    return m_port && m_port->isOpen();
+}
+
+bool GrblStreamer::canSendCommand() const
+{
+    return isConnected() && !m_macroActive && (!m_streaming || m_waitingTool >= 0);
+}
+
+void GrblStreamer::writeLine(const QString &line)
+{
+    const QByteArray data = line.trimmed().toLatin1() + '\n';
+    m_port->write(data);
+    emit consoleLine(QStringLiteral("> %1").arg(line.trimmed()));
+}
+
+bool GrblStreamer::sendCommand(const QString &line)
+{
+    if (!canSendCommand())
+        return false;
+    const QString l = line.trimmed();
+    if (!l.isEmpty()) {
+        // Empty lines (the wake newline right after open) are sent uncounted:
+        // an Arduino-class board is still resetting then and would swallow it,
+        // and a lost ack would block every later stream and macro.
+        ++m_adhocPending;
+        m_adhocLines << l;
+        m_adhocClock.restart();
+    }
+    writeLine(l);
+    return true;
+}
+
+void GrblStreamer::requestStatus()
+{
+    if (isConnected())
+        m_port->write("?", 1);
+}
+
+void GrblStreamer::sendRealtime(char c)
+{
+    if (isConnected())
+        m_port->write(&c, 1);
+}
+
+void GrblStreamer::jogCancel()
+{
+    sendRealtime(char(0x85));
+}
+
+void GrblStreamer::startStream(const QStringList &lines)
+{
+    if (!isConnected() || m_streaming || m_macroActive)
+        return;
+    m_queue.clear();
+    for (const QString &l : lines) {
+        const QString s = l.trimmed();
+        // ( )-comment lines are never queued: Carbide's GRBL 1.1h build does
+        // not ack them (verified live — the ack stream stops dead at the
+        // first one, stalling char-counting). They're for humans anyway.
+        if (s.isEmpty() || s.startsWith(QChar('(')))
+            continue;
+        const int tool = toolMarkerNumber(s);
+        m_queue << (tool >= 0 ? kToolMarker + QString::number(tool) : s);
+    }
+    m_nextIndex = 0;
+    m_ackedCount = 0;
+    m_inflightSizes.clear();
+    m_inflightBytes = 0;
+    m_hadError = false;
+    m_waitingTool = -1;
+    m_streaming = !m_queue.isEmpty();
+    m_ackClock.start();
+    emit progressChanged(0, m_queue.size());
+    pump();
+}
+
+void GrblStreamer::continueAfterToolChange()
+{
+    if (!m_streaming || m_waitingTool < 0)
+        return;
+    // The park travel or the BitSetter probe is still running. Resuming here
+    // would put two writers on the line: pump() writes cutting moves while
+    // pumpMacro() is still working through M5 / G53 moves, the macro branch
+    // takes every ok before the stream branch sees it (so the stream never
+    // releases its inflight entries and wedges), and the macro's own lines are
+    // written with no byte accounting at all - past GRBL's 128-byte buffer.
+    if (m_macroActive) {
+        emit consoleLine(QStringLiteral("== still moving - wait for the tool "
+                                        "measurement to finish =="));
+        return;
+    }
+    m_waitingTool = -1;
+    m_ackClock.restart();
+    emit consoleLine(QStringLiteral("== tool change done, continuing =="));
+    pump();
+}
+
+// Everything in flight is void after a controller reset we did not ask for.
+// Drop the program and the macro, and tell whoever is listening that they
+// ended - unsuccessfully.
+void GrblStreamer::abortAfterReset()
+{
+    const bool wasProgram = m_streaming, wasMacro = m_macroActive;
+    m_streaming = false;
+    m_waitingTool = -1;
+    m_queue.clear();
+    m_inflightSizes.clear();
+    m_inflightBytes = 0;
+    m_macroActive = false;
+    m_macroInflight = false;
+    m_macroQueue.clear();
+    m_tloPending = (m_tlo != 0.0);
+    emit errorOccurred(QStringLiteral("controller reset: %1 stopped")
+                           .arg(wasProgram ? QStringLiteral("the program")
+                                           : QStringLiteral("the tool measurement")));
+    if (wasMacro)
+        emit macroFinished(false);
+    if (wasProgram)
+        emit streamFinished(false);
+}
+
+void GrblStreamer::pauseStream()
+{
+    if (isConnected())
+        m_port->write("!", 1);
+}
+
+void GrblStreamer::resumeStream()
+{
+    if (isConnected())
+        m_port->write("~", 1);
+}
+
+void GrblStreamer::abortStream(const QString &why, bool holdMachine)
+{
+    if (!m_streaming)
+        return;
+    // A feed hold decelerates to a stop and keeps the machine's position, so
+    // the operator can look at the job before deciding; ctrl-X would stop it
+    // too but lose the work coordinates with it.
+    if (holdMachine && isConnected()) {
+        const char hold = '!';
+        m_port->write(&hold, 1);
+    }
+    m_streaming = false;
+    m_waitingTool = -1;
+    m_queue.clear();
+    m_inflightSizes.clear();
+    m_inflightBytes = 0;
+    m_hadError = true;
+    emit errorOccurred(QStringLiteral("program stopped: %1").arg(why));
+    emit streamFinished(false);
+}
+
+void GrblStreamer::stopStream()
+{
+    if (!isConnected())
+        return;
+    const char reset = 0x18;                    // ctrl-X: GRBL soft reset
+    m_port->write(&reset, 1);
+    const bool wasProgram = m_streaming;
+    m_streaming = false;
+    m_waitingTool = -1;
+    m_queue.clear();
+    m_inflightSizes.clear();
+    m_inflightBytes = 0;
+    const bool wasMacro = m_macroActive;
+    m_macroActive = false;
+    m_macroInflight = false;
+    m_macroQueue.clear();
+    m_adhocPending = 0;                         // reset flushes GRBL's buffer
+    m_adhocLines.clear();
+    m_tloPending = (m_tlo != 0.0);              // GRBL forgets G43.1 on reset
+    emit consoleLine(QStringLiteral("> [soft reset]"));
+    if (wasMacro)
+        emit macroFinished(false);
+    if (wasProgram)
+        emit streamFinished(false);
+}
+
+void GrblStreamer::pump()
+{
+    while (m_streaming && m_waitingTool < 0 && m_adhocPending == 0
+           && m_nextIndex < m_queue.size()) {
+        const QString &line = m_queue.at(m_nextIndex);
+        if (line.startsWith(kToolMarker)) {
+            // Park only once everything before the marker has been acked, so
+            // the operator (and the probe macro) find the machine idle.
+            if (!m_inflightSizes.isEmpty())
+                break;
+            m_waitingTool = line.mid(kToolMarker.size()).toInt();
+            ++m_nextIndex;
+            ++m_ackedCount;                      // the marker counts as done
+            emit progressChanged(m_ackedCount, m_queue.size());
+            emit consoleLine(QStringLiteral("== tool change: T%1 ==").arg(m_waitingTool));
+            emit toolChangeRequested(m_waitingTool);
+            break;
+        }
+        if (m_conservative && !m_inflightSizes.isEmpty())
+            break;
+        const QByteArray data = line.toLatin1() + '\n';
+        // A line longer than the whole window can never satisfy the "wait for
+        // room" test, so waiting meant waiting for ever: nothing was written,
+        // so no ack could arrive, and the program stalled silently with the
+        // spindle running. Send it on its own once the window is empty --
+        // GRBL's own buffer is larger than ours and will answer it, with
+        // error:14 at worst, which keeps the byte accounting sound.
+        if (data.size() > RX_BUFFER) {
+            if (!m_inflightSizes.isEmpty())
+                break;                           // drain first, then send alone
+        } else if (m_inflightBytes + data.size() > RX_BUFFER) {
+            break;
+        }
+        m_port->write(data);
+        if (m_conservative)
+            emit consoleLine(QStringLiteral(">> %1").arg(line));
+        m_inflightSizes.append(data.size());
+        m_inflightBytes += data.size();
+        ++m_nextIndex;
+    }
+    if (m_streaming && m_waitingTool < 0 && m_ackedCount >= m_queue.size()) {
+        m_streaming = false;
+        emit streamFinished(!m_hadError);
+        flushTlo();
+    }
+}
+
+void GrblStreamer::startMacro(const QStringList &lines)
+{
+    if (!isConnected() || m_macroActive || (m_streaming && m_waitingTool < 0)) {
+        emit macroFinished(false);
+        return;
+    }
+    m_macroQueue.clear();
+    for (const QString &l : lines)
+        if (!l.trimmed().isEmpty())
+            m_macroQueue << l.trimmed();
+    m_macroActive = true;
+    m_macroInflight = false;
+    m_macroError = false;
+    pumpMacro();
+}
+
+void GrblStreamer::cancelMacro()
+{
+    if (!m_macroActive)
+        return;
+    m_macroQueue.clear();
+    m_macroActive = false;
+    m_macroSkipAck = m_macroInflight;     // its ok is still to come
+    m_macroInflight = false;
+    m_macroError = true;
+    emit macroFinished(false);
+}
+
+void GrblStreamer::pumpMacro()
+{
+    if (!m_macroActive || m_macroInflight || m_adhocPending > 0)
+        return;
+    if (m_macroQueue.isEmpty()) {
+        m_macroActive = false;
+        emit macroFinished(!m_macroError);
+        flushTlo();
+        return;
+    }
+    const QString line = m_macroQueue.takeFirst();
+    m_macroInflight = true;
+    writeLine(line);
+}
+
+QStringList GrblStreamer::measureToolLines(const BitSetterConfig &cfg, bool returnHome,
+                                          double returnX, double returnY)
+{
+    // Two touches like Carbide Motion: a fast one to find the button, back
+    // off, then a slow one for the number that matters. GRBL blocks the `ok`
+    // of a G38.2 until the probe cycle ends, so the macro naturally waits.
+    QStringList m;
+    m << QStringLiteral("M5")
+      << QStringLiteral("G90")
+      << QStringLiteral("G53 G0 Z%1").arg(cfg.safeZ, 0, 'f', 3)
+      << QStringLiteral("G53 G0 X%1 Y%2").arg(cfg.x, 0, 'f', 3).arg(cfg.y, 0, 'f', 3)
+      << QStringLiteral("G91 G38.2 Z-%1 F%2").arg(cfg.maxTravel, 0, 'f', 3).arg(cfg.fastFeed, 0, 'f', 0)
+      << QStringLiteral("G0 Z%1").arg(cfg.retract, 0, 'f', 3)
+      << QStringLiteral("G38.2 Z-%1 F%2").arg(cfg.retract + 2.0, 0, 'f', 3).arg(cfg.slowFeed, 0, 'f', 0)
+      << QStringLiteral("G90")
+      << QStringLiteral("G53 G0 Z%1").arg(cfg.safeZ, 0, 'f', 3);
+    if (returnHome)
+        m << QStringLiteral("G53 G0 X%1 Y%2").arg(returnX, 0, 'f', 3).arg(returnY, 0, 'f', 3);
+    return m;
+}
+
+QStringList GrblStreamer::toolChangeRehearsalLines(const BitSetterConfig &cfg, int tool)
+{
+    // No M2: there is no job to end, and the offset the measurement applied
+    // should be left exactly as it is for the operator to look at.
+    const QString safe = QStringLiteral("G53 G0 Z%1").arg(cfg.safeZ, 0, 'f', 3);
+    return {QStringLiteral("M5"), QStringLiteral("G90"), safe,
+            QStringLiteral("M0 ;T%1").arg(tool), safe, QStringLiteral("M5")};
+}
+
+void GrblStreamer::measureTool(const BitSetterConfig &cfg, bool returnHome,
+                               double returnX, double returnY)
+{
+    m_probeOk = false;
+    startMacro(measureToolLines(cfg, returnHome, returnX, returnY));
+}
+
+void GrblStreamer::applyToolLengthOffset(double mm)
+{
+    m_tlo = mm;
+    m_tloPending = true;
+    flushTlo();
+}
+
+void GrblStreamer::flushTlo()
+{
+    if (!m_tloPending || !canSendCommand())
+        return;                                 // busy: sent when the line frees up
+    m_tloPending = false;
+    ++m_adhocPending;
+    m_adhocLines << QStringLiteral("G43.1");
+    m_adhocClock.restart();
+    writeLine(QStringLiteral("G43.1 Z%1").arg(m_tlo, 0, 'f', 3));
+}
+
+void GrblStreamer::resyncAdhoc(const QString &why)
+{
+    if (m_adhocPending == 0)
+        return;
+    emit consoleLine(QStringLiteral("!! %1 — dropping %2 unanswered command(s)")
+                         .arg(why).arg(m_adhocPending));
+    m_adhocPending = 0;
+    m_adhocLines.clear();
+    pumpMacro();
+    pump();
+}
+
+qint64 GrblStreamer::msSinceAck() const
+{
+    return m_ackClock.isValid() ? m_ackClock.elapsed() : 0;
+}
+
+void GrblStreamer::onReadyRead()
+{
+    m_rx += m_port->readAll();
+    int nl;
+    while ((nl = m_rx.indexOf('\n')) >= 0) {
+        const QByteArray line = m_rx.left(nl).trimmed();
+        m_rx.remove(0, nl + 1);
+        if (!line.isEmpty())
+            handleLine(line);
+    }
+}
+
+void GrblStreamer::handleLine(const QByteArray &line)
+{
+    // `$$` listing: $130=1250.000. Kept for the jog limits.
+    if (line.startsWith('$') && line.contains('=')) {
+        const int eq = line.indexOf('=');
+        bool okN = false, okV = false;
+        const int n = line.mid(1, eq - 1).toInt(&okN);
+        const double v = line.mid(eq + 1).toDouble(&okV);
+        if (okN && okV)
+            m_settings.insert(n, v);
+    }
+    // Realtime status: <Idle|MPos:10.000,20.000,-1.000|FS:500,8000|WCO:0,0,0>
+    if (line.startsWith('<')) {
+        const QList<QByteArray> parts = line.mid(1).chopped(line.endsWith('>') ? 1 : 0).split('|');
+        MachineStatus st = m_status;
+        st.state = parts.isEmpty() ? QString() : QString::fromLatin1(parts.first());
+        st.probePin = false;
+        st.limitPins.clear();
+        bool haveM = false, haveW = false;
+        double px = 0, py = 0, pz = 0;
+        for (const QByteArray &p : parts) {
+            if (p.startsWith("WCO:")) {
+                const QList<QByteArray> c = p.mid(4).split(',');
+                if (c.size() >= 3) {
+                    m_wcoX = c.at(0).toDouble();
+                    m_wcoY = c.at(1).toDouble();
+                    m_wcoZ = c.at(2).toDouble();
+                }
+            } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
+                const QList<QByteArray> c = p.mid(5).split(',');
+                if (c.size() >= 3) {
+                    px = c.at(0).toDouble();
+                    py = c.at(1).toDouble();
+                    pz = c.at(2).toDouble();
+                    haveM = p.startsWith("MPos:");
+                    haveW = !haveM;
+                }
+            } else if (p.startsWith("FS:")) {
+                const QList<QByteArray> c = p.mid(3).split(',');
+                if (c.size() >= 2) {
+                    st.feed = c.at(0).toDouble();
+                    st.spindle = c.at(1).toDouble();
+                }
+            } else if (p.startsWith("Pn:")) {
+                st.probePin = p.contains('P');
+                for (char a : {'X', 'Y', 'Z', 'A'})
+                    if (p.indexOf(a, 3) >= 0)
+                        st.limitPins += QLatin1Char(a);
+            }
+        }
+        if (haveM) {
+            st.mx = px; st.my = py; st.mz = pz;
+            st.wx = px - m_wcoX; st.wy = py - m_wcoY; st.wz = pz - m_wcoZ;
+        } else if (haveW) {
+            st.wx = px; st.wy = py; st.wz = pz;
+            st.mx = px + m_wcoX; st.my = py + m_wcoY; st.mz = pz + m_wcoZ;
+        }
+        st.valid = true;
+        m_status = st;
+        // An ad-hoc line that is still unanswered while the controller sits
+        // Idle for seconds was never received (typical right after a DTR
+        // reset). Without this every stream and macro would wait forever.
+        if (m_adhocPending > 0 && st.state == QLatin1String("Idle")
+            && m_adhocClock.isValid() && m_adhocClock.elapsed() > 3000)
+            resyncAdhoc(QStringLiteral("no ack while Idle"));
+        emit statusReport(st.state, st.mx, st.my, st.mz);
+        emit statusChanged(st);
+        return;
+    }
+
+    emit consoleLine(QString::fromLatin1(line));
+
+    // Probe report precedes the G38.2's ok: [PRB:-5.000,-200.000,-80.123:1]
+    if (line.startsWith("[PRB:")) {
+        const QByteArray body = line.mid(5).chopped(line.endsWith(']') ? 1 : 0);
+        const int colon = body.lastIndexOf(':');
+        const QList<QByteArray> c = body.left(colon).split(',');
+        if (c.size() >= 3) {
+            m_probeOk = (colon >= 0 && body.mid(colon + 1).trimmed() == "1");
+            m_probeZ = c.at(2).toDouble();
+            emit probeResult(c.at(0).toDouble(), c.at(1).toDouble(), m_probeZ, m_probeOk);
+        }
+        return;
+    }
+
+    // After a reset GRBL forgets G43.1 (and nothing sent before the reset
+    // will be answered). Put the offset back once the controller is ready;
+    // if it boots into Alarm the $X / $H ack re-tries it.
+    if (line.startsWith("Grbl ")) {
+        m_adhocPending = 0;
+        m_adhocLines.clear();
+        // The controller rebooted under us - reset button, brown-out, a USB
+        // stall. Its RX buffer, modal state and G43.1 are gone and every line
+        // in flight will never be answered. Pushing the rest of the program at
+        // it would cut with the wrong modal state and the wrong tool offset;
+        // and because those acks never arrive, m_ackedCount would stay short
+        // of the queue for ever - progress frozen near 100%, streamFinished
+        // never emitted, canSendCommand() false, so even jog and $X are
+        // refused. Abort instead, and say so.
+        if (m_streaming || m_macroActive)
+            abortAfterReset();
+        if (m_tlo != 0.0) {
+            m_tloPending = true;
+            QTimer::singleShot(400, this, [this] { flushTlo(); });
+        }
+    }
+
+    const bool ok = (line == "ok");
+    const bool alarm = line.startsWith("ALARM:");
+    const bool err = line.startsWith("error:") || alarm;
+
+    if ((ok || err) && m_adhocPending > 0) {
+        --m_adhocPending;
+        m_adhocClock.restart();
+        const QString sent = m_adhocLines.isEmpty() ? QString() : m_adhocLines.takeFirst();
+        if (err)
+            emit errorOccurred(QString::fromLatin1(line));
+        // Unlock and homing both leave GRBL without the G43.1 it had.
+        if (ok && (sent == QLatin1String("$X") || sent == QLatin1String("$H")) && m_tlo != 0.0)
+            m_tloPending = true;
+        if (m_adhocPending == 0) {
+            flushTlo();
+            pumpMacro();
+            pump();
+        }
+        return;
+    }
+
+    if (m_macroSkipAck && (ok || err)) {
+        m_macroSkipAck = false;             // the cancelled macro's last line
+        return;
+    }
+    if (m_macroActive && (ok || err)) {
+        m_macroInflight = false;
+        if (err) {
+            m_macroError = true;
+            m_macroQueue.clear();
+            emit errorOccurred(QString::fromLatin1(line));
+        }
+        pumpMacro();
+        return;
+    }
+
+    // A critical alarm - a hard or soft limit, which is a routine event on a
+    // Shapeoko - is not a per-line error. GRBL stops, answers nothing but `?`
+    // until it is reset, and never acks the lines already in its buffer. It
+    // does not reboot, so the "Grbl " banner path above never fires. Counting
+    // the alarm as one ack and waiting for the others left m_streaming true
+    // for ever: progress frozen, streamFinished never emitted, and because
+    // canSendCommand() is false while streaming, unlock, homing and jog all
+    // silently did nothing.
+    if (alarm && m_streaming) {
+        abortStream(QString::fromLatin1(line)
+                        + QStringLiteral(" (reset the controller to continue)"),
+                    false);
+        return;
+    }
+
+    if ((ok || err) && m_streaming && !m_inflightSizes.isEmpty()) {
+        m_inflightBytes -= m_inflightSizes.takeFirst();
+        ++m_ackedCount;
+        m_ackClock.restart();
+        if (err) {
+            emit errorOccurred(QString::fromLatin1(line));
+            // GRBL throws the rejected block away and carries straight on with
+            // whatever else is in its buffer. If the rejected line was the
+            // retract, the next move is a rapid at cutting depth: 50 mm across
+            // the part with the tool 3 mm under the surface. Every other sender
+            // halts here, and so do we.
+            abortStream(QStringLiteral("%1 on line %2")
+                            .arg(QString::fromLatin1(line)).arg(m_ackedCount),
+                        true);
+            return;
+        }
+        emit progressChanged(m_ackedCount, m_queue.size());
+        pump();                                  // also handles completion
+    } else if (err) {
+        emit errorOccurred(QString::fromLatin1(line));
+    }
+}
+
+} // namespace c2d

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 2 x 1 inch page with a 200 x 100 viewBox: 1 user unit = 0.254 mm. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="2in" height="1in" viewBox="0 0 200 100">
+  <rect x="10" y="10" width="80" height="50" style="fill:none;stroke:#000"/>
+  <circle cx="150" cy="50" r="40"/>
+</svg>

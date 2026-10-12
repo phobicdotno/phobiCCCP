@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 100 x 80 mm page, 1 user unit = 1 mm. A cubic path inside a translated
+     group, a rounded rect inside a rotated group, and a text element that
+     must be ignored (and counted). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="80mm" viewBox="0 0 100 80">
+  <defs>
+    <linearGradient id="g"><stop offset="0" stop-color="#000"/></linearGradient>
+  </defs>
+  <g transform="translate(10,10)">
+    <path d="M0,0 C 20,0 20,20 40,20 L40,40 Z" fill="url(#g)"/>
+  </g>
+  <g transform="rotate(90 50 40)">
+    <rect x="60" y="10" width="20" height="10" rx="2"/>
+  </g>
+  <text x="5" y="75" font-size="6">ignored</text>
+</svg>
