@@ -1,6 +1,8 @@
 #include "toollibrarydialog.h"
 #include "tooldiagram.h"
 
+#include <algorithm>
+
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -8,6 +10,8 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSettings>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace c2d {
@@ -33,6 +37,44 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
     top->addWidget(new QLabel(QStringLiteral("Material"), this));
     top->addWidget(m_material, 1);
     lay->addLayout(top);
+
+    // Bit kinds, one icon each, in the order the library first lists them.
+    static const QHash<QString, QString> kindNames = {
+        {QStringLiteral("endmill"), QStringLiteral("End mill")},
+        {QStringLiteral("ball"), QStringLiteral("Ball")},
+        {QStringLiteral("vbit"), QStringLiteral("V-bit")},
+        {QStringLiteral("engraver"), QStringLiteral("Engraver")},
+        {QStringLiteral("roundover"), QStringLiteral("Corner round")}};
+    auto *kinds = new QHBoxLayout;
+    for (const LibraryTool &t : lib.tools()) {
+        if (m_kindOrder.contains(t.kind))
+            continue;
+        m_kindOrder << t.kind;
+        auto *b = new QToolButton(this);
+        b->setCheckable(true);
+        b->setIcon(toolKindIcon(t));
+        b->setIconSize(QSize(24, 36));
+        b->setText(kindNames.value(t.kind, t.kind));
+        b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        b->setProperty("kind", t.kind);
+        b->setToolTip(QStringLiteral("Show %1 bits; press several to list them in that order")
+                          .arg(b->text().toLower()));
+        connect(b, &QToolButton::toggled, this,
+                [this, kind = t.kind](bool on) { kindToggled(kind, on); });
+        m_kindButtons << b;
+        kinds->addWidget(b);
+    }
+    kinds->addStretch(1);
+    lay->addLayout(kinds);
+    const QStringList saved =
+        QSettings().value(QStringLiteral("ui/toolKinds")).toStringList();
+    for (const QString &k : saved)
+        if (m_kindOrder.contains(k) && !m_marked.contains(k))
+            m_marked << k;
+    for (QToolButton *b : m_kindButtons) {
+        const QSignalBlocker block(b);
+        b->setChecked(m_marked.contains(b->property("kind").toString()));
+    }
 
     auto *mid = new QHBoxLayout;
     m_list = new QListWidget(this);
@@ -76,12 +118,32 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
         m_list->setCurrentRow(0);
 }
 
+void ToolLibraryDialog::kindToggled(const QString &kind, bool on)
+{
+    m_marked.removeAll(kind);
+    if (on)
+        m_marked << kind;
+    QSettings().setValue(QStringLiteral("ui/toolKinds"), m_marked);
+    rebuildList();
+}
+
 void ToolLibraryDialog::rebuildList()
 {
     const QString q = m_search->text().trimmed();
     const int keep = selectedTool() ? selectedTool()->number : -1;
     m_list->clear();
-    for (const LibraryTool &t : m_lib.tools()) {
+    // Marked kinds first-pressed first; nothing marked lists every kind in
+    // the row's order. Within a kind the library's own order stays.
+    const QStringList order = m_marked.isEmpty() ? m_kindOrder : m_marked;
+    QVector<const LibraryTool *> tools;
+    for (const LibraryTool &t : m_lib.tools())
+        if (order.contains(t.kind))
+            tools << &t;
+    std::stable_sort(tools.begin(), tools.end(), [&order](auto *a, auto *b) {
+        return order.indexOf(a->kind) < order.indexOf(b->kind);
+    });
+    for (const LibraryTool *tp : tools) {
+        const LibraryTool &t = *tp;
         QString hay = QStringLiteral("#%1 %2 %3 %4 %5mm")
                           .arg(t.number).arg(t.name, t.kind, t.model).arg(t.diameter);
         if (!q.isEmpty() && !hay.contains(q, Qt::CaseInsensitive))

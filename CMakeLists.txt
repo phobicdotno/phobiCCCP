@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.0.7 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.0.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -177,6 +177,11 @@ if(Qt6Test_FOUND)
     add_executable(test_about tests/test_about.cpp src/aboutdialog.cpp data/tools.qrc)
     target_link_libraries(test_about PRIVATE phobicccp_core Qt6::Widgets)
     add_test(NAME about COMMAND test_about)
+    # Tool library popup: the bit-kind icons that sort the list.
+    add_executable(test_toollibrarydialog tests/test_toollibrarydialog.cpp
+                   src/toollibrarydialog.cpp src/tooldiagram.cpp data/tools.qrc)
+    target_link_libraries(test_toollibrarydialog PRIVATE phobicccp_core Qt6::Widgets)
+    add_test(NAME toollibrarydialog COMMAND test_toollibrarydialog)
     # Panel <-> canvas selection handover (needs the real widgets).
     add_executable(test_panels tests/test_panels.cpp src/canvas.cpp
                    src/toolpathpanel.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp)

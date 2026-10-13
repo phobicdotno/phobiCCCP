@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.0.8 (build 50) — 2026-10-13
+
+> Bit icons along the top of the tool library sort the bits
+
+**Tool library**
+- A row of bit icons along the top (end mill, ball, V-bit, engraver, corner
+  round): press one to list only those bits, press more to list them in the
+  order pressed, press again to unmark. Nothing pressed lists every bit,
+  grouped by kind. The choice is remembered.
+
 ## v1.0.7 (build 49) — 2026-10-12
 
 > Jog: tap moves one step, hold moves until you let go
