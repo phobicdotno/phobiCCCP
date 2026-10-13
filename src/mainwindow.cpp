@@ -1613,6 +1613,8 @@ void MainWindow::onExportGcode()
                                .replace(QChar('\n'), QStringLiteral("  ·  ")));
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
+    if (!r.notes.isEmpty())
+        msg += QStringLiteral("  (%1)").arg(r.notes.join(QStringLiteral("; ")));
     statusBar()->showMessage(msg, 8000);
 }
 

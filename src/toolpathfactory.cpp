@@ -222,6 +222,14 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("tolerance"), 0.01);
     }
 
+    // phobiCCCP keys: start where the toolpaths above left off (rest depth),
+    // keeping rest_overlap mm of overlap into their floor.
+    if (type == QLatin1String("pocket_toolpath") || type == QLatin1String("contour")
+        || cutout || adaptive) {
+        j.insert(QStringLiteral("rest_auto"), true);
+        j.insert(QStringLiteral("rest_overlap"), 1.0);
+    }
+
     QString stem = toolpathLabel(type) + QStringLiteral(" Toolpath");
     if (type == QLatin1String("contour")) {
         j.insert(QStringLiteral("climb"), false);

@@ -303,6 +303,73 @@ int main(int argc, char *argv[])
         check(approx(sameLen, fullLen, 1e-6), "rest with same-size tool = full pocket");
     }
 
+    // --- rest depth: a pocket inside an earlier pocket starts at its floor ----
+    {
+        auto levels = [](const QString &gcode) {
+            QList<double> zs;
+            for (const CutPoint &p : cutPoints(gcode)) {
+                bool seen = false;
+                for (double z : zs)
+                    if (approx(z, p.z, 1e-3))
+                        seen = true;
+                if (!seen)
+                    zs << p.z;
+            }
+            std::sort(zs.begin(), zs.end());
+            return zs;
+        };
+        auto has = [](const QList<double> &zs, double z) {
+            for (double v : zs)
+                if (std::fabs(v - z) < 1e-3)
+                    return true;
+            return false;
+        };
+        auto rig = [&](QPointF innerCentre, const QJsonObject &innerExtra) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("5.000")},
+                                              {"stepdown", 2.5}, {"name", QStringLiteral("A")}});
+            r.addShape(c2d::Element::makeRectangle(innerCentre, 20, 10, layer));
+            QJsonObject extra{{"stepover", 3.0}, {"end_depth", QStringLiteral("10.000")},
+                              {"stepdown", 2.5}, {"uuid", QStringLiteral("{tp-2}")},
+                              {"name", QStringLiteral("B")}};
+            for (const QString &k : innerExtra.keys())
+                extra.insert(k, innerExtra.value(k));
+            r.addToolpath("pocket_toolpath", extra);
+            return c2d::exportGcode(r.doc);
+        };
+        // Without rest_auto: B cuts from the top, 2.5 at a time.
+        c2d::GcodeResult g = rig({30, 20}, {});
+        QList<double> zs = levels(g.gcode);
+        check(g.done.size() == 2 && has(zs, -7.5) && !has(zs, -6.5), "no rest: inner pocket starts at the top");
+        // With it: A reaches 5, B starts 1 mm above that floor: 4, then 6.5, 9, 10.
+        g = rig({30, 20}, {{"rest_auto", true}, {"rest_overlap", 1.0}});
+        zs = levels(g.gcode);
+        std::fprintf(stderr, "rest depth levels:");
+        for (double z : zs)
+            std::fprintf(stderr, " %.2f", z);
+        std::fprintf(stderr, "\n  notes: %s\n  skipped: %s\n", qPrintable(g.notes.join("|")), qPrintable(g.skipped.join("|")));
+        check(g.done.size() == 2 && has(zs, -6.5) && has(zs, -9.0) && has(zs, -10.0) && !has(zs, -7.5),
+              "rest depth: inner pocket starts at the outer pocket's floor minus the overlap");
+        check(g.notes.size() == 1 && g.notes.first().startsWith(QStringLiteral("B: starts at 4.00 mm")),
+              "rest depth is reported");
+        // Only partly inside the first pocket: full depth kept, and said so.
+        g = rig({45, 20}, {{"rest_auto", true}});
+        zs = levels(g.gcode);
+        check(g.done.size() == 2 && has(zs, -7.5) && !has(zs, -6.5), "partly covered: full depth kept");
+        check(g.notes.size() == 1 && g.notes.first().contains(QStringLiteral("partly")), "partial coverage reported");
+        // Already as deep as the toolpaths above: with no overlap there is nothing left.
+        g = rig({30, 20}, {{"rest_auto", true}, {"rest_overlap", 0.0}, {"end_depth", QStringLiteral("5.000")}});
+        check(g.done.size() == 1 && g.skipped.size() == 1
+                  && g.skipped.first().contains(QStringLiteral("already cut to 5.00 mm")),
+              "fully cut above: left out");
+        // Same with 1 mm overlap: one finishing pass over the floor.
+        g = rig({30, 20}, {{"rest_auto", true}, {"rest_overlap", 1.0}, {"end_depth", QStringLiteral("5.000")}});
+        zs = levels(g.gcode);
+        check(g.done.size() == 2 && g.skipped.isEmpty() && !has(zs, -4.0) && has(zs, -5.0),
+              "fully cut above with overlap: one pass at the floor");
+    }
+
     // --- drilling: pecks at the circle center ------------------------------
     {
         Rig r;

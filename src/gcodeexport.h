@@ -27,6 +27,7 @@ struct GcodeResult {
     QString gcode;
     QStringList done;      // toolpath names emitted
     QStringList skipped;   // "name (reason)" for what was left out
+    QStringList notes;     // "name: ..." for what was changed on the way (rest depth)
     QVector<Op> ops;       // the machine operations, for on-canvas preview
     bool cancelled = false;   // abandoned part-way: `ops` and `gcode` are partial
 };

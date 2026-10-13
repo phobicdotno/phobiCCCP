@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.1.7 (build 58) — 2026-10-13
+
+> Rest depth: a toolpath starts where the toolpaths above it stopped, 1 mm overlap
+
+- New pocket, contour, cutout and adaptive toolpaths carry `rest_auto` (on) and
+  `rest_overlap` (1 mm). At export, a toolpath lying wholly inside what the
+  toolpaths above already cleared starts `rest_overlap` above their floor; one
+  whose floor is already reached is left out; one only partly inside keeps its
+  full depth and says so. Simulate uses the same result.
+- The export status line reports what was changed ("B: starts at 4.00 mm ...").
+- Old toolpaths without the key are exported exactly as before.
+
 ## v1.1.6 (build 57) — 2026-10-13
 
 > Status line one line up, clear of the shop screen's hidden bottom edge

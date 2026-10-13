@@ -348,6 +348,129 @@ static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
     return components(rest);
 }
 
+
+// ---- automatic rest depth ---------------------------------------------------
+//
+// Toolpaths that start where the ones above them stopped. Each ring toolpath
+// (pocket / contour / cutout) and each adaptive one leaves behind the region
+// its tool swept and the floor it reached. A later toolpath with `rest_auto`
+// whose every tool-centre point lies inside what was already cleared - inset
+// by its own radius, so the whole disc is in cut air - starts `rest_overlap`
+// above the deepest floor that covers it, instead of at the stock top. A
+// toolpath only partly inside keeps its full depth (that is the XY rest case,
+// a different job); one whose floor is already reached is left out.
+struct Cleared {
+    QPainterPath foot;   // material removed, as a region
+    double zBot = 0;     // the floor it reached (Z, negative down)
+};
+
+#ifdef HAVE_CLIPPER2
+static QPainterPath sweptRegion(const QList<QPolygonF> &centres, double toolR)
+{
+    // A closed ring is a joined polyline (offset both sides, no ends): toPath64
+    // drops its repeated closing point, so as an open path it would lose a side.
+    C2::Paths64 loops, open;
+    for (const QPolygonF &poly : centres) {
+        if (poly.size() < 2)
+            continue;
+        (poly.isClosed() && poly.size() > 3 ? loops : open).push_back(toPath64(poly));
+    }
+    C2::Paths64 all = C2::InflatePaths(loops, toolR * kScale, C2::JoinType::Round,
+                                       C2::EndType::Joined, 2.0, 10.0);
+    for (const C2::Path64 &p : C2::InflatePaths(open, toolR * kScale, C2::JoinType::Round,
+                                                C2::EndType::Round, 2.0, 10.0))
+        all.push_back(p);
+    return regionFromRings(ringsFromPaths(C2::Union(all, C2::FillRule::NonZero)));
+}
+
+static QPainterPath unionRegions(const QList<QPainterPath> &regions)
+{
+    C2::Paths64 ps;
+    for (const QPainterPath &r : regions)
+        for (const C2::Path64 &p : pathsOfRegion(r))
+            ps.push_back(p);
+    return regionFromRings(ringsFromPaths(C2::Union(ps, C2::FillRule::NonZero)));
+}
+#else
+static QPainterPath sweptRegion(const QList<QPolygonF> &centres, double toolR)
+{
+    QPainterPathStroker st;
+    st.setWidth(2 * toolR);
+    st.setJoinStyle(Qt::RoundJoin);
+    st.setCapStyle(Qt::RoundCap);
+    QPainterPath out;
+    for (const QPolygonF &poly : centres) {
+        if (poly.size() < 2)
+            continue;
+        QPainterPath c;
+        c.addPolygon(poly);
+        out = out.united(st.createStroke(c));
+    }
+    out = out.simplified();
+    out.setFillRule(Qt::OddEvenFill);
+    return out;
+}
+
+static QPainterPath unionRegions(const QList<QPainterPath> &regions)
+{
+    QPainterPath out;
+    for (const QPainterPath &r : regions)
+        out = out.united(r);
+    out = out.simplified();
+    out.setFillRule(Qt::OddEvenFill);
+    return out;
+}
+#endif
+
+enum class RestVerdict { Untouched, Raised, Done, Partial };
+
+// Deepest floor among `cleared` under which every point of `pts` (tool
+// centres of radius toolR) is in cut air; `*zTop` is lowered to that floor
+// plus `overlap`. Done: that leaves nothing above zBot.
+static RestVerdict restAdjust(const QList<Cleared> &cleared, const QVector<QPointF> &pts,
+                              double toolR, double overlap, double *zTop, double zBot,
+                              double *floor)
+{
+    if (cleared.isEmpty() || pts.isEmpty())
+        return RestVerdict::Untouched;
+    QList<double> floors;
+    for (const Cleared &c : cleared)
+        if (!floors.contains(c.zBot))
+            floors << c.zBot;
+    std::sort(floors.begin(), floors.end());          // deepest (most negative) first
+    bool anyInside = false;
+    for (double z : floors) {
+        QList<QPainterPath> regs;
+        for (const Cleared &c : cleared)
+            if (c.zBot <= z + 1e-6)
+                regs << c.foot;
+        const QPainterPath air = regionFromRings(insetRings(unionRegions(regs), qMax(0.0, toolR - 0.02)));
+        if (air.isEmpty())
+            continue;
+        // Even-odd over the ring polygons: QPainterPath::contains() is not
+        // reliable on rings with a repeated closing point.
+        const QList<QPolygonF> airPolys = air.toSubpathPolygons();
+        auto inAir = [&airPolys](const QPointF &p) {
+            int crossings = 0;
+            for (const QPolygonF &poly : airPolys)
+                if (poly.containsPoint(p, Qt::OddEvenFill))
+                    ++crossings;
+            return (crossings & 1) != 0;
+        };
+        int in = 0;
+        for (const QPointF &p : pts)
+            if (inAir(p))
+                ++in;
+        anyInside = anyInside || in > 0;
+        if (in == pts.size()) {
+            *floor = z;
+            *zTop = qMin(*zTop, z + overlap);
+            return *zTop <= zBot + 1e-6 ? RestVerdict::Done : RestVerdict::Raised;
+        }
+    }
+    return anyInside ? RestVerdict::Partial : RestVerdict::Untouched;
+}
+
 // Circular-ring detection: every vertex equidistant from the vertex centroid,
 // letting the ring go out as two G2/G3 half arcs instead of line segments.
 static bool asCircle(const QPolygonF &poly, QPointF *center, double *radius, bool *ccw)
@@ -1517,6 +1640,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         pendingTool = -1;
     };
 
+    QList<Cleared> cleared;   // what the toolpaths so far have removed (rest depth)
     const int tpTotal = int(doc.toolpaths().size());
     for (const Toolpath &t : doc.toolpaths()) {
         const QJsonObject j = t.json;
@@ -2108,6 +2232,49 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             }
             const double ramp = qBound(0.5, numOr(j.value("ramp_angle"), 2.0), 15.0);
             const double clear = 1.0;   // hops and plunges start this far above the last floor
+            {
+                QList<QPolygonF> centres;
+                QVector<QPointF> pts;
+                for (const adaptive::Move &m : plan.moves) {
+                    if (m.kind == adaptive::Move::Helix) {
+                        QPolygonF ring;
+                        for (int k = 0; k <= 16; ++k) {
+                            const double a = k * M_PI / 8;
+                            ring << m.center + m.radius * QPointF(qCos(a), qSin(a));
+                        }
+                        centres << ring;
+                        pts += ring;
+                    } else if (m.path.size() >= 2) {
+                        centres << m.path;
+                        pts += m.path;
+                    }
+                }
+                bool skipIt = false;
+                if (j.value("rest_auto").toBool(false)) {
+                    const double overlap = qBound(0.0, numOr(j.value("rest_overlap"), 1.0), 50.0);
+                    double floor = 0;
+                    switch (restAdjust(cleared, pts, toolR, overlap, &cp.zTop, cp.zBot, &floor)) {
+                    case RestVerdict::Done:
+                        res.skipped << QStringLiteral("%1 (already cut to %2 mm by the toolpaths above)")
+                                           .arg(name).arg(-floor, 0, 'f', 2);
+                        skipIt = true;
+                        break;
+                    case RestVerdict::Raised:
+                        res.notes << QStringLiteral("%1: starts at %2 mm, the toolpaths above cut to %3 mm")
+                                         .arg(name).arg(-cp.zTop, 0, 'f', 2).arg(-floor, 0, 'f', 2);
+                        break;
+                    case RestVerdict::Partial:
+                        res.notes << QStringLiteral("%1: only partly inside what the toolpaths above cut, full depth kept")
+                                         .arg(name);
+                        break;
+                    case RestVerdict::Untouched:
+                        break;
+                    }
+                }
+                cleared.append({sweptRegion(centres, toolR), cp.zBot});
+                if (skipIt)
+                    continue;
+            }
             double prevZ = cp.zTop;
             while (prevZ > cp.zBot + 1e-9) {
                 const double z = qMax(cp.zBot, prevZ - cp.stepdown);
@@ -2631,6 +2798,43 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     }
                 }
             }
+        }
+
+        if (!jobs.isEmpty() && (pocket || contour || cutout)) {
+            // Rest depth: start where the toolpaths above left off.
+            QList<QPolygonF> centres;
+            QVector<QPointF> pts;
+            for (const Job &job : jobs) {
+                for (const QPolygonF &r : job.rings) { centres << r; pts += r; }
+                for (const QPolygonF &r : job.finish) { centres << r; pts += r; }
+                if (job.helix.on)
+                    for (int k = 0; k < 8; ++k) {
+                        const double a = k * M_PI / 4;
+                        const QPointF hp = job.helix.c + job.helix.r * QPointF(qCos(a), qSin(a));
+                        pts << hp;
+                    }
+            }
+            if (j.value("rest_auto").toBool(false)) {
+                const double overlap = qBound(0.0, numOr(j.value("rest_overlap"), 1.0), 50.0);
+                double floor = 0;
+                switch (restAdjust(cleared, pts, toolR, overlap, &cp.zTop, cp.zBot, &floor)) {
+                case RestVerdict::Done:
+                    res.skipped << QStringLiteral("%1 (already cut to %2 mm by the toolpaths above)")
+                                       .arg(name).arg(-floor, 0, 'f', 2);
+                    continue;
+                case RestVerdict::Raised:
+                    res.notes << QStringLiteral("%1: starts at %2 mm, the toolpaths above cut to %3 mm")
+                                     .arg(name).arg(-cp.zTop, 0, 'f', 2).arg(-floor, 0, 'f', 2);
+                    break;
+                case RestVerdict::Partial:
+                    res.notes << QStringLiteral("%1: only partly inside what the toolpaths above cut, full depth kept")
+                                     .arg(name);
+                    break;
+                case RestVerdict::Untouched:
+                    break;
+                }
+            }
+            cleared.append({sweptRegion(centres, toolR), cp.zBot});
         }
 
         if (!jobs.isEmpty()) {
