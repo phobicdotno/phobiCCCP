@@ -284,6 +284,23 @@ int main(int argc, char **argv)
             check(bad.ok, "dxf: half a fit-point spline still imports the rest");
             check(bad.elements.size() == 1, "dxf: the unusable spline is dropped, the line kept");
         }
+        // Four LINEs that make a square (in any order and direction) plus one
+        // loose line: the square comes back as one closed path.
+        {
+            const QByteArray dxf =
+                "0\nSECTION\n2\nENTITIES\n"
+                "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n10\n21\n0\n"
+                "0\nLINE\n8\n0\n10\n0\n20\n10\n11\n0\n21\n0\n"
+                "0\nLINE\n8\n0\n10\n10\n20\n10\n11\n10\n21\n0\n"
+                "0\nLINE\n8\n0\n10\n0\n20\n10\n11\n10\n21\n10\n"
+                "0\nLINE\n8\n0\n10\n30\n20\n30\n11\n40\n21\n35\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult sq = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("square"));
+            check(sq.ok && sq.elements.size() == 2, "dxf: four touching lines join into one shape");
+            check(isClosed(sq.elements.at(0)) && countType(sq.elements.at(0), 1) == 4,
+                  "dxf: the joined square is closed with four sides");
+            check(!isClosed(sq.elements.at(1)), "dxf: the loose line stays open");
+        }
         r = c2d::importDxfData("garbage\n", opts(0, 0), QStringLiteral("x"));
         check(!r.ok, "non-dxf rejected");
         r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg'/>", opts(0, 0));

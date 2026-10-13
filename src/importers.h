@@ -64,6 +64,11 @@ QString importFileFilter();                // for file dialogs
 // One CC `path` element per subpath of `p` (mm, Y-up). A subpath whose last
 // point coincides with its first is written closed (line-back + close row).
 QVector<Element> elementsFromPath(const QPainterPath &p, const QJsonObject &layer);
+// Chain open subpaths whose ends meet (within `tol` mm) into one subpath each,
+// closed when the chain comes back to its start. CAD exports write a square as
+// four LINE entities; this turns them back into one closed shape, so pockets,
+// the Area tool and offsets see an outline instead of loose edges.
+QPainterPath joinSubpaths(const QPainterPath &p, double tol = 0.01);
 // Elliptical arc as cubic beziers appended to `path` (starts with moveTo when
 // `path` is empty or `startNew`). Angles in radians, sweep signed (CCW > 0 in a
 // Y-up frame). `rotation` rotates the ellipse axes.

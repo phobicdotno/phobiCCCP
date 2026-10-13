@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.1.5 (build 56) — 2026-10-13
+
+> Imported DXF edges are joined into closed shapes, so Area select and pockets work on them
+
+- A CAD export writes a square as four LINE entities; the importer now chains touching
+  segments into one path and closes it when it comes back to its start.
+- Canvas test for the Area tool (outer shape, island, nested island, Shift add).
+
 ## v1.1.4 (build 55) — 2026-10-13
 
 > Tool library prices and stock, Open Recent for DXFs, update dialog with notes and %

@@ -537,6 +537,42 @@ int main(int argc, char *argv[])
         check(doc.elements().size() == n, "missed edge pick and Esc add nothing");
     }
 
+    // --- Area tool: click inside a closed shape selects it and its islands ----------
+    {
+        c2d::Document adoc;
+        c2d::Canvas ac;
+        ac.resize(900, 700);
+        ac.show();
+        ac.setDocument(&adoc);
+        ac.resetTransform();
+        ac.scale(3, -3);
+        ac.centerOn(QPointF(100, 100));
+        const c2d::Element outer = c2d::Element::makeRectangle({100, 100}, 120, 100, adoc.defaultLayer());
+        const c2d::Element hole = c2d::Element::makeCircle({80, 100}, 15, adoc.defaultLayer());
+        const c2d::Element inHole = c2d::Element::makeCircle({80, 100}, 5, adoc.defaultLayer());
+        const c2d::Element other = c2d::Element::makeRectangle({300, 300}, 20, 20, adoc.defaultLayer());
+        for (const auto &e : {outer, hole, inHole, other})
+            adoc.addElement(e);
+        ac.rebuild();
+        ac.setTool(c2d::Canvas::SelectArea);
+        click(&ac, {130, 100});                     // inside the rectangle, outside the hole
+        QStringList got = ac.selectedElementIds();
+        got.sort();
+        QStringList want{outer.id, hole.id};
+        want.sort();
+        check(got == want, "area click selects the rectangle and its island, not the nested one");
+        click(&ac, {80, 100});                      // inside the small circle
+        check(ac.selectedElementIds() == QStringList{inHole.id}, "area click picks the innermost shape");
+        QTest::mouseClick(ac.viewport(), Qt::LeftButton, Qt::ShiftModifier, vp(&ac, {300, 300}));
+        got = ac.selectedElementIds();
+        got.sort();
+        want = {inHole.id, other.id};
+        want.sort();
+        check(got == want, "Shift adds the next area");
+        click(&ac, {600, 600});                     // empty space
+        check(ac.selectedElementIds().isEmpty(), "area click on nothing clears");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

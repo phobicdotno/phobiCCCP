@@ -52,6 +52,91 @@ QString ImportResult::summary() const
 // (type 3) carries its two control points in cp1/cp2; a closed contour ends
 // with a segment arriving at the start followed by a close row (type 4,
 // smooth 1). Coordinates are absolute, position [0,0].
+QPainterPath joinSubpaths(const QPainterPath &p, double tol)
+{
+    struct Seg { bool curve; QPointF a, c1, c2, b; };
+    struct Sub { QVector<Seg> segs; bool closed; };
+    QVector<Sub> subs;
+    QPointF start;
+    for (int i = 0; i < p.elementCount(); ++i) {
+        const QPainterPath::Element e = p.elementAt(i);
+        if (e.isMoveTo()) {
+            start = QPointF(e.x, e.y);
+            subs.append({{}, false});
+        } else if (subs.isEmpty()) {
+            continue;
+        } else if (e.isLineTo()) {
+            const QPointF prev = subs.last().segs.isEmpty() ? start : subs.last().segs.last().b;
+            subs.last().segs.append({false, prev, prev, QPointF(e.x, e.y), QPointF(e.x, e.y)});
+        } else if (e.isCurveTo() && i + 2 < p.elementCount()) {
+            const QPointF prev = subs.last().segs.isEmpty() ? start : subs.last().segs.last().b;
+            const QPainterPath::Element c2 = p.elementAt(i + 1), end = p.elementAt(i + 2);
+            subs.last().segs.append({true, prev, QPointF(e.x, e.y), QPointF(c2.x, c2.y),
+                                     QPointF(end.x, end.y)});
+            i += 2;
+        }
+    }
+    for (Sub &s : subs)
+        s.closed = !s.segs.isEmpty() && samePoint(s.segs.first().a, s.segs.last().b, tol);
+
+    auto reversed = [](QVector<Seg> v) {
+        std::reverse(v.begin(), v.end());
+        for (Seg &g : v) {
+            std::swap(g.a, g.b);
+            std::swap(g.c1, g.c2);
+        }
+        return v;
+    };
+    QVector<bool> used(subs.size(), false);
+    QPainterPath out;
+    auto write = [&out](const QVector<Seg> &segs, bool close) {
+        out.moveTo(segs.first().a);
+        for (const Seg &g : segs)
+            if (g.curve)
+                out.cubicTo(g.c1, g.c2, g.b);
+            else
+                out.lineTo(g.b);
+        if (close)
+            out.closeSubpath();
+    };
+    for (int i = 0; i < subs.size(); ++i) {
+        if (used[i] || subs[i].segs.isEmpty())
+            continue;
+        used[i] = true;
+        if (subs[i].closed) {
+            write(subs[i].segs, false);
+            continue;
+        }
+        QVector<Seg> chain = subs[i].segs;
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (int j = 0; j < subs.size(); ++j) {
+                if (used[j] || subs[j].closed || subs[j].segs.isEmpty())
+                    continue;
+                const QVector<Seg> &o = subs[j].segs;
+                if (samePoint(chain.last().b, o.first().a, tol)) {
+                    chain += o;
+                } else if (samePoint(chain.last().b, o.last().b, tol)) {
+                    chain += reversed(o);
+                } else if (samePoint(chain.first().a, o.last().b, tol)) {
+                    chain = o + chain;
+                } else if (samePoint(chain.first().a, o.first().a, tol)) {
+                    chain = reversed(o) + chain;
+                } else {
+                    continue;
+                }
+                used[j] = true;
+                grew = true;
+            }
+        }
+        const bool close = chain.size() > 1 && samePoint(chain.first().a, chain.last().b, tol);
+        if (close)
+            chain.last().b = chain.first().a;
+        write(chain, close);
+    }
+    return out;
+}
+
 QVector<Element> elementsFromPath(const QPainterPath &p, const QJsonObject &layer)
 {
     struct Row { int type; QPointF pt, c1, c2; };
@@ -181,7 +266,7 @@ static void finish(ImportResult &res, QPainterPath mm, const ImportOptions &opt)
         bb = mm.boundingRect();
         res.relocated = true;
     }
-    res.elements = elementsFromPath(mm, opt.layer);
+    res.elements = elementsFromPath(joinSubpaths(mm), opt.layer);
     res.bounds = bb;
     res.ok = true;
 }
