@@ -12,6 +12,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Commits must be authored and committed by a person. Reject anything signed
+  # as Claude / anthropic.com or carrying a Claude co-author or session trailer.
+  commit-identity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reject Claude-authored commits
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE" ]; then
+            range="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            range="$BEFORE..HEAD"
+          else
+            range="HEAD --not origin/main"
+          fi
+          bad=0
+          for c in $(git rev-list $range); do
+            who=$(git log -1 --format='%an <%ae>%n%cn <%ce>' "$c")
+            body=$(git log -1 --format='%B' "$c")
+            if echo "$who" | grep -qiE '^claude <|@anthropic\.com>' ||
+               echo "$body" | grep -qiE '^co-authored-by:.*(claude|anthropic)|^claude-session:|claude\.ai/code|generated with \[?claude'; then
+              echo "::error::$(git log -1 --format='%h %an <%ae>: %s' "$c")"
+              bad=1
+            fi
+          done
+          exit $bad
+
   build-and-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
