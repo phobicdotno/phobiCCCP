@@ -8,6 +8,8 @@
 #include "exportprogress.h"
 #include "c2ddocument.h"
 #include "gcodeexport.h"
+#include "surfacemap.h"
+#include "post_grbl.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -644,7 +646,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     moreToggle->setAutoRaise(true);
     moreToggle->setArrowType(Qt::RightArrow);
     moreToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    moreToggle->setText(QStringLiteral("Feed override, air cut"));
+    moreToggle->setText(QStringLiteral("Feed override, air cut, surface map"));
     moreToggle->setFocusPolicy(Qt::NoFocus);
     bv->addWidget(moreToggle);
     auto *more = new QWidget(jobCard);
@@ -676,6 +678,23 @@ MachinePanel::MachinePanel(QWidget *parent)
     airRow->addWidget(m_airLift);
     airRow->addStretch(1);
     mv->addLayout(airRow);
+    // Surface map, measured on the BitZero page; on or off for each job.
+    auto *mapRow = new QHBoxLayout;
+    m_useMap = new QCheckBox(QStringLiteral("Surface map"), more);
+    m_useMap->setToolTip(QStringLiteral(
+        "Raise or lower every Z by the measured surface at its XY, so the job "
+        "follows a table or board that is not flat. Measure it under Probe zero "
+        "(BitZero) → Surface map."));
+    m_mapLabel = new QLabel(more);
+    m_mapLabel->setStyleSheet(QStringLiteral("color: #8b93a1; font-size: 12px;"));
+    m_mapLabel->setWordWrap(true);
+    mapRow->addWidget(m_useMap);
+    mapRow->addWidget(m_mapLabel, 1);
+    mv->addLayout(mapRow);
+    connect(m_useMap, &QCheckBox::toggled, this, [this](bool on) {
+        if (!m_loading)
+            QSettings().setValue(QStringLiteral("machine/heightmap/use"), on);
+    });
     more->hide();
     bv->addWidget(more);
     connect(moreToggle, &QToolButton::toggled, this, [more, moreToggle](bool on) {
@@ -855,6 +874,43 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_bzPanel, &BitZeroPanel::beginRequested, this, [this] { bitZeroBegin(); });
     connect(m_bzPanel, &BitZeroPanel::backRequested, this,
             [this] { m_rightStack->setCurrentWidget(m_jobPage); });
+
+    // ---- Surface map (run from the BitZero page) ---------------------------
+    m_mapper = new SurfaceMapProber(m_grbl, this);
+    connect(m_mapper, &SurfaceMapProber::waitingForPlate, this, [this](int i, int n) {
+        m_bzPanel->setBusy(false);
+        m_bzPanel->setMapWaiting(i, n);
+        log(QStringLiteral("surface map: over point %1 of %2. Put the plate under the "
+                           "tool, then press Probe point").arg(i).arg(n));
+    });
+    connect(m_mapper, &SurfaceMapProber::probing, this, [this](int, int) {
+        m_bzPanel->setBusy(true);
+    });
+    connect(m_mapper, &SurfaceMapProber::pointMeasured, this,
+            [this](int i, int n, double x, double y, double z) {
+        log(QStringLiteral("surface map: point %1 of %2 at X%3 Y%4 → stock top machine Z%5")
+                .arg(i).arg(n).arg(x, 0, 'f', 1).arg(y, 0, 'f', 1).arg(z, 0, 'f', 3));
+    });
+    connect(m_mapper, &SurfaceMapProber::finished, this, [this](const SurfaceMap &map) {
+        m_bzPanel->setMapWaiting(0, 0);
+        m_bzPanel->setBusy(false);
+        setSurfaceMap(map);
+        m_useMap->setChecked(true);
+        log(QStringLiteral("surface map: done, %1. It is on for the job; remove the plate "
+                           "and the magnet before cutting").arg(map.summary()));
+    });
+    connect(m_mapper, &SurfaceMapProber::failed, this, [this](const QString &why) {
+        log(QStringLiteral("!! surface map: %1").arg(why));
+        if (!m_mapper->isRunning())
+            m_bzPanel->setMapWaiting(0, 0);
+        m_bzPanel->setBusy(false);
+    });
+    connect(m_bzPanel, &BitZeroPanel::cancelMapRequested, this, [this] {
+        m_mapper->cancel();
+        m_bzPanel->setMapWaiting(0, 0);
+        m_bzPanel->setBusy(false);
+        log(QStringLiteral("surface map: stopped; the map in use is unchanged"));
+    });
 
     // ---- Program -----------------------------------------------------------
     connect(m_runBtn, &QPushButton::clicked, this, [this] {
@@ -1066,6 +1122,16 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_holdRepeat, &QTimer::timeout, this, [this] { jogIncrement(); });
 
     loadSettings();
+    {
+        const SurfaceMap saved = SurfaceMap::fromJson(
+            QSettings().value(QStringLiteral("machine/heightmap/map")).toString());
+        m_loading = true;
+        m_map = saved;
+        m_useMap->setChecked(saved.isValid()
+                             && QSettings().value(QStringLiteral("machine/heightmap/use"), false).toBool());
+        m_loading = false;
+        refreshMapUi();
+    }
     loadGamepadMapping();
     updateOffsetLabels();
     refreshPorts();
@@ -1325,6 +1391,8 @@ void MachinePanel::focusOutEvent(QFocusEvent *event)
 
 void MachinePanel::openBitZero()
 {
+    if (m_doc && !m_mapper->isRunning())
+        m_bzPanel->setStockSize(m_doc->boardWidth(), m_doc->boardHeight());
     m_bzPanel->setConnected(m_grbl->isConnected());
     if (m_grbl->status().valid)
         m_bzPanel->setContact(m_grbl->status().probePin, true);
@@ -1402,6 +1470,16 @@ void MachinePanel::bitZeroBegin()
         return;
     if (!m_grbl->canSendCommand()) {
         log(QStringLiteral("!! busy — cannot probe now"));
+        return;
+    }
+    if (m_mapper->isWaiting()) {
+        m_bzPanel->setBusy(true);
+        m_mapper->probeNext();
+        return;
+    }
+    if (m_bzPanel->mode() == BitZeroPanel::Map) {
+        stopHoldJog();
+        startSurfaceMap();
         return;
     }
     const MachineStatus st = m_grbl->status();
@@ -1683,6 +1761,51 @@ void MachinePanel::bitZeroApply()
         if (m_rightStack)
             m_rightStack->setCurrentWidget(m_jobPage);
     });
+}
+
+// ---- Surface map --------------------------------------------------------
+//
+// The plate (or the stock itself, when it conducts) touched at a grid of
+// points; SurfaceMapProber runs the moves and touches, this keeps the result.
+
+void MachinePanel::startSurfaceMap()
+{
+    if (m_grbl->status().valid && m_grbl->status().probePin) {
+        log(QStringLiteral("!! the probe input is already closed — move the tool clear "
+                           "of the plate and retry"));
+        return;
+    }
+    const SurfaceMapPlan plan = m_bzPanel->mapPlan();
+    log(QStringLiteral("surface map: %1 × %2 points over X%3–%4 Y%5–%6, travelling at "
+                       "work Z%7%8")
+            .arg(plan.cols).arg(plan.rows)
+            .arg(plan.x0, 0, 'f', 1).arg(plan.x1, 0, 'f', 1)
+            .arg(plan.y0, 0, 'f', 1).arg(plan.y1, 0, 'f', 1)
+            .arg(plan.travelZ(), 0, 'f', 1)
+            .arg(plan.pauseEachPoint ? QStringLiteral(", stopping at each point for the plate")
+                                     : QStringLiteral(", touching the stock directly")));
+    m_bzPanel->setBusy(true);
+    m_mapper->start(plan);
+}
+
+void MachinePanel::setSurfaceMap(const SurfaceMap &map)
+{
+    m_map = map;
+    QSettings().setValue(QStringLiteral("machine/heightmap/map"),
+                         map.isValid() ? map.toJson() : QString());
+    refreshMapUi();
+}
+
+void MachinePanel::refreshMapUi()
+{
+    const bool have = m_map.isValid();
+    if (!have)
+        m_useMap->setChecked(false);
+    m_useMap->setEnabled(have);
+    const QString text = have ? m_map.summary()
+                              : QStringLiteral("not measured: Probe zero (BitZero) → Surface map");
+    m_mapLabel->setText(text);
+    m_bzPanel->setMapSummary(have ? QStringLiteral("Map in use: %1").arg(text) : QString());
 }
 
 void MachinePanel::showPage(const QString &name)
@@ -2579,7 +2702,16 @@ void MachinePanel::runProgram()
         shopTell(this, QStringLiteral("Machine"), QStringLiteral("No exportable toolpaths."));
         return;
     }
-    QStringList lines = r.gcode.split(QChar('\n'), Qt::SkipEmptyParts);
+    // Surface map: every Z follows the measured surface. Applied to the
+    // operations and posted again, so feeds are cut up along the way.
+    QVector<Op> ops = r.ops;
+    QString gcode = r.gcode;
+    const bool useMap = m_useMap->isChecked() && m_map.isValid();
+    if (useMap) {
+        ops = applySurfaceMap(r.ops, m_map);
+        gcode = GrblPost(true).generate(ops);
+    }
+    QStringList lines = gcode.split(QChar('\n'), Qt::SkipEmptyParts);
     const bool air = m_airCut->isChecked();
     if (air)
         lines = airCutTransform(lines, m_airLift->value());
@@ -2615,7 +2747,7 @@ void MachinePanel::runProgram()
                                 : QFileInfo(m_doc->filePath()).fileName());
     ask.body = QStringLiteral("%1 toolpath(s), %2 lines\n%3")
                    .arg(r.done.size()).arg(lines.size())
-                   .arg(statsSummary(computeStats(r.ops)));
+                   .arg(statsSummary(computeStats(ops)));
     if (npause > 0)
         ask.body += QStringLiteral("\n\n%1 tool change(s): the machine parks at the "
                                    "tool-change spot and prompts%2.")
@@ -2623,6 +2755,19 @@ void MachinePanel::runProgram()
                         .arg(m_bsEnabled->isChecked()
                                  ? QStringLiteral(", then measures on the BitSetter")
                                  : QString());
+    if (useMap) {
+        ask.body += QStringLiteral("\n\nSurface map on: Z follows the measured surface (%1).")
+                        .arg(m_map.summary());
+        // Cutting moves only: the rapids to and from X0 Y0 lie outside any
+        // grid that keeps clear of the stock edges.
+        bool outside = false;
+        for (const Op &o : r.ops)
+            if ((o.kind == Op::Feed || o.kind == Op::Arc) && !m_map.covers(o.x, o.y, 1.0))
+                outside = true;
+        if (outside)
+            ask.body += QStringLiteral(" The job reaches past the mapped area; the edge "
+                                       "heights are held there.");
+    }
     if (air) {
         ask.note = QStringLiteral("AIR CUT: spindle stripped, all Z +%1 mm")
                        .arg(m_airLift->value(), 0, 'f', 1);
@@ -2635,6 +2780,8 @@ void MachinePanel::runProgram()
     if (!shopAsk(this, ask))
         return;
 
+    if (useMap)
+        log(QStringLiteral("surface map applied: %1").arg(m_map.summary()));
     if (air)
         log(QStringLiteral("air cut: spindle off, Z lifted %1 mm").arg(m_airLift->value(), 0, 'f', 1));
     m_held = false;

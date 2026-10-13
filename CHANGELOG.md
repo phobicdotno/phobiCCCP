@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.1.0 (build 51) — 2026-10-13
+
+> Surface map: the BitZero measures a grid, and Z follows the surface
+
+**Surface map (BitZero height compensation)**
+- New **Surface map** cycle on the BitZero page: the tool travels over a grid
+  of points across the stock (1–15 across × 1–15 deep, 3 × 3 by default, 10 mm
+  in from the edges) and stops over each one; put the BitZero under it and
+  press *Probe point*. For aluminium or PCB, *Touch the stock itself* probes
+  every point without stopping.
+- The heights are interpolated bilinearly between the points (the edge value
+  is held outside them) and counted from the height at X0 Y0, where the corner
+  probe sets Z0. The map is kept between sessions and survives tool changes
+  and re-zeroing at the corner.
+- **Surface map** tick under the job (Feed override, air cut, surface map):
+  at Start every Z is raised or lowered by the surface under it. Feeds are cut
+  into pieces of at most 3 mm and arcs into chords (within 0.005 mm) so Z
+  follows the surface along the way; rapids keep their single move. The Start
+  confirmation says when the map is on and when the job reaches past it.
+- `phobicccp --grbl-map` runs the cycle headless; the machine-flow test maps a
+  tilted surface on the GRBL simulator (`grblsim.py --surface`).
+
 ## v1.0.8 (build 50) — 2026-10-13
 
 > Tool library: bit icons sort the bits; collections with save and load

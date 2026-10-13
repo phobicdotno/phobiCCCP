@@ -1,6 +1,7 @@
 #include "bitzeropanel.h"
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -8,8 +9,11 @@
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
+#include <QSpinBox>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace c2d {
 
@@ -94,12 +98,75 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
         m_modes->addButton(b, i);
         modeGrid->addWidget(b, 0, i);
     }
+    {
+        QToolButton *b = toggle(modeBox, QStringLiteral("Surface map (grid of Z)"));
+        m_modes->addButton(b, Map);
+        modeGrid->addWidget(b, 1, 0, 1, 4);
+    }
     lay->addWidget(modeBox);
 
     m_help = new QLabel(this);
     m_help->setWordWrap(true);
     m_help->setStyleSheet(QStringLiteral("color: #a3abb8;"));
     lay->addWidget(m_help);
+
+    // Surface map: the grid, and how high to travel between its points.
+    m_mapBox = new QWidget(this);
+    auto *mapForm = new QFormLayout(m_mapBox);
+    mapForm->setContentsMargins(0, 0, 0, 0);
+    mapForm->setHorizontalSpacing(10);
+    mapForm->setVerticalSpacing(6);
+    auto intSpin = [this](int lo, int hi, const QString &suffix) {
+        auto *s = new QSpinBox(m_mapBox);
+        s->setRange(lo, hi);
+        s->setSuffix(suffix);
+        s->setMinimumHeight(32);
+        return s;
+    };
+    auto *gridW = new QWidget(m_mapBox);
+    auto *gridLay = new QHBoxLayout(gridW);
+    gridLay->setContentsMargins(0, 0, 0, 0);
+    m_mapCols = intSpin(1, 15, QStringLiteral(" across"));
+    m_mapRows = intSpin(1, 15, QStringLiteral(" deep"));
+    gridLay->addWidget(m_mapCols, 1);
+    gridLay->addWidget(m_mapRows, 1);
+    mapForm->addRow(QStringLiteral("Points"), gridW);
+    auto *areaW = new QWidget(m_mapBox);
+    auto *areaLay = new QHBoxLayout(areaW);
+    areaLay->setContentsMargins(0, 0, 0, 0);
+    m_mapW = spin(areaW, 1, 5000, 1, QStringLiteral(" mm"));
+    m_mapH = spin(areaW, 1, 5000, 1, QStringLiteral(" mm"));
+    m_mapW->setToolTip(QStringLiteral("Stock width (X); filled in from the open design"));
+    m_mapH->setToolTip(QStringLiteral("Stock depth (Y); filled in from the open design"));
+    areaLay->addWidget(m_mapW, 1);
+    areaLay->addWidget(new QLabel(QStringLiteral("×"), areaW));
+    areaLay->addWidget(m_mapH, 1);
+    mapForm->addRow(QStringLiteral("Stock"), areaW);
+    m_mapMargin = spin(m_mapBox, 0, 500, 1, QStringLiteral(" mm"));
+    m_mapMargin->setToolTip(QStringLiteral(
+        "How far inside the stock edges the outer points sit, so the plate lies "
+        "fully on the stock"));
+    mapForm->addRow(QStringLiteral("In from edges"), m_mapMargin);
+    m_mapClear = spin(m_mapBox, 1, 50, 1, QStringLiteral(" mm"));
+    m_mapClear->setToolTip(QStringLiteral(
+        "Travel height between points, above the plate top"));
+    mapForm->addRow(QStringLiteral("Travel above plate"), m_mapClear);
+    m_mapDev = spin(m_mapBox, 0.5, 20, 1, QStringLiteral(" mm"));
+    m_mapDev->setToolTip(QStringLiteral(
+        "How much lower than at X0 Y0 the surface may be: the probe gives up "
+        "this far below the expected plate top"));
+    mapForm->addRow(QStringLiteral("Max. dip"), m_mapDev);
+    m_mapDirect = new QCheckBox(QStringLiteral("Touch the stock itself (aluminium, PCB): "
+                                               "no plate, no stops"), m_mapBox);
+    m_mapDirect->setToolTip(QStringLiteral(
+        "For conductive stock with the ground clip on it. The tool touches the "
+        "surface at every point without stopping."));
+    mapForm->addRow(m_mapDirect);
+    m_mapSummary = new QLabel(m_mapBox);
+    m_mapSummary->setWordWrap(true);
+    m_mapSummary->setStyleSheet(QStringLiteral("color: #8b93a1; font-size: 12px;"));
+    mapForm->addRow(m_mapSummary);
+    lay->addWidget(m_mapBox);
 
     // The probe circuit, live. Nothing should move until this reacts.
     m_contact = new QLabel(this);
@@ -196,12 +263,23 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
     });
 
     lay->addStretch(1);
+    m_mapCancel = new QPushButton(QStringLiteral("Stop the surface map"), this);
+    m_mapCancel->setObjectName(QStringLiteral("big"));
+    m_mapCancel->setMinimumHeight(40);
+    m_mapCancel->setFocusPolicy(Qt::NoFocus);
+    m_mapCancel->hide();
+    lay->addWidget(m_mapCancel);
+    connect(m_mapCancel, &QPushButton::clicked, this, &BitZeroPanel::cancelMapRequested);
     m_begin = new QPushButton(QStringLiteral("▶  Begin probe"), this);
     m_begin->setObjectName(QStringLiteral("start"));
     m_begin->setMinimumHeight(64);
     lay->addWidget(m_begin);
     connect(m_begin, &QPushButton::clicked, this, &BitZeroPanel::beginRequested);
-    connect(m_modes, &QButtonGroup::idClicked, this, [this] { updateHelp(); save(); });
+    connect(m_modes, &QButtonGroup::idClicked, this, [this] {
+        updateHelp();
+        updateBegin();
+        save();
+    });
     // Each plate keeps its own numbers: switching loads the other set.
     connect(m_plates, &QButtonGroup::idClicked, this, [this] {
         QSettings().setValue(QStringLiteral("machine/bitzero/plate"), m_plates->checkedId());
@@ -210,8 +288,12 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
         updateHelp();
     });
     for (QDoubleSpinBox *s : {m_thick, m_search, m_spotX, m_spotY, m_zTravel, m_fast, m_slow,
-                              m_retract, m_lip, m_toolDia, m_clearance, m_sideDepth, m_lipDrop})
+                              m_retract, m_lip, m_toolDia, m_clearance, m_sideDepth, m_lipDrop,
+                              m_mapW, m_mapH, m_mapMargin, m_mapClear, m_mapDev})
         connect(s, &QDoubleSpinBox::valueChanged, this, [this] { save(); });
+    for (QSpinBox *s : {m_mapCols, m_mapRows})
+        connect(s, &QSpinBox::valueChanged, this, [this] { save(); });
+    connect(m_mapDirect, &QCheckBox::toggled, this, [this] { updateHelp(); save(); });
 
     if (QAbstractButton *b = m_plates->button(
             QSettings().value(QStringLiteral("machine/bitzero/plate"), 0).toInt()))
@@ -225,7 +307,77 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
 
 BitZeroPanel::Mode BitZeroPanel::mode() const
 {
-    return Mode(qBound(0, m_modes->checkedId(), 3));
+    return Mode(qBound(0, m_modes->checkedId(), int(Map)));
+}
+
+SurfaceMapPlan BitZeroPanel::mapPlan() const
+{
+    SurfaceMapPlan p;
+    const double m = m_mapMargin->value();
+    const double w = m_mapW->value(), h = m_mapH->value();
+    // A margin wider than half the stock would turn the grid inside out.
+    const double mx = std::min(m, w / 2.0), my = std::min(m, h / 2.0);
+    p.x0 = mx;
+    p.y0 = my;
+    p.x1 = w - mx;
+    p.y1 = h - my;
+    p.cols = m_mapCols->value();
+    p.rows = m_mapRows->value();
+    if (p.x1 - p.x0 < 1.0)
+        p.cols = 1;
+    if (p.y1 - p.y0 < 1.0)
+        p.rows = 1;
+    const bool direct = m_mapDirect->isChecked();
+    p.plate = direct ? 0.0 : m_thick->value();
+    p.pauseEachPoint = !direct;
+    p.clearance = m_mapClear->value();
+    p.maxDeviation = m_mapDev->value();
+    p.fastFeed = m_fast->value();
+    p.slowFeed = m_slow->value();
+    p.retract = m_retract->value();
+    return p;
+}
+
+void BitZeroPanel::setStockSize(double width, double height)
+{
+    if (width > 0)
+        m_mapW->setValue(width);
+    if (height > 0)
+        m_mapH->setValue(height);
+}
+
+void BitZeroPanel::setMapWaiting(int point, int total)
+{
+    m_mapPoint = point;
+    m_mapTotal = point > 0 ? total : 0;
+    updateBegin();
+}
+
+void BitZeroPanel::setMapSummary(const QString &text)
+{
+    m_mapSummary->setText(text);
+}
+
+void BitZeroPanel::updateBegin()
+{
+    QString t;
+    if (m_busy)
+        t = QStringLiteral("Probing…");
+    else if (m_mapTotal > 0)
+        t = QStringLiteral("▶  Probe point %1 of %2").arg(m_mapPoint).arg(m_mapTotal);
+    else if (mode() == Map)
+        t = QStringLiteral("▶  Begin surface map");
+    else
+        t = QStringLiteral("▶  Begin probe");
+    m_begin->setText(t);
+    m_begin->setEnabled(!m_busy && m_connected);
+    const bool mapping = m_mapTotal > 0;
+    m_mapCancel->setVisible(mapping && !m_busy);
+    for (QAbstractButton *b : m_modes->buttons())
+        b->setEnabled(!mapping && !m_busy);
+    for (QAbstractButton *b : m_plates->buttons())
+        b->setEnabled(!mapping && !m_busy);
+    m_mapBox->setEnabled(!mapping && !m_busy);
 }
 
 QString BitZeroPanel::plateKey() const
@@ -284,14 +436,13 @@ void BitZeroPanel::setContact(bool closed, bool known)
 void BitZeroPanel::setBusy(bool on)
 {
     m_busy = on;
-    m_begin->setText(on ? QStringLiteral("Probing…") : QStringLiteral("▶  Begin probe"));
-    m_begin->setEnabled(!on && m_connected);
+    updateBegin();
 }
 
 void BitZeroPanel::setConnected(bool on)
 {
     m_connected = on;
-    m_begin->setEnabled(!m_busy && on);
+    updateBegin();
 }
 
 void BitZeroPanel::updateHelp()
@@ -337,8 +488,23 @@ void BitZeroPanel::updateHelp()
                 "BitZero on a corner, lips against the stock. Jog the pin <b>into the "
                 "bore</b>. Finds both Y walls, sets Y0 at their middle: the front edge.");
         break;
+    case Map:
+        t = m_mapDirect->isChecked()
+            ? QStringLiteral(
+                "Set X0 Y0 Z0 first (Corner). Ground clip on the stock. Touches the "
+                "surface at every point of the grid without stopping, then the job's Z "
+                "follows it: turn <b>Surface map</b> on under the job.")
+            : QStringLiteral(
+                "Set X0 Y0 Z0 first (Corner). The tool goes over each point of the grid "
+                "and stops: put the %1 flat under it, press <b>Probe point</b>. "
+                "Heights count from the one at X0 Y0, so the job's Z then follows the "
+                "surface: turn <b>Surface map</b> on under the job.")
+                  .arg(v1 ? QStringLiteral("block") : QStringLiteral("BitZero"));
+        break;
     }
     m_help->setText(t);
+    if (m_mapBox)
+        m_mapBox->setVisible(mode() == Map);
 }
 
 void BitZeroPanel::load()
@@ -366,6 +532,17 @@ void BitZeroPanel::load()
     m_sideDepth->setValue(s.value(QStringLiteral("sideDepth"), d.sideDepth).toDouble());
     m_lipDrop->setValue(s.value(QStringLiteral("lipDrop"), d.lipDrop).toDouble());
     s.endGroup();
+    const SurfaceMapPlan mp;
+    s.beginGroup(QStringLiteral("machine/heightmap/plan"));
+    m_mapCols->setValue(s.value(QStringLiteral("cols"), mp.cols).toInt());
+    m_mapRows->setValue(s.value(QStringLiteral("rows"), mp.rows).toInt());
+    m_mapW->setValue(s.value(QStringLiteral("width"), 100.0).toDouble());
+    m_mapH->setValue(s.value(QStringLiteral("height"), 100.0).toDouble());
+    m_mapMargin->setValue(s.value(QStringLiteral("margin"), 10.0).toDouble());
+    m_mapClear->setValue(s.value(QStringLiteral("clearance"), mp.clearance).toDouble());
+    m_mapDev->setValue(s.value(QStringLiteral("maxDip"), mp.maxDeviation).toDouble());
+    m_mapDirect->setChecked(s.value(QStringLiteral("direct"), false).toBool());
+    s.endGroup();
     if (QAbstractButton *b = m_modes->button(s.value(QStringLiteral("machine/bitzero/mode"), 0).toInt()))
         b->setChecked(true);
     m_loading = false;
@@ -390,6 +567,16 @@ void BitZeroPanel::save()
     s.setValue(QStringLiteral("sideClearance"), m_clearance->value());
     s.setValue(QStringLiteral("sideDepth"), m_sideDepth->value());
     s.setValue(QStringLiteral("lipDrop"), m_lipDrop->value());
+    s.endGroup();
+    s.beginGroup(QStringLiteral("machine/heightmap/plan"));
+    s.setValue(QStringLiteral("cols"), m_mapCols->value());
+    s.setValue(QStringLiteral("rows"), m_mapRows->value());
+    s.setValue(QStringLiteral("width"), m_mapW->value());
+    s.setValue(QStringLiteral("height"), m_mapH->value());
+    s.setValue(QStringLiteral("margin"), m_mapMargin->value());
+    s.setValue(QStringLiteral("clearance"), m_mapClear->value());
+    s.setValue(QStringLiteral("maxDip"), m_mapDev->value());
+    s.setValue(QStringLiteral("direct"), m_mapDirect->isChecked());
     s.endGroup();
     s.setValue(QStringLiteral("machine/bitzero/mode"), m_modes->checkedId());
 }

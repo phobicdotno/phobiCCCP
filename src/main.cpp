@@ -6,6 +6,7 @@
 #include "model3d.h"
 #include "gcodeexport.h"
 #include "grblstreamer.h"
+#include "surfacemap.h"
 #include "tiling.h"
 #include "vcarve.h"
 #include <QSet>
@@ -411,6 +412,7 @@ static void printUsage()
         "  --grbl-probe <port> <bsX> <bsY> [safeZ]       BitSetter measurement (machine XY)\n"
         "  --grbl-run <port> <job.nc> [bsX bsY]          stream, with automatic tool changes\n"
         "  --grbl-rehearse <port> <bsX> <bsY> [safeZ]    reference + one tool change, spindle off\n"
+        "  --grbl-map <port> <x0> <y0> <x1> <y1> <cols> <rows>  surface map, touching the stock\n"
         "  --grbl-aircut <port> <template.c2d> [lift_mm] rehearse a program in the air\n"
         "  --grbl-circle <port> [feed]                   sweep the largest circle that fits\n"
         "\n"
@@ -535,6 +537,52 @@ int main(int argc, char *argv[])
         QTimer::singleShot(1500, &grbl, [&] { grbl.measureTool(cfg, true, grbl.status().mx, grbl.status().my); });
         QTimer::singleShot(120000, &app, [&] { qInfo() << "PROBE_TIMEOUT"; QCoreApplication::exit(2); });
         return app.exec();
+    }
+
+    // --grbl-map <port> <x0> <y0> <x1> <y1> <cols> <rows>: a surface map through
+    // the real prober, touching the stock directly (no plate, no stops) from
+    // the current work zero. Reports each point and the map's offsets.
+    if (argc == 9 && QByteArray(argv[1]) == "--grbl-map") {
+        c2d::GrblStreamer grbl;
+        c2d::SurfaceMapProber prober(&grbl);
+        c2d::SurfaceMapPlan plan;
+        plan.x0 = QByteArray(argv[3]).toDouble();
+        plan.y0 = QByteArray(argv[4]).toDouble();
+        plan.x1 = QByteArray(argv[5]).toDouble();
+        plan.y1 = QByteArray(argv[6]).toDouble();
+        plan.cols = QByteArray(argv[7]).toInt();
+        plan.rows = QByteArray(argv[8]).toInt();
+        plan.plate = 0;
+        plan.pauseEachPoint = false;
+        plan.fastFeed = 600;
+        plan.slowFeed = 100;
+        QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
+                         [](const QString &e) { qWarning().noquote() << "ERR:" << e; });
+        QObject::connect(&prober, &c2d::SurfaceMapProber::pointMeasured,
+                         [](int i, int n, double x, double y, double z) {
+            qInfo().noquote() << QStringLiteral("POINT %1/%2 X%3 Y%4 Z%5")
+                                     .arg(i).arg(n).arg(x, 0, 'f', 3).arg(y, 0, 'f', 3).arg(z, 0, 'f', 3);
+        });
+        int rc = 1;
+        QObject::connect(&prober, &c2d::SurfaceMapProber::finished, [&](const c2d::SurfaceMap &m) {
+            rc = 0;
+            qInfo().noquote() << QStringLiteral("MAP_OK points=%1 offset(x0,y0)=%2 offset(x1,y1)=%3 offset(x1,y0)=%4")
+                                     .arg(m.cols * m.rows)
+                                     .arg(m.offsetAt(plan.x0, plan.y0), 0, 'f', 3)
+                                     .arg(m.offsetAt(plan.x1, plan.y1), 0, 'f', 3)
+                                     .arg(m.offsetAt(plan.x1, plan.y0), 0, 'f', 3);
+            QTimer::singleShot(300, &app, [&] { grbl.disconnectPort(); QCoreApplication::exit(0); });
+        });
+        QObject::connect(&prober, &c2d::SurfaceMapProber::failed, [&](const QString &why) {
+            qInfo().noquote() << "MAP_FAILED" << why;
+            QTimer::singleShot(300, &app, [&] { grbl.disconnectPort(); QCoreApplication::exit(1); });
+        });
+        if (!grbl.connectPort(QString::fromLocal8Bit(argv[2])))
+            return 1;
+        QTimer::singleShot(1500, &grbl, [&] { prober.start(plan); });
+        QTimer::singleShot(180000, &app, [&] { qInfo() << "MAP_TIMEOUT"; QCoreApplication::exit(2); });
+        const int r = app.exec();
+        return r ? r : rc;
     }
 
     // --grbl-run <port> <file.nc> [bsX bsY]: stream a program with the full

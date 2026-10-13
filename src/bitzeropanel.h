@@ -1,7 +1,11 @@
 #pragma once
+#include "surfacemap.h"
+
 #include <QWidget>
 
 class QButtonGroup;
+class QCheckBox;
+class QSpinBox;
 class QDoubleSpinBox;
 class QLabel;
 class QPushButton;
@@ -49,10 +53,20 @@ class BitZeroPanel : public QWidget
 {
     Q_OBJECT
 public:
-    enum Mode { Corner, ZOnly, XOnly, YOnly };
+    // Map: the plate top touched at a grid of points over the stock, for a
+    // surface map the job's Z then follows (surfacemap.h).
+    enum Mode { Corner, ZOnly, XOnly, YOnly, Map };
     explicit BitZeroPanel(QWidget *parent = nullptr);
     Mode mode() const;
     BitZeroConfig config() const;
+    // The grid over the stock (work X0 Y0 at its lower-left corner), with the
+    // plate's numbers and feeds from config().
+    SurfaceMapPlan mapPlan() const;
+    void setStockSize(double width, double height);
+    // Map run feedback: over point `point` of `total`, waiting for the plate
+    // (Begin then probes it); or 0 when no map is running.
+    void setMapWaiting(int point, int total);
+    void setMapSummary(const QString &text);
     void setContact(bool closed, bool known);   // live probe-pin state
     void setBusy(bool on);                      // a probe sequence is running
     void setConnected(bool on);
@@ -60,6 +74,7 @@ public:
 signals:
     void beginRequested();
     void backRequested();                       // "← Job"
+    void cancelMapRequested();
 
 private:
     void load();
@@ -76,6 +91,14 @@ private:
     QDoubleSpinBox *m_thick, *m_search, *m_spotX, *m_spotY, *m_zTravel,
                    *m_fast, *m_slow, *m_retract,
                    *m_lip, *m_toolDia, *m_clearance, *m_sideDepth, *m_lipDrop;
+    QSpinBox *m_mapCols, *m_mapRows;
+    QDoubleSpinBox *m_mapW, *m_mapH, *m_mapMargin, *m_mapClear, *m_mapDev;
+    QCheckBox *m_mapDirect;
+    QWidget *m_mapBox = nullptr;
+    QLabel *m_mapSummary = nullptr;
+    QPushButton *m_mapCancel = nullptr;
+    int m_mapPoint = 0, m_mapTotal = 0;
+    void updateBegin();
     QWidget *m_v2Rows[2] = {};
     QWidget *m_v1Rows[4] = {};
     QWidget *m_v2Labels[2] = {};

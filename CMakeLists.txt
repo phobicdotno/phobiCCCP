@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.0.8 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,7 @@ add_library(phobicccp_core STATIC
     src/post_grbl.cpp
     src/grblstreamer.cpp
     src/heightmodel.cpp
+    src/surfacemap.cpp
     src/simulation.cpp
     src/vectorops.cpp
     src/sketch.cpp
@@ -146,6 +147,10 @@ add_test(NAME import COMMAND test_import)
 add_executable(test_rehearsal tests/test_rehearsal.cpp)
 target_link_libraries(test_rehearsal PRIVATE phobicccp_core)
 add_test(NAME rehearsal COMMAND test_rehearsal)
+# Surface map: interpolation, storage, probe macros, applying it to a program.
+add_executable(test_surfacemap tests/test_surfacemap.cpp)
+target_link_libraries(test_surfacemap PRIVATE phobicccp_core)
+add_test(NAME surfacemap COMMAND test_surfacemap)
 add_executable(test_tiling tests/test_tiling.cpp)
 target_link_libraries(test_tiling PRIVATE phobicccp_core)
 add_test(NAME tiling COMMAND test_tiling)

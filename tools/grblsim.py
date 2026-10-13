@@ -154,13 +154,22 @@ class Sim:
         w = self.coord[self.modal["coord"] - 54]
         return [w[0] + self.g92[0], w[1] + self.g92[1], w[2] + self.g92[2] + self.tlo]
 
+    def contact_z(self, x, y):
+        """Machine Z at which the tool touches something conductive at (x, y):
+        the BitSetter button, else the --surface plane, else None."""
+        if math.hypot(x - self.bitsetter[0], y - self.bitsetter[1]) <= self.bitsetter_r:
+            return self.bitsetter_z + self.tool_delta
+        if self.a.surface is not None:
+            z0, sx, sy = self.a.surface
+            return z0 + sx * x + sy * y + self.tool_delta
+        return None
+
     def probe_triggered(self):
         if self.probe_force is not None:
             return self.probe_force
         x, y, z = self.mpos
-        surface = self.bitsetter_z + self.tool_delta
-        return (math.hypot(x - self.bitsetter[0], y - self.bitsetter[1]) <= self.bitsetter_r
-                and z <= surface + 0.01)
+        surface = self.contact_z(x, y)
+        return surface is not None and z <= surface + 0.01
 
     def state_str(self):
         if self.sleep:
@@ -494,8 +503,9 @@ class Sim:
                     self.mpos = newpos
                     if self.probe_triggered():
                         # snap to the exact contact height when we crossed the surface
-                        surface = self.bitsetter_z + self.tool_delta
-                        if self.probe_force is None and prev_z > surface > target[2]:
+                        surface = self.contact_z(newpos[0], newpos[1])
+                        if (self.probe_force is None and surface is not None
+                                and prev_z > surface > target[2]):
                             f = (surface - start[2]) / (target[2] - start[2])
                             self.mpos = [s + (t - s) * f for s, t in zip(start, target)]
                         return "probe"
@@ -1068,6 +1078,8 @@ def main():
     p.add_argument("--bitsetter", type=float, nargs=2, default=[-20.0, -20.0], metavar=("X", "Y"), help="BitSetter machine XY")
     p.add_argument("--bitsetter-z", type=float, default=-60.0, help="BitSetter surface machine Z (with tool delta 0)")
     p.add_argument("--bitsetter-radius", type=float, default=10.0, help="BitSetter XY tolerance radius")
+    p.add_argument("--surface", type=float, nargs=3, default=None, metavar=("Z", "SX", "SY"),
+                   help="conductive stock top everywhere off the BitSetter: machine Z = Z + SX*x + SY*y")
     p.add_argument("--tool-delta", type=float, default=0.0, help="initial extra tool length (mm); change at runtime with 'tool <delta>' on stdin")
     p.add_argument("--m6", choices=("error", "ok", "hold"), default="error", help="M6 handling: error:20 (stock), plain ok, or pause like M0")
     p.add_argument("--link", metavar="PATH", help="create a symlink PATH -> the pty slave (removed on exit)")

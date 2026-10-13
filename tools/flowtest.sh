@@ -5,6 +5,8 @@
 #                   is 5 mm longer, so the streamer must apply G43.1 Z5.000.
 #   3. --grbl-rehearse: the Machine panel's tool-change rehearsal with the same
 #                   tool in, so the offset must come back 0.000.
+#   4. --grbl-map:  a 3 x 3 surface map over a tilted stock (second simulator
+#                   with --surface); the offsets must match the tilt.
 # Usage: tools/flowtest.sh [path/to/phobicccp]   (default ./build/phobicccp)
 set -u
 cd "$(dirname "$0")/.."
@@ -37,5 +39,18 @@ timeout 120 $BIN --grbl-rehearse $PORT -20 -20 -5 > $T/rehearse.log 2>&1
 grep -q 'TOOLCHANGE T1 parked' $T/rehearse.log && echo "PASS rehearsal parked for the tool" || { echo "FAIL rehearsal park"; fail=1; }
 grep -q 'REHEARSE_OK tlo=0.000' $T/rehearse.log && echo "PASS rehearsal measured the same tool at offset 0.000" || { echo "FAIL rehearsal"; tail -8 $T/rehearse.log; fail=1; }
 exec 3>&-; kill $SIM 2>/dev/null; wait $SIM 2>/dev/null
+echo "## surface map on a tilted conductive stock (Z = -1 + 0.01 x + 0.005 y)"
+python3 tools/grblsim.py --speed 20 --surface -1 0.01 0.005 --quiet < /dev/null > $T/sim2.out 2> $T/sim2.err &
+SIM2=$!
+for i in $(seq 1 50); do PORT2=$(grep -m1 '^PORT=' $T/sim2.out | cut -d= -f2); [ -n "$PORT2" ] && break; sleep 0.1; done
+if [ -n "$PORT2" ]; then
+    timeout 180 $BIN --grbl-map $PORT2 10 10 90 90 3 3 > $T/map.log 2>&1
+    # Nine points; the offsets count from the height nearest X0 Y0, (10, 10).
+    grep -q 'MAP_OK points=9 offset(x0,y0)=0.000 offset(x1,y1)=1.200 offset(x1,y0)=0.800' $T/map.log \
+        && echo "PASS surface map follows the tilt" || { echo "FAIL surface map"; tail -8 $T/map.log; fail=1; }
+else
+    echo "FAIL: second simulator did not start"; fail=1
+fi
+kill $SIM2 2>/dev/null; wait $SIM2 2>/dev/null
 [ $fail -eq 0 ] && echo "PASS: machine flow test" || echo "FAIL: machine flow test (logs in $T)"
 exit $fail

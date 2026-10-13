@@ -34,7 +34,9 @@ Four modes, in the order of the work: **Design → Toolpaths → Simulate → Ma
 4. **Machine** – *Connect*, *Initialize* (homes, then parks front right),
    mount the bit, set zero with the BitZero (corner / Z / X / Y) or the Zero
    buttons, *Measure bit* on the BitSetter, then **Start**. Tool changes park
-   the spindle, prompt, measure the new bit and continue.
+   the spindle, prompt, measure the new bit and continue. For a table or board
+   that is not flat, *Surface map* on the BitZero page touches the plate at a
+   grid of points; with *Surface map* ticked under the job, every Z follows it.
 
 Examples of the command line (screenshots, headless export, probing) are
 under [CLI](#cli).

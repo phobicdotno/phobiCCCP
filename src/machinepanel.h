@@ -1,6 +1,7 @@
 #pragma once
 #include "bitzeropanel.h"
 #include "grblstreamer.h"
+#include "surfacemap.h"
 #include <QVector>
 #include <QHash>
 #include <QElapsedTimer>
@@ -140,6 +141,16 @@ private:
     void bitZeroFail(const QString &why);
     static QStringList bitZeroWallLines(char axis, const BitZeroConfig &c);
     static QStringList bitZeroPlateLines(const BitZeroConfig &c);
+
+    // Surface map (surfacemap.h): measured from the BitZero page, kept in
+    // QSettings, applied to the program at Run when switched on in the job.
+    SurfaceMapProber *m_mapper = nullptr;
+    SurfaceMap m_map;
+    QCheckBox *m_useMap = nullptr;
+    QLabel *m_mapLabel = nullptr;
+    void startSurfaceMap();
+    void setSurfaceMap(const SurfaceMap &map);
+    void refreshMapUi();
 
     // jog
     QComboBox *m_step, *m_speed;
