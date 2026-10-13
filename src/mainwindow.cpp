@@ -1973,6 +1973,12 @@ void MainWindow::showStartupWindow()
     else
         show();
     QTimer::singleShot(3000, this, [this] { checkForUpdate(); });
+    // ... and once an hour after that, so a long-running copy sees a new
+    // version without being restarted first.
+    auto *recheck = new QTimer(this);
+    recheck->setInterval(60 * 60 * 1000);
+    connect(recheck, &QTimer::timeout, this, &MainWindow::checkForUpdate);
+    recheck->start();
 }
 
 void MainWindow::newUntitled()

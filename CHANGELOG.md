@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.3 (build 54) — 2026-10-13
+
+> Update check repeats every hour while the app runs
+
+- A running copy now looks for a new version once an hour, not only at start.
+
 ## v1.1.2 (build 53) — 2026-10-13
 
 > Open dialog: always the dark Qt one, starting in the last file's folder
