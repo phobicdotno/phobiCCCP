@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.1.1 (build 52) — 2026-10-13
+
+> Design: hand and area tools, zoom buttons, Fit to selection, one-click update
+
+- Hand tool (H) next to the arrow: drag to move the view. Area tool (W):
+  click inside a closed shape to select it with its islands, for a pocket.
+  Arrow, hand and area are on the Toolpaths page too.
+- − / + zoom buttons with the zoom % and X / Y readout at the bottom of the
+  right-hand panel; + and − keys zoom. No scrollbars on the canvas.
+- Fit with something selected fills the window with it; else the whole board.
+- "↑ Install vX" at the top installs a newer version in one click: download,
+  build, install, restart with the same file open.
+- Open and Save dialogs: icons twice as big, from the desktop icon theme.
+- A vector file opened as a design keeps its name in the header.
+- README: building and installing come first.
+
 ## v1.1.0 (build 51) — 2026-10-13
 
 > Surface map: the BitZero measures a grid, and Z follows the surface

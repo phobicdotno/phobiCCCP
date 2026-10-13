@@ -5,6 +5,37 @@ machines (Shapeoko) — a Carbide-Create-and-Carbide-Motion-free workflow on
 Linux, built on the reverse-engineered format documentation in
 [shapeoko-c2d](https://github.com/phobicdotno/shapeoko-c2d).
 
+## Building (Ubuntu / Debian)
+
+```sh
+sudo apt install build-essential cmake qt6-base-dev qt6-base-dev-tools \
+     libqt6sql6-sqlite qt6-serialport-dev zlib1g-dev libgl1-mesa-dev \
+     libboost-dev
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+./build/phobicccp yourfile.c2d
+```
+
+Install (binary + start-menu launcher + icon + `.c2d` file association):
+
+```sh
+sudo cmake --install build                                  # system-wide, /usr/local
+cmake --install build --prefix ~/.local                     # or per-user, no root
+```
+
+After that **phobiCCCP** shows up in the application menu (search "phobic")
+and `.c2d` files open with it on double-click. For the Machine dock you also
+need serial access: `sudo usermod -aG dialout $USER`, then log out and in.
+
+Clipper2 is fetched at configure time (disable with
+`-DPHOBICCCP_WITH_CLIPPER2=OFF`). `libboost-dev` provides the header-only
+Boost.Polygon Voronoi builder for the medial-axis v-carve; without it the
+build falls back to depth-graded ring approximation.
+
+Tests: `ctest --test-dir build` (set `QT_QPA_PLATFORM=offscreen` without a
+display). GitHub Actions runs the same build and suite on every push and pull
+request (`.github/workflows/ci.yml`).
+
 ## Screenshots
 
 Four modes, in the order of the work: **Design → Toolpaths → Simulate → Machine**
@@ -220,37 +251,6 @@ under [CLI](#cli).
 stock — rapids dashed, cuts coloured by depth — with orbit / zoom, and an
 animated tool marker with play / pause / speed and a position slider. The
 machine's live work position is drawn on it while connected.
-
-## Building (Ubuntu / Debian)
-
-```sh
-sudo apt install build-essential cmake qt6-base-dev qt6-base-dev-tools \
-     libqt6sql6-sqlite qt6-serialport-dev zlib1g-dev libgl1-mesa-dev \
-     libboost-dev
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-./build/phobicccp yourfile.c2d
-```
-
-Install (binary + start-menu launcher + icon + `.c2d` file association):
-
-```sh
-sudo cmake --install build                                  # system-wide, /usr/local
-cmake --install build --prefix ~/.local                     # or per-user, no root
-```
-
-After that **phobiCCCP** shows up in the application menu (search "phobic")
-and `.c2d` files open with it on double-click. For the Machine dock you also
-need serial access: `sudo usermod -aG dialout $USER`, then log out and in.
-
-Clipper2 is fetched at configure time (disable with
-`-DPHOBICCCP_WITH_CLIPPER2=OFF`). `libboost-dev` provides the header-only
-Boost.Polygon Voronoi builder for the medial-axis v-carve; without it the
-build falls back to depth-graded ring approximation.
-
-Tests: `ctest --test-dir build` (set `QT_QPA_PLATFORM=offscreen` without a
-display). GitHub Actions runs the same build and suite on every push and pull
-request (`.github/workflows/ci.yml`).
 
 ## CLI
 

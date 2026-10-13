@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.1.0 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.1.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -59,7 +59,8 @@ add_library(phobicccp_core STATIC
 target_include_directories(phobicccp_core PUBLIC src)
 # The binary should be able to say which build it is (--version, --help);
 # PROJECT_VERSION is the single source of truth in this file.
-target_compile_definitions(phobicccp_core PUBLIC PHOBICCCP_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(phobicccp_core PUBLIC PHOBICCCP_VERSION="${PROJECT_VERSION}"
+    PHOBICCCP_SOURCE_DIR="${CMAKE_SOURCE_DIR}" PHOBICCCP_BUILD_DIR="${CMAKE_BINARY_DIR}")
 target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
 
 add_executable(phobicccp

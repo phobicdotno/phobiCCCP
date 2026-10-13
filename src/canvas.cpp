@@ -5,6 +5,9 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QGraphicsScene>
+#include <QToolButton>
+#include <QLabel>
+#include <QHBoxLayout>
 #include <QMenu>
 #include <QGraphicsPathItem>
 #include <QGraphicsSceneHoverEvent>
@@ -89,6 +92,7 @@ public:
         }
         p->drawPath(path());
     }
+    bool isClosed() const { return m_closed; }
     QPainterPath shape() const override
     {
         // Closed shapes select from anywhere inside; open paths keep the
@@ -220,6 +224,45 @@ Canvas::Canvas(QWidget *parent)
     setMouseTracking(true);
     // Flip Y so CC's Y-up space maps to Qt's Y-down scene.
     scale(1.0, -1.0);
+    // No scrollbars: the hand tool, the middle button and the wheel move the
+    // view, and the scene leaves room around the board to move it in.
+    setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
+    // Zoom out / in and the zoom % + cursor position, bottom right on the
+    // canvas, where they sit with the drawing instead of under the panels.
+    m_hud = new QWidget(this);
+    m_hud->setObjectName(QStringLiteral("canvasHud"));
+    m_hud->setStyleSheet(QStringLiteral(
+        "#canvasHud { background: rgba(22,24,29,215); border-radius: 8px; }"
+        "#canvasHud QToolButton { font-size: 20px; font-weight: 600; min-width: 40px;"
+        " min-height: 36px; border-radius: 6px; background: #2a2e36; color: #d8dce4; }"
+        "#canvasHud QToolButton:pressed { background: #3a404b; }"
+        "#canvasHud QLabel { color: #aab1bd; padding: 0 6px; }"));
+    auto *hl = new QHBoxLayout(m_hud);
+    hl->setContentsMargins(6, 4, 6, 4);
+    hl->setSpacing(6);
+    auto *zoomOut = new QToolButton(m_hud);
+    zoomOut->setText(QStringLiteral("\u2212"));
+    zoomOut->setToolTip(tr("Zoom out  (-)"));
+    zoomOut->setAutoRepeat(true);
+    auto *zoomIn = new QToolButton(m_hud);
+    zoomIn->setText(QStringLiteral("+"));
+    zoomIn->setToolTip(tr("Zoom in  (+)"));
+    zoomIn->setAutoRepeat(true);
+    m_hudText = new QLabel(m_hud);
+    hl->addWidget(zoomOut);
+    hl->addWidget(zoomIn);
+    hl->addWidget(m_hudText);
+    connect(zoomOut, &QToolButton::clicked, this, [this] { zoomBy(1.0 / 1.25); });
+    connect(zoomIn, &QToolButton::clicked, this, [this] { zoomBy(1.25); });
+    connect(this, &Canvas::cursorMoved, this, [this](QPointF p) {
+        m_hudPos = p;
+        m_hudHasPos = true;
+        updateHud();
+    });
+    connect(this, &Canvas::zoomChanged, this, [this] { updateHud(); });
+    updateHud();
     connect(m_scene, &QGraphicsScene::selectionChanged,
             this, &Canvas::onSelectionChanged);
 }
@@ -256,6 +299,45 @@ QGraphicsPathItem *Canvas::itemFor(const QString &id) const
         if (it->data(0).isValid() && it->data(0).toString() == id)
             return qgraphicsitem_cast<QGraphicsPathItem *>(it);
     return nullptr;
+}
+
+void Canvas::selectAreaAt(const QPointF &p, bool add)
+{
+    QList<QPair<QString, QPainterPath>> closed;
+    for (QGraphicsItem *it : m_scene->items())
+        if (auto *e = dynamic_cast<ElemItem *>(it))
+            if (e->isClosed() && e->data(0).isValid())
+                closed.append({e->data(0).toString(), e->mapToScene(e->path())});
+    int outer = -1;
+    double best = 0;
+    for (int i = 0; i < closed.size(); ++i) {
+        if (!closed[i].second.contains(p))
+            continue;
+        const QRectF b = closed[i].second.boundingRect();
+        if (outer < 0 || b.width() * b.height() < best) {
+            outer = i;
+            best = b.width() * b.height();
+        }
+    }
+    QStringList ids = add ? selectedElementIds() : QStringList();
+    if (outer >= 0) {
+        const QPainterPath &op = closed[outer].second;
+        QList<int> inside;
+        for (int i = 0; i < closed.size(); ++i)
+            if (i != outer && op.contains(closed[i].second))
+                inside << i;
+        if (!ids.contains(closed[outer].first))
+            ids << closed[outer].first;
+        for (int i : inside) {
+            bool nested = false;    // inside another island: not this pocket's
+            for (int j : inside)
+                if (j != i && closed[j].second.contains(closed[i].second))
+                    nested = true;
+            if (!nested && !ids.contains(closed[i].first))
+                ids << closed[i].first;
+        }
+    }
+    selectElements(ids);
 }
 
 void Canvas::selectElements(const QStringList &ids)
@@ -319,6 +401,33 @@ void Canvas::convertToPaths(const QStringList &ids)
 void Canvas::emitZoom()
 {
     emit zoomChanged(qAbs(transform().m11()) * 100.0);
+}
+
+void Canvas::zoomBy(double factor)
+{
+    setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+    scale(factor, factor);
+    emitZoom();
+}
+
+void Canvas::updateHud()
+{
+    if (!m_hudText)
+        return;
+    const QString pos = m_hudHasPos
+        ? QStringLiteral("X %1   Y %2 mm").arg(m_hudPos.x(), 0, 'f', 2).arg(m_hudPos.y(), 0, 'f', 2)
+        : QStringLiteral("X \u2014   Y \u2014");
+    m_hudText->setText(QStringLiteral("%1%   %2").arg(qRound(qAbs(transform().m11()) * 100.0)).arg(pos));
+    placeHud();
+}
+
+void Canvas::placeHud()
+{
+    if (!m_hud || m_hud->parentWidget() != this)
+        return;
+    m_hud->adjustSize();
+    m_hud->move(width() - m_hud->width() - 10, height() - m_hud->height() - 10);
+    m_hud->raise();
 }
 
 void Canvas::editElement(const QString &id, const QHash<QString, double> &params)
@@ -676,8 +785,10 @@ void Canvas::setTool(Tool t)
     m_grab = GrabNone;
     setDragMode(t == Select ? QGraphicsView::RubberBandDrag
                             : QGraphicsView::NoDrag);
-    viewport()->setCursor(t == Select || t == NodeEdit ? Qt::ArrowCursor : Qt::CrossCursor);
-    const bool selectable = (t == Select || t == NodeEdit);
+    viewport()->setCursor(t == Pan ? Qt::OpenHandCursor
+                          : t == SelectArea ? Qt::PointingHandCursor
+                          : t == Select || t == NodeEdit ? Qt::ArrowCursor : Qt::CrossCursor);
+    const bool selectable = (t == Select || t == NodeEdit || t == Pan || t == SelectArea);
     for (QGraphicsItem *it : m_scene->items()) {
         if (it->data(0).isValid()) {
             it->setFlag(QGraphicsItem::ItemIsSelectable, selectable);
@@ -704,6 +815,8 @@ void Canvas::setTool(Tool t)
                                           : tr("Polygon (inscribed) — press at the center, drag to a corner")); break;
     case DrawPath:    emit statusHint(tr("Path — click = corner, click-drag = curve; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
+    case SelectArea:  emit statusHint(tr("Area — click inside a closed shape: selects it and the shapes inside it (islands); Shift adds")); break;
+    case Pan:         emit statusHint(tr("Hand — drag to move the view; the wheel or - / + zoom")); break;
     case NodeEdit:    emit statusHint(tr("Nodes — drag anchors/handles (Alt breaks symmetry), double-click a segment to add, Del removes, right-click a node for its kind")); break;
     }
     if (t == NodeEdit)
@@ -720,6 +833,18 @@ void Canvas::zoomFit()
 {
     if (!m_doc)
         return;
+    // Something selected: fill the window with it, centred. Else the plate.
+    QRectF sel;
+    for (QGraphicsItem *it : m_scene->selectedItems())
+        if (it->data(0).isValid())
+            sel |= it->sceneBoundingRect();
+    if (sel.width() > 0 || sel.height() > 0) {
+        const double m = qMax(qMax(sel.width(), sel.height()) * 0.04, 0.5);
+        fitInView(sel.adjusted(-m, -m, m, m), Qt::KeepAspectRatio);
+        centerOn(sel.center());
+        emitZoom();
+        return;
+    }
     const double w = m_doc->boardWidth(), h = m_doc->boardHeight();
     if (w > 0 && h > 0)
         fitInView(QRectF(-10, -10, w + 20, h + 20), Qt::KeepAspectRatio);
@@ -743,9 +868,10 @@ void Canvas::rebuild()
     const double w = m_doc->boardWidth();
     const double h = m_doc->boardHeight();
     // Margin so the rubber band / fit has somewhere to breathe.
-    m_scene->setSceneRect(QRectF(-w * 0.2 - 20, -h * 0.2 - 20, w * 1.4 + 40, h * 1.4 + 40));
+    m_scene->setSceneRect(QRectF(-w * 2 - 200, -h * 2 - 200, w * 5 + 400, h * 5 + 400));
 
-    const bool selectable = (m_tool == Select || m_tool == NodeEdit);
+    const bool selectable = (m_tool == Select || m_tool == NodeEdit || m_tool == Pan
+                             || m_tool == SelectArea);
     for (const Element &e : m_doc->elements()) {
         // Open paths are the only unfilled type; a path row of point_type 4
         // marks a closed one.
@@ -781,6 +907,7 @@ void Canvas::rebuild()
 void Canvas::resizeEvent(QResizeEvent *event)
 {
     QGraphicsView::resizeEvent(event);
+    placeHud();
     if (!m_fitted && m_doc && m_doc->boardWidth() > 0 && m_doc->boardHeight() > 0
         && viewport()->width() > 100) {
         zoomFit();
@@ -1476,10 +1603,18 @@ void Canvas::finishPath(bool closed)
 
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
-    if (event->button() == Qt::MiddleButton) {
+    if (event->button() == Qt::MiddleButton || (m_tool == Pan && event->button() == Qt::LeftButton)) {
         m_panning = true;
         m_panLast = event->pos();
         viewport()->setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+
+    // Select closed area: the innermost closed shape around the click, plus
+    // the closed shapes directly inside it - what a pocket needs.
+    if (m_tool == SelectArea && event->button() == Qt::LeftButton) {
+        selectAreaAt(mapToScene(event->pos()), event->modifiers() & Qt::ShiftModifier);
         event->accept();
         return;
     }
@@ -1807,9 +1942,11 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
 
 void Canvas::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (m_panning && event->button() == Qt::MiddleButton) {
+    if (m_panning && (event->button() == Qt::MiddleButton
+                      || (m_tool == Pan && event->button() == Qt::LeftButton))) {
         m_panning = false;
-        viewport()->setCursor(m_tool == Select ? Qt::ArrowCursor : Qt::CrossCursor);
+        viewport()->setCursor(m_tool == Pan ? Qt::OpenHandCursor
+                              : m_tool == Select ? Qt::ArrowCursor : Qt::CrossCursor);
         event->accept();
         return;
     }

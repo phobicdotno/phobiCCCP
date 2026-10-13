@@ -26,6 +26,13 @@
 #include <QProxyStyle>
 #include <QSettings>
 #include "settingsdialog.h"
+#include <QComboBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QIcon>
+#include <QListView>
+#include <QToolButton>
+#include <QTreeView>
 
 // Tool buttons with variants open their menu after a 500 ms press-and-hold
 // (Fusion's default is 600 ms); a plain click uses the current variant.
@@ -54,6 +61,42 @@ public:
         if (hint == SH_DialogButtonBox_ButtonsHaveIcons)
             return 0;
         return QProxyStyle::styleHint(hint, opt, w, ret);
+    }
+};
+
+// Open / Save dialogs are Qt's own, with 16 px icons that are hard to hit on
+// the shop PC's touchscreen: every icon in them is drawn 2x (32 px files and
+// places, 24 px toolbar), from the desktop's icon theme so they stay sharp.
+class FileDialogIcons : public QObject
+{
+public:
+    using QObject::QObject;
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        auto *dlg = qobject_cast<QFileDialog *>(o);
+        if (e->type() == QEvent::Show && dlg && !dlg->property("phobicIcons").toBool()) {
+            dlg->setProperty("phobicIcons", true);
+            for (auto *v : dlg->findChildren<QAbstractItemView *>())
+                v->setIconSize(QSize(32, 32));
+            const QHash<QString, QString> themed = {
+                {QStringLiteral("backButton"), QStringLiteral("go-previous")},
+                {QStringLiteral("forwardButton"), QStringLiteral("go-next")},
+                {QStringLiteral("toParentButton"), QStringLiteral("go-up")},
+                {QStringLiteral("newFolderButton"), QStringLiteral("folder-new")},
+                {QStringLiteral("listModeButton"), QStringLiteral("view-list-icons")},
+                {QStringLiteral("detailModeButton"), QStringLiteral("view-list-details")}};
+            for (auto *b : dlg->findChildren<QToolButton *>()) {
+                const QIcon icon = QIcon::fromTheme(themed.value(b->objectName()));
+                if (!icon.isNull())
+                    b->setIcon(icon);
+                b->setIconSize(QSize(24, 24));
+                b->setMinimumSize(36, 36);
+            }
+            for (auto *c : dlg->findChildren<QComboBox *>())
+                c->setIconSize(QSize(24, 24));
+            dlg->resize(dlg->size().expandedTo(QSize(1100, 760)));
+        }
+        return false;
     }
 };
 
@@ -464,6 +507,13 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
     QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));
     applyDarkTheme(app);
+    if (QIcon::themeName().isEmpty() || QIcon::themeName() == QLatin1String("hicolor"))
+        for (const char *name : {"Mint-Y", "Adwaita"})
+            if (QDir(QStringLiteral("/usr/share/icons/") + QLatin1String(name)).exists()) {
+                QIcon::setThemeName(QLatin1String(name));
+                break;
+            }
+    app.installEventFilter(new FileDialogIcons(&app));
 
     if (argc == 4 && QByteArray(argv[1]) == "--selftest")
         return selftest(QString::fromLocal8Bit(argv[2]),

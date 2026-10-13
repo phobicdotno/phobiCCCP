@@ -54,7 +54,7 @@ void ToolbarOrder::restore()
 }
 
 // Saved names first, in their order; anything the saved list does not know
-// (a tool added since) keeps its default place at the end.
+// (a tool added since) goes next to its default neighbour.
 void ToolbarOrder::applyOrder(const QStringList &names)
 {
     QList<QAction *> all = m_bar->actions();
@@ -63,9 +63,18 @@ void ToolbarOrder::applyOrder(const QStringList &names)
         for (QAction *a : all)
             if (a->objectName() == n && !ordered.contains(a))
                 ordered << a;
-    for (QAction *a : all)
-        if (!ordered.contains(a))
-            ordered << a;
+    // A tool the saved list does not know goes right after the tool it
+    // follows by default (the hand after the arrow), else at the end.
+    for (QAction *a : all) {
+        if (ordered.contains(a))
+            continue;
+        const int d = m_default.indexOf(a->objectName());
+        int at = -1;
+        for (int i = d - 1; i >= 0 && at < 0; --i)
+            for (int k = 0; k < ordered.size(); ++k)
+                if (ordered[k]->objectName() == m_default[i]) { at = k + 1; break; }
+        ordered.insert(at < 0 ? ordered.size() : at, a);
+    }
     for (QAction *a : ordered) {
         m_bar->removeAction(a);
         m_bar->addAction(a);

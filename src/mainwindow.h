@@ -88,12 +88,11 @@ private:
     QLabel *m_fileLabel = nullptr;   // open file name in the header
     QLabel *m_updateLabel = nullptr; // "↑ vX on GitHub", hidden until known
     void checkForUpdate();
+    void installUpdate(const QString &version);   // one click: fetch, build, install, restart
     static QIcon fullScreenIcon();
 
     Canvas *m_canvas;
     QPlainTextEdit *m_info;      // params + item summary sidebar
-    QLabel *m_cursorLabel;       // live mm position, right side of status bar
-    QLabel *m_zoomLabel;         // zoom percentage
     PropertiesPanel *m_props;    // numeric editor for the selection
     ToolpathPanel *m_tp;         // toolpath list + parameter editor
     MachinePanel *m_machine;     // GRBL serial control + streaming (Machine page)
@@ -119,6 +118,7 @@ private:
     QAction *m_fullScreenAct = nullptr;
     bool m_dirty = false;
     bool m_untitled = false;     // Save asks for a name (the file is scratch)
+    QString m_untitledFrom;      // the vector file an untitled design was opened from
     QString m_untitledPath;
     Document m_doc;
     BackgroundImage m_bg;        // tracing background (params + sqlar/background.png)

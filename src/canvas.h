@@ -5,6 +5,7 @@
 
 class QGraphicsPathItem;
 class QUndoStack;
+class QLabel;
 
 // Renders a Document's board and elements, and hosts the vector tools. CC uses
 // Y-up with the origin at the board's bottom-left; Qt scene coordinates are
@@ -21,7 +22,7 @@ class Canvas : public QGraphicsView
 public:
     enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
                 DrawEllipse, DrawSlot, DrawArc, Trim, Extend, Break, Measure,
-                DrawPoint, DrawSpline, DrawConic };
+                DrawPoint, DrawSpline, DrawConic, Pan, SelectArea };
     // The three-click tools (slot, 3-point arc): the first
     // two clicks fix two points, the third finishes the shape.
     static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc || t == DrawConic; }
@@ -60,6 +61,10 @@ public:
     bool snapEnabled() const { return m_snap; }
     QUndoStack *undoStack() const { return m_undo; }
     void zoomFit();
+    void zoomBy(double factor);   // zoom about the middle of the view
+    // The - / + zoom buttons with the zoom % and the live X / Y readout. It floats
+    // bottom right on the canvas until the owner puts it in a layout of its own.
+    QWidget *zoomBar() const { return m_hud; }
     void rebuild();                    // re-sync the scene from the document
     // Tracing background picture, painted under the grid (non-owning; nullptr clears).
     void setBackgroundImage(const BackgroundImage *bg);
@@ -80,6 +85,8 @@ public:
     Document *document() const { return m_doc; }
     void selectIds(const QStringList &ids);   // replace the selection (vector ops)
     void selectElements(const QStringList &ids);
+    // Select the closed shape around p (innermost) and its islands.
+    void selectAreaAt(const QPointF &p, bool add = false);
 
     // Amber halo over the vectors a toolpath machines, so selecting a row in
     // the toolpath list answers "which shapes does this one cut?".
@@ -121,6 +128,12 @@ private:
     void cancelDrawing();
     void onSelectionChanged();
     void emitZoom();
+    void placeHud();
+    QWidget *m_hud = nullptr;           // bottom-right: zoom - / + and the live readout
+    QLabel *m_hudText = nullptr;
+    QPointF m_hudPos;
+    bool m_hudHasPos = false;
+    void updateHud();
     void renderPreviewOps();
     QGraphicsPathItem *itemFor(const QString &id) const;
 

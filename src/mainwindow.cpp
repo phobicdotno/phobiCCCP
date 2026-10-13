@@ -46,6 +46,11 @@
 #include <QSettings>
 #include <QCoreApplication>
 #include <QProcess>
+#include <QRegularExpression>
+#include <QProgressBar>
+#include <memory>
+#include <QDialog>
+#include <QPushButton>
 #include <QStandardPaths>
 #include "settingsdialog.h"
 #include "toolbarorder.h"
@@ -54,6 +59,7 @@
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QStatusBar>
+#include <QVBoxLayout>
 #include <QStringList>
 #include <QDebug>
 #include <QSqlDatabase>
@@ -321,7 +327,44 @@ static QIcon toolIcon(const QString &kind)
     QPen pen(QColor(0xd8, 0xdc, 0xe4), 1.6);
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
-    if (kind == "select") {
+    if (kind == "area") {
+        // A closed shape, filled, with the arrow clicking inside it.
+        QPainterPath s;
+        s.moveTo(2.5, 6);
+        s.cubicTo(2.5, 2.5, 9, 1.5, 13.5, 3.5);
+        s.cubicTo(18, 5.5, 17.5, 11, 14.5, 13.5);
+        s.cubicTo(11, 16.5, 2.5, 15.5, 2.5, 6);
+        p.setBrush(QColor(0xf2, 0xa5, 0x36, 90));
+        p.drawPath(s);
+        QPolygonF arrow;
+        arrow << QPointF(8, 6) << QPointF(8, 16) << QPointF(10.6, 13.4)
+              << QPointF(12.6, 17.4) << QPointF(14, 16.7) << QPointF(12, 12.7) << QPointF(15, 12.5);
+        p.setPen(QPen(QColor(0x1e, 0x21, 0x27), 1.0));
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        p.drawPolygon(arrow);
+    } else if (kind == "hand") {
+        // An open hand, palm toward the viewer: four fingers and a thumb.
+        QPainterPath h;
+        h.moveTo(6.2, 17.5);
+        h.cubicTo(4.5, 15.5, 3.2, 13.0, 2.6, 11.2);
+        h.cubicTo(2.2, 10.0, 3.6, 9.4, 4.4, 10.3);
+        h.lineTo(5.6, 11.9);
+        h.lineTo(5.6, 4.6);
+        h.cubicTo(5.6, 3.4, 7.4, 3.4, 7.4, 4.6);
+        h.lineTo(7.4, 9.4);
+        h.lineTo(7.4, 3.3);
+        h.cubicTo(7.4, 2.1, 9.3, 2.1, 9.3, 3.3);
+        h.lineTo(9.3, 9.4);
+        h.lineTo(9.3, 3.9);
+        h.cubicTo(9.3, 2.7, 11.2, 2.7, 11.2, 3.9);
+        h.lineTo(11.2, 9.6);
+        h.lineTo(11.2, 5.6);
+        h.cubicTo(11.2, 4.4, 13.0, 4.4, 13.0, 5.6);
+        h.lineTo(13.0, 12.8);
+        h.cubicTo(13.0, 15.0, 12.0, 16.5, 11.2, 17.5);
+        h.closeSubpath();
+        p.drawPath(h);
+    } else if (kind == "select") {
         QPolygonF arrow;
         arrow << QPointF(6, 3) << QPointF(6, 15) << QPointF(9.5, 11.5)
               << QPointF(12, 16) << QPointF(13.8, 15) << QPointF(11.4, 10.6)
@@ -576,7 +619,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_rightStack->setMinimumWidth(300);
     m_canvasPage = new QSplitter(Qt::Horizontal, this);
     m_canvasPage->addWidget(m_canvas);
-    m_canvasPage->addWidget(m_rightStack);
+    // Zoom - / + and the zoom % / X Y readout under the right-hand panel,
+    // in Design and Toolpaths alike.
+    auto *rightCol = new QWidget(this);
+    auto *rcl = new QVBoxLayout(rightCol);
+    rcl->setContentsMargins(0, 0, 0, 6);
+    rcl->setSpacing(6);
+    rcl->addWidget(m_rightStack, 1);
+    rcl->addWidget(m_canvas->zoomBar(), 0, Qt::AlignLeft);
+    m_canvasPage->addWidget(rightCol);
     m_canvasPage->setChildrenCollapsible(false);
     m_canvasPage->setStretchFactor(0, 3);
     m_canvasPage->setStretchFactor(1, 1);
@@ -678,7 +729,7 @@ MainWindow::MainWindow(QWidget *parent)
                                      QStringLiteral("There are no toolpaths to describe yet."));
             return;
         }
-        const QFileInfo fi(m_untitled ? QString() : m_doc.filePath());
+        const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
         const QString title = fi.fileName().isEmpty() ? QStringLiteral("Untitled") : fi.completeBaseName();
         const QString dest = QFileDialog::getSaveFileName(
             this, QStringLiteral("Save setup sheet"),
@@ -776,8 +827,13 @@ MainWindow::MainWindow(QWidget *parent)
         connect(a, &QAction::triggered, this, [this, t] { m_canvas->setTool(t); });
         return a;
     };
-    addTool(QStringLiteral("Select"), QStringLiteral("select"), Canvas::Select, Qt::Key_V,
-            QStringLiteral("Select / move / delete  (V)"))->setChecked(true);
+    QAction *selectAct = addTool(QStringLiteral("Select"), QStringLiteral("select"), Canvas::Select, Qt::Key_V,
+            QStringLiteral("Select / move / delete  (V)"));
+    selectAct->setChecked(true);
+    QAction *handAct = addTool(QStringLiteral("Hand"), QStringLiteral("hand"), Canvas::Pan, Qt::Key_H,
+            QStringLiteral("Hand: drag to move the view  (H)"));
+    QAction *areaAct = addTool(QStringLiteral("Area"), QStringLiteral("area"), Canvas::SelectArea, Qt::Key_W,
+            QStringLiteral("Select closed area: click inside a shape to select it and its islands, for a pocket  (W)"));
     QAction *circleAct = addTool(QStringLiteral("Circle"), QStringLiteral("circle"),
             Canvas::DrawCircle, Qt::Key_C,
             QStringLiteral("Circle (C) — hold for Center / 2-Point / 3-Point / 2-Tangent / 3-Tangent"));
@@ -886,6 +942,16 @@ MainWindow::MainWindow(QWidget *parent)
     // it (Delete, Snap, Fit) still fits at 1280 px wide.
     m_tpBar->setStyleSheet(QStringLiteral("QToolButton { padding: 4px 5px; }"));
     addToolBar(Qt::TopToolBarArea, m_tpBar);
+    // Arrow, hand and closed-area select on the Toolpaths page too (the same
+    // actions as the drawing palette), icon only so the bar stays narrow.
+    for (QAction *a : {selectAct, handAct, areaAct}) {
+        auto *b = new QToolButton(m_tpBar);
+        b->setDefaultAction(a);
+        b->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        b->setIconSize(QSize(26, 26));
+        m_tpBar->addWidget(b);
+    }
+    m_tpBar->addSeparator();
     {
         const QHash<QString, QString> why = {
             {QStringLiteral("contour"), QStringLiteral("Follow the outline: outside, inside or on the line")},
@@ -965,8 +1031,19 @@ MainWindow::MainWindow(QWidget *parent)
 
     QAction *fitAct = tb->addAction(toolIcon(QStringLiteral("fit")), QStringLiteral("Fit"));
     fitAct->setShortcut(Qt::Key_F);
-    fitAct->setToolTip(QStringLiteral("Zoom to fit board  (F)"));
+    fitAct->setToolTip(QStringLiteral("Zoom to the selection, or the whole board when nothing is selected  (F)"));
     connect(fitAct, &QAction::triggered, this, [this] { m_canvas->zoomFit(); });
+    // Keyboard zoom; the - / + buttons are on the canvas, bottom right.
+    auto *zoomInAct = new QAction(QStringLiteral("Zoom in"), this);
+    zoomInAct->setShortcuts({QKeySequence(Qt::Key_Plus), QKeySequence(Qt::Key_Equal), QKeySequence::ZoomIn});
+    connect(zoomInAct, &QAction::triggered, this, [this] { m_canvas->zoomBy(1.25); });
+    auto *zoomOutAct = new QAction(QStringLiteral("Zoom out"), this);
+    zoomOutAct->setShortcuts({QKeySequence(Qt::Key_Minus), QKeySequence::ZoomOut});
+    connect(zoomOutAct, &QAction::triggered, this, [this] { m_canvas->zoomBy(1.0 / 1.25); });
+    // Only while the canvas has focus: "-" must still type in number boxes.
+    zoomInAct->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    zoomOutAct->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    m_canvas->addActions({zoomInAct, zoomOutAct});
 
     m_previewAct = tb->addAction(toolIcon(QStringLiteral("gcode")),
                                  QStringLiteral("Preview"));
@@ -988,23 +1065,8 @@ MainWindow::MainWindow(QWidget *parent)
     tb->addAction(redoAct);
     new VectorActions(m_canvas, editMenu, this);   // Edit → Vectors + icon bar
 
-    // Status bar: transient hints on the left, zoom + live mm on the right.
-    m_zoomLabel = new QLabel(QStringLiteral("100%"), this);
-    m_zoomLabel->setMinimumWidth(56);
-    m_zoomLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    statusBar()->addPermanentWidget(m_zoomLabel);
-    connect(m_canvas, &Canvas::zoomChanged, this, [this](double pct) {
-        m_zoomLabel->setText(QStringLiteral("%1%").arg(qRound(pct)));
-    });
-
-    m_cursorLabel = new QLabel(QStringLiteral("X —    Y —"), this);
-    m_cursorLabel->setMinimumWidth(180);
-    m_cursorLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    statusBar()->addPermanentWidget(m_cursorLabel);
-    connect(m_canvas, &Canvas::cursorMoved, this, [this](QPointF p) {
-        m_cursorLabel->setText(QStringLiteral("X %1    Y %2 mm")
-                                   .arg(p.x(), 0, 'f', 2).arg(p.y(), 0, 'f', 2));
-    });
+    // Status bar: transient hints. Zoom and the live mm position are on the
+    // canvas itself (bottom right, with the zoom buttons).
 
     connect(m_canvas, &Canvas::documentChanged, this, [this] {
         m_dirty = true;
@@ -1095,7 +1157,9 @@ MainWindow::MainWindow(QWidget *parent)
     name->setTextFormat(Qt::RichText);
     m_updateLabel = new QLabel(brand);
     m_updateLabel->setTextFormat(Qt::RichText);
-    m_updateLabel->setOpenExternalLinks(true);
+    m_updateLabel->setOpenExternalLinks(false);
+    connect(m_updateLabel, &QLabel::linkActivated, this,
+            [this](const QString &link) { installUpdate(link.section(QLatin1Char(':'), 1)); });
     m_updateLabel->hide();
     // The open file, right of the version (it used to sit in the status
     // bar at the bottom, where nobody looked).
@@ -1173,13 +1237,180 @@ void MainWindow::checkForUpdate()
         if (theirs.isNull() || theirs <= ours)
             return;
         m_updateLabel->setText(QStringLiteral(
-            "<a href='https://github.com/phobicdotno/phobiCCCP' "
-            "style='color:#f2a536; text-decoration:none'>↑ v%1 on GitHub</a>").arg(remote));
-        m_updateLabel->setToolTip(QStringLiteral("A newer phobiCCCP is on GitHub: v%1 (this is v%2)")
+            "<a href='update:%1' "
+            "style='color:#f2a536; text-decoration:none'>↑ Install v%1</a>").arg(remote));
+        m_updateLabel->setToolTip(QStringLiteral("Click to install v%1 (this is v%2)")
                                       .arg(remote, QLatin1String(PHOBICCCP_VERSION)));
         m_updateLabel->show();
-        statusBar()->showMessage(QStringLiteral("phobiCCCP v%1 is available on GitHub").arg(remote), 15000);
+        statusBar()->showMessage(QStringLiteral("phobiCCCP v%1 is available: click it at the top to install").arg(remote), 15000);
     });
+}
+
+// The update link at the top: get the new version from GitHub into the
+// source folder this build came from, build it, install it and start it.
+// Every step's output scrolls by in the dialog; a failed step stops there
+// and leaves the running version untouched.
+void MainWindow::installUpdate(const QString &version)
+{
+    const QString src = QStringLiteral(PHOBICCCP_SOURCE_DIR), build = QStringLiteral(PHOBICCCP_BUILD_DIR);
+    if (!QFileInfo::exists(src + QStringLiteral("/.git")) || !QFileInfo::exists(build)) {
+        QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/phobicdotno/phobiCCCP")));
+        return;
+    }
+    if (m_machine && m_machine->isBusy()) {
+        shopTell(this, QStringLiteral("Update"), QStringLiteral("The machine is working"),
+                 QStringLiteral("Install the update when the job is done: it restarts phobiCCCP."));
+        return;
+    }
+    ShopAsk ask;
+    ask.title = QStringLiteral("Update");
+    ask.headline = QStringLiteral("Install phobiCCCP v%1?").arg(version);
+    ask.body = QStringLiteral("Downloads v%1, builds it (a few minutes) and restarts phobiCCCP. "
+                              "You are asked to save unsaved changes before the restart.").arg(version);
+    ask.okText = QStringLiteral("Install");
+    ask.defaultOk = true;
+    if (!shopAsk(this, ask))
+        return;
+
+    // One bar per stage; the build's "[ 42%]" lines drive its bar, the
+    // others pulse while they run. The log is behind "Details".
+    auto *dlg = new QDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setWindowTitle(QStringLiteral("Installing v%1").arg(version));
+    dlg->setFixedWidth(640);
+    auto *v = new QVBoxLayout(dlg);
+    v->setContentsMargins(24, 20, 24, 16);
+    v->setSpacing(10);
+    auto *head = new QLabel(dlg);
+    head->setStyleSheet(QStringLiteral("font-size: 18px; font-weight: 600;"));
+    v->addWidget(head);
+    const QString barStyle = QStringLiteral(
+        "QProgressBar { background: #16181d; border: 1px solid #333945; border-radius: 6px;"
+        " min-height: 24px; text-align: center; color: #d8dce4; font-size: 12px; }"
+        "QProgressBar::chunk { background: #f2a536; border-radius: 5px; }");
+    auto bar = [&](const QString &label) {
+        auto *l = new QLabel(label, dlg);
+        l->setStyleSheet(QStringLiteral("color: #aab1bd; margin-top: 6px;"));
+        auto *b = new QProgressBar(dlg);
+        b->setStyleSheet(barStyle);
+        b->setRange(0, 100);
+        b->setValue(0);
+        b->setTextVisible(false);
+        v->addWidget(l);
+        v->addWidget(b);
+        return b;
+    };
+    QProgressBar *dlBar = bar(QStringLiteral("Downloading"));
+    QProgressBar *buildBar = bar(QStringLiteral("Compiling"));
+    QProgressBar *instBar = bar(QStringLiteral("Installing"));
+    auto *log = new QPlainTextEdit(dlg);
+    log->setReadOnly(true);
+    log->setMinimumHeight(220);
+    log->setStyleSheet(QStringLiteral("font-family: monospace; font-size: 11px;"));
+    log->hide();
+    auto *details = new QToolButton(dlg);
+    details->setText(QStringLiteral("Details \u25BE"));
+    details->setCheckable(true);
+    details->setAutoRaise(true);
+    connect(details, &QToolButton::toggled, dlg, [details, log, dlg](bool on) {
+        details->setText(on ? QStringLiteral("Details \u25B4") : QStringLiteral("Details \u25BE"));
+        log->setVisible(on);
+        dlg->adjustSize();
+    });
+    auto *closeBtn = new QPushButton(QStringLiteral("Close"), dlg);
+    closeBtn->setEnabled(false);
+    connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
+    auto *row = new QHBoxLayout;
+    row->addWidget(details);
+    row->addStretch(1);
+    row->addWidget(closeBtn);
+    v->addSpacing(6);
+    v->addLayout(row);
+    v->addWidget(log);
+    dlg->show();
+    const QList<QProgressBar *> bars = {dlBar, dlBar, buildBar, instBar};
+    auto pulse = [](QProgressBar *b) { b->setRange(0, 0); };
+    auto done = [](QProgressBar *b) { b->setRange(0, 100); b->setValue(100); };
+
+    struct Step { QString what, prog; QStringList args; QString fallbackProg; QStringList fallbackArgs; };
+    const QList<Step> steps = {
+        {QStringLiteral("Downloading"), QStringLiteral("git"), {QStringLiteral("-C"), src, QStringLiteral("fetch"), QStringLiteral("origin"), QStringLiteral("main")}, {}, {}},
+        {QStringLiteral("Downloading"), QStringLiteral("git"), {QStringLiteral("-C"), src, QStringLiteral("reset"), QStringLiteral("--hard"), QStringLiteral("origin/main")}, {}, {}},
+        {QStringLiteral("Building"), QStringLiteral("cmake"), {QStringLiteral("--build"), build, QStringLiteral("-j4")}, {}, {}},
+        {QStringLiteral("Installing"), QStringLiteral("sudo"), {QStringLiteral("-n"), QStringLiteral("cmake"), QStringLiteral("--install"), build},
+         QStringLiteral("pkexec"), {QStringLiteral("cmake"), QStringLiteral("--install"), build}},
+    };
+    auto run = std::make_shared<std::function<void(int, bool)>>();
+    *run = [=](int i, bool fallback) {
+        if (i == steps.size()) {
+            head->setText(QStringLiteral("v%1 installed \u2014 restarting").arg(version));
+            closeBtn->setEnabled(true);
+            const QString file = m_untitled ? QString() : m_doc.filePath();
+            QTimer::singleShot(800, this, [this, file, dlg] {
+                dlg->close();
+                if (!close())            // save prompt cancelled: stay, new version next start
+                    return;
+                QProcess::startDetached(QCoreApplication::applicationFilePath(),
+                                        file.isEmpty() ? QStringList() : QStringList{file});
+                qApp->quit();
+            });
+            return;
+        }
+        const Step &s = steps[i];
+        head->setText(QStringLiteral("%1 v%2\u2026").arg(s.what, version));
+        QProgressBar *b = bars[i];
+        if (b == buildBar) {
+            b->setRange(0, 100);
+            b->setValue(0);
+        } else {
+            pulse(b);
+        }
+        auto *p = new QProcess(dlg);
+        p->setProcessChannelMode(QProcess::MergedChannels);
+        connect(p, &QProcess::readyRead, log, [p, log, b, buildBar] {
+            const QString text = QString::fromLocal8Bit(p->readAll());
+            log->appendPlainText(text.trimmed());
+            if (b != buildBar)
+                return;
+            static const QRegularExpression pct(QStringLiteral("\\[\\s*(\\d+)%\\]"));
+            auto it = pct.globalMatch(text);
+            while (it.hasNext())
+                b->setValue(it.next().captured(1).toInt());
+        });
+        connect(p, &QProcess::finished, dlg, [=](int code, QProcess::ExitStatus st) {
+            p->deleteLater();
+            if (st == QProcess::NormalExit && code == 0) {
+                done(b);
+                (*run)(i + 1, false);
+                return;
+            }
+            if (!fallback && !s.fallbackProg.isEmpty()) {
+                (*run)(i, true);
+                return;
+            }
+            b->setRange(0, 100);
+            head->setText(QStringLiteral("%1 failed \u2014 nothing was changed").arg(s.what));
+            details->setChecked(true);
+            closeBtn->setEnabled(true);
+        });
+        connect(p, &QProcess::errorOccurred, dlg, [=](QProcess::ProcessError e) {
+            if (e != QProcess::FailedToStart)
+                return;
+            p->deleteLater();
+            if (!fallback && !s.fallbackProg.isEmpty()) {
+                (*run)(i, true);
+                return;
+            }
+            b->setRange(0, 100);
+            head->setText(QStringLiteral("%1 failed: %2 not found").arg(s.what, s.prog));
+            details->setChecked(true);
+            closeBtn->setEnabled(true);
+        });
+        log->appendPlainText(QStringLiteral("$ %1 %2").arg(fallback ? s.fallbackProg : s.prog,
+                                                          (fallback ? s.fallbackArgs : s.args).join(QLatin1Char(' '))));
+        p->start(fallback ? s.fallbackProg : s.prog, fallback ? s.fallbackArgs : s.args);
+    };
+    (*run)(0, false);
 }
 
 // Three tool bars on one row need about 1 500 px; the shop screen has
@@ -1477,8 +1708,8 @@ void MainWindow::updateTitle()
 {
     QString t = QStringLiteral("phobiCCCP");
     if (m_untitled)
-        t = QStringLiteral("Untitled") + (m_dirty ? QStringLiteral(" *") : QString())
-            + QStringLiteral(" — phobiCCCP");
+        t = (m_untitledFrom.isEmpty() ? QStringLiteral("Untitled") : QFileInfo(m_untitledFrom).fileName())
+            + (m_dirty ? QStringLiteral(" *") : QString()) + QStringLiteral(" — phobiCCCP");
     else if (!m_doc.filePath().isEmpty())
         t = QFileInfo(m_doc.filePath()).fileName() + (m_dirty ? QStringLiteral(" *") : QString())
             + QStringLiteral(" — phobiCCCP");
@@ -1488,6 +1719,10 @@ void MainWindow::updateTitle()
         m_fileLabel->setText(t.contains(QStringLiteral(" — "))
                                  ? QStringLiteral("·   %1").arg(name)
                                  : QString());
+        // A file is open: the start-up hint no longer applies.
+        if (t.contains(QStringLiteral(" — "))
+            && statusBar()->currentMessage() == QLatin1String("Open a .c2d file to begin"))
+            statusBar()->clearMessage();
         m_fileLabel->setToolTip(m_doc.filePath());
     }
 }
@@ -1583,8 +1818,11 @@ void MainWindow::onSaveAs()
                                  QStringLiteral("Open a .c2d file first."));
         return;
     }
+    const QFileInfo from(m_untitled ? m_untitledFrom : m_doc.filePath());
     QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Save Carbide Create file"), {},
+        this, QStringLiteral("Save Carbide Create file"),
+        from.fileName().isEmpty() ? QString()
+                                  : from.absolutePath() + QLatin1Char('/') + from.completeBaseName() + QStringLiteral(".c2d"),
         QStringLiteral("Carbide Create (*.c2d)"));
     if (path.isEmpty())
         return;
@@ -1660,6 +1898,8 @@ void MainWindow::openFile(const QString &path)
         m_dirty = false;
         newUntitled();
         importVectorFile(this, m_canvas, &m_doc, path);
+        m_untitledFrom = path;         // shown in the header; Save As offers name.c2d
+        updateTitle();
         return;
     }
     openPath(path, false);
@@ -1699,6 +1939,7 @@ void MainWindow::openPath(const QString &path, bool untitled)
     if (m_untitledPath != path)
         removeUntitledFile();         // the untitled design it replaces
     m_untitled = untitled;
+    m_untitledFrom.clear();
     if (untitled)
         m_untitledPath = path;
     else
