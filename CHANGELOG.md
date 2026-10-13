@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.2 (build 53) — 2026-10-13
+
+> Open dialog: always the dark Qt one, starting in the last file's folder
+
+- The white GTK file chooser no longer takes over when phobiCCCP is started
+  from the desktop menu; Open and Save use the dark dialog with the 2x icons.
+- Open starts in the folder of the most recently opened design.
+- Screenshot runs (--shot) no longer push their file into Open Recent.
+
 ## v1.1.1 (build 52) — 2026-10-13
 
 > Design: hand and area tools, zoom buttons, Fit to selection, one-click update

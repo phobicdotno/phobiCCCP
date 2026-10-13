@@ -507,6 +507,10 @@ int main(int argc, char *argv[])
     QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
     QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));
     applyDarkTheme(app);
+    // Always the Qt file dialogs: launched from the Cinnamon menu the gtk3
+    // platform theme swaps in GTK's white chooser, which ignores the dark
+    // palette, the icon sizes and the start folder below.
+    QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     if (QIcon::themeName().isEmpty() || QIcon::themeName() == QLatin1String("hicolor"))
         for (const char *name : {"Mint-Y", "Adwaita"})
             if (QDir(QStringLiteral("/usr/share/icons/") + QLatin1String(name)).exists()) {
@@ -1192,7 +1196,10 @@ int main(int argc, char *argv[])
                 w.resize(1680, 980);
         }
         w.show();
+        // A screenshot run must not land its file in the user's Open Recent.
+        const QVariant recentBefore = QSettings().value(QStringLiteral("recentFiles"));
         w.openFile(QString::fromLocal8Bit(argv[2]));
+        QSettings().setValue(QStringLiteral("recentFiles"), recentBefore);
         // The page to grab; "a:b:c" walks through several, like a user
         // switching modes, and grabs the last.
         if (argc == 5) {

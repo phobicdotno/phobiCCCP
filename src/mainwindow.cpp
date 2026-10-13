@@ -1761,8 +1761,16 @@ void MainWindow::onNew()
 
 void MainWindow::onOpen()
 {
+    // Start where the last design came from, not in the home folder.
+    QString dir;
+    const QStringList recent = QSettings().value(QStringLiteral("recentFiles")).toStringList();
+    for (const QString &r : recent)
+        if (QFileInfo::exists(r)) {
+            dir = QFileInfo(r).absolutePath();
+            break;
+        }
     const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open"), {},
+        this, QStringLiteral("Open"), dir,
         QStringLiteral("Designs and vectors (*.c2d *.svg *.dxf *.plt *.hpgl *.hpg *.hgl *.pdf *.ai *.eps *.ps);;"
                        "Carbide Create (*.c2d);;") + importFileFilter()
             + QStringLiteral(";;All files (*)"));
