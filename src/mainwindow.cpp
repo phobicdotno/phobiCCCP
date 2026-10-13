@@ -2,6 +2,7 @@
 #include "importers.h"
 #include "shopdialog.h"
 #include "aboutdialog.h"
+#include "toolstrip.h"
 #include "brandlogo.h"
 
 #include "exportprogress.h"
@@ -569,6 +570,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_machine = new MachinePanel(this);
     m_iso = new IsoPreview(this);
     m_sim = new SimPanel(this);
+    m_toolStrip = new ToolStrip(this);
+    m_toolStrip->setMaximumWidth(130);
+    connect(m_iso, &IsoPreview::currentToolChanged, m_toolStrip, &ToolStrip::setCurrent);
+    connect(m_toolStrip, &ToolStrip::toolClicked, m_iso, &IsoPreview::seekToTool);
 
     auto scrolled = [](QWidget *w) {
         auto *sa = new QScrollArea;
@@ -660,10 +665,12 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Simulate page: the 3D route preview beside the material-removal view.
     m_simPage = new QSplitter(Qt::Horizontal, this);
+    m_simPage->addWidget(m_toolStrip);
     m_simPage->addWidget(m_iso);
     m_simPage->addWidget(m_sim);
-    m_simPage->setStretchFactor(0, 1);
+    m_simPage->setStretchFactor(0, 0);
     m_simPage->setStretchFactor(1, 1);
+    m_simPage->setStretchFactor(2, 1);
     m_simPage->setChildrenCollapsible(false);
     m_stack->addWidget(m_simPage);
 
@@ -979,6 +986,24 @@ MainWindow::MainWindow(QWidget *parent)
             const QString type = k.type;
             connect(a, &QAction::triggered, this, [this, type] { m_tp->newToolpath(type); });
         }
+    }
+    // Cut order: the list top to bottom (default), or same-tool toolpaths
+    // pooled so each site is finished before the spindle moves on.
+    m_tpBar->addSeparator();
+    {
+        QAction *site = m_tpBar->addAction(QStringLiteral("Site order"));
+        site->setCheckable(true);
+        site->setChecked(QSettings().value(QStringLiteral("export/siteOrder"), false).toBool());
+        site->setToolTip(QStringLiteral("Off: cut in list order, top to bottom.\n"
+                                        "On: pool toolpaths that share a tool and finish each site "
+                                        "(counterbore, then its through-hole) before moving on."));
+        connect(site, &QAction::toggled, this, [this](bool on) {
+            QSettings().setValue(QStringLiteral("export/siteOrder"), on);
+            m_doc.setParam(QStringLiteral("site_order"), on ? QStringLiteral("1") : QStringLiteral("0"));
+            markIsoStale();
+            if (m_previewAct->isChecked())
+                refreshPreview();
+        });
     }
 
     // Top bar: options and view/edit actions.
@@ -1695,6 +1720,7 @@ void MainWindow::refreshPreview(bool interactive)
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
+    m_toolStrip->setJob(m_doc, r.ops);
     m_isoStale = false;
     QString msg = QStringLiteral("Preview: %1 toolpath(s)").arg(r.done.size());
     if (!r.skipped.isEmpty())
@@ -1732,6 +1758,7 @@ void MainWindow::refreshIso(bool interactive)
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
+    m_toolStrip->setJob(m_doc, r.ops);
 }
 
 void MainWindow::showSimulation()
@@ -1987,6 +2014,9 @@ void MainWindow::openPath(const QString &path, bool untitled)
         return;
     }
     m_doc = std::move(next);
+    m_doc.setParam(QStringLiteral("site_order"),
+                   QSettings().value(QStringLiteral("export/siteOrder"), false).toBool()
+                       ? QStringLiteral("1") : QStringLiteral("0"));
     qDebug() << "[diag] loaded elements:" << m_doc.elements().size()
              << "toolpaths:" << m_doc.toolpaths().size()
              << "board:" << m_doc.boardWidth() << "x" << m_doc.boardHeight()

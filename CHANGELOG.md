@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.1.8 (build 59) — 2026-10-13
+
+> Simulate: cuts in list order, tool changes stop the preview, tool strip, zoom buttons
+
+- Toolpaths are cut in list order, top to bottom. "Site order" on the Toolpaths bar brings
+  back the pooling of same-tool toolpaths per site.
+- 3D preview: a tool change stops playback like the machine's M0 and says which tool;
+  the status shows the tool in the spindle.
+- A tool strip beside the Simulate views lists the tools in use with their icons; the
+  current one is highlighted, clicking one jumps to its tool change.
+- Zoom − / + buttons on both Simulate views.
+- Tool change window: the bit's diagram with its sizes, plus Ø, cut length and flutes in words;
+  the shop popups have no title bar any more.
+
 ## v1.1.7 (build 58) — 2026-10-13
 
 > Rest depth: a toolpath starts where the toolpaths above it stopped, 1 mm overlap

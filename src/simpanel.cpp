@@ -17,6 +17,9 @@
 
 namespace c2d {
 
+void addZoomButtons(QWidget *view, std::function<void(double)> zoom);   // isopreview.cpp
+void placeZoomButtons(QWidget *view);
+
 namespace {
 // Same palette as the isometric preview so the two tabs read alike.
 const QColor kViewBg(0x15, 0x17, 0x1c);
@@ -40,6 +43,18 @@ public:
         // Two-finger pinch zooms (and pans with the pinch's centre).
         setAttribute(Qt::WA_AcceptTouchEvents);
         grabGesture(Qt::PinchGesture);
+        addZoomButtons(this, [this](double f) { zoomBy(f); });
+    }
+
+    void zoomBy(double f)
+    {
+        if (m_img.isNull())
+            return;
+        const QPointF c(width() / 2.0, height() / 2.0);
+        m_off = c - f * (c - m_off);
+        m_scale *= f;
+        m_fitPending = false;
+        update();
     }
 
     bool event(QEvent *e) override
@@ -152,6 +167,7 @@ protected:
     }
     void resizeEvent(QResizeEvent *) override
     {
+        placeZoomButtons(this);
         if (m_fitPending)
             update();
     }

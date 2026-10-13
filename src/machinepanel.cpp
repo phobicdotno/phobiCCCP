@@ -1,5 +1,7 @@
 #include "machinepanel.h"
 #include "shopdialog.h"
+#include "toollibrary.h"
+#include "toolstrip.h"
 
 #include "gamepad.h"
 #include "gamepadmapdialog.h"
@@ -2532,6 +2534,22 @@ void MachinePanel::onMacroFinished(bool ok)
             a.body = m_rehearsal
                 ? QStringLiteral("Or leave the same one in to check the measurement repeats.")
                 : QStringLiteral("Tighten the collet before you continue.");
+            if (!m_rehearsal && m_doc) {
+                // Which bit: its diagram with the sizes on it, and the sizes in words.
+                const LibraryTool lt = toolFromToolpaths(*m_doc, m_pendingTool);
+                if (lt.diameter > 0) {
+                    QString what = lt.name.isEmpty() ? QStringLiteral("T%1").arg(m_pendingTool) : lt.name;
+                    what += QStringLiteral("\n\u00d8 %1 mm").arg(lt.diameter, 0, 'g', 4);
+                    if (lt.length > 0)
+                        what += QStringLiteral(" \u00b7 cut length %1 mm").arg(lt.length, 0, 'g', 4);
+                    if (lt.angle > 0)
+                        what += QStringLiteral(" \u00b7 %1\u00b0").arg(lt.angle);
+                    if (lt.flutes > 0)
+                        what += QStringLiteral(" \u00b7 %1 flute%2").arg(lt.flutes).arg(lt.flutes == 1 ? "" : "s");
+                    a.body = what + QStringLiteral("\n\n") + a.body;
+                    a.picture = toolPicture(lt, 150, 225, devicePixelRatioF());
+                }
+            }
             a.note = bs ? QStringLiteral("The BitSetter measures it, then the program "
                                          "carries on.")
                         : QStringLiteral("BitSetter is off: re-zero Z by hand if the tool "

@@ -22,6 +22,7 @@ class MachinePanel;
 class ModelPanel;
 class PropertiesPanel;
 class SimPanel;
+class ToolStrip;
 class ToolpathPanel;
 
 class MainWindow : public QMainWindow
@@ -100,6 +101,7 @@ private:
     IsoPreview *m_iso;           // isometric animated route preview (Simulate page)
     QSplitter *m_simPage;        // 3D route | material removal
     SimPanel *m_sim;             // material-removal simulation (Simulate page)
+    ToolStrip *m_toolStrip;      // tools in use, beside the Simulate views
     QStackedWidget *m_stack;     // canvas / simulation / machine pages
     QSplitter *m_canvasPage;     // canvas | right column
     QStackedWidget *m_rightStack; // Design page / Toolpaths page

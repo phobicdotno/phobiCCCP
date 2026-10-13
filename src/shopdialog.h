@@ -1,4 +1,5 @@
 #pragma once
+#include <QPixmap>
 #include <QString>
 
 class QWidget;
@@ -14,6 +15,7 @@ struct ShopAsk {
     QString headline;         // one line, large
     QString body;             // plain text; blank lines start new paragraphs
     QString note;             // optional, shown in an amber (or red) box
+    QPixmap picture;          // optional, beside the headline and body (a tool diagram)
     bool noteDanger = false;  // red note box instead of amber
     QString okText = QStringLiteral("OK");
     QString cancelText = QStringLiteral("Cancel");   // empty: no cancel button

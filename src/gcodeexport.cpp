@@ -1641,6 +1641,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
     };
 
     QList<Cleared> cleared;   // what the toolpaths so far have removed (rest depth)
+    // Cut order: the toolpath list, top to bottom (each toolpath's own jobs
+    // still run nearest-first). With params.site_order = "1" consecutive
+    // same-tool toolpaths are pooled and every site is finished before the
+    // spindle moves on (counterbore, then the through-hole beside it).
+    const bool siteOrder = doc.params().value(QStringLiteral("site_order")) == QLatin1String("1");
     const int tpTotal = int(doc.toolpaths().size());
     for (const Toolpath &t : doc.toolpaths()) {
         const QJsonObject j = t.json;
@@ -2843,6 +2848,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             pendingTool = toolNo;
             for (const Job &job : jobs)
                 pending.append({job, cp, myIndex, name, feed, plunge, rpm});
+            if (!siteOrder)
+                flush();                      // list order: this toolpath, then the next
             continue;
         }
 

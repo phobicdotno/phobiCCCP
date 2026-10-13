@@ -18,6 +18,7 @@
 #include <QtMath>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace c2d {
 
@@ -63,6 +64,39 @@ QString fmtTime(double sec)
 
 } // namespace
 
+// Zoom - / + in the corner of a view, for a finger on the shop screen.
+void addZoomButtons(QWidget *view, std::function<void(double)> zoom)
+{
+    for (int i = 0; i < 2; ++i) {
+        auto *b = new QToolButton(view);
+        b->setObjectName(i == 0 ? QStringLiteral("zoomOut") : QStringLiteral("zoomIn"));
+        b->setText(i == 0 ? QStringLiteral("\u2212") : QStringLiteral("+"));
+        b->setToolTip(i == 0 ? QStringLiteral("Zoom out") : QStringLiteral("Zoom in"));
+        b->setAutoRepeat(true);
+        b->setFixedSize(36, 36);
+        b->setStyleSheet(QStringLiteral(
+            "QToolButton { font-size: 20px; font-weight: 600; border-radius: 6px;"
+            " background: rgba(42,46,54,220); color: #d8dce4; }"
+            "QToolButton:pressed { background: #3a404b; }"));
+        const double f = i == 0 ? 1.0 / 1.25 : 1.25;
+        QObject::connect(b, &QToolButton::clicked, view, [zoom, f] { zoom(f); });
+        b->show();
+    }
+}
+
+void placeZoomButtons(QWidget *view)
+{
+    QToolButton *out = view->findChild<QToolButton *>(QStringLiteral("zoomOut"));
+    QToolButton *in = view->findChild<QToolButton *>(QStringLiteral("zoomIn"));
+    if (!out || !in)
+        return;
+    const int y = view->height() - 36 - 30;   // above the hint line
+    in->move(view->width() - 36 - 8, y);
+    out->move(view->width() - 36 * 2 - 14, y);
+    in->raise();
+    out->raise();
+}
+
 // ---------------------------------------------------------------------------
 // IsoView: the painted/orbitable 3D area.
 
@@ -77,6 +111,7 @@ public:
         // pans); one finger still arrives as a mouse drag and orbits.
         setAttribute(Qt::WA_AcceptTouchEvents);
         grabGesture(Qt::PinchGesture);
+        addZoomButtons(this, [this](double f) { zoomBy(f); });
     }
 
     bool event(QEvent *e) override
@@ -101,6 +136,21 @@ public:
     }
 
     void setJob(const QVector<Op> &ops, double w, double h, double t);
+    // Tool changes along the program: (time, tool number), in order.
+    const QVector<QPair<double, int>> &toolChanges() const { return m_toolChanges; }
+    int toolAt(double t) const
+    {
+        int n = 0;
+        for (const auto &c : m_toolChanges)
+            if (c.first <= t + 1e-9)
+                n = c.second;
+        return n;
+    }
+    void zoomBy(double f)
+    {
+        m_scale *= f;
+        update();
+    }
     void setLive(double x, double y, double z, bool valid)
     {
         m_lx = x; m_ly = y; m_lz = z; m_lvalid = valid;
@@ -145,6 +195,7 @@ protected:
         }
         update();
     }
+    void resizeEvent(QResizeEvent *) override { placeZoomButtons(this); }
     void wheelEvent(QWheelEvent *e) override
     {
         const double steps = e->angleDelta().y() / 120.0;
@@ -175,6 +226,7 @@ private:
     void boundsCorners(QVector<QPointF> &out) const;
 
     QVector<Seg> m_segs;
+    QVector<QPair<double, int>> m_toolChanges;
     double m_total = 0, m_time = 0;
     int m_opCount = 0, m_stride = 1;
     double m_w = 0, m_h = 0, m_t = 0;
@@ -194,6 +246,7 @@ void IsoView::setJob(const QVector<Op> &ops, double w, double h, double t)
 {
     m_w = w; m_h = h; m_t = qMax(0.0, t);
     m_segs.clear();
+    m_toolChanges.clear();
     m_opCount = ops.size();
 
     double zMin = 0;
@@ -267,6 +320,9 @@ void IsoView::setJob(const QVector<Op> &ops, double w, double h, double t)
             x = op.x; y = op.y; z = op.z;
             break;
         }
+        case Op::Tool:
+            m_toolChanges.append({tm, op.ival});
+            break;
         default:
             break;
         }
@@ -547,9 +603,34 @@ IsoPreview::IsoPreview(QWidget *parent)
         updateStatus();
     });
     connect(m_timer, &QTimer::timeout, this, &IsoPreview::tick);
+    connect(m_slider, &QSlider::valueChanged, this, [this] { announceTool(); });
 
     syncSlider();
     updateStatus();
+}
+
+void IsoPreview::announceTool()
+{
+    const int n = m_view->toolAt(m_view->time());
+    if (n != m_lastTool) {
+        m_lastTool = n;
+        emit currentToolChanged(n);
+    }
+}
+
+int IsoPreview::currentTool() const { return m_view->toolAt(m_view->time()); }
+
+void IsoPreview::seekToTool(int number)
+{
+    for (const auto &c : m_view->toolChanges())
+        if (c.second == number) {
+            pause();
+            m_view->setTime(c.first);
+            syncSlider();
+            updateStatus();
+            announceTool();
+            return;
+        }
 }
 
 void IsoPreview::setJob(const QVector<Op> &ops, double stockW, double stockH, double stockT)
@@ -558,6 +639,8 @@ void IsoPreview::setJob(const QVector<Op> &ops, double stockW, double stockH, do
     m_view->setJob(ops, stockW, stockH, stockT);
     syncSlider();
     updateStatus();
+    m_lastTool = -1;
+    announceTool();
 }
 
 void IsoPreview::setLivePosition(double x, double y, double z, bool valid)
@@ -604,12 +687,27 @@ void IsoPreview::tick()
 {
     const double dt = m_clock.restart() / 1000.0;
     const double speed = m_speed->currentData().toDouble();
-    const double t = m_view->time() + dt * speed;
+    const double was = m_view->time();
+    double t = was + dt * speed;
+    // A tool change on the way is an M0 on the machine: stop there, say so,
+    // and let Play carry on with the next tool.
+    bool stopped = false;
+    for (const auto &c : m_view->toolChanges())
+        if (c.first > was + 1e-9 && c.first <= t && c.first > 1e-9) {
+            t = c.first;
+            stopped = true;
+            break;
+        }
     m_view->setTime(t);
-    if (t >= m_view->totalTime())
+    if (stopped || t >= m_view->totalTime())
         pause();
     syncSlider();
     updateStatus();
+    announceTool();
+    if (stopped)
+        m_status->setText(QStringLiteral("Tool change \u2192 T%1   press Play to carry on   %2 / %3")
+                              .arg(m_view->toolAt(t))
+                              .arg(fmtTime(t), fmtTime(m_view->totalTime())));
 }
 
 void IsoPreview::syncSlider()
@@ -629,8 +727,9 @@ void IsoPreview::updateStatus()
         return;
     }
     const IsoView::Cursor c = m_view->cursorAt(m_view->time());
-    m_status->setText(QStringLiteral("op %1/%2   X %3  Y %4  Z %5   %6 / %7")
-                          .arg(c.op + 1).arg(m_view->opCount())
+    const int tool = m_view->toolAt(m_view->time());
+    m_status->setText(QStringLiteral("T%1  op %2/%3   X %4  Y %5  Z %6   %7 / %8")
+                          .arg(tool).arg(c.op + 1).arg(m_view->opCount())
                           .arg(c.x, 7, 'f', 2).arg(c.y, 7, 'f', 2).arg(c.z, 6, 'f', 2)
                           .arg(fmtTime(m_view->time()), fmtTime(m_view->totalTime())));
 }

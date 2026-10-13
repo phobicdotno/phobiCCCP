@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.1.7 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.1.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -72,6 +72,7 @@ add_executable(phobicccp
     src/toolpathpanel.cpp
     src/toollibrarydialog.cpp
     src/tooldiagram.cpp
+    src/toolstrip.cpp
     src/machinepanel.cpp
     src/shopdialog.cpp
     src/isopreview.cpp

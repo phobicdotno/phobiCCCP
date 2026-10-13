@@ -3,6 +3,7 @@
 #include "gamepadmapdialog.h"
 #include "toollibrary.h"
 #include "toollibrarydialog.h"
+#include "toolstrip.h"
 #include "model3d.h"
 #include "gcodeexport.h"
 #include "grblstreamer.h"
@@ -1289,6 +1290,14 @@ int main(int argc, char *argv[])
                                                 "carries on.");
                         a.okText = QStringLiteral("Measure and continue");
                         a.cancelText = QStringLiteral("Stop the job");
+                        c2d::LibraryTool lt;
+                        lt.number = 1106; lt.diameter = 10; lt.length = 32; lt.shank = 10; lt.flutes = 2;
+                        lt.kind = QStringLiteral("endmill");
+                        lt.name = QStringLiteral("Straight 2-flute end mill 10 mm (10x32x70)");
+                        a.headline = QStringLiteral("Insert tool T1106");
+                        a.body = QStringLiteral("%1\n\u00d8 10 mm \u00b7 cut length 32 mm \u00b7 2 flutes\n\n%2")
+                                     .arg(lt.name, a.body);
+                        a.picture = c2d::toolPicture(lt, 150, 225, w.devicePixelRatioF());
                     } else {
                         a.title = QStringLiteral("Run program");
                         a.headline = QStringLiteral("Stream 1st test.c2d to the machine?");

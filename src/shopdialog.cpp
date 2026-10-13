@@ -10,12 +10,14 @@ namespace c2d {
 
 bool shopAsk(QWidget *parent, const ShopAsk &a)
 {
-    QDialog dlg(parent);
+    // No window-manager title bar: the caption inside is the title, and the
+    // card gets an amber edge instead so it still reads as a popup.
+    QDialog dlg(parent, Qt::Dialog | Qt::FramelessWindowHint);
     dlg.setWindowTitle(a.title);
     dlg.setObjectName(QStringLiteral("shopDialog"));
     dlg.setAttribute(Qt::WA_StyledBackground);
     dlg.setStyleSheet(QStringLiteral(
-        "#shopDialog { background: #1e2127; }"
+        "#shopDialog { background: #1e2127; border: 2px solid #f2a536; border-radius: 10px; }"
         "QLabel { color: #e6e9ef; }"
         "QLabel#caption { color: #8b93a1; font-size: 11px; letter-spacing: 1px; }"
         "QLabel#headline { font-size: 20px; font-weight: bold; }"
@@ -44,20 +46,40 @@ bool shopAsk(QWidget *parent, const ShopAsk &a)
     auto *cap = new QLabel(a.title.toUpper(), &dlg);
     cap->setObjectName(QStringLiteral("caption"));
     v->addWidget(cap);
+    // Headline and body; with a picture they sit in a column beside it.
+    const int picW = a.picture.isNull() ? 0 : int(a.picture.width() / a.picture.devicePixelRatio());
+    const int colW = picW > 0 ? textW - picW - 18 : textW;
+    auto *col = new QVBoxLayout;
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(14);
     if (!a.headline.isEmpty()) {
         auto *h = new QLabel(a.headline, &dlg);
         h->setObjectName(QStringLiteral("headline"));
         h->setWordWrap(true);
-        h->setFixedWidth(textW);
-        v->addWidget(h);
+        h->setFixedWidth(colW);
+        col->addWidget(h);
     }
     if (!a.body.isEmpty()) {
         auto *b = new QLabel(a.body, &dlg);
         b->setObjectName(QStringLiteral("body"));
         b->setWordWrap(true);
         b->setTextFormat(Qt::PlainText);
-        b->setFixedWidth(textW);
-        v->addWidget(b);
+        b->setFixedWidth(colW);
+        col->addWidget(b);
+    }
+    col->addStretch(1);
+    if (picW > 0) {
+        auto *hb = new QHBoxLayout;
+        hb->setContentsMargins(0, 0, 0, 0);
+        hb->setSpacing(18);
+        hb->addLayout(col, 1);
+        auto *pic = new QLabel(&dlg);
+        pic->setPixmap(a.picture);
+        pic->setAlignment(Qt::AlignTop | Qt::AlignHCenter);
+        hb->addWidget(pic, 0, Qt::AlignTop);
+        v->addLayout(hb);
+    } else {
+        v->addLayout(col);
     }
     if (!a.note.isEmpty()) {
         auto *n = new QLabel(a.note, &dlg);

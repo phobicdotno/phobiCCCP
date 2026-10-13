@@ -37,8 +37,15 @@ public:
     void setProgress(double fraction);   // 0..1 of total job time
     double progress() const;
     void resetView();
+    // Jump to the moment tool `number` is picked up (its M0 tool change).
+    void seekToTool(int number);
+    int currentTool() const;
 
     QSize sizeHint() const override { return {360, 520}; }
+
+signals:
+    // The tool in the spindle at the playback position changed (0 = none yet).
+    void currentToolChanged(int number);
 
 private:
     void tick();
@@ -52,6 +59,8 @@ private:
     QLabel *m_status;
     QTimer *m_timer;
     QElapsedTimer m_clock;
+    int m_lastTool = -1;
+    void announceTool();
 };
 
 } // namespace c2d
