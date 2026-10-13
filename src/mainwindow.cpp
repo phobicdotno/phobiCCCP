@@ -1243,6 +1243,28 @@ void MainWindow::checkForUpdate()
                                       .arg(remote, QLatin1String(PHOBICCCP_VERSION)));
         m_updateLabel->show();
         statusBar()->showMessage(QStringLiteral("phobiCCCP v%1 is available: click it at the top to install").arg(remote), 15000);
+        // What is new: the one-line summary of every release newer than this one.
+        auto *nam2 = new QNetworkAccessManager(this);
+        QNetworkRequest req2(QUrl(QStringLiteral(
+            "https://raw.githubusercontent.com/phobicdotno/phobiCCCP/main/CHANGELOG.md")));
+        req2.setTransferTimeout(8000);
+        QNetworkReply *r2 = nam2->get(req2);
+        connect(r2, &QNetworkReply::finished, this, [this, r2, nam2, ours] {
+            r2->deleteLater();
+            nam2->deleteLater();
+            if (r2->error() != QNetworkReply::NoError)
+                return;
+            m_updateNotes.clear();
+            for (const ReleaseSummary &rel : summarizeChangelog(QString::fromUtf8(r2->readAll()))) {
+                if (QVersionNumber::fromString(rel.version) <= ours)
+                    break;
+                m_updateNotes << QStringLiteral("v%1 \u2014 %2").arg(rel.version,
+                    rel.summary.isEmpty() ? rel.areas.join(QStringLiteral(", ")) : rel.summary);
+            }
+            if (!m_updateNotes.isEmpty())
+                m_updateLabel->setToolTip(m_updateLabel->toolTip() + QStringLiteral("\n\n")
+                                          + m_updateNotes.join(QLatin1Char('\n')));
+        });
     });
 }
 
@@ -1265,7 +1287,8 @@ void MainWindow::installUpdate(const QString &version)
     ShopAsk ask;
     ask.title = QStringLiteral("Update");
     ask.headline = QStringLiteral("Install phobiCCCP v%1?").arg(version);
-    ask.body = QStringLiteral("Downloads v%1, builds it (a few minutes) and restarts phobiCCCP. "
+    ask.body = (m_updateNotes.isEmpty() ? QString() : m_updateNotes.join(QLatin1Char('\n')) + QStringLiteral("\n\n"))
+             + QStringLiteral("Downloads v%1, builds it (a few minutes) and restarts phobiCCCP. "
                               "You are asked to save unsaved changes before the restart.").arg(version);
     ask.okText = QStringLiteral("Install");
     ask.defaultOk = true;
@@ -1274,9 +1297,11 @@ void MainWindow::installUpdate(const QString &version)
 
     // One bar per stage; the build's "[ 42%]" lines drive its bar, the
     // others pulse while they run. The log is behind "Details".
-    auto *dlg = new QDialog(this);
+    auto *dlg = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint);   // no title bar
     dlg->setAttribute(Qt::WA_DeleteOnClose);
     dlg->setWindowTitle(QStringLiteral("Installing v%1").arg(version));
+    dlg->setObjectName(QStringLiteral("updateDialog"));
+    dlg->setStyleSheet(QStringLiteral("#updateDialog { border: 2px solid #f2a536; border-radius: 8px; }"));
     dlg->setFixedWidth(640);
     auto *v = new QVBoxLayout(dlg);
     v->setContentsMargins(24, 20, 24, 16);
@@ -1284,6 +1309,13 @@ void MainWindow::installUpdate(const QString &version)
     auto *head = new QLabel(dlg);
     head->setStyleSheet(QStringLiteral("font-size: 18px; font-weight: 600;"));
     v->addWidget(head);
+    if (!m_updateNotes.isEmpty()) {
+        auto *notes = new QLabel(m_updateNotes.join(QLatin1Char('\n')), dlg);
+        notes->setStyleSheet(QStringLiteral("color: #aab1bd;"));
+        notes->setWordWrap(true);
+        v->addWidget(notes);
+    }
+    QHash<QProgressBar *, QLabel *> pctOf;   // the "42%" behind each bar
     const QString barStyle = QStringLiteral(
         "QProgressBar { background: #16181d; border: 1px solid #333945; border-radius: 6px;"
         " min-height: 24px; text-align: center; color: #d8dce4; font-size: 12px; }"
@@ -1296,8 +1328,16 @@ void MainWindow::installUpdate(const QString &version)
         b->setRange(0, 100);
         b->setValue(0);
         b->setTextVisible(false);
+        auto *pct = new QLabel(dlg);
+        pct->setFixedWidth(44);
+        pct->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        pct->setStyleSheet(QStringLiteral("color: #aab1bd;"));
+        auto *h = new QHBoxLayout;
+        h->addWidget(b, 1);
+        h->addWidget(pct);
         v->addWidget(l);
-        v->addWidget(b);
+        v->addLayout(h);
+        pctOf.insert(b, pct);
         return b;
     };
     QProgressBar *dlBar = bar(QStringLiteral("Downloading"));
@@ -1319,7 +1359,11 @@ void MainWindow::installUpdate(const QString &version)
     });
     auto *closeBtn = new QPushButton(QStringLiteral("Close"), dlg);
     closeBtn->setEnabled(false);
-    connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
+    // Close and Escape both take the dialog down for good; the step that is
+    // running (if any) finishes on its own and the chain stops after it.
+    auto takeDown = [dlg] { dlg->hide(); dlg->deleteLater(); };
+    connect(closeBtn, &QPushButton::clicked, dlg, takeDown);
+    connect(dlg, &QDialog::rejected, dlg, takeDown);
     auto *row = new QHBoxLayout;
     row->addWidget(details);
     row->addStretch(1);
@@ -1329,8 +1373,8 @@ void MainWindow::installUpdate(const QString &version)
     v->addWidget(log);
     dlg->show();
     const QList<QProgressBar *> bars = {dlBar, dlBar, buildBar, instBar};
-    auto pulse = [](QProgressBar *b) { b->setRange(0, 0); };
-    auto done = [](QProgressBar *b) { b->setRange(0, 100); b->setValue(100); };
+    auto pulse = [pctOf](QProgressBar *b) { b->setRange(0, 0); pctOf[b]->setText(QStringLiteral("\u2026")); };
+    auto done = [pctOf](QProgressBar *b) { b->setRange(0, 100); b->setValue(100); pctOf[b]->setText(QStringLiteral("100%")); };
 
     struct Step { QString what, prog; QStringList args; QString fallbackProg; QStringList fallbackArgs; };
     const QList<Step> steps = {
@@ -1367,15 +1411,17 @@ void MainWindow::installUpdate(const QString &version)
         }
         auto *p = new QProcess(dlg);
         p->setProcessChannelMode(QProcess::MergedChannels);
-        connect(p, &QProcess::readyRead, log, [p, log, b, buildBar] {
+        connect(p, &QProcess::readyRead, log, [p, log, b, buildBar, pctOf] {
             const QString text = QString::fromLocal8Bit(p->readAll());
             log->appendPlainText(text.trimmed());
             if (b != buildBar)
                 return;
             static const QRegularExpression pct(QStringLiteral("\\[\\s*(\\d+)%\\]"));
             auto it = pct.globalMatch(text);
-            while (it.hasNext())
+            while (it.hasNext()) {
                 b->setValue(it.next().captured(1).toInt());
+                pctOf[b]->setText(QStringLiteral("%1%").arg(b->value()));
+            }
         });
         connect(p, &QProcess::finished, dlg, [=](int code, QProcess::ExitStatus st) {
             p->deleteLater();
@@ -1392,6 +1438,8 @@ void MainWindow::installUpdate(const QString &version)
             head->setText(QStringLiteral("%1 failed \u2014 nothing was changed").arg(s.what));
             details->setChecked(true);
             closeBtn->setEnabled(true);
+            closeBtn->setDefault(true);
+            closeBtn->setFocus();
         });
         connect(p, &QProcess::errorOccurred, dlg, [=](QProcess::ProcessError e) {
             if (e != QProcess::FailedToStart)
@@ -1907,6 +1955,7 @@ void MainWindow::openFile(const QString &path)
         newUntitled();
         importVectorFile(this, m_canvas, &m_doc, path);
         m_untitledFrom = path;         // shown in the header; Save As offers name.c2d
+        rememberRecent(path);          // a DXF you keep coming back to belongs in Open Recent too
         updateTitle();
         return;
     }

@@ -1,3 +1,5 @@
+<p align="center"><img src="desktop/phobicccp.svg" alt="phobiCCCP" width="160"></p>
+
 # phobiCCCP — Phobic Carbide Create Clone Project
 
 A Linux/Qt6 CAD/CAM application for Carbide Create `.c2d` files and GRBL

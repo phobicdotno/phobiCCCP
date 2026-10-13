@@ -15,6 +15,7 @@
 #include <QListWidget>
 #include <QPushButton>
 #include <QSettings>
+#include <QSpinBox>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -133,8 +134,43 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
     m_preview->setStyleSheet(QStringLiteral("QLabel { font-family: monospace; padding: 6px; }"));
     m_diagram = new ToolDiagram(this);
     mid->addWidget(m_diagram, 0);
-    mid->addWidget(m_preview, 2);
+    auto *right = new QVBoxLayout;
+    right->addWidget(m_preview, 1);
+    // Stock row: how many are in the drawer, and a bin for the one that just
+    // snapped. The bin takes one out of stock and counts it as thrown away.
+    auto *stock = new QHBoxLayout;
+    stock->addWidget(new QLabel(QStringLiteral("In stock"), this));
+    m_stock = new QSpinBox(this);
+    m_stock->setRange(0, 999);
+    m_stock->setToolTip(QStringLiteral("How many of this bit you have"));
+    stock->addWidget(m_stock);
+    m_trash = new QToolButton(this);
+    m_trash->setIcon(QIcon::fromTheme(QStringLiteral("user-trash"),
+                                      QIcon::fromTheme(QStringLiteral("edit-delete"))));
+    m_trash->setText(QStringLiteral("Broke one"));
+    m_trash->setToolButtonStyle(m_trash->icon().isNull() ? Qt::ToolButtonTextOnly
+                                                          : Qt::ToolButtonTextBesideIcon);
+    m_trash->setToolTip(QStringLiteral("One bit broke and went in the bin: one less in stock"));
+    stock->addWidget(m_trash);
+    m_broken = new QLabel(this);
+    stock->addWidget(m_broken);
+    stock->addStretch(1);
+    right->addLayout(stock);
+    mid->addLayout(right, 2);
     lay->addLayout(mid, 1);
+    connect(m_stock, &QSpinBox::valueChanged, this, [this](int v) {
+        if (const LibraryTool *t = selectedTool())
+            QSettings().setValue(QStringLiteral("toolStock/%1/have").arg(t->number), v);
+    });
+    connect(m_trash, &QToolButton::clicked, this, [this] {
+        const LibraryTool *t = selectedTool();
+        if (!t)
+            return;
+        QSettings st;
+        st.setValue(QStringLiteral("toolStock/%1/broken").arg(t->number), stockBroken(*t) + 1);
+        st.setValue(QStringLiteral("toolStock/%1/have").arg(t->number), qMax(0, stockHave(*t) - 1));
+        updateStock();
+    });
 
     auto *src = new QLabel(QStringLiteral("Library: %1 · %2 tools · values flagged "
                                           "(guess) are conservative, not CC defaults")
@@ -155,7 +191,7 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
     });
     connect(m_search, &QLineEdit::textChanged, this, [this] { rebuildList(); });
     connect(m_material, &QComboBox::currentIndexChanged, this, [this] { updatePreview(); });
-    connect(m_list, &QListWidget::currentRowChanged, this, [this] { updatePreview(); });
+    connect(m_list, &QListWidget::currentRowChanged, this, [this] { updatePreview(); updateStock(); });
     connect(m_list, &QListWidget::itemDoubleClicked, this, [this] { accept(); });
 
     rebuildList();
@@ -166,6 +202,34 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
         }
     if (m_list->currentRow() < 0 && m_list->count() > 0)
         m_list->setCurrentRow(0);
+    updateStock();
+}
+
+int ToolLibraryDialog::stockHave(const LibraryTool &t)
+{
+    return QSettings().value(QStringLiteral("toolStock/%1/have").arg(t.number), t.bought).toInt();
+}
+
+int ToolLibraryDialog::stockBroken(const LibraryTool &t)
+{
+    return QSettings().value(QStringLiteral("toolStock/%1/broken").arg(t.number), 0).toInt();
+}
+
+void ToolLibraryDialog::updateStock()
+{
+    const LibraryTool *t = selectedTool();
+    m_stock->setEnabled(t);
+    m_trash->setEnabled(t && stockHave(*t) > 0);
+    if (!t) {
+        m_broken->clear();
+        return;
+    }
+    const QSignalBlocker block(m_stock);
+    m_stock->setValue(stockHave(*t));
+    const int b = stockBroken(*t);
+    m_broken->setText(b == 0 ? QString()
+                      : b == 1 ? QStringLiteral("1 thrown away")
+                               : QStringLiteral("%1 thrown away").arg(b));
 }
 
 void ToolLibraryDialog::kindToggled(const QString &kind, bool on)
@@ -213,6 +277,8 @@ void ToolLibraryDialog::rebuildList()
             label += QStringLiteral(" · %1°").arg(t.angle);
         if (t.uncertain)
             label += QStringLiteral("  (number unverified)");
+        if (const int have = stockHave(t); have > 0 || t.bought > 0)
+            label += QStringLiteral(" · %1 in stock").arg(have);
         auto *it = new QListWidgetItem(label, m_list);
         it->setData(Qt::UserRole, t.number);
         it->setIcon(toolKindIcon(t));
@@ -395,6 +461,11 @@ void ToolLibraryDialog::updatePreview()
                     .arg(t->diameter).arg(t->flutes);
     if (t->angle > 0)
         s += QStringLiteral(" · %1°").arg(t->angle);
+    if (t->price > 0) {
+        s += QStringLiteral("\nPrice: %1 %2").arg(t->currency).arg(t->price, 0, 'f', 2);
+        if (!t->priceNote.isEmpty())
+            s += QStringLiteral(" (%1)").arg(t->priceNote);
+    }
     s += QStringLiteral("\n\n%1:\n").arg(m_lib.materialName(selectedMaterialId()));
     if (!f.valid()) {
         s += QStringLiteral("  no feeds for this material");

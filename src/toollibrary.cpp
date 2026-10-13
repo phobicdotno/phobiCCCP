@@ -97,6 +97,10 @@ bool ToolLibrary::loadJson(const QByteArray &json, QString *err)
         lt.shank = t.value("shank").toDouble(lt.diameter);
         lt.flutes = t.value("flutes").toInt(2);
         lt.uncertain = t.value("uncertain").toBool(false);
+        lt.price = t.value("price").toDouble();
+        lt.bought = t.value("bought").toInt();
+        lt.currency = t.value("currency").toString(QStringLiteral("USD"));
+        lt.priceNote = t.value("price_note").toString();
         const QJsonObject feeds = t.value("feeds").toObject();
         for (auto it = feeds.constBegin(); it != feeds.constEnd(); ++it) {
             const QJsonObject f = it.value().toObject();

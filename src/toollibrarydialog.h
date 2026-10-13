@@ -7,6 +7,7 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QSpinBox;
 class QToolButton;
 
 namespace c2d { class ToolDiagram; }
@@ -63,6 +64,14 @@ private:
     QComboBox *m_collection;
     QToolButton *m_addTo;
     QToolButton *m_removeFrom;
+    // Stock: how many of the selected bit are in the drawer and how many have
+    // been thrown away, kept in settings (toolStock/<number>/have, /broken).
+    QSpinBox *m_stock;
+    QToolButton *m_trash;
+    QLabel *m_broken;
+    void updateStock();
+    static int stockHave(const LibraryTool &t);
+    static int stockBroken(const LibraryTool &t);
 };
 
 } // namespace c2d

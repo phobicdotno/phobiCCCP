@@ -29,6 +29,9 @@ struct LibraryTool {
     double diameter = 0, angle = 0, cornerRadius = 0, length = 0, shank = 0;
     int flutes = 0;
     bool uncertain = false;                 // catalogue number/spec unverified
+    double price = 0;                       // per bit, in `currency`; 0 = unknown
+    int bought = 0;                         // bits per pack as bought: the stock a fresh install starts with
+    QString currency, priceNote;            // "USD"; "10-pack US $106.48"
     QHash<QString, ToolFeeds> feeds;        // material id -> feeds
 
     int ccType() const;                     // CC tool.type: 0 flat, 1 ball, 2 V

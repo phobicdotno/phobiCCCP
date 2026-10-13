@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.1.4 (build 55) — 2026-10-13
+
+> Tool library prices and stock, Open Recent for DXFs, update dialog with notes and %
+
+- Tools carry a price (per bit, what was paid) and a stock count; "Broke one" takes a bit
+  out of stock and counts it as thrown away.
+- #1101–1106: straight-slot two-flute end mills 3.175 (25, 32), 6 (25, 42), 8 and 10 mm.
+- #1201 XCAN single-flute spiral 3.175 mm, #1202 XCAN engraving bit set.
+- Open Recent now lists imported DXF/SVG files too (it only listed .c2d designs).
+- Update: one-liners of what is new, a percentage behind each bar, no title bar;
+  Close and Escape always close the dialog after a failure.
+
 ## v1.1.3 (build 54) — 2026-10-13
 
 > Update check repeats every hour while the app runs

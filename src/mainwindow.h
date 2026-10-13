@@ -87,6 +87,7 @@ private:
     QMenuBar *m_menuBar = nullptr;   // in the header widget, not QMainWindow's own
     QLabel *m_fileLabel = nullptr;   // open file name in the header
     QLabel *m_updateLabel = nullptr; // "↑ vX on GitHub", hidden until known
+    QStringList m_updateNotes;       // "v1.1.3 — one line" per release newer than this one
     void checkForUpdate();
     void installUpdate(const QString &version);   // one click: fetch, build, install, restart
     static QIcon fullScreenIcon();
