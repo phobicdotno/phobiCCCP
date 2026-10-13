@@ -47,6 +47,7 @@ add_library(phobicccp_core STATIC
     src/setupsheet.cpp
     src/importers.cpp
     src/toollibrary.cpp
+    src/toolcollections.cpp
     src/toolpathfactory.cpp
     src/tiling.cpp
     data/tools.qrc

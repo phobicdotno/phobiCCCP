@@ -5,6 +5,10 @@
 
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFileDialog>
+#include <QInputDialog>
+#include <QMenu>
+#include <QMessageBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -65,6 +69,47 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
         kinds->addWidget(b);
     }
     kinds->addStretch(1);
+
+    // Collections, at the right end of the same row.
+    m_collections = ToolCollections::loadSettings();
+    kinds->addWidget(new QLabel(QStringLiteral("Collection"), this));
+    m_collection = new QComboBox(this);
+    m_collection->setMinimumWidth(150);
+    m_collection->setToolTip(QStringLiteral("Show only the bits in one collection"));
+    kinds->addWidget(m_collection);
+    m_addTo = new QToolButton(this);
+    m_addTo->setText(QStringLiteral("Add to"));
+    m_addTo->setToolTip(QStringLiteral("Put the selected bit in a collection"));
+    m_addTo->setPopupMode(QToolButton::InstantPopup);
+    m_addTo->setMenu(new QMenu(m_addTo));
+    connect(m_addTo->menu(), &QMenu::aboutToShow, this, [this] { fillAddMenu(); });
+    kinds->addWidget(m_addTo);
+    m_removeFrom = new QToolButton(this);
+    m_removeFrom->setText(QStringLiteral("Remove"));
+    m_removeFrom->setToolTip(QStringLiteral("Take the selected bit out of this collection"));
+    connect(m_removeFrom, &QToolButton::clicked, this, [this] {
+        if (const LibraryTool *t = selectedTool()) {
+            m_collections.removeTool(shownCollection(), t->number);
+            collectionsChanged(shownCollection());
+        }
+    });
+    kinds->addWidget(m_removeFrom);
+    auto *manage = new QToolButton(this);
+    manage->setText(QStringLiteral("Collections"));
+    manage->setPopupMode(QToolButton::InstantPopup);
+    auto *mm = new QMenu(manage);
+    mm->addAction(QStringLiteral("New collection…"), this, [this] { newCollection(-1); });
+    QAction *ren = mm->addAction(QStringLiteral("Rename…"), this, [this] { renameCollection(); });
+    QAction *del = mm->addAction(QStringLiteral("Delete"), this, [this] { deleteCollection(); });
+    mm->addSeparator();
+    mm->addAction(QStringLiteral("Save to file…"), this, [this] { saveCollections(); });
+    mm->addAction(QStringLiteral("Load from file…"), this, [this] { loadCollections(); });
+    connect(mm, &QMenu::aboutToShow, this, [this, ren, del] {
+        ren->setEnabled(!shownCollection().isEmpty());
+        del->setEnabled(!shownCollection().isEmpty());
+    });
+    manage->setMenu(mm);
+    kinds->addWidget(manage);
     lay->addLayout(kinds);
     const QStringList saved =
         QSettings().value(QStringLiteral("ui/toolKinds")).toStringList();
@@ -103,6 +148,11 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     lay->addWidget(buttons);
 
+    rebuildCollections(QSettings().value(QStringLiteral("ui/toolCollection")).toString());
+    connect(m_collection, &QComboBox::currentIndexChanged, this, [this] {
+        QSettings().setValue(QStringLiteral("ui/toolCollection"), shownCollection());
+        rebuildList();
+    });
     connect(m_search, &QLineEdit::textChanged, this, [this] { rebuildList(); });
     connect(m_material, &QComboBox::currentIndexChanged, this, [this] { updatePreview(); });
     connect(m_list, &QListWidget::currentRowChanged, this, [this] { updatePreview(); });
@@ -134,14 +184,23 @@ void ToolLibraryDialog::rebuildList()
     m_list->clear();
     // Marked kinds first-pressed first; nothing marked lists every kind in
     // the row's order. Within a kind the library's own order stays.
+    // A collection lists its bits in the order they were added.
     const QStringList order = m_marked.isEmpty() ? m_kindOrder : m_marked;
     QVector<const LibraryTool *> tools;
-    for (const LibraryTool &t : m_lib.tools())
-        if (order.contains(t.kind))
-            tools << &t;
-    std::stable_sort(tools.begin(), tools.end(), [&order](auto *a, auto *b) {
-        return order.indexOf(a->kind) < order.indexOf(b->kind);
-    });
+    if (const ToolCollection *c = m_collections.byName(shownCollection())) {
+        for (int n : c->tools)
+            if (const LibraryTool *t = m_lib.byNumber(n); t && order.contains(t->kind))
+                tools << t;
+    } else {
+        for (const LibraryTool &t : m_lib.tools())
+            if (order.contains(t.kind))
+                tools << &t;
+    }
+    // A collection with no kind pressed keeps its own order.
+    if (!m_marked.isEmpty() || shownCollection().isEmpty())
+        std::stable_sort(tools.begin(), tools.end(), [&order](auto *a, auto *b) {
+            return order.indexOf(a->kind) < order.indexOf(b->kind);
+        });
     for (const LibraryTool *tp : tools) {
         const LibraryTool &t = *tp;
         QString hay = QStringLiteral("#%1 %2 %3 %4 %5mm")
@@ -164,6 +223,137 @@ void ToolLibraryDialog::rebuildList()
     if (m_list->currentRow() < 0 && m_list->count() > 0)
         m_list->setCurrentRow(0);
     updatePreview();
+}
+
+// ---- collections ----------------------------------------------------------
+
+QString ToolLibraryDialog::shownCollection() const
+{
+    return m_collection->currentData().toString();
+}
+
+void ToolLibraryDialog::rebuildCollections(const QString &show)
+{
+    {
+        const QSignalBlocker block(m_collection);
+        m_collection->clear();
+        m_collection->addItem(QStringLiteral("All bits"), QString());
+        for (const ToolCollection &c : m_collections.all())
+            m_collection->addItem(QStringLiteral("%1 (%2)").arg(c.name).arg(c.tools.size()),
+                                  c.name);
+        const int i = m_collection->findData(show);
+        m_collection->setCurrentIndex(i >= 0 ? i : 0);
+    }
+    QSettings().setValue(QStringLiteral("ui/toolCollection"), shownCollection());
+    m_removeFrom->setEnabled(!shownCollection().isEmpty());
+}
+
+void ToolLibraryDialog::collectionsChanged(const QString &show)
+{
+    m_collections.saveSettings();
+    rebuildCollections(show);
+    rebuildList();
+}
+
+void ToolLibraryDialog::fillAddMenu()
+{
+    QMenu *m = m_addTo->menu();
+    m->clear();
+    const LibraryTool *t = selectedTool();
+    for (const ToolCollection &c : m_collections.all()) {
+        QAction *a = m->addAction(c.name);
+        a->setEnabled(t && !c.tools.contains(t->number));
+        const QString name = c.name;
+        connect(a, &QAction::triggered, this, [this, name, n = t ? t->number : -1] {
+            m_collections.addTool(name, n);
+            collectionsChanged(shownCollection());
+        });
+    }
+    m->addSeparator();
+    QAction *nw = m->addAction(QStringLiteral("New collection…"));
+    nw->setEnabled(t);
+    connect(nw, &QAction::triggered, this,
+            [this, n = t ? t->number : -1] { newCollection(n); });
+}
+
+void ToolLibraryDialog::newCollection(int addTool)
+{
+    const QString name = QInputDialog::getText(this, QStringLiteral("New collection"),
+                                               QStringLiteral("Name"));
+    if (name.trimmed().isEmpty())
+        return;
+    if (!m_collections.add(name)) {
+        QMessageBox::information(this, QStringLiteral("New collection"),
+                                 QStringLiteral("There is already a collection called %1.")
+                                     .arg(name.trimmed()));
+        return;
+    }
+    if (addTool >= 0)
+        m_collections.addTool(name.trimmed(), addTool);
+    collectionsChanged(addTool >= 0 ? shownCollection() : name.trimmed());
+}
+
+void ToolLibraryDialog::renameCollection()
+{
+    const QString from = shownCollection();
+    if (from.isEmpty())
+        return;
+    const QString to = QInputDialog::getText(this, QStringLiteral("Rename collection"),
+                                             QStringLiteral("Name"), QLineEdit::Normal, from);
+    if (to.trimmed().isEmpty() || to.trimmed() == from)
+        return;
+    if (!m_collections.rename(from, to)) {
+        QMessageBox::information(this, QStringLiteral("Rename collection"),
+                                 QStringLiteral("There is already a collection called %1.")
+                                     .arg(to.trimmed()));
+        return;
+    }
+    collectionsChanged(to.trimmed());
+}
+
+void ToolLibraryDialog::deleteCollection()
+{
+    const QString name = shownCollection();
+    if (name.isEmpty())
+        return;
+    if (QMessageBox::question(this, QStringLiteral("Delete collection"),
+                              QStringLiteral("Delete the collection %1? The bits stay in "
+                                             "the library.").arg(name))
+        != QMessageBox::Yes)
+        return;
+    m_collections.remove(name);
+    collectionsChanged(QString());
+}
+
+void ToolLibraryDialog::saveCollections()
+{
+    QString path = QFileDialog::getSaveFileName(this, QStringLiteral("Save collections"),
+                                                QStringLiteral("tool-collections.json"),
+                                                QStringLiteral("Tool collections (*.json)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QLatin1String(".json"), Qt::CaseInsensitive))
+        path += QLatin1String(".json");
+    QString err;
+    if (!m_collections.saveFile(path, &err))
+        QMessageBox::warning(this, QStringLiteral("Save collections"), err);
+}
+
+void ToolLibraryDialog::loadCollections()
+{
+    const QString path = QFileDialog::getOpenFileName(this, QStringLiteral("Load collections"),
+                                                      QString(),
+                                                      QStringLiteral("Tool collections (*.json)"));
+    if (path.isEmpty())
+        return;
+    ToolCollections loaded;
+    QString err;
+    if (!ToolCollections::loadFile(path, &loaded, &err)) {
+        QMessageBox::warning(this, QStringLiteral("Load collections"), err);
+        return;
+    }
+    m_collections.merge(loaded);
+    collectionsChanged(loaded.all().isEmpty() ? shownCollection() : loaded.all().first().name);
 }
 
 const LibraryTool *ToolLibraryDialog::selectedTool() const

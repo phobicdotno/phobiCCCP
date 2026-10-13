@@ -2,13 +2,18 @@
 
 ## v1.0.8 (build 50) — 2026-10-13
 
-> Bit icons along the top of the tool library sort the bits
+> Tool library: bit icons sort the bits; collections with save and load
 
 **Tool library**
 - A row of bit icons along the top (end mill, ball, V-bit, engraver, corner
   round): press one to list only those bits, press more to list them in the
   order pressed, press again to unmark. Nothing pressed lists every bit,
   grouped by kind. The choice is remembered.
+- Collections: My Tools and Unused to start with, plus any you make. Pick
+  one to list only its bits; *Add to* puts the selected bit in a
+  collection, *Remove* takes it out. *Collections* › New, Rename, Delete,
+  Save to file and Load from file (.json; loading replaces collections of
+  the same name and adds the rest).
 
 ## v1.0.7 (build 49) — 2026-10-12
 
