@@ -1961,11 +1961,12 @@ void MainWindow::closeEvent(QCloseEvent *e)
 {
     // Never close in the middle of a cut, a probe or a homing cycle: the
     // serial link goes with the window, and the machine is left mid-move.
+    // Quietly: a popup over a running job is exactly what the operator must
+    // not get (the close request may well have come from a script).
     if (m_machine && m_machine->isBusy()) {
         e->ignore();
-        shopTell(this, QStringLiteral("phobiCCCP"), QStringLiteral("The machine is busy"),
-                 QStringLiteral("It is running a program, probing, homing or moving. Let it "
-                                "finish, or stop it, before closing phobiCCCP."));
+        statusBar()->showMessage(QStringLiteral("Not closing: the machine is busy. Let the job "
+                                                "finish, or stop it, before closing phobiCCCP."), 10000);
         return;
     }
     if (confirmDiscard(QStringLiteral("Save before closing?"))) {

@@ -1584,6 +1584,27 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
 
 } // namespace
 
+QString toolReuseWarning(const QVector<Op> &ops)
+{
+    QList<int> seq;
+    for (const Op &o : ops)
+        if (o.kind == Op::Tool && (seq.isEmpty() || seq.last() != o.ival))
+            seq << o.ival;
+    QList<int> distinct;
+    QStringList again;
+    for (int i = 0; i < seq.size(); ++i) {
+        if (distinct.contains(seq.at(i)))
+            again << QStringLiteral("T%1 after T%2").arg(seq.at(i)).arg(seq.at(i - 1));
+        else
+            distinct << seq.at(i);
+    }
+    if (again.isEmpty())
+        return QString();
+    return QStringLiteral("%1 tool change(s) where %2 would do: %3 is picked up again. "
+                          "Put the toolpaths that share a tool next to each other.")
+        .arg(seq.size() - 1).arg(distinct.size() - 1).arg(again.join(QStringLiteral(", ")));
+}
+
 double documentSafeZ(const Document &doc)
 {
     const double z = doc.params().value(QStringLiteral("retract"),
@@ -2872,6 +2893,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
 
     res.gcode = GrblPost(true).generate(ops);
     res.ops = ops;
+    if (const QString w = toolReuseWarning(ops); !w.isEmpty())
+        res.notes << w;
     return res;
 }
 

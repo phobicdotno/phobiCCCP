@@ -58,6 +58,11 @@ struct ExportWatch {
 GcodeResult exportGcode(Document &doc, const ExportWatch *watch = nullptr,
                         const HeightModel *relief = nullptr);
 
+// A tool picked up again after another one: changes that would not be
+// needed with the toolpaths ordered tool by tool. Empty when the order is
+// fine; otherwise one sentence for the operator.
+QString toolReuseWarning(const QVector<Op> &ops);
+
 // The document's retract height, as every exporter must read it. `retract`
 // comes verbatim out of the params table and QString::toDouble returns 0 for
 // anything it cannot parse (an empty value, a comma decimal from another

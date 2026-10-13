@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.9 (build 60) — 2026-10-13
+
+> No popups over a running job; tool-change window says to set the dust boot; warns when a tool is picked up twice
+
+- A close request while the machine is busy is refused on the status line, not with a popup.
+- Tool change window: "Tighten the collet and set the dust boot height".
+- Export status and the Run dialog warn when a tool is picked up again after another one,
+  with the number of tool changes that reordering would save.
+
 ## v1.1.8 (build 59) — 2026-10-13
 
 > Simulate: cuts in list order, tool changes stop the preview, tool strip, zoom buttons

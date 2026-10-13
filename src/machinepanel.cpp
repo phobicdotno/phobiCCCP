@@ -2533,7 +2533,7 @@ void MachinePanel::onMacroFinished(bool ok)
                 : QStringLiteral("Insert tool T%1").arg(m_pendingTool);
             a.body = m_rehearsal
                 ? QStringLiteral("Or leave the same one in to check the measurement repeats.")
-                : QStringLiteral("Tighten the collet before you continue.");
+                : QStringLiteral("Tighten the collet and set the dust boot height before you continue.");
             if (!m_rehearsal && m_doc) {
                 // Which bit: its diagram with the sizes on it, and the sizes in words.
                 const LibraryTool lt = toolFromToolpaths(*m_doc, m_pendingTool);
@@ -2773,6 +2773,8 @@ void MachinePanel::runProgram()
                         .arg(m_bsEnabled->isChecked()
                                  ? QStringLiteral(", then measures on the BitSetter")
                                  : QString());
+    if (const QString w = toolReuseWarning(ops); !w.isEmpty())
+        ask.body += QStringLiteral("\n\n\u26a0 ") + w;
     if (useMap) {
         ask.body += QStringLiteral("\n\nSurface map on: Z follows the measured surface (%1).")
                         .arg(m_map.summary());

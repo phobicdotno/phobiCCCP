@@ -1285,7 +1285,7 @@ int main(int argc, char *argv[])
                     } else if (step == "asktool") {
                         a.title = QStringLiteral("Tool change");
                         a.headline = QStringLiteral("Insert tool T2");
-                        a.body = QStringLiteral("Tighten the collet before you continue.");
+                        a.body = QStringLiteral("Tighten the collet and set the dust boot height before you continue.");
                         a.note = QStringLiteral("The BitSetter measures it, then the program "
                                                 "carries on.");
                         a.okText = QStringLiteral("Measure and continue");
