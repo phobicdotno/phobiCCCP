@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.6 (build 57) — 2026-10-13
+
+> Status line one line up, clear of the shop screen's hidden bottom edge
+
+- The whole window keeps a 16 px bottom margin, so the status hint is not cut off
+  on a screen whose panel sits a fifth of a line too low.
+
 ## v1.1.5 (build 56) — 2026-10-13
 
 > Imported DXF edges are joined into closed shapes, so Area select and pockets work on them

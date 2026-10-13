@@ -25,6 +25,7 @@
 #include <QStyleFactory>
 #include <QProxyStyle>
 #include <QSettings>
+#include <QStatusBar>
 #include "settingsdialog.h"
 #include <QComboBox>
 #include <QDir>
@@ -1200,6 +1201,7 @@ int main(int argc, char *argv[])
         const QVariant recentBefore = QSettings().value(QStringLiteral("recentFiles"));
         w.openFile(QString::fromLocal8Bit(argv[2]));
         QSettings().setValue(QStringLiteral("recentFiles"), recentBefore);
+        w.statusBar()->showMessage(QStringLiteral("Select \u2014 click/drag to select, drag to move, Del to delete"));
         // The page to grab; "a:b:c" walks through several, like a user
         // switching modes, and grabs the last.
         if (argc == 5) {

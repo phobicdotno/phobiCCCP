@@ -542,6 +542,9 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setWindowTitle(QStringLiteral("phobiCCCP — Carbide Create .c2d (Linux)"));
+    // The shop screen hides its bottom fifth of a text line; keep the status
+    // line a line clear of the edge.
+    setContentsMargins(0, 0, 0, 16);
     resize(1100, 780);
     // The menus live in a header of our own (menus · brand · mode switch),
     // so this is the bar every menu goes on; see the end of the constructor.
