@@ -775,6 +775,35 @@ void ModelPanel::addStl()
     appendComponent(c);
 }
 
+bool ModelPanel::addStlMesh(const QByteArray &bytes, const QString &fileName, double x, double y,
+                            QString *error)
+{
+    if (!m_doc) {
+        if (error) *error = QStringLiteral("No design is open.");
+        return false;
+    }
+    QVector<StlTriangle> tris;
+    if (!parseStl(bytes, &tris, error))
+        return false;
+    if (tris.isEmpty()) {
+        if (error) *error = QStringLiteral("The mesh has no triangles.");
+        return false;
+    }
+    ModelComponent c;
+    c.kind = ModelComponent::StlMesh;
+    c.data = bytes;
+    c.sourceName = QStringLiteral("%1 (%2 triangles)").arg(fileName).arg(tris.size());
+    c.name = uniqueName(QStringLiteral("STL"));
+    c.units = ModelComponent::Millimetres;
+    c.width = 0;
+    c.x = x;
+    c.y = y;
+    c.height = 0;
+    c.combine = ModelComponent::Merge;
+    appendComponent(c);
+    return true;
+}
+
 void ModelPanel::removeSelected()
 {
     const int row = selectedRow();

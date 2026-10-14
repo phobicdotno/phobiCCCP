@@ -48,6 +48,13 @@ public:
     // Synchronous rebuild + view refresh (used by --shot … model).
     void rebuildBlocking();
 
+    // Add an STL mesh as a component without asking: millimetres, its own
+    // size and height, lower-left corner at (x, y). Used for projects that
+    // arrive from Syntexophobic. Returns false with `error` set when the bytes
+    // are not a usable STL.
+    bool addStlMesh(const QByteArray &bytes, const QString &fileName, double x, double y,
+                    QString *error = nullptr);
+
     ModelStore *store() { return &m_store; }
     const Model3D &model() const { return m_store.model; }
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.1.15 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.1.16 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -89,6 +89,7 @@ add_executable(phobicccp
     src/bitzeropanel.cpp
     src/settingsdialog.cpp
     src/toolbarorder.cpp
+    src/projectreceiver.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
@@ -136,6 +137,10 @@ add_test(NAME sketch COMMAND test_sketch)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
+# Projects sent from Syntexophobic: the protocol reader and a loopback transfer.
+add_executable(test_receiver tests/test_receiver.cpp src/projectreceiver.cpp)
+target_link_libraries(test_receiver PRIVATE phobicccp_core Qt6::Network)
+add_test(NAME receiver COMMAND test_receiver)
 add_executable(test_newdoc tests/test_newdoc.cpp)
 target_link_libraries(test_newdoc PRIVATE phobicccp_core)
 add_test(NAME newdoc COMMAND test_newdoc)
