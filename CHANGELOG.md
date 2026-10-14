@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.12 (build 63) — 2026-10-14
+
+> Toolpaths panel text 25 % bigger
+
+- List, settings cards, fields and switches all scaled up together.
+
 ## v1.1.11 (build 62) — 2026-10-14
 
 > Toolpath settings as cards with switches and number fields instead of a key table

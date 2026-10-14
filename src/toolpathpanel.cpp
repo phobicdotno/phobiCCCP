@@ -8,6 +8,7 @@
 #include "toolpathfactory.h"
 
 #include <QHBoxLayout>
+#include <QFontInfo>
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -42,6 +43,12 @@ static QToolButton *smallButton(QWidget *parent, const QString &text, const QStr
 ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     : QWidget(parent), m_canvas(canvas)
 {
+    // Text 25 % larger than the rest of the app: this panel is read and
+    // edited at arm's length on the shop screen.
+    // A plain setFont() is overridden once the app stylesheet polishes the
+    // children, so the size goes in a stylesheet of its own.
+    setStyleSheet(QStringLiteral("QWidget { font-size: %1px; }")
+                      .arg(qRound(QFontInfo(font()).pixelSize() * 1.25)));
     auto *lay = new QVBoxLayout(this);
     lay->setContentsMargins(6, 6, 6, 6);
     lay->setSpacing(6);
@@ -138,7 +145,7 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_list->setColumnWidth(1, 84);
     m_list->setColumnWidth(2, 52);
     m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_list->setMaximumHeight(150);
+    m_list->setMaximumHeight(190);
     m_list->setMinimumHeight(60);
     m_list->setToolTip(QStringLiteral(
         "Machining order, top to bottom. Checkbox = enabled; double-click the "

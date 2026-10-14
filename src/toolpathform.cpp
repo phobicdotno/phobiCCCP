@@ -35,7 +35,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::StrongFocus);
     }
-    QSize sizeHint() const override { return {48, 26}; }
+    QSize sizeHint() const override { return {56, 30}; }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -345,7 +345,7 @@ ToolpathForm::ToolpathForm(QWidget *parent)
         " background: transparent; color: #d8dce4; }"
         "#tpLabel { color: #aab1bd; }"
         "#tpToolText { color: #d8dce4; }"
-        "QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { min-height: 28px; }"));
+        "QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { min-height: 34px; }"));
 }
 
 void ToolpathForm::clear()
@@ -503,7 +503,7 @@ void ToolpathForm::rebuild()
     {
         auto *row = new QHBoxLayout;
         m_name = new QLineEdit(m_json.value(QStringLiteral("name")).toString(), this);
-        m_name->setStyleSheet(QStringLiteral("font-size: 15px; font-weight: 600;"));
+        m_name->setStyleSheet(QStringLiteral("font-size: 19px; font-weight: 600;"));
         connect(m_name, &QLineEdit::editingFinished, this, [this] {
             const QString n = m_name->text().trimmed();
             if (!n.isEmpty() && n != m_json.value(QStringLiteral("name")).toString())
@@ -637,7 +637,7 @@ void ToolpathForm::updateValues()
         m_name->setText(m_json.value(QStringLiteral("name")).toString());
     if (m_toolIcon) {
         const LibraryTool t = toolOf(m_json.value(QStringLiteral("tool")).toObject());
-        m_toolIcon->setPixmap(toolKindIcon(t).pixmap(QSize(28, 42)));
+        m_toolIcon->setPixmap(toolKindIcon(t).pixmap(QSize(34, 52)));
         QString s = QStringLiteral("<b>T%1</b>  Ø %2 mm").arg(t.number).arg(t.diameter, 0, 'g', 4);
         if (t.angle > 0)
             s += QStringLiteral(" · %1°").arg(t.angle);
