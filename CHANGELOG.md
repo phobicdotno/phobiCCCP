@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.10 (build 61) — 2026-10-14
+
+> Tool library: three duplicate bits removed
+
+- #111, #321 and #322 were unverified guesses with the specs of #112, #302 and #301;
+  they listed the same bit twice. Files that use them keep their embedded tool.
+
 ## v1.1.9 (build 60) — 2026-10-13
 
 > No popups over a running job; tool-change window says to set the dust boot; warns when a tool is picked up twice
