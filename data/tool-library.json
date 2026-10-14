@@ -268,7 +268,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 4000,
+          "feed": 5000,
           "plunge": 800,
           "stepdown": 1.5,
           "stepover_pct": 10,
@@ -336,7 +336,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 2500,
+          "feed": 5000,
           "plunge": 600,
           "stepdown": 1.0,
           "stepover_pct": 40,
@@ -405,7 +405,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 2000,
+          "feed": 5000,
           "plunge": 500,
           "stepdown": 0.8,
           "stepover_pct": 10,
@@ -474,7 +474,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 1200,
+          "feed": 5000,
           "plunge": 300,
           "stepdown": 0.5,
           "stepover_pct": 40,
@@ -543,7 +543,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 1000,
+          "feed": 5000,
           "plunge": 250,
           "stepdown": 0.4,
           "stepover_pct": 10,
@@ -616,7 +616,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 500,
+          "feed": 5000,
           "plunge": 150,
           "stepdown": 0.25,
           "stepover_pct": 40,
@@ -685,7 +685,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 3000,
+          "feed": 5000,
           "plunge": 800,
           "stepdown": 2.0,
           "stepover_pct": 10,
@@ -754,7 +754,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 3000,
+          "feed": 5000,
           "plunge": 800,
           "stepdown": 2.0,
           "stepover_pct": 10,
@@ -823,7 +823,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 1500,
+          "feed": 5000,
           "plunge": 400,
           "stepdown": 0.5,
           "stepover_pct": 10,
@@ -896,7 +896,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 1500,
+          "feed": 5000,
           "plunge": 400,
           "stepdown": 0.5,
           "stepover_pct": 10,
@@ -1039,7 +1039,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 3000,
+          "feed": 5000,
           "plunge": 600,
           "stepdown": 2.0,
           "stepover_pct": 50,
@@ -1107,7 +1107,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 1500,
+          "feed": 5000,
           "plunge": 300,
           "stepdown": 0.9,
           "stepover_pct": 45,
@@ -1185,7 +1185,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 1500,
+          "feed": 5000,
           "plunge": 300,
           "stepdown": 0.9,
           "stepover_pct": 45,
@@ -1263,7 +1263,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 2500,
+          "feed": 5000,
           "plunge": 500,
           "stepdown": 1.8,
           "stepover_pct": 45,
@@ -1341,7 +1341,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 2500,
+          "feed": 5000,
           "plunge": 500,
           "stepdown": 1.8,
           "stepover_pct": 45,
@@ -1419,7 +1419,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 2800,
+          "feed": 5000,
           "plunge": 550,
           "stepdown": 2.4,
           "stepover_pct": 45,
@@ -1496,7 +1496,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 3000,
+          "feed": 5000,
           "plunge": 600,
           "stepdown": 3.0,
           "stepover_pct": 45,
@@ -1584,7 +1584,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 2000,
+          "feed": 5000,
           "plunge": 400,
           "stepdown": 2.0,
           "stepover_pct": 45,
@@ -1662,7 +1662,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 800,
+          "feed": 5000,
           "plunge": 200,
           "stepdown": 0.5,
           "stepover_pct": 30,

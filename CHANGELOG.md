@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.15 (build 66) — 2026-10-14
+
+> Tool library: PVC feed 5000 mm/min for every bit
+
+- PVC feed is 5000 mm/min for every bit (rpm, plunge and stepdown unchanged).
+
 ## v1.1.14 (build 65) — 2026-10-14
 
 > Tool library: shorter, cleaner bit names and descriptions; Soft wood feed 5000 mm/min for every bit
