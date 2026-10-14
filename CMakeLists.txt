@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.1.18 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.1.19 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,7 @@ endif()
 # Shared by the app and the headless tests.
 add_library(phobicccp_core STATIC
     src/zlibutil.cpp
+    src/cccpfile.cpp
     src/c2ddocument.cpp
     src/element.cpp
     src/gcodeexport.cpp
@@ -151,6 +152,10 @@ add_executable(test_import tests/test_import.cpp)
 target_link_libraries(test_import PRIVATE phobicccp_core)
 target_compile_definitions(test_import PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
 add_test(NAME import COMMAND test_import)
+add_executable(test_cccpfile tests/test_cccpfile.cpp)
+target_link_libraries(test_cccpfile PRIVATE phobicccp_core)
+target_compile_definitions(test_cccpfile PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
+add_test(NAME cccpfile COMMAND test_cccpfile)
 # The tool-change rehearsal program: what it may and may not send.
 add_executable(test_rehearsal tests/test_rehearsal.cpp)
 target_link_libraries(test_rehearsal PRIVATE phobicccp_core)

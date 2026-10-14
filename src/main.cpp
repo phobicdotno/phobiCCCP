@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "cccpfile.h"
 #include "shopdialog.h"
 #include "gamepadmapdialog.h"
 #include "toollibrary.h"
@@ -1171,7 +1172,13 @@ int main(int argc, char *argv[])
         // failure with QMessageBox::warning, whose exec() spins its own event
         // loop on an invisible offscreen surface - a headless smoke test would
         // wedge for ever with nothing on screen to dismiss.
-        {
+        if (c2d::isCccpFile(QString::fromLocal8Bit(argv[2]))) {
+            const c2d::CccpProduct p = c2d::readCccp(QString::fromLocal8Bit(argv[2]));
+            if (!p.ok) {
+                qWarning() << "load failed:" << p.error;
+                return 1;
+            }
+        } else {
             c2d::Document probe;
             QString perr;
             if (!probe.load(QString::fromLocal8Bit(argv[2]), &perr)) {
