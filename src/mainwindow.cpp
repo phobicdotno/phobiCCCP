@@ -13,6 +13,7 @@
 #include "isopreview.h"
 #include "machinepanel.h"
 #include "modelpanel.h"
+#include "projectreceiver.h"
 #include "tiling.h"
 #include <QInputDialog>
 #include "propertiespanel.h"
@@ -57,6 +58,7 @@
 #include "toolbarorder.h"
 #include "toolpathfactory.h"
 #include <QTimer>
+#include <QSysInfo>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QStatusBar>
@@ -759,6 +761,17 @@ MainWindow::MainWindow(QWidget *parent)
         f.close();
         statusBar()->showMessage(QStringLiteral("Setup sheet saved to %1").arg(dest), 6000);
         QDesktopServices::openUrl(QUrl::fromLocalFile(dest));
+    });
+    fileMenu->addSeparator();
+    m_receiveAct = fileMenu->addAction(QStringLiteral("&Receive from Syntexophobic"));
+    m_receiveAct->setCheckable(true);
+    m_receiveAct->setToolTip(QStringLiteral(
+        "Let Syntexophobic on this network or over Tailscale send projects here "
+        "(port %1). You are asked before anything is opened.").arg(ProjectReceiver::kPort));
+    m_receiveAct->setChecked(QSettings().value(QStringLiteral("receive/enabled"), true).toBool());
+    connect(m_receiveAct, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("receive/enabled"), on);
+        setReceiving(on);
     });
     fileMenu->addSeparator();
     installImageMenus(fileMenu, this, m_canvas, &m_doc, &m_bg);   // backgrounddialog.cpp
@@ -2058,6 +2071,8 @@ void MainWindow::showStartupWindow()
         m_fullScreenAct->setChecked(true);    // shows it full screen
     else
         show();
+    // Only the real window listens: --shot and the tests build a MainWindow too.
+    setReceiving(m_receiveAct->isChecked());
     QTimer::singleShot(3000, this, [this] { checkForUpdate(); });
     // ... and once an hour after that, so a long-running copy sees a new
     // version without being restarted first.
@@ -2083,6 +2098,108 @@ void MainWindow::newUntitled()
     }
     openPath(path, true);
     statusBar()->showMessage(QStringLiteral("New design — %1").arg(machine.label), 6000);
+}
+
+// ---- projects from Syntexophobic -----------------------------------------
+//
+// Syntexophobic's File > Send to phobiCCCP… sends the part (STL), its XY
+// sketches (DXF), the stock size and the project with its history (.cccp);
+// see projectreceiver.h. Nothing is written or opened before the user says
+// yes here, and the sender is told what happened.
+void MainWindow::setReceiving(bool on)
+{
+    if (!on) {
+        delete m_receiver;
+        m_receiver = nullptr;
+        return;
+    }
+    if (m_receiver)
+        return;
+    m_receiver = new ProjectReceiver(this);
+    QString err;
+    if (!m_receiver->start(ProjectReceiver::kPort, &err)) {
+        statusBar()->showMessage(QStringLiteral("Cannot receive from Syntexophobic (port %1): %2")
+                                     .arg(ProjectReceiver::kPort).arg(err), 10000);
+        delete m_receiver;
+        m_receiver = nullptr;
+        return;
+    }
+    connect(m_receiver, &ProjectReceiver::received, this, &MainWindow::onProjectReceived);
+}
+
+void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
+{
+    const QString host = QSysInfo::machineHostName();
+    const ReceivedFile *model = p.first(QStringLiteral("model"));
+    const int sketches = p.count(QStringLiteral("vectors"));
+    QStringList what;
+    if (model)
+        what << QStringLiteral("the part as a 3D model");
+    if (sketches)
+        what << (sketches == 1 ? QStringLiteral("1 sketch as vectors")
+                               : QStringLiteral("%1 sketches as vectors").arg(sketches));
+    if (p.count(QStringLiteral("project")))
+        what << QStringLiteral("the project with its history");
+    const QString sender = p.from.isEmpty() ? p.peer
+                                            : QStringLiteral("%1 (%2)").arg(p.from, p.peer);
+    if (isMinimized())
+        showNormal();
+    raise();
+    activateWindow();
+    const auto r = QMessageBox::question(
+        this, QStringLiteral("Project from Syntexophobic"),
+        QStringLiteral("%1 on %2 sends \u201c%3\u201d: %4.\n\nOpen it as a new design?")
+            .arg(p.app.isEmpty() ? QStringLiteral("Syntexophobic") : p.app, sender, p.name,
+                 what.join(QStringLiteral(", "))),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (r != QMessageBox::Yes
+        || !confirmDiscard(QStringLiteral("Save before opening the received project?"))) {
+        if (m_receiver)
+            m_receiver->answer(id, false, QStringLiteral("declined on %1").arg(host));
+        return;
+    }
+    auto refuse = [&](const QString &why) {
+        QMessageBox::warning(this, QStringLiteral("Project from Syntexophobic"), why);
+        if (m_receiver)
+            m_receiver->answer(id, false, QStringLiteral("could not open it on %1: %2").arg(host, why));
+    };
+
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                         + QStringLiteral("/phobiCCCP/Received");
+    QStringList paths;
+    QString err;
+    const QString dir = saveReceived(p, base, &paths, &err);
+    if (dir.isEmpty())
+        return refuse(err);
+    QSettings st;
+    const auto machine = appsettings::machine(st);
+    const QString c2dPath = QDir(dir).filePath(safeFileName(p.name) + QStringLiteral(".c2d"));
+    if (!Document::createBlank(c2dPath, p.stockWidth > 0 ? p.stockWidth : machine.width,
+                               p.stockHeight > 0 ? p.stockHeight : machine.height,
+                               p.stockThickness > 0 ? p.stockThickness : appsettings::kBlankThickness,
+                               &err))
+        return refuse(err);
+    m_dirty = false;   // the question was already asked
+    openPath(c2dPath, false);
+    if (QFileInfo(m_doc.filePath()) != QFileInfo(c2dPath))
+        return refuse(QStringLiteral("%1 did not open").arg(c2dPath));
+    setMode(Mode::Design, false);
+    QStringList notes;
+    for (int i = 0; i < p.files.size(); ++i) {
+        const ReceivedFile &f = p.files.at(i);
+        if (f.role == QLatin1String("vectors"))
+            importVectorFile(this, m_canvas, &m_doc, paths.at(i));
+        else if (f.role == QLatin1String("model")
+                 && !m_model->addStlMesh(f.data, f.name, f.x, f.y, &err))
+            notes << QStringLiteral("the model could not be read (%1)").arg(err);
+    }
+    onSave();
+    const QString done = QStringLiteral("opened %1 on %2").arg(QFileInfo(c2dPath).fileName(), host)
+                         + (notes.isEmpty() ? QString() : QStringLiteral(", but ") + notes.join(QStringLiteral("; ")));
+    statusBar()->showMessage(QStringLiteral("Received \u201c%1\u201d from %2 into %3")
+                                 .arg(p.name, sender, dir), 10000);
+    if (m_receiver)
+        m_receiver->answer(id, true, done);
 }
 
 void MainWindow::removeUntitledFile()

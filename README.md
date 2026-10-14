@@ -249,6 +249,16 @@ under [CLI](#cli).
   on the machine, then an air-cut run with a real tool change, before
   trusting them on a job.
 
+**From Syntexophobic** (File → Receive from Syntexophobic, on by default):
+[Syntexophobic](https://github.com/phobicdotno/syntexophobic)'s File → *Send to
+phobiCCCP…* sends a project here over the local network (phobiCCCP is found by itself)
+or Tailscale (its Tailscale name or address is typed in). phobiCCCP asks before it
+opens anything, then starts a new design the size of the sent stock with the part as a
+3D model and every XY sketch as vectors; the files and the Syntexophobic project with
+its history (`.cccp`) are kept in `Documents/phobiCCCP/Received/<name>`. The link uses
+port 47652 (TCP for the transfer, UDP for being found); `src/projectreceiver.h`
+describes the protocol.
+
 **Isometric preview** (Preview tab): the generated route drawn in 3D over the
 stock — rapids dashed, cuts coloured by depth — with orbit / zoom, and an
 animated tool marker with play / pause / speed and a position slider. The

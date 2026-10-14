@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.1.16 (build 67) — 2026-10-14
+
+> Receive projects from Syntexophobic over the local network or Tailscale
+
+- Syntexophobic's File > Send to phobiCCCP… now lands here: phobiCCCP asks whether to
+  open it, then starts a new design the size of the sent stock, with the part as a 3D
+  model (STL component) and its XY sketches as vectors. The files, and the Syntexophobic
+  project with its history (.cccp), are kept in Documents/phobiCCCP/Received/<name>.
+- phobiCCCP answers Syntexophobic's network search on port 47652, so it shows up there by
+  itself on the local network; over Tailscale its Tailscale name or address is typed in.
+- File > Receive from Syntexophobic turns listening off and on (on by default).
+
 ## v1.1.15 (build 66) — 2026-10-14
 
 > Tool library: PVC feed 5000 mm/min for every bit

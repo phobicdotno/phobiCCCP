@@ -18,6 +18,8 @@ class QPlainTextEdit;
 namespace c2d {
 
 class IsoPreview;
+class ProjectReceiver;
+struct ReceivedProject;
 class MachinePanel;
 class ModelPanel;
 class PropertiesPanel;
@@ -76,6 +78,9 @@ private:
     void updateTitle();
     void openPath(const QString &path, bool untitled);
     void removeUntitledFile();    // the scratch file behind an untitled design
+    // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
+    void setReceiving(bool on);
+    void onProjectReceived(int id, const ReceivedProject &project);
     // Ask before throwing edits away. False = the user cancelled.
     bool confirmDiscard(const QString &what);
 
@@ -116,6 +121,8 @@ private:
     Mode m_mode = Mode::Design;
     QAction *m_modeActs[4] = {};
     ModelPanel *m_model;         // 3D modelling components + composited relief
+    ProjectReceiver *m_receiver = nullptr;   // listens while receiving is on
+    QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
     QAction *m_previewAct;       // toolpath overlay toggle
     QAction *m_fullScreenAct = nullptr;
