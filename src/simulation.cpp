@@ -215,6 +215,106 @@ struct Stamper {
     }
 };
 
+// How far a tool moving straight from a to b (tip Z linear along the move)
+// digs into the map as it is now: the deepest stock-above-underside along
+// the move, 0 when clear, with the tip position there. Only cells within
+// r - cell/4 of the axis count, so a tool leaving a slot it has just cut, or
+// travelling beside a wall, is not flagged for the quantised edge of the
+// slot (the same allowance Syntexophobic's rapid check makes).
+double rapidDepth(const HeightMap &m, const Profile &p, double ax, double ay, double az,
+                  double bx, double by, double bz, double *hx, double *hy, double *hz)
+{
+    const double cell = m.cellSize();
+    const double r = std::max(p.r - 0.25 * cell, 0.5 * cell);
+    const double L = std::hypot(bx - ax, by - ay);
+    const int n = std::max(1, int(std::ceil(L / (0.5 * cell))));
+    const int ri = int(std::ceil(r / cell)) + 1;
+    double worst = 0;
+    for (int k = 0; k <= n; ++k) {
+        const double t = double(k) / n;
+        const double px = ax + (bx - ax) * t, py = ay + (by - ay) * t, pz = az + (bz - az) * t;
+        if (pz >= 0)
+            continue;   // the stock top is 0: nothing to hit up here
+        const int ci = int(std::floor((px - m.originX()) / cell));
+        const int cj = int(std::floor((py - m.originY()) / cell));
+        for (int iy = std::max(0, cj - ri); iy <= std::min(m.height() - 1, cj + ri); ++iy) {
+            const double dy = m.cellCenterY(iy) - py;
+            const float *row = m.row(iy);
+            for (int ix = std::max(0, ci - ri); ix <= std::min(m.width() - 1, ci + ri); ++ix) {
+                const double dx = m.cellCenterX(ix) - px;
+                const double rho2 = dx * dx + dy * dy;
+                if (rho2 > r * r)
+                    continue;
+                const double d = row[ix] - (pz + p.heightAt(std::sqrt(rho2)));
+                if (d > worst) {
+                    worst = d;
+                    *hx = px; *hy = py; *hz = pz;
+                }
+            }
+        }
+    }
+    return worst;
+}
+
+// The gouge check. "The part" for a relief carved into stock is the relief
+// itself: the cells the model defines and raises above its own floor
+// (baseZ). Everything else -- the floor around and under the relief, and
+// stock the model does not cover -- is where roughing, pockets, cutouts and
+// through-cuts are meant to go, so cuts there are never gouges. Inside the
+// footprint a cell is gouged when the simulated surface is below the part by
+// more than the tolerance plus the simulator's own error: sloped moves are
+// stamped at the low end of each piece (up to maxDz too deep). The depth is
+// measured along the part's normal (Syntexophobic's _normal_depth), and the
+// part is taken as its lowest point within a quarter of a simulation cell of
+// the cell centre, so a steep wall is not condemned for where exactly in the
+// cell its edge happens to fall. The model grid itself has two readings --
+// one height per cell (heightmodel.h) and bilinear between cell centres
+// (HeightModel::sample(), what the 3D toolpaths follow) -- which disagree by
+// up to half a cell at a step; a cut is a gouge only when it is below both.
+// gougeDepth reports that normal depth.
+void checkGouges(SimResult &res, const SimSettings &s)
+{
+    const HeightModel &part = s.part;
+    const HeightMap &map = res.map;
+    if (!part.valid() || map.isNull())
+        return;
+    const double tol = std::max(0.0, s.gougeTol) + std::max(0.005, s.maxDz);
+    const double q = 0.25 * map.cellSize();
+    const int w = map.width(), h = map.height();
+    QVector<quint8> mask(qsizetype(w) * h, 0);
+    for (int iy = 0; iy < h; ++iy) {
+        const double y = map.cellCenterY(iy);
+        const int r = int(std::floor((y - part.originY) / part.cell));
+        if (r < 0 || r >= part.rows)
+            continue;
+        const float *row = map.row(iy);
+        for (int ix = 0; ix < w; ++ix) {
+            const double x = map.cellCenterX(ix);
+            const float raw = part.at(int(std::floor((x - part.originX) / part.cell)), r);
+            if (raw == HeightModel::NoModel || raw <= part.baseZ + 1e-3)
+                continue;
+            double ph = std::min({double(raw), part.sample(x, y),
+                                  part.sample(x - q, y), part.sample(x + q, y),
+                                  part.sample(x, y - q), part.sample(x, y + q)});
+            // Measured along the part's normal: on a steep wall a height
+            // difference is mostly sideways (0.25 mm in Z on a wall at 85
+            // degrees is 0.02 mm into it).
+            const double gx = (part.sample(x + part.cell, y) - part.sample(x - part.cell, y)) / (2 * part.cell);
+            const double gy = (part.sample(x, y + part.cell) - part.sample(x, y - part.cell)) / (2 * part.cell);
+            const double depth = (ph - row[ix]) / std::sqrt(1.0 + std::min(gx * gx + gy * gy, 1e6));
+            if (depth > tol) {
+                mask[qsizetype(iy) * w + ix] = 1;
+                ++res.gougeCells;
+                res.gougeDepth = std::max(res.gougeDepth, depth);
+            }
+        }
+    }
+    if (res.gougeCells > 0) {
+        res.gougeMask = mask;
+        res.gougeArea = res.gougeCells * map.cellSize() * map.cellSize();
+    }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -261,6 +361,7 @@ SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
     Profile prof = profileOf(defTool);
     double x = 0, y = 0, z = 0;
     bool have = false;
+    QString opName;
 
     // One straight tip move a→b: split sloped moves so each piece is stamped
     // at its lowest Z (error ≤ maxDz), plunges collapse to a single disc.
@@ -275,6 +376,51 @@ SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
             st.capsule(ax + (bx - ax) * t0, ay + (by - ay) * t0,
                        ax + (bx - ax) * t1, ay + (by - ay) * t1, zc, prof);
         }
+    };
+
+    // The move the machine actually makes for a G0 to (bx, by, bz), checked
+    // against the stock as cut so far. The sender's safeRapidsTransform
+    // (post_grbl.h) never moves down and sideways at once, so a rapid that
+    // descends travels first and then drops, and one that rises lifts first
+    // and then travels.
+    auto rapidMove = [&](double bx, double by, double bz) {
+        struct Seg { double ax, ay, az, bx, by, bz; };
+        Seg seg[2];
+        int nSeg = 1;
+        if (std::hypot(bx - x, by - y) <= 1e-9 || std::fabs(bz - z) < 1e-9) {
+            seg[0] = {x, y, z, bx, by, bz};
+        } else if (bz < z) {
+            seg[0] = {x, y, z, bx, by, z};
+            seg[1] = {bx, by, z, bx, by, bz};
+            nSeg = 2;
+        } else {
+            seg[0] = {x, y, z, x, y, bz};
+            seg[1] = {x, y, bz, bx, by, bz};
+            nSeg = 2;
+        }
+        RapidHit hit;
+        hit.op = opName;
+        for (int k = 0; k < nSeg; ++k) {
+            const Seg &g = seg[k];
+            if (std::min(g.az, g.bz) >= -s.rapidTol)
+                continue;   // above the stock top less the tolerance: cannot hit
+            double hx = 0, hy = 0, hz = 0;
+            const double d = rapidDepth(res.map, prof, g.ax, g.ay, g.az, g.bx, g.by, g.bz,
+                                        &hx, &hy, &hz);
+            if (d > hit.depth)
+                hit = {opName, hx, hy, hz, d};
+            // A G0 through stock removes it as surely as a G1 (or breaks the
+            // tool trying): stamp it after the check, so later moves see the
+            // stock as it then is.
+            piece(g.ax, g.ay, g.az, g.bx, g.by, g.bz);
+        }
+        if (hit.depth <= s.rapidTol)
+            return;
+        ++res.rapidHitCount;
+        if (res.rapidHits.size() < 100)
+            res.rapidHits.append(hit);
+        if (hit.depth > res.worstRapid.depth)
+            res.worstRapid = hit;
     };
 
     const int n = ops.size();
@@ -304,9 +450,16 @@ SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
                 if (!res.missingTools.contains(op.ival))
                     res.missingTools.append(op.ival);
             }
+            // The tool change parks the spindle at the top of its travel.
+            z = std::max(z, 0.0);
             break;
         }
+        case Op::Comment:
+            opName = op.text;
+            break;
         case Op::Rapid:
+            if (have)
+                rapidMove(op.x, op.y, op.z);
             x = op.x; y = op.y; z = op.z; have = true;
             break;
         case Op::Feed:
@@ -352,6 +505,8 @@ SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
     res.minZ = mz;
     res.throughCut = s.stockT > 0 && mz <= -s.stockT + 1e-6;
     res.segments = st.stamped;
+    if (!res.cancelled)
+        checkGouges(res, s);
     res.elapsedMs = timer.nsecsElapsed() / 1e6;
     if (progress && !res.cancelled)
         progress(100);
@@ -365,13 +520,15 @@ namespace {
 const QColor kUncut(0xd9, 0xc5, 0x9e);     // light stock
 const QColor kDeep(0x5c, 0x41, 0x24);      // full-depth floor
 const QColor kThrough(0x2b, 0x3d, 0x5a);   // slate: nothing left, looking at the spoilboard
+const QColor kGouge(0xe0, 0x2a, 0x2a);     // red: cut below the part
 }
 
 QColor simColorUncut()   { return kUncut; }
 QColor simColorDeep()    { return kDeep; }
 QColor simColorThrough() { return kThrough; }
+QColor simColorGouge()   { return kGouge; }
 
-QImage renderHeightMap(const HeightMap &map, double stockT)
+QImage renderHeightMap(const HeightMap &map, double stockT, const QVector<quint8> &gouges)
 {
     if (map.isNull())
         return QImage();
@@ -395,6 +552,7 @@ QImage renderHeightMap(const HeightMap &map, double stockT)
     const int ur = kUncut.red(), ug = kUncut.green(), ub = kUncut.blue();
     const int dr = kDeep.red(), dg = kDeep.green(), db = kDeep.blue();
     const QRgb through = kThrough.rgb();
+    const bool haveGouges = gouges.size() == qsizetype(w) * h;
 
     for (int iy = 0; iy < h; ++iy) {
         QRgb *out = reinterpret_cast<QRgb *>(img.scanLine(h - 1 - iy));
@@ -405,7 +563,7 @@ QImage renderHeightMap(const HeightMap &map, double stockT)
         for (int ix = 0; ix < w; ++ix) {
             const float zc = row[ix];
             if (zc <= thr) {
-                out[ix] = through;
+                out[ix] = haveGouges && gouges.at(qsizetype(iy) * w + ix) ? kGouge.rgb() : through;
                 continue;
             }
             const int xe = std::min(w - 1, ix + 1), xw = std::max(0, ix - 1);
@@ -418,6 +576,14 @@ QImage renderHeightMap(const HeightMap &map, double stockT)
             const double ndl = nx * lx + ny * ly + nz * lz;
             double shade = 0.35 + 0.65 * qBound(0.0, ndl / flatDot, 1.35);
 
+            if (haveGouges && gouges.at(qsizetype(iy) * w + ix)) {
+                // Shaded like the rest, so the gouge's shape still reads.
+                const double gs = qBound(0.55, shade, 1.15);
+                out[ix] = qRgb(qBound(0, int(kGouge.red() * gs + 0.5), 255),
+                               qBound(0, int(kGouge.green() * gs + 0.5), 255),
+                               qBound(0, int(kGouge.blue() * gs + 0.5), 255));
+                continue;
+            }
             const bool cut = zc < -1e-4;
             const double f = cut ? 0.12 + 0.88 * qBound(0.0, double(-zc) / T, 1.0) : 0.0;
             const double r = (ur + (dr - ur) * f) * shade;

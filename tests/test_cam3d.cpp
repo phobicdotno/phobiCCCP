@@ -5,6 +5,7 @@
 // asserts, no framework; exits 0 on success.
 
 #include "../src/c2ddocument.h"
+#include "../src/element.h"
 #include "../src/cam3d.h"
 #include "../src/gcodeexport.h"
 #include "../src/heightmodel.h"
@@ -111,6 +112,25 @@ static QSet<qint64> feedLevels(const QVector<Op> &ops)
         if (o.kind == Op::Feed && o.z < -1e-6)
             levels.insert(qRound64(o.z * 1e4));
     return levels;
+}
+
+// Square terraces (a stepped pyramid) centred in a size×size grid: the
+// floor at -9 out to the edge, a tier at -6.4 within ±20 mm, -3.3 within
+// ±12 mm and the top at 0 within ±5 mm. The tier heights are deliberately
+// not multiples of any stepdown used below.
+static c2d::HeightModel terraces(double cell = 0.5, double size = 60)
+{
+    c2d::HeightModel m;
+    m.cell = cell;
+    m.baseZ = -9;
+    m.resize(int(size / cell), int(size / cell));
+    for (int r = 0; r < m.rows; ++r)
+        for (int c = 0; c < m.cols; ++c) {
+            const double x = (c + 0.5) * cell - size / 2, y = (r + 0.5) * cell - size / 2;
+            const double d = std::fmax(std::fabs(x), std::fabs(y));
+            m.ref(c, r) = float(d <= 5 ? 0.0 : d <= 12 ? -3.3 : d <= 20 ? -6.4 : -9.0);
+        }
+    return m;
 }
 
 int main()
@@ -445,6 +465,234 @@ int main()
         addToolpath(doc, f);
         const c2d::GcodeResult g = c2d::exportGcode(doc);
         check(g.done.size() == 2 && g.skipped.isEmpty(), "defaults: both export over the hemisphere");
+    }
+
+
+    // --- rough: a level on every flat terrace -----------------------------------
+    {
+        const c2d::HeightModel steps = terraces();
+        const QVector<double> flats = c2d::modelFlats(steps, 1.0);
+        std::printf("terraces: %d flats:", int(flats.size()));
+        for (double f : flats)
+            std::printf(" %.3f", f);
+        std::printf("\n");
+        check(flats.size() == 3 && approx(flats.at(0), 0.0, 1e-6) && approx(flats.at(1), -3.3, 1e-5)
+                  && approx(flats.at(2), -6.4, 1e-5),
+              "flats: the three terraces, highest first, floor not listed");
+        check(c2d::modelFlats(model, 1.0).isEmpty(), "flats: a dome has none");
+        // An almost level ramp (0.0008 mm per cell) passes the per-cell
+        // flatness test everywhere but is a slope, not a terrace.
+        c2d::HeightModel ramp;
+        ramp.cell = 0.5;
+        ramp.baseZ = -2;
+        ramp.resize(400, 40);
+        for (int r = 0; r < ramp.rows; ++r)
+            for (int c = 0; c < ramp.cols; ++c)
+                ramp.ref(c, r) = float(-0.0008 * c);
+        check(c2d::modelFlats(ramp, 1.0).isEmpty(), "flats: a gentle ramp has none");
+        // Too small to matter: a terrace below the area threshold.
+        check(c2d::modelFlats(steps, 2000.0).isEmpty(), "flats: area threshold respected");
+
+        current = &steps;
+        c2d::Document doc;
+        addToolpath(doc, toolpath("3d_rough_toolpath", kFlat,
+                                  {{"stepdown", 2.0}, {"stepover", 2.5}, {"stock_to_leave", 0.0}}));
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const QSet<qint64> lv = feedLevels(g.ops);
+        QList<qint64> sorted = lv.values();
+        std::sort(sorted.begin(), sorted.end());
+        std::printf("terraces rough levels:");
+        for (qint64 z : sorted)
+            std::printf(" %.3f", z / 1e4);
+        std::printf("\n");
+        check(lv.size() == 7 && lv.contains(-20000) && lv.contains(-33000) && lv.contains(-40000)
+                  && lv.contains(-60000) && lv.contains(-64000) && lv.contains(-80000)
+                  && lv.contains(-90000),
+              "rough: -2, -3.3 (terrace), -4, -6, -6.4 (terrace), -8, -9 (floor)");
+        c2d::SimSettings ss = stock(60, 60, 12);
+        ss.part = steps;
+        const c2d::SimResult sim = c2d::simulate(g.ops, c2d::toolGeometry(doc), ss);
+        std::printf("terraces rough: tier2 %.3f tier1 %.3f, %d gouge cells\n",
+                    sim.map.sample(30 + 9.6, 30), sim.map.sample(30 + 16.1, 30), sim.gougeCells);
+        if (qgetenv("TEST_DUMP") == "1")
+            for (int iy = 0; iy < sim.map.height(); ++iy)
+                for (int ix = 0; ix < sim.map.width(); ++ix)
+                    if (!sim.gougeMask.isEmpty() && sim.gougeMask.at(iy * sim.map.width() + ix))
+                        std::fprintf(stderr, "gouge (%.2f, %.2f) sim %.3f model %.3f\n", sim.map.cellCenterX(ix),
+                                     sim.map.cellCenterY(iy), sim.map.at(ix, iy),
+                                     steps.sample(sim.map.cellCenterX(ix), sim.map.cellCenterY(iy)));
+        check(approx(sim.map.sample(30 + 9.6, 30), -3.3, 0.01), "rough: terrace at -3.3 cleared onto it");
+        check(approx(sim.map.sample(30 + 16.1, 30), -6.4, 0.01), "rough: terrace at -6.4 cleared onto it");
+        check(sim.gougeCells == 0, "rough: terraces are not gouged");
+
+        // Stock to leave lifts the terrace levels with it; levels within
+        // 0.05 mm of a step merge into the terrace.
+        c2d::Document d2;
+        addToolpath(d2, toolpath("3d_rough_toolpath", kFlat,
+                                 {{"stepdown", 2.0}, {"stepover", 2.5}, {"stock_to_leave", 0.5}}));
+        const QSet<qint64> lv2 = feedLevels(c2d::exportGcode(d2).ops);
+        check(lv2.contains(-28000) && lv2.contains(-59000) && lv2.contains(-85000) && lv2.size() == 7,
+              "rough + leave 0.5: -2, -2.8, -4, -5.9, -6, -8, -8.5");
+        c2d::Document d3;
+        addToolpath(d3, toolpath("3d_rough_toolpath", kFlat,
+                                 {{"stepdown", 2.0}, {"stepover", 2.5}, {"stock_to_leave", 0.37}}));
+        const QSet<qint64> lv3 = feedLevels(c2d::exportGcode(d3).ops);
+        check(lv3.contains(-29300) && lv3.contains(-60300) && !lv3.contains(-60000) && lv3.size() == 6,
+              "rough + leave 0.37: the terrace at -6.03 replaces the step at -6");
+        current = &model;
+    }
+
+    // --- finish: waterline ---------------------------------------------------------
+    {
+        const double leave = 0.0;
+        auto run = [&](const char *dir, const QJsonObject &extra = {}) {
+            c2d::Document doc;
+            QJsonObject e{{"stepdown", 2.0}, {"strategy", QStringLiteral("waterline")},
+                          {"direction", QLatin1String(dir)}, {"stock_to_leave", leave}};
+            for (const QString &k : extra.keys())
+                e.insert(k, extra.value(k));
+            addToolpath(doc, toolpath("3d_finish_toolpath", kBall, e));
+            return c2d::exportGcode(doc);
+        };
+        check(c2d::cam3dParams(QJsonObject{{"strategy", "waterline"}}, 3).strategy
+                  == c2d::Cam3dParams::Waterline
+                  && c2d::cam3dParams(QJsonObject{}, 3).strategy == c2d::Cam3dParams::Raster,
+              "waterline: parsed; absent = raster");
+        const c2d::GcodeResult g = run("climb");
+        check(g.done.size() == 1 && g.skipped.isEmpty(), "waterline: exported");
+        const QSet<qint64> lv = feedLevels(g.ops);
+        std::printf("waterline: %d ops, %d levels\n", int(g.ops.size()), int(lv.size()));
+        check(lv.size() == 10 && lv.contains(-20000) && lv.contains(-200000),
+              "waterline: -2 .. -18 every 2 mm and the floor at -20");
+
+        c2d::ToolGeom ball; ball.kind = c2d::ToolGeom::Ball; ball.diameter = 3; ball.cornerRadius = 1.5;
+        auto cz = [&](double x, double y) { return c2d::compensatedZ(model, ball, x, y) + leave; };
+        // How far the tool at tip height z is into the dome at (x, y),
+        // measured across the compensated surface rather than up it: by a
+        // wall that surface is nearly vertical, and the vertex positions
+        // are rounded to the micron by the boundary clipping.
+        auto into = [&](double x, double y, double z) {
+            const double h = 0.05;
+            const double gx = (cz(x + h, y) - cz(x - h, y)) / (2 * h);
+            const double gy = (cz(x, y + h) - cz(x, y - h)) / (2 * h);
+            return (cz(x, y) - z) / std::sqrt(1 + gx * gx + gy * gy);
+        };
+        // Every move at a level: the tip sits at that level and the tool is
+        // clear of the dome there (it may not be below the compensated
+        // surface), at the vertices and between them.
+        int onLevel = 0, touching = 0;
+        double worstGouge = -1e9, worstMid = -1e9, area10 = 0;
+        double px = 0, py = 0, pz = 1e9;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Feed && std::fabs(o.z - pz) < 1e-9 && o.z < -1e-6) {
+                ++onLevel;
+                check(lv.contains(qRound64(o.z * 1e4)), "waterline: every point at a level");
+                const double c = cz(o.x, o.y);
+                worstGouge = std::fmax(worstGouge, into(o.x, o.y, o.z));
+                if (c >= o.z - 0.05)
+                    ++touching;
+                {
+                    const double mx = (o.x + px) / 2, my = (o.y + py) / 2;
+                    const double dm = into(mx, my, o.z);
+                    if (dm > 0.02 && qgetenv("TEST_DUMP") == "1")
+                        std::fprintf(stderr, "mid (%.3f, %.3f) rho %.3f z %.2f over %.4f seg %.3f\n", mx, my,
+                                     std::hypot(mx - 30, my - 30), o.z, dm, std::hypot(o.x - px, o.y - py));
+                    worstMid = std::fmax(worstMid, dm);
+                }
+                if (qRound64(o.z * 1e4) == -100000)
+                    area10 += (px - 30) * (o.y - 30) - (py - 30) * (o.x - 30);
+            }
+            if (o.kind == Op::Feed || o.kind == Op::Rapid) {
+                px = o.x; py = o.y; pz = o.z;
+            }
+        }
+        std::printf("waterline: %d moves on levels, %d touching; worst over the surface: "
+                    "vertex %.4f, mid %.4f mm\n", onLevel, touching, worstGouge, worstMid);
+        check(onLevel > 500, "waterline: contours traced");
+        check(worstGouge <= 0.002, "waterline: no vertex into the dome");
+        check(worstMid <= 0.02, "waterline: chords stay out of the dome (0.02 mm)");
+        check(touching >= onLevel * 0.95, "waterline: the tool follows the wall, not the air");
+        check(area10 > 0, "waterline climb: anticlockwise around the dome (material on the left)");
+
+        // The level -10 loop is the circle where the ball touches the dome at
+        // that height: tip at -10, centre on the offset sphere R + r.
+        {
+            const double zc = -10 + 1.5 + 20;   // ball centre above the sphere centre
+            const double rhoExpect = std::sqrt(21.5 * 21.5 - zc * zc);
+            double lo = 1e9, hi = 0;
+            for (const Op &o : g.ops)
+                if (o.kind == Op::Feed && qRound64(o.z * 1e4) == -100000) {
+                    const double rho = std::hypot(o.x - 30, o.y - 30);
+                    lo = std::fmin(lo, rho);
+                    hi = std::fmax(hi, rho);
+                }
+            std::printf("waterline -10: rho %.3f..%.3f, expected %.3f\n", lo, hi, rhoExpect);
+            check(approx(lo, rhoExpect, 0.1) && approx(hi, rhoExpect, 0.1), "waterline: -10 loop on the offset sphere");
+        }
+
+        const c2d::GcodeResult gc = run("conventional");
+        double areaC = 0;
+        px = py = 0;
+        for (const Op &o : gc.ops) {
+            if (o.kind == Op::Feed && qRound64(o.z * 1e4) == -100000 && std::fabs(o.z - pz) < 1e-9)
+                areaC += (px - 30) * (o.y - 30) - (py - 30) * (o.x - 30);
+            if (o.kind == Op::Feed || o.kind == Op::Rapid) {
+                px = o.x; py = o.y; pz = o.z;
+            }
+        }
+        check(areaC < 0, "waterline conventional: clockwise around the dome");
+
+        // Simulated against the dome: never into it, and the gouge check
+        // agrees.
+        c2d::Document doc;
+        addToolpath(doc, toolpath("3d_finish_toolpath", kBall,
+                                  {{"stepdown", 2.0}, {"strategy", QStringLiteral("waterline")}}));
+        c2d::SimSettings ss = stock(60, 60, 25);
+        ss.part = model;
+        const c2d::SimResult sim = c2d::simulate(c2d::exportGcode(doc).ops, c2d::toolGeometry(doc), ss);
+        const double halfCell = 0.5 * M_SQRT2 * sim.map.cellSize();
+        double worst = 1e9;
+        for (int iy = 0; iy < sim.map.height(); ++iy)
+            for (int ix = 0; ix < sim.map.width(); ++ix) {
+                const double x = sim.map.cellCenterX(ix), y = sim.map.cellCenterY(iy);
+                worst = std::fmin(worst, sim.map.at(ix, iy) - modelMin(model, x, y, halfCell));
+            }
+        std::printf("waterline: closest approach %.4f mm, %d gouge cells, %d rapid hits\n",
+                    worst, sim.gougeCells, sim.rapidHitCount);
+        check(worst >= -0.02, "waterline: never below the model (0.02 mm)");
+        check(sim.gougeCells == 0 && sim.rapidHitCount == 0, "waterline: no gouge, no rapid into stock");
+
+        // A boundary keeps the tool centre inside it.
+        {
+            c2d::Document d;
+            const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 20, 20, QJsonObject());
+            d.addElement(e);
+            QJsonObject j = toolpath("3d_finish_toolpath", kBall,
+                                     {{"stepdown", 2.0}, {"strategy", QStringLiteral("waterline")}});
+            j.insert("elements", QJsonArray{QJsonObject{{"uuid", e.id}}});
+            addToolpath(d, j);
+            const c2d::GcodeResult gb = c2d::exportGcode(d);
+            const c2d::JobStats st = c2d::computeStats(gb.ops);
+            check(gb.done.size() == 1 && st.minX >= 20 - 0.01 && st.maxX <= 40 + 0.01
+                      && st.minY >= 20 - 0.01 && st.maxY <= 40 + 0.01,
+                  "waterline: tool centre stays inside the boundary");
+            // Loop radii: 9.1 mm at -2 (whole), 12.5 at -4 (corners clipped
+            // off), 14.9 at -6 (beyond the 14.1 mm corner: gone).
+            const QSet<qint64> lvb = feedLevels(gb.ops);
+            check(lvb.size() == 2 && lvb.contains(-20000) && lvb.contains(-40000),
+                  "waterline: clipped loops still cut");
+        }
+
+        // Terraces: a waterline on each terrace's own height.
+        current = nullptr;
+        const c2d::HeightModel steps = terraces();
+        current = &steps;
+        c2d::Document d4;
+        addToolpath(d4, toolpath("3d_finish_toolpath", kBall,
+                                 {{"stepdown", 2.0}, {"strategy", QStringLiteral("waterline")}}));
+        const QSet<qint64> lv4 = feedLevels(c2d::exportGcode(d4).ops);
+        check(lv4.contains(-33000) && lv4.contains(-64000), "waterline: loops on the terraces");
+        current = &model;
     }
 
     // --- compensatedZ: flat tool on the dome peak, ball on the floor --------------

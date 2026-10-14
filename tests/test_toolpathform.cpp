@@ -7,6 +7,7 @@
 
 #include <QAbstractButton>
 #include <QApplication>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
 #include <QToolButton>
@@ -114,6 +115,27 @@ int main(int argc, char *argv[])
     // The same toolpath again: values update in place, editors survive.
     form.setToolpath("{tp}", "pocket_toolpath", last);
     check(editorFor<QDoubleSpinBox>(&form, "end_depth") == end, "a refresh keeps the editors");
+
+    // 3D finish: the strategy is a choice, offered (as raster) even on a
+    // toolpath saved before waterline existed, and written only on an edit.
+    {
+        QJsonObject f{{"type", "3d_finish_toolpath"}, {"uuid", "{f3d}"}, {"name", "3D Finish"},
+                      {"enabled", true}, {"stepdown", 1.0}, {"stepover", 0.5},
+                      {"direction", "zigzag"}, {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{f3d}", "3d_finish_toolpath", f);
+        app.processEvents();
+        auto *strategy = editorFor<QComboBox>(&form, "strategy");
+        check(strategy && strategy->currentText() == QStringLiteral("Raster"),
+              "3D finish: strategy offered, raster when absent");
+        auto *direction = editorFor<QComboBox>(&form, "direction");
+        check(direction && direction->currentText() == QStringLiteral("Zigzag"), "3D finish: direction is a choice");
+        const int before = edits;
+        strategy->setCurrentIndex(1);
+        emit strategy->activated(1);
+        check(edits == before + 1 && last.value("strategy").toString() == QLatin1String("waterline")
+                  && last.value("stepdown").toDouble() == 1.0,
+              "3D finish: choosing waterline writes strategy = waterline");
+    }
 
     std::printf("test_toolpathform: %d checks OK\n", g_checks);
     return 0;

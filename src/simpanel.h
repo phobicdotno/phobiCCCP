@@ -26,10 +26,12 @@ class SimPanel : public QWidget
 public:
     explicit SimPanel(QWidget *parent = nullptr);
 
-    // Program + tool table + stock (X 0..W, Y 0..H, Z -T..0). Cheap: nothing
-    // runs until simulate().
+    // Program + tool table + stock (X 0..W, Y 0..H, Z -T..0), and the
+    // document's 3D relief (if any) for the gouge check. Cheap: nothing runs
+    // until simulate().
     void setJob(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
-                double stockW, double stockH, double stockT);
+                double stockW, double stockH, double stockT,
+                const HeightModel *part = nullptr);
     void simulate();            // asynchronous (the Simulate button)
     void simulateBlocking();    // synchronous, on this thread (used by --shot)
     void cancel();
@@ -52,6 +54,7 @@ private:
 
     QVector<Op> m_ops;
     QHash<int, ToolGeom> m_tools;
+    HeightModel m_part;
     double m_w = 0, m_h = 0, m_t = 0;
     bool m_stale = false;   // program changed since the last run
     // Set when setJob() cancels a run that belongs to the previous program:

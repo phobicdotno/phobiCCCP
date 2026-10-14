@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.1.17 (build 68) — 2026-10-14
+
+> 3D CAM from Syntexophobic: gouge and rapids-into-stock checks in Simulate, waterline finishing, roughing levels on flat terraces
+
+- Simulate: with an enabled 3D model, cells where the simulated cut is below the relief
+  (0.05 mm plus the simulator's own step error, measured along the surface normal) are
+  drawn red; the status line gives the gouged area and the deepest gouge. Only the relief
+  counts as the part: its floor and the stock around it are where roughing, pockets and
+  cutouts are meant to go.
+- Simulate: every rapid (G0) is checked against the stock as cut so far, as the sender
+  runs it (across then down, up then across); rapids through material are reported with
+  the count, the worst depth, its X/Y/Z and the toolpath. Such a rapid now also cuts in
+  the simulation, as it would on the machine. `--shot … simulation` prints both checks.
+- 3D Finish: new Strategy setting, Raster (as before, the default) or Waterline: one pass
+  around every wall per stepdown on the tool-compensated contour, climb/conventional
+  honoured, boundary and stock to leave respected, linked on the surface where clear.
+  Direction is now a choice in the form too.
+- 3D Rough (and waterline): a level is put exactly on every flat terrace of the model
+  (plus stock to leave), not only every stepdown; levels within 0.05 mm merge.
+
 ## v1.1.16 (build 67) — 2026-10-14
 
 > Receive projects from Syntexophobic over the local network or Tailscale

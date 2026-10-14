@@ -1,5 +1,6 @@
 #pragma once
 #include "gcodeexport.h"
+#include "heightmodel.h"
 #include "post_grbl.h"
 #include <QHash>
 #include <QImage>
@@ -59,6 +60,19 @@ struct SimSettings {
     int maxCells = 4000000;    // cell budget; cell size grows to respect it
     double chord = 0.2;        // arc tessellation tolerance (max chord length, mm)
     double maxDz = 0.05;       // sloped moves are split so each piece drops ≤ this
+    // The part, for the gouge check: the document's 3D relief (heightmodel.h
+    // convention, z <= 0 from the stock top). Invalid = no model, no check.
+    HeightModel part;
+    double gougeTol = 0.05;    // mm below the part before a cell counts (+ maxDz, see simulate())
+    double rapidTol = 0.05;    // mm a rapid may graze the stock before it counts as a hit
+};
+
+// A rapid (G0) that passes through material: the deepest point of that move,
+// where the tool's underside is `depth` mm below the stock as it was then.
+struct RapidHit {
+    QString op;                  // toolpath name (the last Comment op before it)
+    double x = 0, y = 0, z = 0;  // tool tip at the deepest point
+    double depth = 0;            // mm into the stock
 };
 
 struct SimResult {
@@ -70,25 +84,46 @@ struct SimResult {
     QList<int> missingTools;     // tool numbers not in the table (default tool used)
     double elapsedMs = 0;
     bool cancelled = false;
+
+    // Gouge check against SimSettings::part (only when one was given): cells
+    // inside the relief's footprint where the simulated surface lies below
+    // the part by more than the tolerance. gougeMask is width*height, 1 =
+    // gouged, empty when there are none.
+    int gougeCells = 0;
+    double gougeArea = 0;        // mm²
+    double gougeDepth = 0;       // deepest, mm into the part along its normal (0 = none)
+    QVector<quint8> gougeMask;
+
+    // Rapids into material: every G0 is checked against the stock as cut so
+    // far. `rapidHitCount` counts the offending moves; `rapidHits` keeps the
+    // first 100 of them, and `worstRapid` the deepest.
+    int rapidHitCount = 0;
+    QList<RapidHit> rapidHits;
+    RapidHit worstRapid;
 };
 
 using SimProgress = std::function<void(int)>;   // percent 0..100
 
 // Run the simulation synchronously. `cancel` (optional) is polled between
-// ops; a cancelled run returns the partial map with cancelled = true.
+// ops; a cancelled run returns the partial map with cancelled = true. Rapids
+// are checked against the stock as they happen; the gouge check runs at the
+// end when settings.part is valid (not on a cancelled run).
 SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
                    const SimSettings &settings, std::atomic<bool> *cancel = nullptr,
                    const SimProgress &progress = {});
 
 // Shaded top-down rendering: one pixel per cell, Y up (row 0 = top of the
 // stock), light from the upper left, uncut stock light, deeper darker,
-// through-cuts in a distinct background colour.
-QImage renderHeightMap(const HeightMap &map, double stockT);
+// through-cuts in a distinct background colour, gouged cells (a non-empty
+// `gouges` mask, SimResult::gougeMask) in red.
+QImage renderHeightMap(const HeightMap &map, double stockT,
+                       const QVector<quint8> &gouges = {});
 
 // Colours used by renderHeightMap, exposed for the panel's legend.
 QColor simColorUncut();
 QColor simColorDeep();
 QColor simColorThrough();
+QColor simColorGouge();
 
 // Worker-thread wrapper: start() returns immediately, progress()/finished()
 // are emitted on the job's thread (the GUI thread), result() is valid after

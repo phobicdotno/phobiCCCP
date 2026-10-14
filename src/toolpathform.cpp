@@ -279,6 +279,18 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     add(QStringLiteral("mode"), choice(QStringLiteral("cut"), QStringLiteral("Engrave"),
         {{QStringLiteral("outline"), QStringLiteral("Outline")}, {QStringLiteral("fill"), QStringLiteral("Hatch fill")},
          {QStringLiteral("both"), QStringLiteral("Outline + fill")}}));
+    if (type == QLatin1String("3d_finish_toolpath")) {
+        F f = choice(QStringLiteral("cut"), QStringLiteral("Strategy"),
+            {{QStringLiteral("raster"), QStringLiteral("Raster")},
+             {QStringLiteral("waterline"), QStringLiteral("Waterline (Z-level)")}});
+        f.tip = QStringLiteral("Raster: parallel passes over the surface. Waterline: one pass "
+                               "around every wall per stepdown");
+        add(QStringLiteral("strategy"), f);
+        add(QStringLiteral("direction"), choice(QStringLiteral("cut"), QStringLiteral("Direction"),
+            {{QStringLiteral("climb"), QStringLiteral("Climb")},
+             {QStringLiteral("conventional"), QStringLiteral("Conventional")},
+             {QStringLiteral("zigzag"), QStringLiteral("Zigzag")}}));
+    }
     add(QStringLiteral("stepover"), mm(QStringLiteral("cut"), QStringLiteral("Stepover"), 100,
                                        QStringLiteral("Sideways step between passes")));
     add(QStringLiteral("stock_to_leave"), mm(QStringLiteral("cut"), QStringLiteral("Leave"), 50,
@@ -392,8 +404,14 @@ void ToolpathForm::clear()
     rebuild();
 }
 
-void ToolpathForm::setToolpath(const QString &uuid, const QString &type, const QJsonObject &json)
+void ToolpathForm::setToolpath(const QString &uuid, const QString &type, const QJsonObject &json_)
 {
+    // The form only shows the keys a toolpath has. A 3D finish saved before
+    // waterline existed has no `strategy`; offer it at its meaning (raster),
+    // which is written back only with the user's next edit.
+    QJsonObject json = json_;
+    if (type == QLatin1String("3d_finish_toolpath") && !json.contains(QStringLiteral("strategy")))
+        json.insert(QStringLiteral("strategy"), QStringLiteral("raster"));
     const QStringList keys = flatKeys(json);
     const bool same = uuid == m_uuid && type == m_type && keys == m_keys;
     m_uuid = uuid;

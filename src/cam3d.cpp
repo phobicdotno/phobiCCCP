@@ -5,11 +5,13 @@
 #include <QPainterPathStroker>
 #include <QPolygonF>
 #include <QRectF>
+#include <QSet>
 #include <QUuid>
 #include <QtMath>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 #ifdef HAVE_CLIPPER2
 #include <clipper2/clipper.h>
@@ -65,6 +67,8 @@ Cam3dParams cam3dParams(const QJsonObject &j, double safeZ)
                 : dir == QLatin1String("conventional") ? Cam3dParams::Conventional
                 : Cam3dParams::Zigzag;
     p.bothDirections = j.value("both_directions").toBool(false);
+    p.strategy = j.value("strategy").toString().toLower() == QLatin1String("waterline")
+                     ? Cam3dParams::Waterline : Cam3dParams::Raster;
     return p;
 }
 
@@ -141,8 +145,14 @@ struct LineClipper {
     explicit LineClipper(const QPainterPath &region) : clip(pathsOf(region)) {}
     QList<QPolygonF> operator()(const QPointF &a, const QPointF &b) const
     {
+        return polyline(QPolygonF() << a << b);
+    }
+    // Pieces of an open polyline (a closed loop given with first == last)
+    // inside the region.
+    QList<QPolygonF> polyline(const QPolygonF &poly) const
+    {
         C2::Clipper64 c;
-        c.AddOpenSubject(C2::Paths64{toPath64(QPolygonF() << a << b, false)});
+        c.AddOpenSubject(C2::Paths64{toPath64(poly, false)});
         c.AddClip(clip);
         C2::Paths64 closedOut, openOut;
         c.Execute(C2::ClipType::Intersection, C2::FillRule::EvenOdd, closedOut, openOut);
@@ -197,6 +207,30 @@ struct LineClipper {
         }
         return out;
     }
+    // Pieces of a polyline inside the region, split at the vertices (and
+    // 0.05 mm samples between them) that fall outside.
+    QList<QPolygonF> polyline(const QPolygonF &poly) const
+    {
+        QList<QPolygonF> out;
+        QPolygonF cur;
+        for (int i = 0; i < poly.size(); ++i) {
+            const int n = i == 0 ? 1 : qMax(1, int(std::ceil(QLineF(poly.at(i - 1), poly.at(i)).length() / 0.05)));
+            for (int k = i == 0 ? 0 : 1; k <= n; ++k) {
+                const QPointF q = i == 0 ? poly.at(0) : poly.at(i - 1) + (poly.at(i) - poly.at(i - 1)) * (double(k) / n);
+                if (region.contains(q)) {
+                    if (k == n || cur.isEmpty())
+                        cur.append(q);
+                } else if (!cur.isEmpty()) {
+                    if (cur.size() >= 2)
+                        out.append(cur);
+                    cur.clear();
+                }
+            }
+        }
+        if (cur.size() >= 2)
+            out.append(cur);
+        return out;
+    }
 };
 #endif
 
@@ -249,8 +283,11 @@ struct Field {
     }
 };
 
-// Closed contour polygons of {f <= level}.
-QList<QPolygonF> levelContours(const Field &F, double level, QVector<int> &edgeSeg)
+// Closed contour polygons of {f <= level}. With `edges`, also the grid edge
+// each polygon vertex was interpolated on (edge ids as below), one list per
+// polygon, so a caller can refine the crossing against the true function.
+QList<QPolygonF> levelContours(const Field &F, double level, QVector<int> &edgeSeg,
+                               QList<QVector<int>> *edges = nullptr)
 {
     const int W = F.W, H = F.H;
     auto in = [&](int n) { return F.f[n] <= level + 1e-9; };
@@ -319,11 +356,14 @@ QList<QPolygonF> levelContours(const Field &F, double level, QVector<int> &edgeS
             continue;
         used[s0] = true;
         QPolygonF poly;
+        QVector<int> polyEdges;
         const int startEdge = segA.at(s0);
         int cur = segB.at(s0);
         poly.append(crossing(startEdge));
+        polyEdges.append(startEdge);
         for (int guard = 0; guard < nSeg + 2; ++guard) {
             poly.append(crossing(cur));
+            polyEdges.append(cur);
             if (cur == startEdge)
                 break;
             int s1 = edgeSeg.at(2 * cur);
@@ -334,13 +374,132 @@ QList<QPolygonF> levelContours(const Field &F, double level, QVector<int> &edgeS
             used[s1] = true;
             cur = segA.at(s1) == cur ? segB.at(s1) : segA.at(s1);
         }
-        if (poly.size() >= 4 && poly.first() == poly.last())
+        if (poly.size() >= 4 && poly.first() == poly.last()) {
             out.append(poly);
+            if (edges)
+                edges->append(polyEdges);
+        }
     }
     return out;
 }
 
 } // namespace
+
+// ---- cutting levels ---------------------------------------------------------
+
+QVector<double> modelFlats(const HeightModel &m, double minArea)
+{
+    QVector<double> out;
+    if (!m.valid())
+        return out;
+    // A cell is flat when its whole 3x3 neighbourhood lies within kFlat:
+    // terraces the modeller makes (a Flat profile, an image's level grey, an
+    // STL's horizontal facet) are flat to float precision, while even a 1 %
+    // slope on a 0.1 mm grid already fails it.
+    const double kFlat = 0.002, kBin = 0.01;
+    auto value = [&](int c, int r) {
+        const float h = m.at(c, r);
+        return h == HeightModel::NoModel ? m.baseZ : double(h);
+    };
+    QHash<qint64, int> count;
+    QHash<qint64, double> top;
+    for (int r = 0; r < m.rows; ++r)
+        for (int c = 0; c < m.cols; ++c) {
+            const float h = m.at(c, r);
+            // The floor is always the last level anyway.
+            if (h == HeightModel::NoModel || h <= m.baseZ + 1e-3)
+                continue;
+            double lo = h, hi = h;
+            for (int dr = -1; dr <= 1; ++dr)
+                for (int dc = -1; dc <= 1; ++dc) {
+                    const double v = value(c + dc, r + dr);
+                    lo = qMin(lo, v);
+                    hi = qMax(hi, v);
+                }
+            if (hi - lo > kFlat)
+                continue;
+            const qint64 bin = qRound64(h / kBin);
+            ++count[bin];
+            top[bin] = top.contains(bin) ? qMax(top.value(bin), double(h)) : double(h);
+        }
+    // A terrace is a peak in the histogram of flat-cell heights: enough area
+    // within +-1 bin (a terrace can straddle a bin edge), and clearly more
+    // cells than two bins away, which a long, almost-level slope -- flat
+    // by the test above, but spread evenly over many heights -- never has.
+    const int minCells = qMax(4, int(std::ceil(minArea / (m.cell * m.cell))));
+    QList<qint64> bins = count.keys();
+    std::sort(bins.begin(), bins.end(), [&](qint64 a, qint64 b) {
+        return count.value(a) != count.value(b) ? count.value(a) > count.value(b) : a > b;
+    });
+    QSet<qint64> taken;
+    for (qint64 b : bins) {
+        if (taken.contains(b) || taken.contains(b - 1) || taken.contains(b + 1))
+            continue;
+        const int c = count.value(b);
+        const int around = count.value(b - 1) + c + count.value(b + 1);
+        const int far = qMax(count.value(b - 2), count.value(b + 2));
+        if (around < minCells || c < 4 * far)
+            continue;
+        taken.insert(b);
+        // The highest height in the terrace's bins: a level there clears down
+        // onto it and never below any of its cells.
+        double z = top.value(b);
+        for (qint64 n : {b - 1, b + 1})
+            if (top.contains(n))
+                z = qMax(z, top.value(n));
+        out.append(z);
+    }
+    std::sort(out.begin(), out.end(), std::greater<double>());
+    return out;
+}
+
+// Syntexophobic's cutting_levels(): every `stepdown` from the stock top to
+// `floorZ`, the floor itself, and a level exactly on every flat terrace in
+// between (`flats`, already + stock to leave), so a terrace between two
+// levels is not left with up to a stepdown of material on it. Levels closer
+// than 0.05 mm are merged; the floor wins over a terrace and a terrace over
+// a plain step (the step then grows by at most those 0.05 mm). Shallowest
+// first.
+static QVector<double> cuttingLevels(double floorZ, double stepdown, const QVector<double> &flats)
+{
+    struct Level { double z; int rank; };   // 0 step, 1 terrace, 2 floor
+    QVector<Level> all;
+    for (int k = 1; k < 100000; ++k) {
+        const double L = -k * stepdown;
+        if (L <= floorZ + 1e-9)
+            break;
+        all.append({L, 0});
+    }
+    all.append({floorZ, 2});
+    for (double f : flats)
+        if (f < -1e-6 && f > floorZ + 1e-9)
+            all.append({f, 1});
+    std::sort(all.begin(), all.end(), [](const Level &a, const Level &b) { return a.z > b.z; });
+    QVector<Level> kept;
+    for (const Level &l : all) {
+        if (!kept.isEmpty() && kept.last().z - l.z < 0.05) {
+            if (l.rank > kept.last().rank)
+                kept.last() = l;
+            continue;
+        }
+        kept.append(l);
+    }
+    QVector<double> out;
+    for (const Level &l : kept)
+        out.append(l.z);
+    return out;
+}
+
+// Terraces worth a level of their own: at least a quarter of the tool's
+// footprint, so a few flat cells on a crest do not each get a full pass.
+static QVector<double> flatsFor(const HeightModel &model, const Cam3dParams &p)
+{
+    const double r = p.tool.radius();
+    QVector<double> flats = modelFlats(model, M_PI * r * r / 4);
+    for (double &f : flats)
+        f += p.stockToLeave;
+    return flats;
+}
 
 // ---- rough ----------------------------------------------------------------
 
@@ -362,26 +521,19 @@ QList<RoughLevel> roughLevels(const HeightModel &model, const Cam3dParams &p,
 
     const Field F(model, p.stockToLeave);
     QVector<int> edgeSeg(2 * 2 * F.W * F.H);
-    const int levelsExpected = qMax(1, int(std::ceil(-floorZ / qMax(0.01, p.stepdown))));
-    for (int k = 1; k < 100000; ++k) {
+    const QVector<double> levels = cuttingLevels(floorZ, qMax(0.01, p.stepdown), flatsFor(model, p));
+    for (int k = 0; k < levels.size(); ++k) {
         // Each level marches the whole field for its contour, so this is the
         // natural place to let a caller stop a long roughing pass.
-        if (watch && watch->stop(k - 1, levelsExpected, QStringLiteral("3D rough")))
+        if (watch && watch->stop(k, int(levels.size()), QStringLiteral("3D rough")))
             return out;
-        double L = -k * p.stepdown;
-        bool last = false;
-        if (L <= floorZ + 1e-9) {
-            L = floorZ;
-            last = true;
-        }
+        const double L = levels.at(k);
         const QList<QPolygonF> contours = levelContours(F, L, edgeSeg);
         if (!contours.isEmpty()) {
             const QPainterPath region = intersectRegion(regionFromPolys(contours), boundary);
             if (!region.isEmpty())
                 out.append({L, region});
         }
-        if (last)
-            break;
     }
     return out;
 }
@@ -541,6 +693,208 @@ void simplifyProfile(const QVector<P3> &pts, int i, int j, double up, double dow
 
 } // namespace
 
+// ---- waterline --------------------------------------------------------------
+// Z-level finishing (Syntexophobic's ball "finish" op): at every level the
+// tool tip follows the contour of the tool-compensated surface at that Z, so
+// it runs once around every wall, touching it and never cutting into it.
+// The compensated surface is sampled on a grid (`g`, a quarter of the tool
+// radius, never finer than the model, never coarser than 0.5 mm), contoured
+// by the same marching squares as roughing, and every contour vertex is then
+// moved onto the true compensated surface by bisection along its grid edge,
+// on the side where the tool is clear. Between vertices the path is a chord
+// of a curve at most `g` long, so it strays into the wall only by the
+// chord's sag -- microns for any wall the tool can follow.
+static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
+                                const QPainterPath &boundary, int *passes,
+                                const ExportWatch *watch)
+{
+    QVector<Op> ops;
+    int nPasses = 0;
+    const double leave = p.stockToLeave;
+    double floorZ = model.baseZ + leave;
+    if (p.maxDepth > floorZ)
+        floorZ = p.maxDepth;
+    floorZ = qMin(floorZ, 0.0);
+    if (floorZ > -1e-6)
+        return ops;
+    const QVector<double> levels = cuttingLevels(floorZ, qMax(0.01, p.stepdown), flatsFor(model, p));
+
+    auto trueZ = [&](const QPointF &q) {
+        return compensatedZ(model, p.tool, q.x(), q.y()) + leave;
+    };
+
+    // The compensated surface over the boundary, with two cells to spare so
+    // the marching squares' own outer ring (which closes every contour along
+    // the grid's edge) lies outside the boundary and is clipped away.
+    const double g = qMax(model.cell, qMin(0.25 * p.tool.radius(), 0.5));
+    const QRectF bb = boundary.boundingRect();
+    HeightModel cz;
+    cz.cell = g;
+    cz.originX = bb.left() - 2 * g;
+    cz.originY = bb.top() - 2 * g;
+    cz.baseZ = model.baseZ + leave;
+    cz.resize(int(std::ceil(bb.width() / g)) + 4, int(std::ceil(bb.height() / g)) + 4, 0.0f);
+    const int work = cz.rows + int(levels.size());
+    for (int r = 0; r < cz.rows; ++r) {
+        if (watch && watch->stop(r, work, QStringLiteral("3D waterline")))
+            return ops;
+        for (int c = 0; c < cz.cols; ++c)
+            cz.ref(c, r) = float(trueZ(QPointF(cz.originX + (c + 0.5) * g, cz.originY + (r + 0.5) * g)));
+    }
+    const Field F(cz, 0.0);
+    QVector<int> edgeSeg(2 * 2 * F.W * F.H);
+    auto onGrid = [&](int n) {
+        const int i = n % F.W - 2, j = n / F.W - 2;
+        return i >= 0 && j >= 0 && i < F.cols && j < F.rows;
+    };
+
+    const LineClipper clipper(boundary);
+    const QPainterPath linkRegion = offsetRegion(boundary, 0.05);
+    const double linkDist = 10.0 * qMax(p.stepover, p.tool.radius());
+    // Can the tool feed straight from a to b (tip Z linear) without cutting
+    // into the model or leaving the boundary?
+    auto linkClear = [&](const P3 &a, const P3 &b) {
+        const double len = std::hypot(b.x - a.x, b.y - a.y);
+        const int n = qMax(1, int(std::ceil(len / (0.5 * g))));
+        for (int k = 0; k <= n; ++k) {
+            const double t = double(k) / n;
+            const QPointF q(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+            if (!linkRegion.contains(q) || trueZ(q) > a.z + (b.z - a.z) * t + 1e-3)
+                return false;
+        }
+        return true;
+    };
+
+    bool haveCur = false;
+    P3 cur{0, 0, 0};
+    for (int li = 0; li < levels.size(); ++li) {
+        if (watch && watch->stop(cz.rows + li, work, QStringLiteral("3D waterline")))
+            return ops;
+        const double L = levels.at(li);
+        QList<QVector<int>> edges;
+        const QList<QPolygonF> contours = levelContours(F, L, edgeSeg, &edges);
+
+        QList<QPolygonF> pieces;
+        for (int ci = 0; ci < contours.size(); ++ci) {
+            QPolygonF poly = contours.at(ci);
+            const QVector<int> &pe = edges.at(ci);
+            // Onto the true surface: bisect each crossing along its grid edge
+            // and keep the clear end of the final bracket.
+            for (int k = 0; k + 1 < poly.size(); ++k) {
+                const int e = pe.at(k);
+                const int n0 = e / 2, n1 = (e & 1) ? n0 + F.W : n0 + 1;
+                if (!onGrid(n0) || !onGrid(n1))
+                    continue;
+                QPointF in = F.pos(n0), out = F.pos(n1);
+                if (F.f.at(n0) > L)
+                    std::swap(in, out);
+                for (int it = 0; it < 7; ++it) {
+                    const QPointF mid = (in + out) / 2;
+                    (trueZ(mid) <= L ? in : out) = mid;
+                }
+                poly[k] = in;
+            }
+            poly.last() = poly.first();
+            // compensatedZ is itself a max over discrete samples, so by a
+            // steep wall its contour wiggles between the refined vertices.
+            // Where a chord's midpoint is in the wall, add a vertex on the
+            // clear side, found the same way across the chord.
+            {
+                QPolygonF fine;
+                fine.reserve(poly.size() * 2);
+                for (int k = 0; k + 1 < poly.size(); ++k) {
+                    fine.append(poly.at(k));
+                    const QPointF a = poly.at(k), b = poly.at(k + 1);
+                    const QPointF mid = (a + b) / 2;
+                    const double len = QLineF(a, b).length();
+                    if (len < 1e-6 || trueZ(mid) <= L + 0.002)
+                        continue;
+                    const QPointF nrm = QPointF(-(b - a).y(), (b - a).x()) * (0.5 * g / len);
+                    QPointF in = trueZ(mid + nrm) <= L ? mid + nrm
+                               : trueZ(mid - nrm) <= L ? mid - nrm : QPointF(qQNaN(), 0);
+                    if (qIsNaN(in.x()))
+                        continue;
+                    QPointF out = mid;
+                    for (int it = 0; it < 7; ++it) {
+                        const QPointF m2 = (in + out) / 2;
+                        (trueZ(m2) <= L ? in : out) = m2;
+                    }
+                    fine.append(in);
+                }
+                fine.append(fine.first());
+                poly = fine;
+            }
+            for (QPolygonF piece : clipper.polyline(poly)) {
+                if (piece.size() < 2)
+                    continue;
+                // Climb = material on the left of travel (a clockwise
+                // spindle), as for the raster passes; conventional the other
+                // way. Probe the grid either side of every segment.
+                if (p.direction != Cam3dParams::Zigzag) {
+                    double score = 0;
+                    for (int k = 0; k + 1 < piece.size(); ++k) {
+                        const QPointF d = piece.at(k + 1) - piece.at(k);
+                        const double len = std::hypot(d.x(), d.y());
+                        if (len < 1e-9)
+                            continue;
+                        const QPointF m = (piece.at(k) + piece.at(k + 1)) / 2;
+                        const QPointF left = QPointF(-d.y(), d.x()) * (0.5 * g / len);
+                        score += cz.sample((m + left).x(), (m + left).y())
+                               - cz.sample((m - left).x(), (m - left).y());
+                    }
+                    const bool materialLeft = score > 0;
+                    if (materialLeft != (p.direction == Cam3dParams::Climb))
+                        std::reverse(piece.begin(), piece.end());
+                }
+                pieces.append(piece);
+            }
+        }
+
+        // Nearest piece next; a closed loop may start at any of its vertices.
+        while (!pieces.isEmpty()) {
+            const QPointF from = haveCur ? QPointF(cur.x, cur.y) : QPointF(0, 0);
+            int best = 0, bestStart = 0;
+            double bestD = 1e300;
+            for (int i = 0; i < pieces.size(); ++i) {
+                const QPolygonF &pc = pieces.at(i);
+                const bool closed = pc.size() > 2 && QLineF(pc.first(), pc.last()).length() < 1e-6;
+                const int nStart = closed ? int(pc.size()) - 1 : 1;
+                for (int k = 0; k < nStart; ++k) {
+                    const double d = QLineF(from, pc.at(k)).length();
+                    if (d < bestD) { bestD = d; best = i; bestStart = k; }
+                }
+            }
+            QPolygonF pc = pieces.takeAt(best);
+            if (bestStart > 0) {
+                QPolygonF rot;
+                for (int k = 0; k < pc.size() - 1; ++k)
+                    rot.append(pc.at((bestStart + k) % (pc.size() - 1)));
+                rot.append(rot.first());
+                pc = rot;
+            }
+            const P3 start{pc.first().x(), pc.first().y(), L};
+            if (haveCur && bestD <= linkDist && linkClear(cur, start)) {
+                ops.append(Op::feedTo(start.x, start.y, start.z, cur.z > L ? p.plunge : p.feed));
+            } else {
+                if (haveCur)
+                    ops.append(Op::rapid(cur.x, cur.y, p.safeZ));
+                ops.append(Op::rapid(start.x, start.y, p.safeZ));
+                ops.append(Op::feedTo(start.x, start.y, L, p.plunge));
+            }
+            for (int k = 1; k < pc.size(); ++k)
+                ops.append(Op::feedTo(pc.at(k).x(), pc.at(k).y(), L, p.feed));
+            cur = P3{pc.last().x(), pc.last().y(), L};
+            haveCur = true;
+            ++nPasses;
+        }
+    }
+    if (haveCur)
+        ops.append(Op::rapid(cur.x, cur.y, p.safeZ));
+    if (passes)
+        *passes = nPasses;
+    return ops;
+}
+
 QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
                       const QPainterPath &boundary, int *passes,
                       const ExportWatch *watch)
@@ -558,6 +912,8 @@ QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
         if (h != HeightModel::NoModel) { anyRelief = true; break; }
     if (!anyRelief)
         return ops;
+    if (p.strategy == Cam3dParams::Waterline)
+        return waterlineOps(model, p, boundary, passes, watch);
 
     const double cell = model.cell;
     const double leave = p.stockToLeave;
@@ -756,6 +1112,7 @@ QJsonObject defaultFinishToolpathJson()
     j.insert("stock_to_leave", 0.0);
     j.insert("stepdown", 1.0);
     j.insert("stepover", 0.5);
+    j.insert("strategy", QStringLiteral("raster"));
     j.insert("raster_angle", 0.0);
     j.insert("direction", QStringLiteral("zigzag"));
     j.insert("both_directions", false);
