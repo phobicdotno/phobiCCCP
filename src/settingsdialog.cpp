@@ -68,8 +68,17 @@ Machine machine(QSettings &s)
 
 } // namespace appsettings
 
+int appsettings::panelTextPercent(QSettings &s)
+{
+    const int v = s.value(QStringLiteral("ui/panelText"), 125).toInt();
+    return panelTextChoices().contains(v) ? v : 125;
+}
+
+QList<int> appsettings::panelTextChoices() { return {100, 110, 125, 150, 175, 200}; }
+
 SettingsDialog::SettingsDialog(QWidget *parent)
-    : QDialog(parent), m_scale(new QComboBox(this)), m_machine(new QComboBox(this)),
+    : QDialog(parent), m_scale(new QComboBox(this)), m_panelText(new QComboBox(this)),
+      m_machine(new QComboBox(this)),
       m_customW(new QDoubleSpinBox(this)), m_customH(new QDoubleSpinBox(this))
 {
     setWindowTitle(QStringLiteral("Settings"));
@@ -80,6 +89,13 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         m_scale->addItem(QStringLiteral("%1 %").arg(pct), pct);
         if (pct == m_scaleWas)
             m_scale->setCurrentIndex(m_scale->count() - 1);
+    }
+
+    const int panelText = appsettings::panelTextPercent(s);
+    for (int pct : appsettings::panelTextChoices()) {
+        m_panelText->addItem(QStringLiteral("%1 %").arg(pct), pct);
+        if (pct == panelText)
+            m_panelText->setCurrentIndex(m_panelText->count() - 1);
     }
 
     const auto current = appsettings::machine(s);
@@ -109,12 +125,13 @@ SettingsDialog::SettingsDialog(QWidget *parent)
 
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("GUI scale:"), m_scale);
+    form->addRow(QStringLiteral("Toolpaths text size:"), m_panelText);
     form->addRow(QStringLiteral("Machine:"), m_machine);
     form->addRow(QStringLiteral("Custom width (X):"), m_customW);
     form->addRow(QStringLiteral("Custom height (Y):"), m_customH);
 
     auto *note = new QLabel(QStringLiteral(
-        "The GUI scale applies after a restart. The machine sets the size of the "
+        "The GUI scale applies after a restart; the Toolpaths text size at once. The machine sets the size of the "
         "blank design phobiCCCP starts with, and the default for File → New."), this);
     note->setWordWrap(true);
 
@@ -133,6 +150,7 @@ bool SettingsDialog::save()
     QSettings s;
     const int scale = m_scale->currentData().toInt();
     s.setValue(QStringLiteral("ui/scale"), scale);
+    s.setValue(QStringLiteral("ui/panelText"), m_panelText->currentData().toInt());
     s.setValue(QStringLiteral("machine/size"), m_machine->currentData().toString());
     s.setValue(QStringLiteral("machine/customWidth"), m_customW->value());
     s.setValue(QStringLiteral("machine/customHeight"), m_customH->value());

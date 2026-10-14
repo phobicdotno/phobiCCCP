@@ -1,5 +1,13 @@
 #include "toolpathpanel.h"
 #include "toolpathform.h"
+#include <functional>
+#include <cmath>
+#include <QPainter>
+#include <QDropEvent>
+#include <QMouseEvent>
+#include "tooldiagram.h"
+#include "settingsdialog.h"
+#include <QApplication>
 #include "canvas.h"
 #include "c2ddocument.h"
 #include "toollibrary.h"
@@ -31,6 +39,159 @@
 
 namespace c2d {
 
+
+namespace {
+
+enum Role {
+    UuidRole = Qt::UserRole,
+    SubtitleRole = Qt::UserRole + 1,
+    ToolIconRole = Qt::UserRole + 2,
+    ToolTextRole = Qt::UserRole + 3,
+    UsedRole = Qt::UserRole + 4,
+};
+
+// One toolpath as a card: on/off box, type icon, name over "type · vectors ·
+// depth", and the tool (outline + Ø) at the end. Click the box to switch the
+// toolpath on or off; drag the card to change the cutting order.
+class CardDelegate : public QStyledItemDelegate
+{
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    static QRect boxRect(const QRect &card)
+    {
+        const int s = qMin(26, card.height() - 16);
+        return QRect(card.left() + 10, card.center().y() - s / 2, s, s);
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &) const override
+    {
+        const QFontMetrics fm(opt.font);
+        return QSize(200, fm.height() * 2 + 22);
+    }
+
+    void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &ix) const override
+    {
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing);
+        const QRect card = opt.rect.adjusted(2, 3, -2, -3);
+        const bool sel = opt.state & QStyle::State_Selected;
+        const bool cur = opt.state & QStyle::State_HasFocus;
+        const bool on = ix.data(Qt::CheckStateRole).toInt() == Qt::Checked;
+        const bool used = ix.data(UsedRole).toBool();
+        QColor bg = sel ? QColor(0x3a, 0x31, 0x22) : QColor(0x23, 0x26, 0x2e);
+        if (!sel && (opt.state & QStyle::State_MouseOver))
+            bg = QColor(0x2a, 0x2e, 0x36);
+        p->setPen(QPen(sel || cur ? QColor(0xf2, 0xa5, 0x36) : used ? QColor(0x4a, 0x90, 0xd9)
+                                                               : QColor(0x2f, 0x34, 0x3d),
+                       sel || used ? 2 : 1));
+        p->setBrush(bg);
+        p->drawRoundedRect(QRectF(card).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+
+        // on/off box
+        const QRect box = boxRect(card);
+        p->setPen(QPen(on ? QColor(0xf2, 0xa5, 0x36) : QColor(0x6a, 0x71, 0x7d), 1.6));
+        p->setBrush(on ? QColor(0xf2, 0xa5, 0x36) : Qt::transparent);
+        p->drawRoundedRect(QRectF(box), 5, 5);
+        if (on) {
+            p->setPen(QPen(QColor(0x16, 0x18, 0x1d), 2.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            const QRectF b(box);
+            QPolygonF tick;
+            tick << QPointF(b.left() + b.width() * 0.25, b.center().y())
+                 << QPointF(b.left() + b.width() * 0.43, b.bottom() - b.height() * 0.27)
+                 << QPointF(b.right() - b.width() * 0.22, b.top() + b.height() * 0.28);
+            p->drawPolyline(tick);
+        }
+
+        // type icon
+        const int isz = qMin(30, card.height() - 12);
+        const QRect typeR(box.right() + 10, card.center().y() - isz / 2, isz, isz);
+        const QIcon typeIcon = ix.data(Qt::DecorationRole).value<QIcon>();
+        if (!typeIcon.isNull())
+            typeIcon.paint(p, typeR, Qt::AlignCenter, on ? QIcon::Normal : QIcon::Disabled);
+
+        // tool at the end
+        const QFontMetrics fm(opt.font);
+        const QString toolText = ix.data(ToolTextRole).toString();
+        const int tw = fm.horizontalAdvance(toolText);
+        const int th = card.height() - 14;
+        const QRect toolTextR(card.right() - 10 - tw, card.top(), tw, card.height());
+        const QRect toolIconR(toolTextR.left() - 6 - th * 2 / 3, card.top() + 7, th * 2 / 3, th);
+        const QIcon toolIcon = ix.data(ToolIconRole).value<QIcon>();
+        if (!toolIcon.isNull())
+            toolIcon.paint(p, toolIconR, Qt::AlignCenter);
+        p->setPen(QColor(0xaa, 0xb1, 0xbd));
+        p->drawText(toolTextR, Qt::AlignVCenter | Qt::AlignRight, toolText);
+
+        // name over subtitle
+        const int x = typeR.right() + 10;
+        const QRect textR(x, card.top() + 6, toolIconR.left() - 8 - x, card.height() - 12);
+        QFont nf = opt.font;
+        nf.setBold(true);
+        p->setFont(nf);
+        p->setPen(on ? QColor(0xe6, 0xe9, 0xef) : QColor(0x6a, 0x71, 0x7d));
+        const QRect nameR(textR.left(), textR.top(), textR.width(), textR.height() / 2);
+        p->drawText(nameR, Qt::AlignLeft | Qt::AlignVCenter,
+                    QFontMetrics(nf).elidedText(ix.data(Qt::DisplayRole).toString(), Qt::ElideRight, nameR.width()));
+        QFont sf = opt.font;
+        sf.setPointSizeF(sf.pointSizeF() > 0 ? sf.pointSizeF() * 0.85 : 9);
+        if (sf.pixelSize() > 0)
+            sf.setPixelSize(qMax(9, int(opt.font.pixelSize() * 0.85)));
+        p->setFont(sf);
+        p->setPen(QColor(0x8b, 0x93, 0xa1));
+        const QRect subR(textR.left(), textR.top() + textR.height() / 2, textR.width(), textR.height() / 2);
+        p->drawText(subR, Qt::AlignLeft | Qt::AlignVCenter,
+                    QFontMetrics(sf).elidedText(ix.data(SubtitleRole).toString(), Qt::ElideRight, subR.width()));
+        p->restore();
+    }
+
+    bool editorEvent(QEvent *e, QAbstractItemModel *model, const QStyleOptionViewItem &opt,
+                     const QModelIndex &ix) override
+    {
+        if (e->type() == QEvent::MouseButtonRelease) {
+            auto *me = static_cast<QMouseEvent *>(e);
+            if (me->button() == Qt::LeftButton
+                && boxRect(opt.rect.adjusted(2, 3, -2, -3)).adjusted(-6, -6, 6, 6).contains(me->position().toPoint())) {
+                const bool on = ix.data(Qt::CheckStateRole).toInt() == Qt::Checked;
+                model->setData(ix, on ? Qt::Unchecked : Qt::Checked, Qt::CheckStateRole);
+                return true;
+            }
+        }
+        return QStyledItemDelegate::editorEvent(e, model, opt, ix);
+    }
+
+    QWidget *createEditor(QWidget *, const QStyleOptionViewItem &, const QModelIndex &) const override
+    {
+        return nullptr;   // the name is edited in the settings below
+    }
+};
+
+// The list with drag-and-drop reordering: a dropped card reports where it
+// landed, and the panel turns that into one undoable move.
+class CardList : public QTreeWidget
+{
+public:
+    std::function<void(const QString &uuid, int to)> moved;
+    using QTreeWidget::QTreeWidget;
+
+protected:
+    void dropEvent(QDropEvent *e) override
+    {
+        QTreeWidgetItem *dragged = currentItem();
+        const QString uuid = dragged ? dragged->data(0, UuidRole).toString() : QString();
+        QTreeWidget::dropEvent(e);
+        if (uuid.isEmpty() || !moved)
+            return;
+        for (int i = 0; i < topLevelItemCount(); ++i)
+            if (topLevelItem(i)->data(0, UuidRole).toString() == uuid) {
+                moved(uuid, i);
+                return;
+            }
+    }
+};
+
+} // namespace
+
 static QToolButton *smallButton(QWidget *parent, const QString &text, const QString &tip)
 {
     auto *b = new QToolButton(parent);
@@ -43,12 +204,7 @@ static QToolButton *smallButton(QWidget *parent, const QString &text, const QStr
 ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     : QWidget(parent), m_canvas(canvas)
 {
-    // Text 25 % larger than the rest of the app: this panel is read and
-    // edited at arm's length on the shop screen.
-    // A plain setFont() is overridden once the app stylesheet polishes the
-    // children, so the size goes in a stylesheet of its own.
-    setStyleSheet(QStringLiteral("QWidget { font-size: %1px; }")
-                      .arg(qRound(QFontInfo(font()).pixelSize() * 1.25)));
+    applyTextSize();
     auto *lay = new QVBoxLayout(this);
     lay->setContentsMargins(6, 6, 6, 6);
     lay->setSpacing(6);
@@ -125,44 +281,45 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     bar->addWidget(m_downBtn);
     lay->addLayout(bar);
 
-    m_list = new QTreeWidget(this);
-    m_list->setColumnCount(3);
-    m_list->setHeaderLabels({QStringLiteral("toolpath"), QStringLiteral("type"),
-                             QStringLiteral("vectors")});
+    auto *cards = new CardList(this);
+    m_list = cards;
+    m_list->setColumnCount(1);
+    m_list->setHeaderHidden(true);
     m_list->setRootIsDecorated(false);
+    m_list->setIndentation(0);
     m_list->setUniformRowHeights(true);
-    m_list->setAllColumnsShowFocus(true);
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_list->setEditTriggers(QAbstractItemView::DoubleClicked
-                            | QAbstractItemView::EditKeyPressed);
-    // Interactive, not Stretch/ResizeToContents: those two modes lock the
-    // dividers, so the columns could not be dragged and "vectors" was clipped.
-    m_list->header()->setStretchLastSection(false);
-    m_list->header()->setSectionResizeMode(QHeaderView::Interactive);
-    m_list->header()->setSectionsMovable(true);
-    m_list->header()->setMinimumSectionSize(28);
-    m_list->setColumnWidth(0, 168);
-    m_list->setColumnWidth(1, 84);
-    m_list->setColumnWidth(2, 52);
-    m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    m_list->setMaximumHeight(190);
+    m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_list->setItemDelegate(new CardDelegate(m_list));
+    m_list->setMouseTracking(true);
+    m_list->setFrameShape(QFrame::NoFrame);
+    m_list->setStyleSheet(QStringLiteral("QTreeWidget { background: transparent; }"
+                                         "QTreeWidget::item { background: transparent; }"));
+    m_list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_list->setDragEnabled(true);
+    m_list->setAcceptDrops(true);
+    m_list->setDropIndicatorShown(true);
+    m_list->setDragDropMode(QAbstractItemView::InternalMove);
+    m_list->setDefaultDropAction(Qt::MoveAction);
     m_list->setMinimumHeight(60);
     m_list->setToolTip(QStringLiteral(
-        "Machining order, top to bottom. Checkbox = enabled; double-click the "
-        "name to rename. Type and vector count follow the toolpath itself."));
-    // Only the name is the user's to change. The type is what the toolpath
-    // *is* — a Drill is a Drill — and the vector count is derived from its
-    // element list, so double-clicking either used to open an editor whose
-    // result onItemChanged() then silently discarded.
-    class NoEdit : public QStyledItemDelegate
-    {
-    public:
-        using QStyledItemDelegate::QStyledItemDelegate;
-        QWidget *createEditor(QWidget *, const QStyleOptionViewItem &,
-                              const QModelIndex &) const override { return nullptr; }
+        "Cutting order, top to bottom: drag a card to move it. "
+        "The box switches a toolpath on or off."));
+    cards->moved = [this](const QString &uuid, int to) {
+        // Queued: the move ends in refresh(), which rebuilds this list while
+        // the view is still finishing the drop.
+        QMetaObject::invokeMethod(this, [this, uuid, to] {
+            if (!m_doc)
+                return;
+            const int from = m_doc->toolpathIndex(uuid);
+            if (from < 0 || from == to) {
+                refresh();
+                return;
+            }
+            m_uuid = uuid;
+            m_canvas->undoStack()->push(new TpMoveCmd(m_canvas, m_doc, uuid, from, to));
+        }, Qt::QueuedConnection);
     };
-    m_list->setItemDelegateForColumn(1, new NoEdit(m_list));
-    m_list->setItemDelegateForColumn(2, new NoEdit(m_list));
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     lay->addWidget(m_list);
     connect(m_list, &QTreeWidget::currentItemChanged, this,
@@ -216,25 +373,6 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     });
     connect(m_form, &ToolpathForm::changeToolRequested, this, [this] { pickTool(); });
 
-    // The list's column widths are a per-user preference: restore them and
-    // save whatever is dragged, so the layout survives restarts.
-    {
-        QSettings s;
-        s.beginGroup(QStringLiteral("toolpaths"));
-        const QByteArray listState = s.value(QStringLiteral("listHeader")).toByteArray();
-        if (!listState.isEmpty())
-            m_list->header()->restoreState(listState);
-    }
-    auto saveHeaders = [this] {
-        QSettings s;
-        s.beginGroup(QStringLiteral("toolpaths"));
-        s.setValue(QStringLiteral("listHeader"), m_list->header()->saveState());
-    };
-    connect(m_list->header(), &QHeaderView::sectionResized, this,
-            [saveHeaders](int, int, int) { saveHeaders(); });
-    connect(m_list->header(), &QHeaderView::sectionMoved, this,
-            [saveHeaders](int, int, int) { saveHeaders(); });
-
     // Replace the toolpath's vector list with the canvas selection.
     auto *assign = new QPushButton(QStringLiteral("Assign selected vectors"), this);
     assign->setToolTip(QStringLiteral(
@@ -269,6 +407,23 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     connect(inlay, &QPushButton::clicked, this, [this] { createInlayMale(); });
 
     updateButtons();
+}
+
+// The panel's text, larger than the rest of the app (read and edited at arm's
+// length on the shop screen). A plain setFont() is overridden once the app
+// stylesheet polishes the children, so the size goes in a stylesheet.
+void ToolpathPanel::setTypeIcons(std::function<QIcon(const QString &)> f)
+{
+    m_typeIcon = std::move(f);
+    refresh();
+}
+
+void ToolpathPanel::applyTextSize()
+{
+    QSettings st;
+    const int pct = appsettings::panelTextPercent(st);
+    const int base = QFontInfo(QApplication::font()).pixelSize();
+    setStyleSheet(QStringLiteral("QWidget { font-size: %1px; }").arg(qRound(base * pct / 100.0)));
 }
 
 // ---- lifecycle -----------------------------------------------------------
@@ -520,23 +675,51 @@ void ToolpathPanel::refresh()
             it->setText(0, t.json.value("name").toString());
             it->setCheckState(0, t.json.value("enabled").toBool(true) ? Qt::Checked
                                                                        : Qt::Unchecked);
-            it->setText(1, toolpathLabel(t.type));
-            it->setToolTip(1, t.type);
+            it->setData(0, UuidRole, t.uuid);
+            if (m_typeIcon)
+                it->setData(0, Qt::DecorationRole, m_typeIcon(t.type));
             const QJsonArray refs = t.json.value("elements").toArray();
-            it->setText(2, QString::number(refs.size()));
-            it->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
-            it->setData(0, Qt::UserRole, t.uuid);
+            QString sub = QStringLiteral("%1 \u00b7 %2 vector%3").arg(toolpathLabel(t.type))
+                              .arg(refs.size()).arg(refs.size() == 1 ? "" : "s");
+            for (const char *k : {"end_depth", "cut_depth", "max_depth"}) {
+                const QJsonValue d = t.json.value(QLatin1String(k));
+                if (!d.isUndefined()) {
+                    const double v = std::fabs(d.isString() ? d.toString().toDouble() : d.toDouble());
+                    sub += QStringLiteral(" \u00b7 %1 mm deep").arg(v, 0, 'g', 4);
+                    break;
+                }
+            }
+            it->setData(0, SubtitleRole, sub);
+            const QJsonObject tool = t.json.value("tool").toObject();
+            if (!tool.isEmpty()) {
+                LibraryTool lt;
+                lt.diameter = tool.value("diameter").toDouble();
+                lt.angle = tool.value("angle").toDouble();
+                const int ty = int(tool.value("type").toDouble());
+                lt.kind = ty == 1 ? QStringLiteral("ball")
+                        : (ty == 2 || lt.angle > 0) ? QStringLiteral("vbit") : QStringLiteral("endmill");
+                it->setData(0, ToolIconRole, toolKindIcon(lt));
+                it->setData(0, ToolTextRole, QStringLiteral("\u00d8%1").arg(lt.diameter, 0, 'g', 4));
+            }
             QStringList vids;
             for (const QJsonValue &v : refs)
                 vids << v.toObject().value("uuid").toString();
-            it->setToolTip(2, describeVectors(vids));
-            it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsEditable
-                         | Qt::ItemIsUserCheckable);
+            it->setToolTip(0, QStringLiteral("T%1  %2\n%3")
+                                  .arg(int(tool.value("number").toDouble()))
+                                  .arg(tool.value("name").toString(), describeVectors(vids)));
+            it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable
+                         | Qt::ItemIsDragEnabled);
             if (t.uuid == keep)
                 keepItem = it;
         }
     }
     m_loading = false;
+    {
+        const int n = qBound(1, m_list->topLevelItemCount(), 6);
+        const int rowH = m_list->sizeHintForRow(0) > 0 ? m_list->sizeHintForRow(0)
+                                                       : QFontMetrics(m_list->font()).height() * 2 + 22;
+        m_list->setFixedHeight(n * rowH + 6);
+    }
     if (keepItem)
         m_list->setCurrentItem(keepItem);
     else if (m_list->topLevelItemCount() > 0)
@@ -553,7 +736,7 @@ void ToolpathPanel::onCurrentChanged()
     if (m_loading)
         return;
     const QTreeWidgetItem *it = m_list->currentItem();
-    const QString uuid = it ? it->data(0, Qt::UserRole).toString() : QString();
+    const QString uuid = it ? it->data(0, UuidRole).toString() : QString();
     showToolpath(uuid);
     updateHighlight();
 }
@@ -565,7 +748,7 @@ void ToolpathPanel::updateHighlight()
     const QList<QTreeWidgetItem *> sel = m_list->selectedItems();
     m_canvas->setVectorHighlight(
         sel.isEmpty() ? QStringList()
-                      : vectorIdsOf(sel.first()->data(0, Qt::UserRole).toString()));
+                      : vectorIdsOf(sel.first()->data(0, UuidRole).toString()));
 }
 
 // ---- which toolpath cuts which shape --------------------------------------
@@ -634,21 +817,15 @@ void ToolpathPanel::markUsage(const QStringList &selectedElementIds)
     const QSet<QString> sel(selectedElementIds.begin(), selectedElementIds.end());
     for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
         QTreeWidgetItem *it = m_list->topLevelItem(i);
-        const QStringList ids = vectorIdsOf(it->data(0, Qt::UserRole).toString());
+        const QStringList ids = vectorIdsOf(it->data(0, UuidRole).toString());
         bool used = false;
         for (const QString &id : ids)
             if (sel.contains(id)) {
                 used = true;
                 break;
             }
-        QFont f = it->font(0);
-        if (f.bold() != used) {
-            f.setBold(used);
-            for (int c = 0; c < 3; ++c)
-                it->setFont(c, f);
-        }
-        it->setToolTip(0, used ? QStringLiteral("Machines the selected shape.")
-                               : QString());
+        if (it->data(0, UsedRole).toBool() != used)
+            it->setData(0, UsedRole, used);   // blue edge: machines the selected shape
     }
     m_loading = wasLoading;
 }
@@ -657,7 +834,7 @@ void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
 {
     if (m_loading || column != 0 || !m_doc)
         return;
-    const QString uuid = item->data(0, Qt::UserRole).toString();
+    const QString uuid = item->data(0, UuidRole).toString();
     Toolpath *t = m_doc->toolpathByUuid(uuid);
     if (!t)
         return;

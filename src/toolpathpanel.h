@@ -1,5 +1,7 @@
 #pragma once
+#include <QIcon>
 #include <QWidget>
+#include <functional>
 
 class QLabel;
 class QToolButton;
@@ -25,6 +27,9 @@ public:
     explicit ToolpathPanel(Canvas *canvas, QWidget *parent = nullptr);
     void setDocument(Document *doc);
     QString currentUuid() const { return m_uuid; }
+    void applyTextSize();         // File > Settings > Toolpaths text size
+    // The toolpath-type glyphs of the Toolpaths bar, for the list's cards.
+    void setTypeIcons(std::function<QIcon(const QString &)> f);
 
 public slots:
     void refresh();               // re-read list + fields from the document
@@ -60,7 +65,8 @@ private:
     ToolpathForm *m_form;
     QLabel *m_hint;
     QToolButton *m_dupBtn, *m_delBtn, *m_upBtn, *m_downBtn;
-    QString m_uuid;               // toolpath shown in the table
+    QString m_uuid;               // toolpath shown in the settings
+    std::function<QIcon(const QString &)> m_typeIcon;
 };
 
 } // namespace c2d

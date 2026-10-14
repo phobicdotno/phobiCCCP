@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.1.12 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.1.13 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -197,7 +197,8 @@ if(Qt6Test_FOUND)
     add_test(NAME toolpathform COMMAND test_toolpathform)
     # Panel <-> canvas selection handover (needs the real widgets).
     add_executable(test_panels tests/test_panels.cpp src/canvas.cpp
-                   src/toolpathpanel.cpp src/toolpathform.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp)
+                   src/toolpathpanel.cpp src/toolpathform.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp
+                   src/settingsdialog.cpp)
     target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)

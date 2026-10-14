@@ -153,6 +153,42 @@ LibraryTool toolOf(const QJsonObject &tool)
     return lt;
 }
 
+// A number field with a finger-sized ▼ on the left and ▲ on the right
+// instead of the spin box's own tiny arrows. Holding one repeats.
+QWidget *stepper(QWidget *editor, QWidget *parent)
+{
+    auto *sb = qobject_cast<QAbstractSpinBox *>(editor);
+    if (!sb)
+        return editor;
+    sb->setButtonSymbols(QAbstractSpinBox::NoButtons);
+    sb->setAlignment(Qt::AlignCenter);
+    auto *box = new QWidget(parent);
+    auto *h = new QHBoxLayout(box);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(4);
+    auto make = [box, sb](const QString &text, const QString &tip, bool up) {
+        auto *b = new QToolButton(box);
+        b->setText(text);
+        b->setToolTip(tip);
+        b->setAutoRepeat(true);
+        b->setAutoRepeatDelay(400);
+        b->setAutoRepeatInterval(90);
+        b->setFixedSize(46, 40);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setStyleSheet(QStringLiteral(
+            "QToolButton { font-size: 18px; border-radius: 6px; background: #2f343d; color: #d8dce4; }"
+            "QToolButton:pressed { background: #f2a536; color: #16181d; }"
+            "QToolButton:disabled { color: #5a616d; }"));
+        QObject::connect(b, &QToolButton::clicked, sb, [sb, up] { up ? sb->stepUp() : sb->stepDown(); });
+        return b;
+    };
+    h->addWidget(make(QStringLiteral("\u25bc"), QStringLiteral("Less"), false));
+    h->addWidget(sb, 1);
+    h->addWidget(make(QStringLiteral("\u25b2"), QStringLiteral("More"), true));
+    box->setProperty("stepper", true);   // refreshEnabled() greys the whole group
+    return box;
+}
+
 } // namespace
 
 // One designed field: where it goes, what it is called and how it is edited.
@@ -568,7 +604,7 @@ void ToolpathForm::rebuild()
             ed->setToolTip(label->toolTip());
             const bool isSwitch = kf.second.kind == Field::Bool || kf.second.kind == Field::InvBool;
             row->addWidget(label, 1);
-            row->addWidget(ed, isSwitch ? 0 : 1, isSwitch ? Qt::AlignRight : Qt::Alignment());
+            row->addWidget(stepper(ed, this), isSwitch ? 0 : 1, isSwitch ? Qt::AlignRight : Qt::Alignment());
             body->addLayout(row);
             m_editors.insert(kf.first, ed);
             if (!kf.second.enabledBy.isEmpty()) {
@@ -608,7 +644,7 @@ void ToolpathForm::rebuild()
                     f.max = 1e6;
                     f.decimals = 3;
                     ed = editorFor(k, f);
-                    row->addWidget(ed, 1);
+                    row->addWidget(stepper(ed, this), 1);
                 } else {
                     auto *e = new QLineEdit(v.toString(), this);
                     connect(e, &QLineEdit::editingFinished, this, [this, k, e] {
@@ -675,7 +711,8 @@ void ToolpathForm::refreshEnabled()
     for (auto it = m_enabledBy.constBegin(); it != m_enabledBy.constEnd(); ++it) {
         const bool on = flatGet(m_json, it.value()).toBool();
         if (QWidget *ed = m_editors.value(it.key())) {
-            ed->setEnabled(on);
+            QWidget *group = ed->parentWidget();
+            (group && group->property("stepper").toBool() ? group : ed)->setEnabled(on);
             if (auto *label = qobject_cast<QWidget *>(ed->property("label").value<QObject *>()))
                 label->setEnabled(on);
         }

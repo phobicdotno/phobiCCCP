@@ -564,6 +564,7 @@ MainWindow::MainWindow(QWidget *parent)
     // minimum heights outgrow the 800 px shop screen.
     m_props = new PropertiesPanel(m_canvas, this);
     m_tp = new ToolpathPanel(m_canvas, this);
+    m_tp->setTypeIcons(toolpathIcon);
     m_info = new QPlainTextEdit(this);
     m_info->setReadOnly(true);
     m_model = new ModelPanel(this);
@@ -764,6 +765,9 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addSeparator();
     // close(), not quit(): quit() skips closeEvent and with it the
     // unsaved-changes prompt.
+    fileMenu->addAction(QStringLiteral("Se&ttings…"), this, &MainWindow::onSettings)
+            ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
+    fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("E&xit"), this, &QWidget::close)
             ->setShortcut(QKeySequence::Quit);
 
@@ -798,9 +802,6 @@ MainWindow::MainWindow(QWidget *parent)
         m_canvas->deleteSelected();
     });
     delAct->setToolTip(QStringLiteral("Delete the selected vectors  (Delete)"));
-    editMenu->addSeparator();
-    editMenu->addAction(QStringLiteral("&Settings…"), this, &MainWindow::onSettings)
-            ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Comma));
 
     // View > Full Screen: the window covers the whole display, panel and all.
     // Remembered, so the shop PC comes back up the way it was left.
@@ -2097,7 +2098,9 @@ void MainWindow::onSettings()
     SettingsDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    if (!dlg.save())
+    const bool scaleChanged = dlg.save();
+    m_tp->applyTextSize();
+    if (!scaleChanged)
         return;
     // QT_SCALE_FACTOR is read once, when QApplication starts.
     const auto r = QMessageBox::question(

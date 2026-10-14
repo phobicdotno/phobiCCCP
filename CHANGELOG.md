@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.1.13 (build 64) — 2026-10-14
+
+> Toolpath list as draggable cards; big ▼ ▲ on number fields; text size in File > Settings
+
+- Toolpath settings: each number field has a finger-sized ▼ on the left and ▲ on the
+  right instead of the tiny spin arrows; holding one repeats.
+- Toolpath list: one card per toolpath with an on/off box, the type icon, the name over
+  "type · vectors · depth", and the tool's outline with its Ø at the end. Drag a card to
+  change the cutting order (one undo step); a blue edge marks toolpaths that machine the
+  shape selected on the canvas.
+- File > Settings (Ctrl+,) moved from Edit; new "Toolpaths text size" 100–200 %,
+  applied at once.
+
 ## v1.1.12 (build 63) — 2026-10-14
 
 > Toolpaths panel text 25 % bigger

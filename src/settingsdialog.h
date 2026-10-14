@@ -16,6 +16,9 @@ namespace appsettings {
 // GUI scale in percent: 100, 125, 150, 175 or 200. Anything else reads as 100.
 int uiScalePercent(QSettings &s);
 QList<int> uiScaleChoices();
+// Text size of the Toolpaths panel in percent of the app's text (125 when unset).
+int panelTextPercent(QSettings &s);
+QList<int> panelTextChoices();
 
 // The machine a blank design is sized to: every Carbide 3D Shapeoko, plus
 // "custom" with its size in machine/customWidth and machine/customHeight.
@@ -42,6 +45,7 @@ public:
 
 private:
     QComboBox *m_scale;
+    QComboBox *m_panelText;
     QComboBox *m_machine;
     QDoubleSpinBox *m_customW;
     QDoubleSpinBox *m_customH;

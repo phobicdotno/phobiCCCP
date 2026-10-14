@@ -9,6 +9,7 @@
 #include <QApplication>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QToolButton>
 
 #include <cstdio>
 #include <cstdlib>
@@ -66,12 +67,29 @@ int main(int argc, char *argv[])
     check(edits == 1 && last.value("helix_entry").isBool() && !last.value("helix_entry").toBool(),
           "flipping the switch writes a bool false");
     check(!helixD->isEnabled(), "helix diameter greys out with the switch off");
+    check(helixD->buttonSymbols() == QAbstractSpinBox::NoButtons, "no tiny spin arrows");
+    {
+        QToolButton *up = nullptr;
+        for (QToolButton *b : helixD->parentWidget()->findChildren<QToolButton *>())
+            if (b->text() == QStringLiteral("\u25b2"))
+                up = b;
+        check(up && up->width() >= 40 && !up->isEnabled(), "a big up button beside it, greyed with it");
+    }
 
     // Depths: shown positive, written back as the file's negative strings.
     form.setToolpath("{tp}", "pocket_toolpath", last);
     auto *end = editorFor<QDoubleSpinBox>(&form, "end_depth");
     check(end && qAbs(end->value() - 5.0) < 1e-9 && end->suffix() == QLatin1String(" mm"),
           "end depth shows 5 mm");
+    {
+        QToolButton *up = nullptr;
+        for (QToolButton *b : end->parentWidget()->findChildren<QToolButton *>())
+            if (b->text() == QStringLiteral("\u25b2"))
+                up = b;
+        check(up != nullptr, "end depth has an up button");
+        up->click();
+        check(last.value("end_depth").toString() == QLatin1String("-5.100"), "up steps the depth by 0.1 mm");
+    }
     end->setValue(8.0);
     check(last.value("end_depth").isString() && last.value("end_depth").toString() == QLatin1String("-8.000"),
           "end depth goes back as the string -8.000");

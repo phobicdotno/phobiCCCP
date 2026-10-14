@@ -87,22 +87,16 @@ int main(int argc, char *argv[])
     check(!canvas.vectorHighlight().isEmpty(),
           "selecting a toolpath again brings its outline back");
 
-    // The type and the vector count are not the user's to type over: they are
-    // what the toolpath is and what it references. Double-clicking them used
-    // to open an editor whose result was then silently thrown away.
+    // The list is draggable cards: one column, internal moves, nothing to
+    // type over in place (the name is edited in the settings below).
     {
         auto *tree = panel.findChild<QTreeWidget *>();
         check(tree != nullptr, "the panel has its list");
+        check(tree->columnCount() == 1 && tree->isHeaderHidden(), "one card per row, no header");
+        check(tree->dragDropMode() == QAbstractItemView::InternalMove, "cards can be dragged to reorder");
         QStyleOptionViewItem opt;
-        for (int col = 1; col <= 2; ++col) {
-            QAbstractItemDelegate *d = tree->itemDelegateForColumn(col);
-            check(d != nullptr, "a delegate guards the derived column");
-            check(d->createEditor(tree, opt, tree->model()->index(0, col)) == nullptr,
-                  "the derived column opens no editor");
-        }
-        QAbstractItemDelegate *d0 = tree->itemDelegateForColumn(0);
-        check(d0 == nullptr || d0->createEditor(tree, opt, tree->model()->index(0, 0)) != nullptr,
-              "the name column is still editable");
+        check(tree->itemDelegate()->createEditor(tree, opt, tree->model()->index(0, 0)) == nullptr,
+              "no inline editor on a card");
     }
 
     std::printf("test_panels: %d checks OK\n", g_checks);
