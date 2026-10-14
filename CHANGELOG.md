@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.1.18 (build 69) — 2026-10-14
+
+> Tool library: the 1/32" and 1/16" bits feed at 1000 mm/min in Soft wood and PVC
+
+- #278 (1/32", 0.79 mm), #112 and #122 (1/16", 1.59 mm): Soft wood and PVC feed 1000 mm/min,
+  down from 5000, to be tested on the machine.
+
 ## v1.1.17 (build 68) — 2026-10-14
 
 > 3D CAM from Syntexophobic: gouge and rapids-into-stock checks in Simulate, waterline finishing, roughing levels on flat terraces

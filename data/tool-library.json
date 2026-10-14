@@ -436,7 +436,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 5000,
+          "feed": 1000,
           "plunge": 203,
           "stepdown": 0.508,
           "stepover_pct": 50
@@ -474,7 +474,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 5000,
+          "feed": 1000,
           "plunge": 300,
           "stepdown": 0.5,
           "stepover_pct": 40,
@@ -505,7 +505,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 5000,
+          "feed": 1000,
           "plunge": 203,
           "stepdown": 0.508,
           "stepover_pct": 10
@@ -543,7 +543,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 5000,
+          "feed": 1000,
           "plunge": 250,
           "stepdown": 0.4,
           "stepover_pct": 10,
@@ -576,7 +576,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 5000,
+          "feed": 1000,
           "plunge": 127,
           "stepdown": 0.254,
           "stepover_pct": 40,
@@ -616,7 +616,7 @@
         },
         "pvc": {
           "rpm": 18000,
-          "feed": 5000,
+          "feed": 1000,
           "plunge": 150,
           "stepdown": 0.25,
           "stepover_pct": 40,
