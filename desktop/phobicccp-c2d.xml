@@ -5,4 +5,12 @@
     <glob pattern="*.c2d"/>
     <icon name="phobicccp"/>
   </mime-type>
+  <mime-type type="application/x-syntexophobic-project">
+    <comment>Syntexophobic project</comment>
+    <sub-class-of type="application/zip"/>
+    <magic priority="70">
+      <match type="string" offset="30" value="mimetypeapplication/x-syntexophobic-project"/>
+    </magic>
+    <glob pattern="*.cccp"/>
+  </mime-type>
 </mime-info>

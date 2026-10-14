@@ -1,5 +1,6 @@
 #include "mainwindow.h"
 #include "importers.h"
+#include "cccpfile.h"
 #include "shopdialog.h"
 #include "aboutdialog.h"
 #include "toolstrip.h"
@@ -27,6 +28,8 @@
 
 #include <QApplication>
 #include <QFile>
+#include <QTemporaryDir>
+#include <QJsonArray>
 #include <QDir>
 #include <QCloseEvent>
 #include <QFileInfo>
@@ -1876,7 +1879,8 @@ void MainWindow::onOpen()
         }
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open"), dir,
-        QStringLiteral("Designs and vectors (*.c2d *.svg *.dxf *.plt *.hpgl *.hpg *.hgl *.pdf *.ai *.eps *.ps);;"
+        QStringLiteral("Designs and vectors (*.c2d *.cccp *.svg *.dxf *.plt *.hpgl *.hpg *.hgl *.pdf *.ai *.eps *.ps);;"
+                       "Syntexophobic part (*.cccp);;"
                        "Carbide Create (*.c2d);;") + importFileFilter()
             + QStringLiteral(";;All files (*)"));
     if (!path.isEmpty())
@@ -2004,6 +2008,44 @@ void MainWindow::closeEvent(QCloseEvent *e)
 
 void MainWindow::openFile(const QString &path)
 {
+    // A Syntexophobic project opens as its final product only: the sketches
+    // as vectors and the finished part as an STL model, on a new design.
+    if (isCccpFile(path)) {
+        const CccpProduct p = readCccp(path);
+        if (!p.ok) {
+            QMessageBox::warning(this, QStringLiteral("Open"), p.error);
+            return;
+        }
+        if (!confirmDiscard(QStringLiteral("Save before opening another file?")))
+            return;
+        m_dirty = false;
+        // The stock: the part plus 10 mm all round, as thick as the part.
+        const QJsonArray size = p.info.value(QStringLiteral("size")).toArray();
+        constexpr double kMargin = 10.0;
+        if (size.size() == 3 && size[0].toDouble() > 0 && size[1].toDouble() > 0)
+            newUntitled(size[0].toDouble() + 2 * kMargin, size[1].toDouble() + 2 * kMargin, size[2].toDouble());
+        else
+            newUntitled();
+        if (!p.svg.isEmpty()) {
+            QTemporaryDir tmp;
+            const QString svg = tmp.filePath(p.name + QStringLiteral(".svg"));
+            QFile f(svg);
+            if (tmp.isValid() && f.open(QIODevice::WriteOnly) && f.write(p.svg) == p.svg.size()) {
+                f.close();
+                importVectorFile(this, m_canvas, &m_doc, svg);
+            }
+        }
+        QString err;
+        if (!p.stl.isEmpty() && !m_model->addStlMesh(p.stl, p.name + QStringLiteral(".stl"), kMargin, kMargin, &err))
+            QMessageBox::warning(this, QStringLiteral("Open"),
+                                 QStringLiteral("The part in %1 could not be read: %2")
+                                     .arg(QFileInfo(path).fileName(), err));
+        m_untitledFrom = path;
+        rememberRecent(path);
+        updateTitle();
+        statusBar()->showMessage(QStringLiteral("%1: the finished part from Syntexophobic").arg(p.name), 8000);
+        return;
+    }
     // A vector file opens as a new design (the machine's bed) with the
     // drawing imported into it; Save asks for a name.
     if (isImportableFile(path)) {
@@ -2093,7 +2135,7 @@ void MainWindow::showStartupWindow()
     recheck->start();
 }
 
-void MainWindow::newUntitled()
+void MainWindow::newUntitled(double width, double height, double thickness)
 {
     QSettings st;
     const auto machine = appsettings::machine(st);
@@ -2102,8 +2144,8 @@ void MainWindow::newUntitled()
     const QString path = dir + QStringLiteral("/untitled-%1.c2d")
                                    .arg(QCoreApplication::applicationPid());
     QString err;
-    if (!Document::createBlank(path, machine.width, machine.height,
-                               appsettings::kBlankThickness, &err)) {
+    if (!Document::createBlank(path, width > 0 ? width : machine.width, height > 0 ? height : machine.height,
+                               thickness > 0 ? thickness : appsettings::kBlankThickness, &err)) {
         statusBar()->showMessage(QStringLiteral("Could not start a blank design: %1").arg(err));
         return;
     }

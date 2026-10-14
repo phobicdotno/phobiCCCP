@@ -8,6 +8,6 @@ Exec=@CMAKE_INSTALL_FULL_BINDIR@/phobicccp %f
 Icon=phobicccp
 Terminal=false
 Categories=Graphics;Engineering;
-MimeType=application/x-carbide-create;
+MimeType=application/x-carbide-create;application/x-syntexophobic-project;
 Keywords=CNC;GRBL;Shapeoko;Carbide;gcode;c2d;
 StartupNotify=true

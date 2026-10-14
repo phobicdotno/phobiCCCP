@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.1.19 (build 70) — 2026-10-14
+
+> Opens Syntexophobic .cccp project files as the finished part
+
+- File > Open (and double-click, after `cmake --install`) takes a Syntexophobic `.cccp`
+  project and opens its final product only: the sketches as vectors and the finished part
+  as an STL model component, on a new design whose stock is the part plus 10 mm all round.
+  The project's history and design stay in Syntexophobic.
+
 ## v1.1.18 (build 69) — 2026-10-14
 
 > Tool library: the 1/32" and 1/16" bits feed at 1000 mm/min in Soft wood and PVC

@@ -35,7 +35,8 @@ public:
     void openFile(const QString &path);
     // A blank design the size of the machine in Settings, not yet saved
     // anywhere: what the window starts on when no file is given.
-    void newUntitled();
+    // A blank untitled design; the stock is the machine bed unless a size is given (mm).
+    void newUntitled(double width = 0, double height = 0, double thickness = 0);
     // show(), or full screen if it was left that way (View > Full Screen).
     void showStartupWindow();
     void showToolpathPreview();   // Toolpaths mode with the overlay on (used by --shot)

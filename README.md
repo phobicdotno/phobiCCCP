@@ -26,7 +26,8 @@ cmake --install build --prefix ~/.local                     # or per-user, no ro
 ```
 
 After that **phobiCCCP** shows up in the application menu (search "phobic")
-and `.c2d` files open with it on double-click. For the Machine dock you also
+and `.c2d` files open with it on double-click (Syntexophobic `.cccp` projects too, as their
+finished part: sketches as vectors, the part as an STL model). For the Machine dock you also
 need serial access: `sudo usermod -aG dialout $USER`, then log out and in.
 
 Clipper2 is fetched at configure time (disable with
