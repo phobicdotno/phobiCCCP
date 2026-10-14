@@ -81,7 +81,7 @@
       "length": 19.05,
       "shank": 6.35,
       "url": "https://shop.carbide3d.com/products/201-25-end-mill-cutter-qty-2",
-      "notes": "Carbide 3D's standard 1/4\" 3-flute square end mill; CC's default tool.",
+      "notes": "Carbide 3D's standard square end mill and CC's default tool.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -125,7 +125,7 @@
           "stepdown": 0.254,
           "stepover_pct": 25,
           "guess": true,
-          "note": "conservative; Carbide's chart is close to this but verify"
+          "note": "conservative; check Carbide's chart"
         },
         "pvc": {
           "rpm": 18000,
@@ -133,7 +133,7 @@
           "plunge": 1000,
           "stepdown": 2.0,
           "stepover_pct": 45,
-          "note": "5000 mm/min at 18000 rpm, confirmed on the shop machine"
+          "note": "confirmed on the shop machine"
         }
       }
     },
@@ -149,7 +149,7 @@
       "length": 19.05,
       "shank": 6.35,
       "url": "https://shop.carbide3d.com/products/251-25-downcut-end-mill",
-      "notes": "Downcut variant of #201 for clean top edges in plywood; same feeds as #201.",
+      "notes": "Downcut #201 for clean top edges in plywood. Same feeds as #201.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -195,7 +195,7 @@
           "stepdown": 0.2,
           "stepover_pct": 25,
           "guess": true,
-          "note": "downcut is a poor choice in aluminium (chip packing)"
+          "note": "downcut packs chips in aluminium"
         },
         "pvc": {
           "rpm": 18000,
@@ -203,7 +203,7 @@
           "plunge": 1000,
           "stepdown": 2.0,
           "stepover_pct": 45,
-          "note": "5000 mm/min at 18000 rpm, confirmed on the shop machine"
+          "note": "confirmed on the shop machine"
         }
       }
     },
@@ -219,7 +219,7 @@
       "length": 19.05,
       "shank": 6.35,
       "url": "https://shop.carbide3d.com/products/202-25-ball-cutter",
-      "notes": "1/4\" ball nose; 10 % stepover for finishing passes.",
+      "notes": "Ball nose for finishing passes, 10 % stepover.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -230,7 +230,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1905,
+          "feed": 5000,
           "plunge": 381,
           "stepdown": 1.524,
           "stepover_pct": 10
@@ -288,7 +288,7 @@
       "length": 12.7,
       "shank": 3.175,
       "url": "https://shop.carbide3d.com/products/102-125-end-mill-cutter-qty-2",
-      "notes": "1/8\" 2-flute square end mill.",
+      "notes": "Square end mill for finer detail.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -299,7 +299,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1270,
+          "feed": 5000,
           "plunge": 254,
           "stepdown": 1.016,
           "stepover_pct": 50
@@ -356,7 +356,7 @@
       "length": 12.7,
       "shank": 3.175,
       "url": "https://shop.carbide3d.com/products/101-125-ball-cutter-qty-2",
-      "notes": "1/8\" ball nose; 10 % stepover for finishing passes.",
+      "notes": "Ball nose for finishing passes, 10 % stepover.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -367,7 +367,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1270,
+          "feed": 5000,
           "plunge": 254,
           "stepdown": 1.016,
           "stepover_pct": 10
@@ -425,7 +425,7 @@
       "length": 6.35,
       "shank": 3.175,
       "url": "https://shop.carbide3d.com/products/112-0625-end-mill-cutter-qty-2",
-      "notes": "1/16\" square end mill on a 1/8\" shank.",
+      "notes": "Square end mill on a 1/8\" shank.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -436,7 +436,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 762,
+          "feed": 5000,
           "plunge": 203,
           "stepdown": 0.508,
           "stepover_pct": 50
@@ -494,7 +494,7 @@
       "length": 6.35,
       "shank": 3.175,
       "url": "https://shop.carbide3d.com/products/122-0625-ball-cutter-qty-2",
-      "notes": "1/16\" ball nose on a 1/8\" shank; 10 % stepover for finishing.",
+      "notes": "Ball nose on a 1/8\" shank, 10 % stepover.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -505,7 +505,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 762,
+          "feed": 5000,
           "plunge": 203,
           "stepdown": 0.508,
           "stepover_pct": 10
@@ -564,7 +564,7 @@
       "length": 3.175,
       "shank": 3.175,
       "url": "https://shop.carbide3d.com/",
-      "notes": "UNCERTAIN number: 1/32\" (0.031\") square end mill on a 1/8\" shank. All feeds are conservative guesses.",
+      "notes": "Square end mill on a 1/8\" shank. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -576,7 +576,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 508,
+          "feed": 5000,
           "plunge": 127,
           "stepdown": 0.254,
           "stepover_pct": 40,
@@ -636,7 +636,7 @@
       "length": 6.35,
       "shank": 6.35,
       "url": "https://shop.carbide3d.com/products/301-90-v-cutter",
-      "notes": "90° included angle, 1/2\" cutting diameter, 1/4\" shank.",
+      "notes": "1/2\" wide, 1/4\" shank.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -647,7 +647,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1524,
+          "feed": 5000,
           "plunge": 381,
           "stepdown": 2.54,
           "stepover_pct": 10
@@ -705,7 +705,7 @@
       "length": 11.0,
       "shank": 6.35,
       "url": "https://shop.carbide3d.com/products/302-60-v-cutter",
-      "notes": "60° included angle, 1/2\" cutting diameter, 1/4\" shank.",
+      "notes": "1/2\" wide, 1/4\" shank.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -716,7 +716,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1524,
+          "feed": 5000,
           "plunge": 381,
           "stepdown": 2.54,
           "stepover_pct": 10
@@ -774,7 +774,7 @@
       "length": 5.0,
       "shank": 3.175,
       "url": "https://shop.carbide3d.com/products/501-engraver-30",
-      "notes": "30° single-flute engraving cutter, 1/8\" shank; tip ~0.1 mm. Treated as a V-bit (type 2, angle 30).",
+      "notes": "Single flute, 0.1 mm tip, cut as a 30° V-bit.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -785,7 +785,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1016,
+          "feed": 5000,
           "plunge": 254,
           "stepdown": 0.508,
           "stepover_pct": 10
@@ -844,7 +844,7 @@
       "length": 3.0,
       "shank": 3.175,
       "url": "https://shop.carbide3d.com/",
-      "notes": "UNCERTAIN number: 60° engraver on a 1/8\" shank; feeds copied from #501.",
+      "notes": "Feeds copied from #501.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -856,7 +856,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1016,
+          "feed": 5000,
           "plunge": 254,
           "stepdown": 0.508,
           "stepover_pct": 10,
@@ -917,7 +917,7 @@
       "length": 19.05,
       "shank": 6.0,
       "url": "https://shop.carbide3d.com/",
-      "notes": "UNCERTAIN number: metric 6 mm square end mill. Feeds copied from #201 (the CC 843 sample's user-made '6mm End Mill' #601 uses 2286 / 381 / 1.5).",
+      "notes": "Metric square end mill. Feeds copied from #201.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -971,14 +971,14 @@
           "plunge": 1000,
           "stepdown": 2.0,
           "stepover_pct": 45,
-          "note": "5000 mm/min at 18000 rpm, confirmed on the shop machine"
+          "note": "confirmed on the shop machine"
         }
       }
     },
     {
       "number": 1040,
       "model": "ICT4F-R4.0-H10",
-      "name": "Corner rounding R4 (ICT4F-R4.0-H10)",
+      "name": "Corner Rounding R4 (10 mm head)",
       "kind": "roundover",
       "vendor": "Generic",
       "diameter": 2.0,
@@ -987,7 +987,7 @@
       "corner_radius": 0,
       "length": 4.0,
       "shank": 10.0,
-      "notes": "4-flute carbide corner-rounding (convex round-over) bit: R4.0 x 90 deg, 10 mm head, 10 mm shank, 75 mm overall. Entered by its cutting tip: diameter 2 mm (head 10 minus 2 x R). To round an edge with R4, run a Contour on the outside of the vector, depth 4.0 mm (= R), in one or two passes. Simulation draws it as a 2 mm flat tip, not the curved profile.",
+      "notes": "Round-over: Contour outside the vector, 4 mm deep. Simulation cuts it as a flat tip.",
       "feeds": {
         "mdf": {
           "rpm": 16000,
@@ -999,7 +999,7 @@
         },
         "softwood": {
           "rpm": 16000,
-          "feed": 1500,
+          "feed": 5000,
           "plunge": 300,
           "stepdown": 2.0,
           "stepover_pct": 50,
@@ -1050,11 +1050,11 @@
     {
       "number": 1101,
       "model": "SS2F-3.175x25x45",
-      "name": "Straight 2-flute end mill 3.175 mm (3.175x25x45)",
+      "name": "Straight End Mill 3.175 mm (25 mm flute)",
       "diameter": 3.175,
       "shank": 3.175,
       "length": 25.0,
-      "notes": "3.175 mm cut, 25 mm flute length, 3.175 mm shank, 45 mm overall. Carbide two-flute straight-slot (parallel) end mill, from the AliExpress '3.175/4/6/8/10mm Straight Slot Milling Cutter' 10-packs. Straight flutes, not spiral: clean top edge in plywood and laminate, but chips do not lift out of deep slots, so keep the stepdown moderate. Feeds are starting guesses.",
+      "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -1066,7 +1066,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1500,
+          "feed": 5000,
           "plunge": 300,
           "stepdown": 1.5,
           "stepover_pct": 40,
@@ -1103,7 +1103,7 @@
           "stepdown": 0.15,
           "stepover_pct": 30,
           "guess": true,
-          "note": "straight flutes clear chips badly in metal; air blast, light passes"
+          "note": "poor chip clearing in metal: air blast, light passes"
         },
         "pvc": {
           "rpm": 18000,
@@ -1123,16 +1123,16 @@
       "url": "https://www.aliexpress.com/",
       "bought": 10,
       "price": 1.33,
-      "price_note": "10-pack US $13.29, AliExpress order mid-2024"
+      "price_note": "10-pack $13.29, AliExpress 2024"
     },
     {
       "number": 1102,
       "model": "SS2F-3.175x32x55",
-      "name": "Straight 2-flute end mill 3.175 mm (3.175x32x55)",
+      "name": "Straight End Mill 3.175 mm (32 mm flute)",
       "diameter": 3.175,
       "shank": 3.175,
       "length": 32.0,
-      "notes": "3.175 mm cut, 32 mm flute length, 3.175 mm shank, 55 mm overall. Carbide two-flute straight-slot (parallel) end mill, from the AliExpress '3.175/4/6/8/10mm Straight Slot Milling Cutter' 10-packs. Straight flutes, not spiral: clean top edge in plywood and laminate, but chips do not lift out of deep slots, so keep the stepdown moderate. Feeds are starting guesses.",
+      "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -1144,7 +1144,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1500,
+          "feed": 5000,
           "plunge": 300,
           "stepdown": 1.5,
           "stepover_pct": 40,
@@ -1181,7 +1181,7 @@
           "stepdown": 0.15,
           "stepover_pct": 30,
           "guess": true,
-          "note": "straight flutes clear chips badly in metal; air blast, light passes"
+          "note": "poor chip clearing in metal: air blast, light passes"
         },
         "pvc": {
           "rpm": 18000,
@@ -1201,16 +1201,16 @@
       "url": "https://www.aliexpress.com/",
       "bought": 10,
       "price": 1.89,
-      "price_note": "10-pack US $18.86, AliExpress order mid-2024"
+      "price_note": "10-pack $18.86, AliExpress 2024"
     },
     {
       "number": 1103,
       "model": "SS2F-6x25x50",
-      "name": "Straight 2-flute end mill 6 mm (6x25x50)",
+      "name": "Straight End Mill 6 mm (25 mm flute)",
       "diameter": 6.0,
       "shank": 6.0,
       "length": 25.0,
-      "notes": "6 mm cut, 25 mm flute length, 6 mm shank, 50 mm overall. Carbide two-flute straight-slot (parallel) end mill, from the AliExpress '3.175/4/6/8/10mm Straight Slot Milling Cutter' 10-packs. Straight flutes, not spiral: clean top edge in plywood and laminate, but chips do not lift out of deep slots, so keep the stepdown moderate. Feeds are starting guesses.",
+      "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 16000,
@@ -1222,7 +1222,7 @@
         },
         "softwood": {
           "rpm": 16000,
-          "feed": 2500,
+          "feed": 5000,
           "plunge": 500,
           "stepdown": 3.0,
           "stepover_pct": 40,
@@ -1259,7 +1259,7 @@
           "stepdown": 0.3,
           "stepover_pct": 30,
           "guess": true,
-          "note": "straight flutes clear chips badly in metal; air blast, light passes"
+          "note": "poor chip clearing in metal: air blast, light passes"
         },
         "pvc": {
           "rpm": 18000,
@@ -1279,16 +1279,16 @@
       "url": "https://www.aliexpress.com/",
       "bought": 10,
       "price": 3.24,
-      "price_note": "10-pack US $32.40, AliExpress order mid-2024"
+      "price_note": "10-pack $32.40, AliExpress 2024"
     },
     {
       "number": 1104,
       "model": "SS2F-6x42x70",
-      "name": "Straight 2-flute end mill 6 mm (6x42x70)",
+      "name": "Straight End Mill 6 mm (42 mm flute)",
       "diameter": 6.0,
       "shank": 6.0,
       "length": 42.0,
-      "notes": "6 mm cut, 42 mm flute length, 6 mm shank, 70 mm overall. Carbide two-flute straight-slot (parallel) end mill, from the AliExpress '3.175/4/6/8/10mm Straight Slot Milling Cutter' 10-packs. Straight flutes, not spiral: clean top edge in plywood and laminate, but chips do not lift out of deep slots, so keep the stepdown moderate. Feeds are starting guesses.",
+      "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 16000,
@@ -1300,7 +1300,7 @@
         },
         "softwood": {
           "rpm": 16000,
-          "feed": 2500,
+          "feed": 5000,
           "plunge": 500,
           "stepdown": 3.0,
           "stepover_pct": 40,
@@ -1337,7 +1337,7 @@
           "stepdown": 0.3,
           "stepover_pct": 30,
           "guess": true,
-          "note": "straight flutes clear chips badly in metal; air blast, light passes"
+          "note": "poor chip clearing in metal: air blast, light passes"
         },
         "pvc": {
           "rpm": 18000,
@@ -1357,16 +1357,16 @@
       "url": "https://www.aliexpress.com/",
       "bought": 10,
       "price": 4.31,
-      "price_note": "10-pack US $43.14, AliExpress order mid-2024"
+      "price_note": "10-pack $43.14, AliExpress 2024"
     },
     {
       "number": 1105,
       "model": "SS2F-8x32x60",
-      "name": "Straight 2-flute end mill 8 mm (8x32x60)",
+      "name": "Straight End Mill 8 mm (32 mm flute)",
       "diameter": 8.0,
       "shank": 8.0,
       "length": 32.0,
-      "notes": "8 mm cut, 32 mm flute length, 8 mm shank, 60 mm overall. Carbide two-flute straight-slot (parallel) end mill, from the AliExpress '3.175/4/6/8/10mm Straight Slot Milling Cutter' 10-packs. Straight flutes, not spiral: clean top edge in plywood and laminate, but chips do not lift out of deep slots, so keep the stepdown moderate. Feeds are starting guesses.",
+      "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 16000,
@@ -1378,7 +1378,7 @@
         },
         "softwood": {
           "rpm": 16000,
-          "feed": 2800,
+          "feed": 5000,
           "plunge": 550,
           "stepdown": 4.0,
           "stepover_pct": 40,
@@ -1415,7 +1415,7 @@
           "stepdown": 0.4,
           "stepover_pct": 30,
           "guess": true,
-          "note": "straight flutes clear chips badly in metal; air blast, light passes"
+          "note": "poor chip clearing in metal: air blast, light passes"
         },
         "pvc": {
           "rpm": 18000,
@@ -1434,16 +1434,16 @@
       "currency": "USD",
       "url": "https://www.aliexpress.com/",
       "bought": 10,
-      "price_note": "10-pack from the same AliExpress order (mid-2024); pack price not noted"
+      "price_note": "10-pack, AliExpress 2024, price not noted"
     },
     {
       "number": 1106,
       "model": "SS2F-10x32x70",
-      "name": "Straight 2-flute end mill 10 mm (10x32x70)",
+      "name": "Straight End Mill 10 mm (32 mm flute)",
       "diameter": 10.0,
       "shank": 10.0,
       "length": 32.0,
-      "notes": "10 mm cut, 32 mm flute length, 10 mm shank, 70 mm overall. Carbide two-flute straight-slot (parallel) end mill, from the AliExpress '3.175/4/6/8/10mm Straight Slot Milling Cutter' 10-packs. Straight flutes, not spiral: clean top edge in plywood and laminate, but chips do not lift out of deep slots, so keep the stepdown moderate. Feeds are starting guesses.",
+      "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 16000,
@@ -1455,7 +1455,7 @@
         },
         "softwood": {
           "rpm": 16000,
-          "feed": 3000,
+          "feed": 5000,
           "plunge": 600,
           "stepdown": 5.0,
           "stepover_pct": 40,
@@ -1492,7 +1492,7 @@
           "stepdown": 0.5,
           "stepover_pct": 30,
           "guess": true,
-          "note": "straight flutes clear chips badly in metal; air blast, light passes"
+          "note": "poor chip clearing in metal: air blast, light passes"
         },
         "pvc": {
           "rpm": 18000,
@@ -1512,12 +1512,12 @@
       "url": "https://www.aliexpress.com/",
       "bought": 10,
       "price": 10.65,
-      "price_note": "10-pack US $106.48, AliExpress order mid-2024"
+      "price_note": "10-pack $106.48, AliExpress 2024"
     },
     {
       "number": 1201,
       "model": "XCAN-1F-3.175x22",
-      "name": "XCAN single-flute spiral 3.175 mm (3.175x22)",
+      "name": "XCAN Single-Flute Spiral 3.175 mm",
       "kind": "endmill",
       "vendor": "XCAN (AliExpress)",
       "flutes": 1,
@@ -1528,10 +1528,10 @@
       "length": 22.0,
       "currency": "USD",
       "price": 1.16,
-      "price_note": "10-pack US $11.55, XCAN Official Store, 2022-08-17",
+      "price_note": "10-pack $11.55, XCAN store 2022",
       "bought": 10,
       "url": "https://www.aliexpress.com/",
-      "notes": "Tungsten carbide single-flute up-cut spiral, 3.175 mm cut and shank, 22 mm flute length. Single flute: big chips, runs cool in plastics and plywood; feed it, do not dwell. Feeds are starting guesses.",
+      "notes": "Up-cut single flute; runs cool in plastic and plywood if kept moving. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -1543,7 +1543,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 1800,
+          "feed": 5000,
           "plunge": 400,
           "stepdown": 2.0,
           "stepover_pct": 40,
@@ -1564,7 +1564,7 @@
           "stepdown": 1.5,
           "stepover_pct": 40,
           "guess": true,
-          "note": "single flute suits acrylic: no melting if the feed is kept up"
+          "note": "keep the feed up so it does not melt"
         },
         "hdpe": {
           "rpm": 18000,
@@ -1595,7 +1595,7 @@
     {
       "number": 1202,
       "model": "XCAN-ENG-SET10",
-      "name": "XCAN engraving bit set 30° (3.175 shank, 10 pcs)",
+      "name": "XCAN Engraver Set 30° (1/8\")",
       "kind": "engraver",
       "vendor": "XCAN (AliExpress)",
       "flutes": 1,
@@ -1606,11 +1606,11 @@
       "length": 10.0,
       "currency": "USD",
       "price": 2.5,
-      "price_note": "10-piece set US $24.99, XCAN Official Store, 2022-08-17",
+      "price_note": "10-piece set $24.99, XCAN store 2022",
       "bought": 10,
       "url": "https://www.aliexpress.com/",
       "uncertain": true,
-      "notes": "XCAN 'Solid Carbide Engraving Bit' 10-piece set, 3.175 mm shank. The set mixes tip widths; entered as a 30-degree 0.1 mm-tip engraver until the tips are measured. Feeds are starting guesses.",
+      "notes": "Mixed tips, entered as 30° with a 0.1 mm tip until measured. Feeds are guesses.",
       "feeds": {
         "mdf": {
           "rpm": 18000,
@@ -1622,7 +1622,7 @@
         },
         "softwood": {
           "rpm": 18000,
-          "feed": 800,
+          "feed": 5000,
           "plunge": 200,
           "stepdown": 0.5,
           "stepover_pct": 30,

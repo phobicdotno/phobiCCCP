@@ -1293,7 +1293,7 @@ int main(int argc, char *argv[])
                         c2d::LibraryTool lt;
                         lt.number = 1106; lt.diameter = 10; lt.length = 32; lt.shank = 10; lt.flutes = 2;
                         lt.kind = QStringLiteral("endmill");
-                        lt.name = QStringLiteral("Straight 2-flute end mill 10 mm (10x32x70)");
+                        lt.name = QStringLiteral("Straight End Mill 10 mm (32 mm flute)");
                         a.headline = QStringLiteral("Insert tool T1106");
                         a.body = QStringLiteral("%1\n\u00d8 10 mm \u00b7 cut length 32 mm \u00b7 2 flutes\n\n%2")
                                      .arg(lt.name, a.body);

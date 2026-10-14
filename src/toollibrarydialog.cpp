@@ -21,6 +21,18 @@
 
 namespace c2d {
 
+// A diameter for display: at most three decimals, no trailing zeros
+// (1/16" = 1.5875 shows as 1.587, 6.0 as 6).
+static QString mmText(double mm)
+{
+    QString s = QString::number(mm, 'f', 3);
+    while (s.endsWith(QLatin1Char('0')))
+        s.chop(1);
+    if (s.endsWith(QLatin1Char('.')))
+        s.chop(1);
+    return s;
+}
+
 ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &materialId,
                                      int currentToolNumber, QWidget *parent)
     : QDialog(parent), m_lib(lib)
@@ -272,11 +284,11 @@ void ToolLibraryDialog::rebuildList()
         if (!q.isEmpty() && !hay.contains(q, Qt::CaseInsensitive))
             continue;
         QString label = QStringLiteral("%1   Ø%2 mm · %3 fl")
-                            .arg(t.name).arg(t.diameter).arg(t.flutes);
+                            .arg(t.name, mmText(t.diameter)).arg(t.flutes);
         if (t.angle > 0)
             label += QStringLiteral(" · %1°").arg(t.angle);
         if (t.uncertain)
-            label += QStringLiteral("  (number unverified)");
+            label += QStringLiteral(" · unverified");
         if (const int have = stockHave(t); have > 0 || t.bought > 0)
             label += QStringLiteral(" · %1 in stock").arg(have);
         auto *it = new QListWidgetItem(label, m_list);
@@ -457,8 +469,8 @@ void ToolLibraryDialog::updatePreview()
         ? QStringLiteral("corner-rounding bit, Ø = cutting tip")
         : QLatin1String(kinds[t->ccType()]);
     QString s = QStringLiteral("%1\n%2 · Ø %3 mm · %4 flutes")
-                    .arg(t->name, kind)
-                    .arg(t->diameter).arg(t->flutes);
+                    .arg(t->name, kind, mmText(t->diameter))
+                    .arg(t->flutes);
     if (t->angle > 0)
         s += QStringLiteral(" · %1°").arg(t->angle);
     if (t->price > 0) {
@@ -475,7 +487,7 @@ void ToolLibraryDialog::updatePreview()
                  .arg(f.rpm).arg(f.feed).arg(f.plunge).arg(f.stepdown)
                  .arg(f.stepoverPct).arg(t->diameter * f.stepoverPct / 100.0, 0, 'f', 2);
         if (f.guess)
-            s += QStringLiteral("\n  (guess — conservative, not a CC default)");
+            s += QStringLiteral("\n  (guess, not a CC default)");
         if (!f.note.isEmpty())
             s += QStringLiteral("\n  %1").arg(f.note);
     }

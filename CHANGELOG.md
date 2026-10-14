@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.1.14 (build 65) — 2026-10-14
+
+> Tool library: shorter, cleaner bit names and descriptions; Soft wood feed 5000 mm/min for every bit
+
+- Bit names follow one pattern: "#201 End Mill (1/4\")", "Straight End Mill 6 mm (42 mm flute)".
+- Each bit's description is one or two short sentences; price and feed notes are trimmed too.
+- The list shows diameters with at most three decimals (Ø1.587, not Ø1.5875) and tags
+  unconfirmed catalogue numbers "· unverified".
+- Soft wood feed is 5000 mm/min for every bit (rpm, plunge and stepdown unchanged).
+
 ## v1.1.13 (build 64) — 2026-10-14
 
 > Toolpath list as draggable cards; big ▼ ▲ on number fields; text size in File > Settings
