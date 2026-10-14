@@ -1733,7 +1733,7 @@ void MainWindow::refreshPreview(bool interactive)
     m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
-                  m_doc.params().value("thickness").toDouble());
+                  m_doc.params().value("thickness").toDouble(), heightModelFor(m_doc));
     m_toolStrip->setJob(m_doc, r.ops);
     m_isoStale = false;
     QString msg = QStringLiteral("Preview: %1 toolpath(s)").arg(r.done.size());
@@ -1771,7 +1771,7 @@ void MainWindow::refreshIso(bool interactive)
     m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
-                  m_doc.params().value("thickness").toDouble());
+                  m_doc.params().value("thickness").toDouble(), heightModelFor(m_doc));
     m_toolStrip->setJob(m_doc, r.ops);
 }
 
@@ -1781,6 +1781,17 @@ void MainWindow::showSimulation()
     if (m_isoStale)
         refreshIso(false);         // --shot: no dialog, the grab follows
     m_sim->simulateBlocking();   // --shot … simulation: result is in the grab
+    // --shot is the only headless way into the simulator: say on the console
+    // what the status line says, for scripts that render a check image.
+    const SimResult &sr = m_sim->result();
+    if (sr.gougeCells > 0)
+        qInfo().noquote() << QStringLiteral("simulation: gouge, %1 mm² into the 3D model, up to %2 mm deep")
+                                 .arg(sr.gougeArea, 0, 'f', 2).arg(sr.gougeDepth, 0, 'f', 3);
+    if (sr.rapidHitCount > 0)
+        qInfo().noquote() << QStringLiteral("simulation: %1 rapid(s) into stock, worst %2 mm at X%3 Y%4 Z%5 (%6)")
+                                 .arg(sr.rapidHitCount).arg(sr.worstRapid.depth, 0, 'f', 3)
+                                 .arg(sr.worstRapid.x, 0, 'f', 2).arg(sr.worstRapid.y, 0, 'f', 2)
+                                 .arg(sr.worstRapid.z, 0, 'f', 2).arg(sr.worstRapid.op);
 }
 
 void MainWindow::showModel()

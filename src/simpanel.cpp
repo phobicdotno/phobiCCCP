@@ -295,6 +295,8 @@ SimPanel::SimPanel(QWidget *parent)
         QString zs = QStringLiteral("%1").arg(z, 7, 'f', 3);
         if (m_t > 0 && z <= -m_t + 1e-6)
             zs += QStringLiteral(" (through)");
+        if (!m_result.gougeMask.isEmpty() && m_result.gougeMask.at(qsizetype(iy) * m.width() + ix))
+            zs += QStringLiteral(" (gouge)");
         m_readout->setText(QStringLiteral("X %1  Y %2  Z %3")
                                .arg(m.cellCenterX(ix), 7, 'f', 2)
                                .arg(m.cellCenterY(iy), 7, 'f', 2)
@@ -306,7 +308,8 @@ SimPanel::SimPanel(QWidget *parent)
 }
 
 void SimPanel::setJob(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
-                      double stockW, double stockH, double stockT)
+                      double stockW, double stockH, double stockT,
+                      const HeightModel *part)
 {
     // A run already in flight is computing the previous program: stop it, or
     // its result would land as if it were current.
@@ -316,6 +319,7 @@ void SimPanel::setJob(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
     }
     m_ops = ops;
     m_tools = tools;
+    m_part = part && part->valid() ? *part : HeightModel();
     m_w = stockW; m_h = stockH; m_t = qMax(0.0, stockT);
     m_stale = !m_result.map.isNull();
     m_simBtn->setEnabled(!m_ops.isEmpty() && !isRunning());
@@ -330,6 +334,7 @@ SimSettings SimPanel::settings() const
     if (!(s.minCell > 0))
         s.minCell = 0.2;
     s.maxCells = 4000000;
+    s.part = m_part;
     return s;
 }
 
@@ -369,7 +374,7 @@ void SimPanel::setBusy(bool on)
 void SimPanel::takeResult(const SimResult &r)
 {
     m_result = r;
-    m_image = renderHeightMap(m_result.map, m_t);
+    m_image = renderHeightMap(m_result.map, m_t, m_result.gougeMask);
     m_stale = false;
     m_progress->setValue(100);
     m_view->setImage(m_image, m_w, m_h, m_t);
@@ -400,6 +405,17 @@ void SimPanel::updateStatus()
                     .arg(m_result.minZ, 0, 'f', 2);
     if (m_result.throughCut)
         s += QStringLiteral(" · THROUGH-CUT");
+    if (m_result.gougeCells > 0)
+        s += QStringLiteral(" · GOUGE: %1 mm² into the 3D model, up to %2 mm deep (red)")
+                 .arg(m_result.gougeArea, 0, 'f', m_result.gougeArea < 10 ? 2 : 0)
+                 .arg(m_result.gougeDepth, 0, 'f', 2);
+    if (m_result.rapidHitCount > 0) {
+        const RapidHit &h = m_result.worstRapid;
+        s += QStringLiteral(" · RAPID INTO STOCK: %1 move(s), worst %2 mm at X%3 Y%4 Z%5%6")
+                 .arg(m_result.rapidHitCount).arg(h.depth, 0, 'f', 2)
+                 .arg(h.x, 0, 'f', 2).arg(h.y, 0, 'f', 2).arg(h.z, 0, 'f', 2)
+                 .arg(h.op.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(h.op));
+    }
     if (m_result.cancelled)
         s += QStringLiteral(" · cancelled (partial)");
     if (!m_result.missingTools.isEmpty()) {

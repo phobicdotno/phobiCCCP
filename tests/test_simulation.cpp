@@ -242,6 +242,122 @@ int main()
         check(t.value(7).kind == ToolGeom::VBit, "toolGeometry: angle without type is a V-bit");
     }
 
+    // --- gouge check against the 3D model ------------------------------------
+    {
+        // A 20×20 mm plateau standing 5 mm proud of its floor, in a 60×40
+        // stock: inside the square the part is the stock top, everywhere
+        // else it is the model's floor (baseZ), which is not part.
+        c2d::HeightModel part;
+        part.cell = 0.5;
+        part.baseZ = -5;
+        part.resize(120, 80, -5.0f);
+        for (int r = 20; r < 60; ++r)
+            for (int c = 40; c < 80; ++c)
+                part.ref(c, r) = 0.0f;   // X 20..40, Y 10..30
+        auto run = [&](const QVector<Op> &ops) {
+            c2d::SimSettings s = stock(60, 40, 10, 0.2);
+            s.part = part;
+            return c2d::simulate(ops, tools(), s);
+        };
+
+        // Work around the part is not a gouge: a cutout well outside it, a
+        // contour whose edge just kisses the wall, and a pocket in the floor.
+        QVector<Op> ok;
+        ok << Op::tool(201) << Op::rapid(14, 4, 5) << Op::feedTo(14, 4, -8, 300)
+           << Op::feedTo(46, 4, -8, 1000) << Op::feedTo(46, 36, -8, 1000)
+           << Op::feedTo(14, 36, -8, 1000) << Op::feedTo(14, 4, -8, 1000)
+           << Op::rapid(14, 4, 5)
+           << Op::rapid(17, 7, 5) << Op::feedTo(17, 7, -5, 300)    // edge at x 20: on the wall
+           << Op::feedTo(17, 33, -5, 1000) << Op::rapid(17, 33, 5)
+           << Op::rapid(4, 10, 5) << Op::feedTo(4, 10, -6, 300)
+           << Op::feedTo(8, 30, -6, 1000) << Op::rapid(8, 30, 5);
+        const c2d::SimResult a = run(ok);
+        std::printf("gouge: around the part %d cells\n", a.gougeCells);
+        check(a.gougeCells == 0 && a.gougeMask.isEmpty() && a.gougeDepth == 0,
+              "gouge: cuts outside the relief's footprint are not gouges");
+        check(a.throughCut == false && a.rapidHitCount == 0, "gouge: clean program, no rapid hits");
+
+        // A 6 mm end mill plunged 2 mm into the plateau.
+        QVector<Op> bad = ok;
+        bad << Op::rapid(30, 20, 5) << Op::feedTo(30, 20, -2, 300) << Op::rapid(30, 20, 5);
+        const c2d::SimResult b = run(bad);
+        std::printf("gouge: plunge %d cells, %.2f mm², %.3f mm deep\n", b.gougeCells, b.gougeArea, b.gougeDepth);
+        check(b.gougeCells > 0 && approx(b.gougeArea, M_PI * 9, 2.0), "gouge: the plunge's disc is reported");
+        check(approx(b.gougeDepth, 2.0, 0.01), "gouge: 2 mm deep");
+        check(b.gougeMask.size() == b.map.width() * b.map.height(), "gouge: mask covers the map");
+        int ix = 0, iy = 0;
+        check(b.map.cellOf(30.05, 20.05, &ix, &iy) && b.gougeMask.at(iy * b.map.width() + ix) == 1
+                  && b.map.cellOf(35.1, 20.05, &ix, &iy) && b.gougeMask.at(iy * b.map.width() + ix) == 0,
+              "gouge: mask marks the disc only");
+        const QImage img = c2d::renderHeightMap(b.map, 10, b.gougeMask);
+        const QRgb px = img.pixel(int(30.05 / 0.2), img.height() - 1 - int(20.05 / 0.2));
+        check(qRed(px) > 2 * qGreen(px) && qRed(px) > 2 * qBlue(px), "gouge: drawn red");
+        const QImage plain = c2d::renderHeightMap(b.map, 10);
+        const QRgb pp = plain.pixel(int(30.05 / 0.2), plain.height() - 1 - int(20.05 / 0.2));
+        check(!(qRed(pp) > 2 * qGreen(pp)), "gouge: not red without the mask");
+
+        // A cut within the tolerance (0.05 mm + the simulator's maxDz) is fine.
+        QVector<Op> skim = ok;
+        skim << Op::rapid(30, 20, 5) << Op::feedTo(30, 20, -0.05, 300) << Op::rapid(30, 20, 5);
+        check(run(skim).gougeCells == 0, "gouge: a 0.05 mm skim is within tolerance");
+
+        // No model, no check.
+        check(c2d::simulate(bad, tools(), stock(60, 40, 10, 0.2)).gougeCells == 0, "gouge: no part, no check");
+    }
+
+    // --- rapids into material ------------------------------------------------
+    {
+        // Slot at Z -3 from (10, 10) to (30, 10); then three rapids:
+        //   1. back along the slot at Z -2.9: clear (inside the cut);
+        //   2. across uncut stock at Z -2.9: a hit, 2.9 mm deep;
+        //   3. a G0 straight down into uncut stock at (50, 30): 2 mm deep.
+        QVector<Op> ops;
+        ops << Op::comment(QStringLiteral("Slot")) << Op::tool(201) << Op::rapid(10, 10, 5)
+            << Op::feedTo(10, 10, -3, 300) << Op::feedTo(30, 10, -3, 1000)
+            << Op::rapid(30, 10, -2.9) << Op::rapid(10, 10, -2.9);
+        const c2d::SimResult clear = c2d::simulate(ops, tools(), stock(60, 40, 10, 0.2));
+        check(clear.rapidHitCount == 0, "rapid: travelling inside the slot is clear");
+
+        ops << Op::rapid(10, 30, -2.9) << Op::rapid(10, 30, 5)
+            << Op::comment(QStringLiteral("Drill")) << Op::rapid(50, 30, 5) << Op::rapid(50, 30, -2)
+            << Op::rapid(50, 30, 5);
+        const c2d::SimResult r = c2d::simulate(ops, tools(), stock(60, 40, 10, 0.2));
+        std::printf("rapid: %d hits, worst %.3f at (%.2f, %.2f, %.2f) in %s\n", r.rapidHitCount,
+                    r.worstRapid.depth, r.worstRapid.x, r.worstRapid.y, r.worstRapid.z,
+                    qPrintable(r.worstRapid.op));
+        check(r.rapidHitCount == 2 && r.rapidHits.size() == 2, "rapid: two moves through stock");
+        check(r.rapidHits.at(0).op == QLatin1String("Slot") && approx(r.rapidHits.at(0).depth, 2.9, 0.01)
+                  && approx(r.rapidHits.at(0).z, -2.9, 1e-9),
+              "rapid: the sideways G0 at -2.9 in the slot's toolpath");
+        check(r.rapidHits.at(1).op == QLatin1String("Drill") && approx(r.rapidHits.at(1).depth, 2.0, 0.01)
+                  && approx(r.rapidHits.at(1).x, 50, 1e-9) && approx(r.rapidHits.at(1).y, 30, 1e-9),
+              "rapid: the plunge at (50, 30)");
+        check(approx(r.worstRapid.depth, 2.9, 0.01), "rapid: worst is the deepest");
+
+        // A G0 that descends diagonally runs across first and then drops (as
+        // the sender's safeRapidsTransform executes it): into uncut stock at
+        // its end, 1 mm deep, but not through anything on the way.
+        QVector<Op> diag;
+        diag << Op::tool(201) << Op::rapid(10, 10, 5) << Op::rapid(40, 20, -1);
+        const c2d::SimResult d = c2d::simulate(diag, tools(), stock(60, 40, 10, 0.2));
+        check(d.rapidHitCount == 1 && approx(d.worstRapid.depth, 1.0, 0.01)
+                  && approx(d.worstRapid.x, 40, 1e-9) && approx(d.worstRapid.y, 20, 1e-9),
+              "rapid: a descending G0 drops at its end");
+        // ... and one that rises lifts first: leaving the slot bottom up and
+        // over is clear.
+        QVector<Op> up;
+        up << Op::tool(201) << Op::rapid(10, 10, 5) << Op::feedTo(10, 10, -3, 300)
+           << Op::feedTo(30, 10, -3, 1000) << Op::rapid(50, 30, 5);
+        check(c2d::simulate(up, tools(), stock(60, 40, 10, 0.2)).rapidHitCount == 0,
+              "rapid: a rising G0 lifts before it travels");
+        // A ball end leaving the groove it cut is not a collision.
+        QVector<Op> ballOps;
+        ballOps << Op::tool(102) << Op::rapid(10, 20, 5) << Op::feedTo(10, 20, -2, 300)
+                << Op::feedTo(40, 25, -2, 1000) << Op::rapid(40, 25, 5);
+        check(c2d::simulate(ballOps, tools(), stock(60, 40, 10, 0.2)).rapidHitCount == 0,
+              "rapid: a ball leaving its groove is clear");
+    }
+
     // --- throughput: 100k short cuts on a 2000×2000 map ---------------------
     {
         QVector<Op> ops;

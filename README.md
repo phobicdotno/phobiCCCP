@@ -145,6 +145,12 @@ under [CLI](#cli).
 - **3D roughing and finishing**: Z-level clearing and raster finishing on the
   tool-compensated surface (ball, flat, V), boundary vectors, stepover in mm
   or %, raster angle, zigzag/climb/conventional, optional cross pass
+- **Waterline finishing** (3D Finish, Strategy: Waterline): Z-level passes
+  that follow every wall once per stepdown along the tool-compensated
+  contour, climb or conventional, linked on the surface where clear
+- **Terrace levels**: 3D roughing (and waterline) put a level exactly on
+  every flat terrace of the model as well as every stepdown, so a flat
+  between two levels is not left with up to a stepdown of material
 - **Tool library** with Carbide 3D's cutters and per-material speeds & feeds
   (Toolpaths → Tool library…; values that are guesses are flagged as such)
 - **Rest machining** for pockets (`enable_rest` / `rest_diameter`)
@@ -154,6 +160,12 @@ under [CLI](#cli).
 - **3D Simulation** tab: material-removal heightmap of the whole program
   (end mill / ball / V-bit / bull-nose), shaded top-down view with depth
   readout and through-cut warning
+- **Gouge check**: with a 3D model, every cell where the simulated cut goes
+  below the relief (more than 0.05 mm, measured across the surface) is drawn
+  red and reported with its area and depth
+- **Rapids into material**: every G0 is checked against the stock as cut so
+  far (as the sender executes it: across then down, or up then across); a
+  rapid through stock is reported with its depth, position and toolpath
 - Toolpaths panel: edit any toolpath parameter (depths, feeds, stepover,
   tool…) and assign the canvas selection as a toolpath's vectors; edits are
   saved back into the `.c2d` in place
