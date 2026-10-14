@@ -1,4 +1,5 @@
 #include "toolpathpanel.h"
+#include "toolpathform.h"
 #include "canvas.h"
 #include "c2ddocument.h"
 #include "toollibrary.h"
@@ -28,75 +29,6 @@
 #include <QVBoxLayout>
 
 namespace c2d {
-
-// Flattened, editable scalar entries of a toolpath payload: top-level scalars
-// plus one nested level for `speeds` and `tool`. Bookkeeping keys that would
-// break references when edited are excluded.
-static QStringList flatKeys(const QJsonObject &j)
-{
-    static const QStringList skip = {QStringLiteral("uuid"), QStringLiteral("type"),
-                                     QStringLiteral("version"), QStringLiteral("toolpath_group")};
-    QStringList keys;
-    for (auto it = j.constBegin(); it != j.constEnd(); ++it) {
-        if (skip.contains(it.key()))
-            continue;
-        if (it.value().isObject()
-            && (it.key() == QLatin1String("speeds") || it.key() == QLatin1String("tool"))) {
-            const QJsonObject sub = it.value().toObject();
-            for (auto s = sub.constBegin(); s != sub.constEnd(); ++s)
-                if (!s.value().isObject() && !s.value().isArray())
-                    keys << it.key() + QLatin1Char('.') + s.key();
-        } else if (!it.value().isObject() && !it.value().isArray()) {
-            keys << it.key();
-        }
-    }
-    keys.sort();
-    return keys;
-}
-
-static QJsonValue flatGet(const QJsonObject &j, const QString &key)
-{
-    const int dot = key.indexOf(QLatin1Char('.'));
-    if (dot < 0)
-        return j.value(key);
-    return j.value(key.left(dot)).toObject().value(key.mid(dot + 1));
-}
-
-static void flatSet(QJsonObject &j, const QString &key, const QJsonValue &v)
-{
-    const int dot = key.indexOf(QLatin1Char('.'));
-    if (dot < 0) {
-        j.insert(key, v);
-        return;
-    }
-    QJsonObject sub = j.value(key.left(dot)).toObject();
-    sub.insert(key.mid(dot + 1), v);
-    j.insert(key.left(dot), sub);
-}
-
-static QString valueToText(const QJsonValue &v)
-{
-    if (v.isBool())
-        return v.toBool() ? QStringLiteral("true") : QStringLiteral("false");
-    if (v.isDouble())
-        return QString::number(v.toDouble());
-    return v.toString();
-}
-
-// Parse the edited text back into the ORIGINAL value's JSON type — CC is
-// strict about this (depths are strings, rates are numbers, flags are bools).
-static QJsonValue textToValue(const QString &text, const QJsonValue &original)
-{
-    if (original.isBool())
-        return QJsonValue(text.trimmed().compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0
-                          || text.trimmed() == QStringLiteral("1"));
-    if (original.isDouble()) {
-        bool ok = false;
-        const double d = text.trimmed().toDouble(&ok);
-        return ok ? QJsonValue(d) : original;
-    }
-    return QJsonValue(text);
-}
 
 static QToolButton *smallButton(QWidget *parent, const QString &text, const QString &tip)
 {
@@ -264,40 +196,36 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_hint->hide();
     lay->addWidget(m_hint);
 
-    m_table = new QTableWidget(0, 2, this);
-    m_table->setHorizontalHeaderLabels({QStringLiteral("parameter"), QStringLiteral("value")});
-    m_table->horizontalHeader()->setStretchLastSection(true);
-    m_table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    m_table->horizontalHeader()->setMinimumSectionSize(40);
-    m_table->setColumnWidth(0, 150);
-    m_table->verticalHeader()->setVisible(false);
-    m_table->setAlternatingRowColors(true);
-    lay->addWidget(m_table);
-    connect(m_table, &QTableWidget::cellChanged, this, &ToolpathPanel::onCellEdited);
+    m_form = new ToolpathForm(this);
+    lay->addWidget(m_form, 1);
+    connect(m_form, &ToolpathForm::edited, this, [this](const QJsonObject &j) {
+        // Queued: editToolpath ends in refresh(), which updates this very form
+        // while it is still inside the editor's signal.
+        const QString uuid = m_uuid;
+        if (uuid.isEmpty())
+            return;
+        QMetaObject::invokeMethod(this, [this, uuid, j] { m_canvas->editToolpath(uuid, j); },
+                                  Qt::QueuedConnection);
+    });
+    connect(m_form, &ToolpathForm::changeToolRequested, this, [this] { pickTool(); });
 
-    // Column widths are a per-user preference: restore them and save whatever
-    // is dragged, so the layout survives restarts.
+    // The list's column widths are a per-user preference: restore them and
+    // save whatever is dragged, so the layout survives restarts.
     {
         QSettings s;
         s.beginGroup(QStringLiteral("toolpaths"));
         const QByteArray listState = s.value(QStringLiteral("listHeader")).toByteArray();
         if (!listState.isEmpty())
             m_list->header()->restoreState(listState);
-        const QByteArray tableState = s.value(QStringLiteral("tableHeader")).toByteArray();
-        if (!tableState.isEmpty())
-            m_table->horizontalHeader()->restoreState(tableState);
     }
     auto saveHeaders = [this] {
         QSettings s;
         s.beginGroup(QStringLiteral("toolpaths"));
         s.setValue(QStringLiteral("listHeader"), m_list->header()->saveState());
-        s.setValue(QStringLiteral("tableHeader"), m_table->horizontalHeader()->saveState());
     };
     connect(m_list->header(), &QHeaderView::sectionResized, this,
             [saveHeaders](int, int, int) { saveHeaders(); });
     connect(m_list->header(), &QHeaderView::sectionMoved, this,
-            [saveHeaders](int, int, int) { saveHeaders(); });
-    connect(m_table->horizontalHeader(), &QHeaderView::sectionResized, this,
             [saveHeaders](int, int, int) { saveHeaders(); });
 
     // Replace the toolpath's vector list with the canvas selection.
@@ -322,14 +250,6 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
         j.insert(QStringLiteral("elements"), arr);
         m_canvas->editToolpath(m_uuid, j);
     });
-
-    // Tool library: pick a cutter + material, write tool/speeds/stepdown.
-    auto *toolBtn = new QPushButton(QStringLiteral("Tool library…"), this);
-    toolBtn->setToolTip(QStringLiteral(
-        "Choose a Carbide 3D cutter and a material: writes the tool definition,\n"
-        "feed / plunge / rpm and depth per pass + stepover into this toolpath."));
-    lay->addWidget(toolBtn);
-    connect(toolBtn, &QPushButton::clicked, this, [this] { pickTool(); });
 
     // V-carve inlay: generate the mirrored male from the selected female.
     auto *inlay = new QPushButton(QStringLiteral("Create inlay male"), this);
@@ -362,9 +282,6 @@ void ToolpathPanel::newToolpath(const QString &type)
     else
         m_hint->clear();
     m_hint->setVisible(!m_hint->text().isEmpty());
-    m_table->setFocus();
-    if (m_table->rowCount() > 0)
-        m_table->setCurrentCell(0, 1);
 }
 
 void ToolpathPanel::duplicateCurrent()
@@ -758,61 +675,24 @@ void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
 void ToolpathPanel::showToolpath(const QString &uuid)
 {
     m_loading = true;
-    m_table->setRowCount(0);
     m_uuid.clear();
-    if (m_doc) {
-        if (const Toolpath *t = m_doc->toolpathByUuid(uuid)) {
-            m_uuid = t->uuid;
-            const QStringList keys = flatKeys(t->json);
-            m_table->setRowCount(keys.size());
-            for (int i = 0; i < keys.size(); ++i) {
-                auto *k = new QTableWidgetItem(keys.at(i));
-                k->setFlags(k->flags() & ~Qt::ItemIsEditable);
-                m_table->setItem(i, 0, k);
-                m_table->setItem(i, 1,
-                                 new QTableWidgetItem(valueToText(flatGet(t->json, keys.at(i)))));
-            }
-            if (t->json.value("elements").toArray().isEmpty()) {
-                m_hint->setText(QStringLiteral(
-                    "\"%1\" has no vectors: select shapes on the canvas and press "
-                    "\"Assign selected vectors\".").arg(t->json.value("name").toString()));
-                m_hint->show();
-            } else {
-                m_hint->hide();
-            }
+    const Toolpath *t = m_doc ? m_doc->toolpathByUuid(uuid) : nullptr;
+    if (t) {
+        m_uuid = t->uuid;
+        m_form->setToolpath(t->uuid, t->type, t->json);
+        if (t->json.value("elements").toArray().isEmpty()) {
+            m_hint->setText(QStringLiteral(
+                "\"%1\" has no vectors: select shapes on the canvas and press "
+                "\"Assign selected vectors\".").arg(t->json.value("name").toString()));
+            m_hint->show();
+        } else {
+            m_hint->hide();
         }
+    } else {
+        m_form->clear();
     }
     m_loading = false;
     updateButtons();
-}
-
-void ToolpathPanel::onCellEdited(int row, int col)
-{
-    if (m_loading || col != 1 || !m_doc || m_uuid.isEmpty())
-        return;
-    Toolpath *t = m_doc->toolpathByUuid(m_uuid);
-    if (!t)
-        return;
-    const QString key = m_table->item(row, 0)->text();
-    const QJsonValue original = flatGet(t->json, key);
-    const QJsonValue v = textToValue(m_table->item(row, col)->text(), original);
-    if (v == original) {
-        // Normalize the cell back (e.g. rejected number) without pushing an edit.
-        m_loading = true;
-        m_table->item(row, col)->setText(valueToText(original));
-        m_loading = false;
-        return;
-    }
-    QJsonObject j = t->json;
-    flatSet(j, key, v);
-    // Same reason as the tree path above: editToolpath ends in refresh(),
-    // which does setRowCount(0) on this very table while the view is still
-    // unwinding the change on the cell being edited. The open editor is then
-    // released mid-commit and the current cell resets, so keyboard navigation
-    // breaks after every edit.
-    const QString uuid = m_uuid;
-    QMetaObject::invokeMethod(this, [this, uuid, j] { m_canvas->editToolpath(uuid, j); },
-                              Qt::QueuedConnection);
 }
 
 } // namespace c2d

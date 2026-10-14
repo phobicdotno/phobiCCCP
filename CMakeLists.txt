@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.1.10 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.1.11 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -70,6 +70,7 @@ add_executable(phobicccp
     src/aboutdialog.cpp
     src/propertiespanel.cpp
     src/toolpathpanel.cpp
+    src/toolpathform.cpp
     src/toollibrarydialog.cpp
     src/tooldiagram.cpp
     src/toolstrip.cpp
@@ -190,9 +191,13 @@ if(Qt6Test_FOUND)
                    src/toollibrarydialog.cpp src/tooldiagram.cpp data/tools.qrc)
     target_link_libraries(test_toollibrarydialog PRIVATE phobicccp_core Qt6::Widgets)
     add_test(NAME toollibrarydialog COMMAND test_toollibrarydialog)
+    add_executable(test_toolpathform tests/test_toolpathform.cpp src/toolpathform.cpp
+                   src/tooldiagram.cpp)
+    target_link_libraries(test_toolpathform PRIVATE phobicccp_core Qt6::Widgets)
+    add_test(NAME toolpathform COMMAND test_toolpathform)
     # Panel <-> canvas selection handover (needs the real widgets).
     add_executable(test_panels tests/test_panels.cpp src/canvas.cpp
-                   src/toolpathpanel.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp)
+                   src/toolpathpanel.cpp src/toolpathform.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp)
     target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)

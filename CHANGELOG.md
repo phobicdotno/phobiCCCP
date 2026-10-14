@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.11 (build 62) — 2026-10-14
+
+> Toolpath settings as cards with switches and number fields instead of a key table
+
+- Name and an enable switch on top, the tool as a card with its outline and Change.
+- Depth, Cutting, Entry, Tabs, Rest machining and Finishing cards hold only the fields
+  the toolpath type has: switches for on/off, number fields with units and arrows,
+  dropdowns for sides and modes. Dependent fields grey out with their switch.
+- Every other key stays editable, typed, in a folded Advanced card.
+- Number fields ignore the mouse wheel unless focused, so scrolling never changes a depth.
+
 ## v1.1.10 (build 61) — 2026-10-14
 
 > Tool library: three duplicate bits removed
