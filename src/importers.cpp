@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <functional>
 
 namespace c2d {
@@ -89,8 +90,8 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
     };
     QVector<bool> used(subs.size(), false);
     QPainterPath out;
-    auto write = [&out](const QVector<Seg> &segs, bool close) {
-        out.moveTo(segs.first().a);
+    auto write = [&out](const std::deque<Seg> &segs, bool close) {
+        out.moveTo(segs.front().a);
         for (const Seg &g : segs)
             if (g.curve)
                 out.cubicTo(g.c1, g.c2, g.b);
@@ -99,39 +100,104 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         if (close)
             out.closeSubpath();
     };
+    // Open subpaths' ends in a grid of tol-sized cells: a point within tol of
+    // another is in the same cell or a neighbouring one. Comparing every
+    // chain end with every subpath was O(n^2): 100k lines took a minute.
+    const double cell = tol > 0 ? tol : 1e-9;
+    auto cellOf = [cell](const QPointF &p) {
+        auto k = [cell](double v) {
+            const double c = std::floor(v / cell);
+            return std::isfinite(c) ? qint64(qBound(-1e15, c, 1e15)) : qint64(0);
+        };
+        return std::make_pair(k(p.x()), k(p.y()));
+    };
+    QHash<std::pair<qint64, qint64>, QVector<int>> grid;
+    for (int j = 0; j < subs.size(); ++j) {
+        if (subs[j].closed || subs[j].segs.isEmpty())
+            continue;
+        grid[cellOf(subs[j].segs.first().a)].append(j);
+        const auto e = cellOf(subs[j].segs.last().b);
+        if (e != cellOf(subs[j].segs.first().a))
+            grid[e].append(j);
+    }
+    // Unused open subpaths with an end near either end of the chain.
+    auto nearby = [&](const QPointF &a, const QPointF &b, QVector<int> &out) {
+        out.clear();
+        for (const QPointF &p : {a, b}) {
+            const auto c = cellOf(p);
+            for (qint64 dx = -1; dx <= 1; ++dx)
+                for (qint64 dy = -1; dy <= 1; ++dy) {
+                    auto it = grid.find({c.first + dx, c.second + dy});
+                    if (it == grid.end())
+                        continue;
+                    QVector<int> &v = it.value();
+                    v.erase(std::remove_if(v.begin(), v.end(), [&](int j) { return used[j]; }),
+                            v.end());
+                    out += v;
+                }
+        }
+    };
+    QVector<int> cand;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
             continue;
         used[i] = true;
         if (subs[i].closed) {
-            write(subs[i].segs, false);
+            write(std::deque<Seg>(subs[i].segs.begin(), subs[i].segs.end()), false);
             continue;
         }
-        QVector<Seg> chain = subs[i].segs;
-        for (bool grew = true; grew;) {
-            grew = false;
-            for (int j = 0; j < subs.size(); ++j) {
-                if (used[j] || subs[j].closed || subs[j].segs.isEmpty())
+        std::deque<Seg> chain(subs[i].segs.begin(), subs[i].segs.end());
+        // The same joins in the same order as sweeping j = 0..n-1 over and
+        // over until a sweep adds nothing: the next join is the lowest
+        // matching j after the last one, else (if this sweep grew) the lowest
+        // from the start.
+        int from = 0;
+        bool grew = false;
+        for (;;) {
+            nearby(chain.front().a, chain.back().b, cand);
+            int best = -1, wrap = -1;
+            int how = 0, wrapHow = 0;
+            for (int j : cand) {
+                if (used[j] || (best >= 0 && j >= best && wrap >= 0 && j >= wrap))
                     continue;
                 const QVector<Seg> &o = subs[j].segs;
-                if (samePoint(chain.last().b, o.first().a, tol)) {
-                    chain += o;
-                } else if (samePoint(chain.last().b, o.last().b, tol)) {
-                    chain += reversed(o);
-                } else if (samePoint(chain.first().a, o.last().b, tol)) {
-                    chain = o + chain;
-                } else if (samePoint(chain.first().a, o.first().a, tol)) {
-                    chain = reversed(o) + chain;
-                } else {
+                int h = 0;
+                if (samePoint(chain.back().b, o.first().a, tol)) h = 1;
+                else if (samePoint(chain.back().b, o.last().b, tol)) h = 2;
+                else if (samePoint(chain.front().a, o.last().b, tol)) h = 3;
+                else if (samePoint(chain.front().a, o.first().a, tol)) h = 4;
+                if (!h)
                     continue;
-                }
-                used[j] = true;
-                grew = true;
+                if (j >= from && (best < 0 || j < best)) { best = j; how = h; }
+                if (wrap < 0 || j < wrap) { wrap = j; wrapHow = h; }
             }
+            if (best < 0) {
+                if (!grew || wrap < 0)
+                    break;
+                best = wrap;
+                how = wrapHow;
+            }
+            if (best < from)
+                grew = false;   // a new sweep began
+            const QVector<Seg> &o = subs[best].segs;
+            if (how == 1) {
+                chain.insert(chain.end(), o.begin(), o.end());
+            } else if (how == 2) {
+                const QVector<Seg> r = reversed(o);
+                chain.insert(chain.end(), r.begin(), r.end());
+            } else if (how == 3) {
+                chain.insert(chain.begin(), o.begin(), o.end());
+            } else {
+                const QVector<Seg> r = reversed(o);
+                chain.insert(chain.begin(), r.begin(), r.end());
+            }
+            used[best] = true;
+            grew = true;
+            from = best + 1;
         }
-        const bool close = chain.size() > 1 && samePoint(chain.first().a, chain.last().b, tol);
+        const bool close = chain.size() > 1 && samePoint(chain.front().a, chain.back().b, tol);
         if (close)
-            chain.last().b = chain.first().a;
+            chain.back().b = chain.front().a;
         write(chain, close);
     }
     return out;
@@ -803,7 +869,14 @@ struct DxfCtx {
     // dies.
     int budget = 200000;
     bool budgetSpent = false;
+    // Points flattened from SPLINEs, all of them together: one spline with a
+    // thousand control points zig-zagging across a kilometre made 16 M points
+    // in a minute from a 20 KB file.
+    qint64 flatPoints = 1000000;
 };
+
+// Beyond this a coordinate (mm) is not a part for a desktop CNC.
+constexpr double kMaxCoordMm = 1e6;
 
 double pairD(const QVector<Pair> &ps, int code, double def = 0)
 {
@@ -935,9 +1008,15 @@ struct Nurbs {
 
 // Flatten f(t) over [t0,t1] into `p` (which already has its start point) with
 // chord deviation below `tol`, measured in output (mm) space.
+// Each point added costs one unit of `budget`; once it is spent nothing more
+// is added and it goes negative to say the curve was cut short.
 void flattenParam(QPainterPath &p, const std::function<QPointF(double)> &f, double t0,
-                  double t1, double tol, int depth = 0)
+                  double t1, double tol, qint64 &budget, int depth = 0)
 {
+    if (budget <= 0) {
+        budget = -1;
+        return;
+    }
     const QPointF a = f(t0), b = f(t1);
     auto dev = [&](double t) {
         const QPointF m = f(t);
@@ -953,14 +1032,23 @@ void flattenParam(QPainterPath &p, const std::function<QPointF(double)> &f, doub
     const double tm = (t0 + t1) / 2;
     if (depth >= 14 || (dev(tm) <= tol && dev((t0 + tm) / 2) <= tol && dev((tm + t1) / 2) <= tol)) {
         p.lineTo(b);
+        --budget;
         return;
     }
-    flattenParam(p, f, t0, tm, tol, depth + 1);
-    flattenParam(p, f, tm, t1, tol, depth + 1);
+    flattenParam(p, f, t0, tm, tol, budget, depth + 1);
+    flattenParam(p, f, tm, t1, tol, budget, depth + 1);
 }
 
-void splineToPath(QPainterPath &out, const Entity &e, const QTransform &xf, double tol)
+static bool saneMm(const QPointF &p)
 {
+    return std::isfinite(p.x()) && std::isfinite(p.y()) && std::fabs(p.x()) <= kMaxCoordMm
+           && std::fabs(p.y()) <= kMaxCoordMm;
+}
+
+void splineToPath(DxfCtx &ctx, const Entity &e, const QTransform &xf)
+{
+    QPainterPath &out = ctx.out;
+    auto bad = [&] { addSkipped(*ctx.res, *ctx.skipped, QStringLiteral("SPLINE (bad coordinates)")); };
     Nurbs n;
     // Nurbs::eval is O(degree^2) and allocates three vectors of degree+1 per
     // call, and it is called tens of thousands of times while flattening. DXF
@@ -979,8 +1067,11 @@ void splineToPath(QPainterPath &out, const Entity &e, const QTransform &xf, doub
     if (n.ctrl.size() < 2 && fx.size() >= 2) {
         // Fit points only: Catmull-Rom cubics through the points (exact interpolation).
         QVector<QPointF> f;
-        for (int i = 0; i < qMin(fx.size(), fy.size()); ++i)
+        for (int i = 0; i < qMin(fx.size(), fy.size()); ++i) {
             f.append(xf.map(QPointF(fx.at(i), fy.at(i))));
+            if (!saneMm(f.last()))
+                return bad();
+        }
         if (f.size() < 2)
             return;              // fit-point X and Y codes did not pair up
         QPainterPath p;
@@ -997,6 +1088,24 @@ void splineToPath(QPainterPath &out, const Entity &e, const QTransform &xf, doub
     }
     if (n.ctrl.size() < 2)
         return;
+    // Control points bound the curve (weights > 0), so checking them checks it.
+    QPointF lo(qInf(), qInf()), hi(-qInf(), -qInf());
+    for (const QPointF &c : n.ctrl) {
+        const QPointF m = xf.map(c);
+        if (!saneMm(m))
+            return bad();
+        lo = QPointF(qMin(lo.x(), m.x()), qMin(lo.y(), m.y()));
+        hi = QPointF(qMax(hi.x(), m.x()), qMax(hi.y(), m.y()));
+    }
+    for (double w : n.weights)
+        if (!std::isfinite(w) || w <= 0)
+            return bad();
+    for (double k : n.knots)
+        if (!std::isfinite(k))
+            return bad();
+    // A tolerance below 1/100000 of the spline's own size buys nothing
+    // visible and multiplies the points on a large one.
+    const double tol = qMax(ctx.tol, std::hypot(hi.x() - lo.x(), hi.y() - lo.y()) * 1e-5);
     if (n.degree >= n.ctrl.size())
         n.degree = n.ctrl.size() - 1;
     const int needKnots = n.ctrl.size() + n.degree + 1;
@@ -1016,7 +1125,13 @@ void splineToPath(QPainterPath &out, const Entity &e, const QTransform &xf, doub
     p.moveTo(f(t0));
     const int pieces = qMax(1, n.ctrl.size() - n.degree);
     for (int i = 0; i < pieces; ++i)
-        flattenParam(p, f, t0 + (t1 - t0) * i / pieces, t0 + (t1 - t0) * (i + 1) / pieces, tol);
+        flattenParam(p, f, t0 + (t1 - t0) * i / pieces, t0 + (t1 - t0) * (i + 1) / pieces, tol,
+                     ctx.flatPoints);
+    if (ctx.flatPoints < 0) {
+        // Spent part-way: a truncated curve would be wrong geometry, so drop it.
+        addSkipped(*ctx.res, *ctx.skipped, QStringLiteral("SPLINE (beyond the point limit)"));
+        return;
+    }
     if (closedFlag)
         p.closeSubpath();
     out.addPath(p);
@@ -1049,8 +1164,13 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
     }
     --ctx.budget;
     const QVector<Pair> &ps = e.pairs;
-    const QTransform xf = ocs(ps) * xfIn;
     const QString &t = e.type;
+    // LINE, ELLIPSE and SPLINE coordinates are already in world coordinates;
+    // only OCS entities (ARC, CIRCLE, polylines, INSERT) are mirrored by an
+    // extrusion of 0,0,-1. Flipping a LINE's X put it at negative X.
+    const bool world = t == QLatin1String("LINE") || t == QLatin1String("ELLIPSE")
+                       || t == QLatin1String("SPLINE");
+    const QTransform xf = (world ? QTransform() : ocs(ps)) * xfIn;
     QPainterPath p;   // drawing units (before xf)
 
     if (t == QLatin1String("LINE")) {
@@ -1077,7 +1197,9 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
         QVector<double> bulge;
         for (const QVector<Pair> &v : e.vertices) {
             const int vf = pairI(v, 70);
-            if (vf & (16 | 8)) continue;   // spline frame control point / 3D mesh vertex
+            // 16 = spline frame control point: skip it. 8 = a vertex made by
+            // spline fitting, which IS the curve; skipping both left nothing.
+            if (vf & 16) continue;
             pts.append(QPointF(pairD(v, 10), pairD(v, 20)));
             bulge.append(pairD(v, 42));
         }
@@ -1097,15 +1219,19 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
         const double ratio = pairD(ps, 40, 1);
         const double rx = std::hypot(maj.x(), maj.y());
         const double rot = std::atan2(maj.y(), maj.x());
-        const double a0 = pairD(ps, 41, 0);
+        double a0 = pairD(ps, 41, 0);
         const double sweep = arcSweep(a0, pairD(ps, 42, 2 * M_PI));
+        // Extrusion 0,0,-1 points the minor axis the other way: parameter t
+        // there is -t here, so the arc a0..a0+sweep is -(a0+sweep)..-a0.
+        if (pairD(ps, 230, 1) < 0)
+            a0 = -(a0 + sweep);
         if (rx > 0 && ratio > 0 && sweep > 0) {
             appendArc(p, c, rx, rx * ratio, rot, a0, sweep, true);
             if (std::fabs(sweep - 2 * M_PI) < 1e-9)
                 p.closeSubpath();
         }
     } else if (t == QLatin1String("SPLINE")) {
-        splineToPath(ctx.out, e, xf * QTransform::fromScale(ctx.unit, ctx.unit), ctx.tol);
+        splineToPath(ctx, e, xf * QTransform::fromScale(ctx.unit, ctx.unit));
         return;
     } else if (t == QLatin1String("INSERT")) {
         const QString name = pairS(ps, 2);
@@ -1131,6 +1257,13 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
                 local = local * QTransform::fromScale(sx, sy);
                 QTransform rt; rt.rotate(rot);
                 local = local * rt * QTransform::fromTranslate(ins.x() + c * colSp, ins.y() + r * rowSp);
+                // Spent: one more call records it, then stop the array
+                // instead of looping rows x cols x entities for nothing.
+                if (ctx.budget <= 0) {
+                    if (!b.entities.isEmpty())
+                        emitEntity(ctx, b.entities.first(), local * xf, depth + 1);
+                    return;
+                }
                 for (const Entity &sub : b.entities)
                     emitEntity(ctx, sub, local * xf, depth + 1);
             }
@@ -1361,7 +1494,13 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
         } else if (cmd == QLatin1String("CI") && !nums.isEmpty()) {
             appendCircle(path, pos, std::abs(nums[0]) * kUnit);
             open = false;
-        } else if (cmd == QLatin1String("IN") || cmd == QLatin1String("SP")
+        } else if (cmd == QLatin1String("IN")) {
+            // Initialise: back to the power-on defaults, absolute and pen up,
+            // whatever an earlier job in the same file left set.
+            penDown = false;
+            relative = false;
+            open = false;
+        } else if (cmd == QLatin1String("SP")
                    || cmd == QLatin1String("LT") || cmd == QLatin1String("VS")
                    || cmd == QLatin1String("IP") || cmd == QLatin1String("SC")) {
             // set-up commands with nothing to draw

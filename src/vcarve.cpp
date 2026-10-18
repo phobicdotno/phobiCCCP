@@ -304,25 +304,97 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
             for (int e : adj.at(n)) if (alive[e]) return e;
             return -1;
         };
-        for (int n = 0; n < nodes.size(); ++n) {
-            if (degree(n) != 1 || smoothVertexAt(nodes.at(n)) != 1)
-                continue;
-            // Walk the spur inward until the axis proper (a junction) or a
-            // node that is itself a real corner.
-            int cur = n;
-            while (degree(cur) == 1) {
-                const int e = aliveEdge(cur);
-                alive[e] = false;
-                const int next = edges.at(e).first == cur ? edges.at(e).second : edges.at(e).first;
-                // Stop at the axis proper: a node that was a junction before
-                // pruning (adj holds the original degree) — even if this was
-                // its last spoke, as at the ends of a rounded slot — or a
-                // real corner. Only chain nodes of the spur itself are walked.
-                if (adj.at(next).size() >= 3 || smoothVertexAt(nodes.at(next)) == 0
-                    || degree(next) != 1)
-                    break;
-                cur = next;
+        auto otherEnd = [&](int e, int n) {
+            return edges.at(e).first == n ? edges.at(e).second : edges.at(e).first;
+        };
+        // One pass over the spurs that start on a smooth boundary vertex.
+        auto pruneVertexSpurs = [&] {
+            bool changed = false;
+            for (int n = 0; n < nodes.size(); ++n) {
+                if (degree(n) != 1 || smoothVertexAt(nodes.at(n)) != 1)
+                    continue;
+                // Walk the spur inward until the axis proper (a junction) or a
+                // node that is itself a real corner.
+                int cur = n;
+                while (degree(cur) == 1) {
+                    const int e = aliveEdge(cur);
+                    alive[e] = false;
+                    changed = true;
+                    const int next = otherEnd(e, cur);
+                    // Stop at the axis proper: a node that was a junction before
+                    // pruning (adj holds the original degree) — even if this was
+                    // its last spoke, as at the ends of a rounded slot — or a
+                    // real corner. Only chain nodes of the spur itself are walked.
+                    if (adj.at(next).size() >= 3 || smoothVertexAt(nodes.at(next)) == 0
+                        || degree(next) != 1)
+                        break;
+                    cur = next;
+                }
             }
+            return changed;
+        };
+        // On a finely flattened curve the vertex spurs meet in a tree of
+        // short junction edges, not at one node (micrometre rounding), and
+        // once the spurs are gone its junctions are tips off any vertex: a
+        // circle of r = 15 at 0.005 mm came out as 148 chains, each a plunge.
+        // A tip whose disc lies inside its neighbour's adds nothing the cone
+        // there does not already cut, so it goes too, and so on inward. Each
+        // node carries one disc enclosing every disc pruned into it, so the
+        // test stays honest along a chain of small steps (the end of an
+        // oval's axis is only trimmed by what it really leaves uncut, at most
+        // kCover). Tips on a real corner are never touched: that spur is the
+        // one the bit rides into the point.
+        const double kCover = 0.01;           // mm of cut a prune may give up
+        QVector<QPointF> discC(nodes.size());
+        QVector<double> discR(nodes.size(), -1.0);
+        auto discOf = [&](int n, QPointF *c, double *r) {
+            if (discR[n] < 0) {
+                discC[n] = nodes.at(n);
+                discR[n] = dOf(n);
+            }
+            *c = discC[n];
+            *r = discR[n];
+        };
+        auto pruneNestedTips = [&] {
+            bool changed = false;
+            QVector<int> work;
+            for (int n = 0; n < nodes.size(); ++n)
+                if (degree(n) == 1)
+                    work.append(n);
+            while (!work.isEmpty()) {
+                const int n = work.takeLast();
+                if (degree(n) != 1 || smoothVertexAt(nodes.at(n)) == 0)
+                    continue;
+                const int e = aliveEdge(n);
+                const int m = otherEnd(e, n);
+                QPointF cn, cm;
+                double rn, rm;
+                discOf(n, &cn, &rn);
+                discOf(m, &cm, &rm);
+                if (QLineF(cn, nodes.at(m)).length() + rn > dOf(m) + kCover)
+                    continue;
+                alive[e] = false;
+                changed = true;
+                // m's disc grows to enclose n's (still within kCover of m's
+                // own clearance, by the test above).
+                const double dist = QLineF(cn, cm).length();
+                if (dist + rn > rm) {
+                    const double R = (dist + rn + rm) / 2;
+                    discC[m] = dist > 1e-12 ? cm + (cn - cm) * ((R - rm) / dist) : cm;
+                    discR[m] = R;
+                }
+                if (degree(m) == 1)
+                    work.append(m);
+            }
+            return changed;
+        };
+        // Each kind of prune exposes tips for the other; run both until
+        // neither finds anything.
+        for (int pass = 0; pass < 100; ++pass) {
+            const bool a = pruneVertexSpurs();
+            const bool b = pruneNestedTips();
+            if (!a && !b)
+                break;
         }
         QVector<QPair<int, int>> kept;
         for (int e = 0; e < edges.size(); ++e)

@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QGraphicsScene>
+#include <QHash>
 #include <QToolButton>
 #include <QLabel>
 #include <QHBoxLayout>
@@ -28,6 +29,7 @@
 #include <QUndoStack>
 #include <QWheelEvent>
 #include <QtMath>
+#include <algorithm>
 
 namespace c2d {
 
@@ -44,6 +46,11 @@ static const QColor kSelected(0xf2, 0xa5, 0x36);   // amber
 static const QColor kPreview(0x5c, 0xc8, 0x8a);
 static const QColor kConstruction(0x8a, 0xa4, 0xc8);   // dashed reference lines
 static const QColor kFullyConstrained(0x7c, 0xd6, 0xc2);   // nothing can move it any more
+
+// How close (screen px) a click must land to pick a curve or a node: the
+// element items' hit corridor and the node editor's hit tests share it, so a
+// double-click that inserts a node is never a click that deselects the path.
+static const double kHitPx = 7.0;
 
 // Element item with CAD-style state rendering: closed shapes get a faint fill
 // (which also makes their interior clickable), hover brightens the outline,
@@ -95,13 +102,26 @@ public:
         p->drawPath(path());
     }
     bool isClosed() const { return m_closed; }
+    // Hit tolerance in scene units (kHitPx at the current zoom). The item's
+    // pen is never drawn (paint() uses its own cosmetic pen); its width
+    // only sizes the stroke QGraphicsPathItem::shape() and boundingRect()
+    // are built from, and setPen() tells the scene index the bounds moved.
+    void setHitTolerance(double mm)
+    {
+        if (qFuzzyCompare(pen().widthF(), 2 * mm))
+            return;
+        QPen hit = pen();
+        hit.setWidthF(2 * mm);
+        setPen(hit);
+    }
     QPainterPath shape() const override
     {
-        // Closed shapes select from anywhere inside; open paths keep the
-        // stroke-based hit area.
+        // Closed shapes select from anywhere inside; open paths and
+        // construction lines from a corridor of kHitPx either side.
         if (m_point) {
+            const double r = pen().widthF() / 2;
             QPainterPath hit;
-            hit.addEllipse(path().boundingRect().center(), 1.5, 1.5);
+            hit.addEllipse(path().boundingRect().center(), r, r);
             return hit;
         }
         return m_closed ? path() : QGraphicsPathItem::shape();
@@ -138,15 +158,61 @@ private:
     Canvas *m_c; Document *m_d; Element m_e;
 };
 
+// Undo puts every element back at the index it had: the element order is
+// the z-order and the order the vectors are machined and selected in.
 class DeleteCmd : public QUndoCommand
 {
 public:
     DeleteCmd(Canvas *c, Document *d, const QVector<Element> &es)
-        : m_c(c), m_d(d), m_es(es) { setText(QStringLiteral("delete %1 element(s)").arg(es.size())); }
-    void redo() override { for (const Element &e : m_es) m_d->removeElementById(e.id); refresh(m_c); }
-    void undo() override { for (const Element &e : m_es) m_d->addElement(e); refresh(m_c); }
+        : m_c(c), m_d(d)
+    {
+        setText(QStringLiteral("delete %1 element(s)").arg(es.size()));
+        const QVector<Element> &all = d->elements();
+        for (const Element &e : es)
+            for (int i = 0; i < all.size(); ++i)
+                if (all.at(i).id == e.id) { m_removed.append({i, all.at(i)}); break; }
+        std::sort(m_removed.begin(), m_removed.end(),
+                  [](const auto &a, const auto &b) { return a.first < b.first; });
+    }
+    void redo() override
+    {
+        for (const auto &p : m_removed) m_d->removeElementById(p.second.id);
+        refresh(m_c);
+    }
+    void undo() override
+    {
+        QVector<Element> &els = m_d->elementsRef();
+        for (const auto &p : m_removed)                 // low index first
+            els.insert(qMin(p.first, int(els.size())), p.second);
+        refresh(m_c);
+    }
 private:
-    Canvas *m_c; Document *m_d; QVector<Element> m_es;
+    Canvas *m_c; Document *m_d;
+    QVector<QPair<int, Element>> m_removed;
+};
+
+// Elements and the toolpath that machines them, added as one step (the
+// inlay male generator).
+class InsertGeneratedCmd : public QUndoCommand
+{
+public:
+    InsertGeneratedCmd(Canvas *c, Document *d, const QVector<Element> &els, const Toolpath &tp)
+        : m_c(c), m_d(d), m_els(els), m_tp(tp)
+    { setText(QStringLiteral("generate %1").arg(tp.json.value("name").toString())); }
+    void redo() override
+    {
+        for (const Element &e : m_els) m_d->addElement(e);
+        m_d->addToolpath(m_tp);
+        refresh(m_c);
+    }
+    void undo() override
+    {
+        m_d->removeToolpath(m_tp.uuid);
+        for (const Element &e : m_els) m_d->removeElementById(e.id);
+        refresh(m_c);
+    }
+private:
+    Canvas *m_c; Document *m_d; QVector<Element> m_els; Toolpath m_tp;
 };
 
 class EditCmd : public QUndoCommand
@@ -166,11 +232,54 @@ private:
 class ReplaceCmd : public QUndoCommand
 {
 public:
+    // `piecesOf` maps each replaced element's id to the ids of the elements
+    // that take its place (convert to paths, break): every toolpath that
+    // machined it then machines all of them, not only the piece that kept
+    // its id.
     ReplaceCmd(Canvas *c, Document *d, const QVector<Element> &before,
-               const QVector<Element> &after, const QString &text)
-        : m_c(c), m_d(d), m_before(before), m_after(after) { setText(text); }
-    void redo() override { swap(m_before, m_after); }
-    void undo() override { swap(m_after, m_before); }
+               const QVector<Element> &after, const QString &text,
+               const QHash<QString, QStringList> &piecesOf = {})
+        : m_c(c), m_d(d), m_before(before), m_after(after)
+    {
+        setText(text);
+        QSet<QString> afterIds;
+        for (const Element &e : after)
+            afterIds.insert(e.id);
+        for (const Toolpath &t : d->toolpaths()) {
+            const QJsonArray refs = t.json.value("elements").toArray();
+            QJsonArray kept;
+            QSet<QString> seen;
+            bool hit = false;
+            for (const QJsonValue &v : refs) {
+                const QString id = v.toObject().value("uuid").toString();
+                if (!piecesOf.contains(id)) {
+                    if (!seen.contains(id)) { kept.append(v); seen.insert(id); }
+                    continue;
+                }
+                hit = true;
+                for (const QString &n : piecesOf.value(id))
+                    if (afterIds.contains(n) && !seen.contains(n)) {
+                        kept.append(QJsonObject{{QStringLiteral("uuid"), n}});
+                        seen.insert(n);
+                    }
+            }
+            if (!hit || kept == refs)
+                continue;
+            Toolpath tpAfter = t;
+            tpAfter.json.insert(QStringLiteral("elements"), kept);
+            m_tps.append({t, tpAfter});
+        }
+    }
+    void redo() override
+    {
+        for (const auto &p : m_tps) m_d->replaceToolpath(p.second);
+        swap(m_before, m_after);
+    }
+    void undo() override
+    {
+        for (const auto &p : m_tps) m_d->replaceToolpath(p.first);
+        swap(m_after, m_before);
+    }
 private:
     void swap(const QVector<Element> &out, const QVector<Element> &in)
     {
@@ -179,6 +288,7 @@ private:
         refresh(m_c);
     }
     Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+    QVector<QPair<Toolpath, Toolpath>> m_tps;
 };
 
 class TpEditCmd : public QUndoCommand
@@ -295,6 +405,30 @@ double Canvas::pxToMm(double px) const
     return px / qMax(1e-9, qAbs(transform().m11()));
 }
 
+// The items' hit corridor is kHitPx on screen, so it is re-sized whenever
+// the zoom changed since the last time (checked on every mouse event too, as
+// the view transform can change without going through zoomBy / zoomFit).
+void Canvas::syncHitTolerance()
+{
+    const double s = qAbs(transform().m11());
+    if (s == m_hitScale)
+        return;
+    m_hitScale = s;
+    const double tol = pxToMm(kHitPx);
+    for (QGraphicsItem *it : m_scene->items())
+        if (auto *e = dynamic_cast<ElemItem *>(it))
+            e->setHitTolerance(tol);
+}
+
+void Canvas::clearPreview()
+{
+    if (m_preview) {
+        m_scene->removeItem(m_preview);
+        delete m_preview;
+        m_preview = nullptr;
+    }
+}
+
 QGraphicsPathItem *Canvas::itemFor(const QString &id) const
 {
     for (QGraphicsItem *it : m_scene->items())
@@ -371,12 +505,16 @@ void Canvas::convertToPaths(const QStringList &ids)
     if (!m_doc)
         return;
     QVector<Element> before, after;
+    QHash<QString, QStringList> piecesOf;
     for (const QString &id : ids) {
         Element *e = m_doc->elementById(id);
         if (!e || e->geometryType == QLatin1String("path"))
             continue;
         before.append(*e);
-        after += Element::toPaths(*e);
+        const QVector<Element> pieces = Element::toPaths(*e);
+        for (const Element &p : pieces)
+            piecesOf[e->id] << p.id;
+        after += pieces;
     }
     if (before.isEmpty())
         return;
@@ -391,7 +529,8 @@ void Canvas::convertToPaths(const QStringList &ids)
         pushEdit(new EditCmd(this, m_doc, before.first(), after.first()), ids);
     } else {
         pushEdit(new ReplaceCmd(this, m_doc, before, after,
-                                tr("convert %1 element(s) to paths").arg(before.size())), ids);
+                                tr("convert %1 element(s) to paths").arg(before.size()),
+                                piecesOf), ids);
     }
     QStringList newIds;
     for (const Element &e : after)
@@ -402,6 +541,7 @@ void Canvas::convertToPaths(const QStringList &ids)
 
 void Canvas::emitZoom()
 {
+    syncHitTolerance();
     emit zoomChanged(qAbs(transform().m11()) * 100.0);
 }
 
@@ -486,11 +626,7 @@ void Canvas::insertGenerated(const QVector<Element> &els, const Toolpath &tp)
 {
     if (!m_doc)
         return;
-    for (const Element &e : els)
-        m_doc->addElement(e);
-    m_doc->addToolpath(tp);
-    rebuild();
-    emit documentChanged();
+    m_undo->push(new InsertGeneratedCmd(this, m_doc, els, tp));
 }
 
 // Exactly one selected, parametrically resizable element? Handle sits at the
@@ -653,7 +789,7 @@ void Canvas::syncEditTarget()
 
 bool Canvas::hitNode(const QPointF &pos, int *sub, int *node, NodeGrab *what) const
 {
-    const double tol = pxToMm(7.0);
+    const double tol = pxToMm(kHitPx);
     // Handles first (they can sit on top of anchors), selected node's first.
     for (int pass = 0; pass < 2; ++pass) {
         for (int si = 0; si < m_model.subs.size(); ++si) {
@@ -684,7 +820,7 @@ bool Canvas::hitNode(const QPointF &pos, int *sub, int *node, NodeGrab *what) co
 
 bool Canvas::hitSegment(const QPointF &pos, int *sub, int *seg, double *t) const
 {
-    const double tol = pxToMm(7.0);
+    const double tol = pxToMm(kHitPx);
     double best = tol;
     bool hit = false;
     for (int si = 0; si < m_model.subs.size(); ++si) {
@@ -781,7 +917,7 @@ QPointF Canvas::snap(QPointF p) const
 void Canvas::setTool(Tool t)
 {
     if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool)
-        || !m_splinePts.isEmpty())
+        || !m_splinePts.isEmpty() || !m_tanLines.isEmpty() || m_preview)
         cancelDrawing();
     m_tool = t;
     m_drawing = false;
@@ -843,8 +979,14 @@ void Canvas::zoomFit()
     // Something selected: fill the window with it, centred. Else the plate.
     QRectF sel;
     for (QGraphicsItem *it : m_scene->selectedItems())
-        if (it->data(0).isValid())
-            sel |= it->sceneBoundingRect();
+        if (it->data(0).isValid()) {
+            // The geometry, not the item's bounds: those include the wide
+            // invisible hit pen, which is mostly margin when zoomed out.
+            if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(it))
+                sel |= pi->mapRectToScene(pi->path().boundingRect());
+            else
+                sel |= it->sceneBoundingRect();
+        }
     if (sel.width() > 0 || sel.height() > 0) {
         const double m = qMax(qMax(sel.width(), sel.height()) * 0.04, 0.5);
         fitInView(sel.adjusted(-m, -m, m, m), Qt::KeepAspectRatio);
@@ -865,6 +1007,7 @@ void Canvas::rebuild()
     const QStringList selected = selectedElementIds();
     m_scene->blockSignals(true);
     m_preview = nullptr;           // owned by the scene; clear() deletes it
+    m_previewItems.clear();        // likewise
     m_scene->clear();
     if (!m_doc) {
         m_scene->blockSignals(false);
@@ -880,6 +1023,8 @@ void Canvas::rebuild()
     const bool selectable = (m_tool == Select || m_tool == NodeEdit || m_tool == Pan
                              || m_tool == SelectArea);
     refreshParametricState();
+    m_hitScale = qAbs(transform().m11());
+    const double hitTol = pxToMm(kHitPx);
     for (const Element &e : m_doc->elements()) {
         // Open paths are the only unfilled type; a path row of point_type 4
         // marks a closed one.
@@ -889,6 +1034,7 @@ void Canvas::rebuild()
                 if (v.toInt() == 4) { closed = true; break; }
         auto *item = new ElemItem(e.painterPath, closed, Element::isConstruction(e),
                                   Element::isPoint(e), m_full.contains(e.id));
+        item->setHitTolerance(hitTol);
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
         item->setData(0, e.id);                       // scene item -> element
@@ -931,16 +1077,30 @@ void Canvas::setVectorHighlight(const QStringList &ids)
     viewport()->update();
 }
 
+// Only the overlay items are replaced: the preview is regenerated in the
+// background whenever the model changes, and a full rebuild() here would
+// pull the scene out from under a drag, a node edit or a shape being drawn.
 void Canvas::setToolpathPreview(const QVector<Op> &ops)
 {
+    removePreviewItems();
     m_previewOps = ops;
-    rebuild();
+    if (!m_previewOps.isEmpty())
+        renderPreviewOps();
 }
 
 void Canvas::clearToolpathPreview()
 {
+    removePreviewItems();
     m_previewOps.clear();
-    rebuild();
+}
+
+void Canvas::removePreviewItems()
+{
+    for (QGraphicsItem *it : std::as_const(m_previewItems)) {
+        m_scene->removeItem(it);
+        delete it;
+    }
+    m_previewItems.clear();
 }
 
 // Draw the generated machine motion over the vectors: rapids as dashed gray,
@@ -1018,6 +1178,7 @@ void Canvas::renderPreviewOps()
     rapidPen.setStyle(Qt::DashLine);
     auto *ri = m_scene->addPath(rapids, rapidPen);
     ri->setZValue(5);
+    m_previewItems.append(ri);
 
     for (int b = 0; b < NB; ++b) {
         if (cut.at(b).isEmpty())
@@ -1030,6 +1191,7 @@ void Canvas::renderPreviewOps()
         pen.setWidthF(1.4);
         auto *it = m_scene->addPath(cut.at(b), pen);
         it->setZValue(6);
+        m_previewItems.append(it);
     }
 }
 
@@ -1486,8 +1648,11 @@ void Canvas::modifyAt(const QPointF &q)
         const QJsonObject layer = before.raw.value("layer").toObject();
         for (int i = 1; i < parts.size(); ++i)
             after.append(Element::makeBezierPath(parts.at(i), layer));
+        QHash<QString, QStringList> piecesOf;
+        for (const Element &e : after)
+            piecesOf[before.id] << e.id;
         pushEdit(new ReplaceCmd(this, m_doc, {before}, after,
-                                tr("break into %1 pieces").arg(after.size())), {before.id});
+                                tr("break into %1 pieces").arg(after.size()), piecesOf), {before.id});
         emit statusHint(tr("Broken into %1 pieces").arg(after.size()));
         break;
     }
@@ -1578,11 +1743,7 @@ void Canvas::cancelDrawing()
     m_penDrag = false;
     m_splinePts.clear();
     m_arcTurn = 0;
-    if (m_preview) {
-        m_scene->removeItem(m_preview);
-        delete m_preview;
-        m_preview = nullptr;
-    }
+    clearPreview();
 }
 
 void Canvas::finishPath(bool closed)
@@ -1611,6 +1772,7 @@ void Canvas::finishPath(bool closed)
 
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
+    syncHitTolerance();
     if (event->button() == Qt::MiddleButton || (m_tool == Pan && event->button() == Qt::LeftButton)) {
         m_panning = true;
         m_panLast = event->pos();
@@ -1645,6 +1807,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
                 QPen pen(kSelected);
                 pen.setCosmetic(true);
                 pen.setStyle(Qt::DashLine);
+                clearPreview();   // one live outline at a time, never orphaned
                 m_preview = m_scene->addPath(QPainterPath(), pen);
                 viewport()->update();
                 event->accept();
@@ -1804,6 +1967,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         QPen pen(kPreview);
         pen.setCosmetic(true);
         pen.setStyle(Qt::DashLine);
+        clearPreview();
         m_preview = m_scene->addPath(QPainterPath(), pen);
         event->accept();
         return;
@@ -1813,6 +1977,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
 
 void Canvas::mouseMoveEvent(QMouseEvent *event)
 {
+    syncHitTolerance();
     if (m_panning) {
         const QPoint d = event->pos() - m_panLast;
         m_panLast = event->pos();
@@ -2099,6 +2264,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
 
 void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    syncHitTolerance();
     if (overlayOn() && event->button() == Qt::LeftButton) {
         const QString uid = hitConstraint(event->pos());
         const int i = m_doc ? m_doc->parametric().indexOfUid(uid) : -1;
@@ -2286,7 +2452,9 @@ void Canvas::deleteSelected()
 
 void Canvas::wheelEvent(QWheelEvent *event)
 {
-    const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
+    const int dy = event->angleDelta().y();
+    if (dy == 0) { QGraphicsView::wheelEvent(event); return; }   // horizontal scroll: pan, not zoom
+    const double factor = dy > 0 ? 1.15 : 1.0 / 1.15;
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     scale(factor, factor);
     emitZoom();

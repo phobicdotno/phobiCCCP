@@ -142,12 +142,15 @@ private:
     // position (unlike ctrl-X); pass false when the controller has already
     // stopped itself and will only listen to a reset.
     void abortStream(const QString &why, bool holdMachine);
+    void resetAfterError();                     // the ctrl-X that follows a held abort
     void writeLine(const QString &line);
     void flushTlo();                            // send a pending G43.1 if allowed
     void resyncAdhoc(const QString &why);       // forget ad-hoc lines that will never ack
 
     QSerialPort *m_port = nullptr;
     QTimer *m_statusTimer;
+    QTimer *m_errorResetTimer;                  // waits for Hold:0 after an error
+    QElapsedTimer m_errorResetClock;
     QByteArray m_rx;
     MachineStatus m_status;
     QHash<int, double> m_settings;   // $n=value lines seen

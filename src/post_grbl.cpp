@@ -52,9 +52,19 @@ JobStats computeStats(const QVector<Op> &ops)
         s.minY = qMin(s.minY, y); s.maxY = qMax(s.maxY, y);
         s.minZ = qMin(s.minZ, z); s.maxZ = qMax(s.maxZ, z);
     };
+    bool spinning = false;
     for (const Op &op : ops) {
         if (op.kind == Op::Dwell)
             s.timeSec += qMax(0.0, op.feed);
+        // The post's spin-up wait: every start from standstill, and a tool
+        // change stops the spindle.
+        if (op.kind == Op::Spindle) {
+            if (op.ival > 0 && !spinning)
+                s.timeSec += kSpindleSpinUpSec;
+            spinning = op.ival > 0;
+        } else if (op.kind == Op::Tool) {
+            spinning = false;
+        }
         if (op.kind != Op::Rapid && op.kind != Op::Feed && op.kind != Op::Arc)
             continue;
         grow(op.x, op.y, op.z);
@@ -111,12 +121,17 @@ QStringList airCutTransform(const QStringList &lines, double lift)
 {
     static const QRegularExpression zWord(QStringLiteral("Z(-?[0-9]+\\.?[0-9]*)"));
     QStringList out;
+    bool afterStart = false;
     for (const QString &raw : lines) {
         const QString l = raw.trimmed();
+        // The spin-up wait right after a dropped start has nothing to wait for.
+        const bool spinUp = afterStart && l.startsWith(QLatin1String("G4P"));
+        afterStart = l.startsWith(QLatin1String("M03")) || l.startsWith(QLatin1String("M04"));
+        if (spinUp)
+            continue;
         // Drop spindle control: M03/M04 starts, bare S rpm changes, M05 stops.
         // (`M0 ;T` tool-change pauses survive — they contain no motion.)
-        if (l.startsWith(QLatin1String("M03")) || l.startsWith(QLatin1String("M04"))
-            || l == QLatin1String("M05")
+        if (afterStart || l == QLatin1String("M05")
             || (l.size() > 1 && l.at(0) == QChar('S') && l.at(1).isDigit()))
             continue;
         if (l.startsWith(QChar('(')) || l.startsWith(QChar(';'))) {
@@ -231,6 +246,11 @@ QString GrblPost::generate(const QVector<Op> &ops) const
         switch (op.kind) {
         case Op::Comment: {
             QString t = op.text;
+            // GRBL ends a comment at the first ')': "(Pocket (12))" leaves a
+            // stray ')' that other senders stream and GRBL rejects.
+            for (QChar &ch : t)
+                if (ch == u'(' || ch == u')' || ch == u'\n' || ch == u'\r')
+                    ch = u' ';
             if (t.length() > 12)
                 t = t.left(9) + QStringLiteral("...");
             line(QStringLiteral("(") + t + QStringLiteral(")"));
@@ -242,8 +262,18 @@ QString GrblPost::generate(const QVector<Op> &ops) const
             } else if (!spindleOn || op.ival != lastRpm) {
                 QString ln;
                 if (!spindleOn) ln += QStringLiteral("M03");
+                const bool starting = !spindleOn;
                 ln += QStringLiteral("S") + QString::number(op.ival);
                 line(ln);
+                // From standstill: wait for the spindle to reach speed
+                // before anything moves into the stock.
+                // Speeding up a running spindle (same tool, higher rpm) takes
+                // part of that time too.
+                if (starting)
+                    line(QStringLiteral("G4P") + QString::number(kSpindleSpinUpSec, 'f', 2));
+                else if (op.ival > lastRpm)
+                    line(QStringLiteral("G4P") + QString::number(
+                        kSpindleSpinUpSec * double(op.ival - lastRpm) / op.ival, 'f', 2));
                 spindleOn = true;
                 lastRpm = op.ival;
             }
@@ -255,6 +285,10 @@ QString GrblPost::generate(const QVector<Op> &ops) const
                 if (spindleOn) { line(QStringLiteral("M05")); spindleOn = false; }
                 // GRBL post: pause for a manual tool change, tool number in comment.
                 line(QStringLiteral("M0 ;T") + QString::number(op.ival));
+                // A probe macro that failed half way (ALARM on G38.2) can
+                // leave GRBL in G91; "Continue anyway" must not run the rest
+                // of the job as relative moves.
+                line(m_metric ? QStringLiteral("G90G21") : QStringLiteral("G90G20"));
                 // The sender runs a probe macro here (G53 moves, its own F),
                 // so nothing modal survives: the next move must carry every word.
                 X.last.clear(); Y.last.clear(); Z.last.clear(); F.last.clear(); G.last.clear();

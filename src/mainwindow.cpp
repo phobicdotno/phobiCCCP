@@ -62,6 +62,7 @@
 #include "toolbarorder.h"
 #include "toolpathfactory.h"
 #include <QTimer>
+#include <QLocale>
 #include <QSysInfo>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -1987,6 +1988,7 @@ void MainWindow::saveExtras(const QString &path)
         return;                       // still dirty: the next save retries
     }
     m_dirty = false;
+    m_recovery.discard();
     updateTitle();
     statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
 }
@@ -2063,6 +2065,7 @@ void MainWindow::closeEvent(QCloseEvent *e)
     }
     if (confirmDiscard(QStringLiteral("Save before closing?"))) {
         removeUntitledFile();
+        m_recovery.discard();         // saved, or the edits were let go
         e->accept();
     }
     else
@@ -2091,11 +2094,17 @@ void MainWindow::openFile(const QString &path)
             newUntitled();
         if (!p.svg.isEmpty()) {
             QTemporaryDir tmp;
-            const QString svg = tmp.filePath(p.name + QStringLiteral(".svg"));
+            // The name comes from the file: "Bracket A/B" or "../../x" must
+            // not become a path outside the temporary folder.
+            const QString svg = tmp.filePath(safeFileName(p.name) + QStringLiteral(".svg"));
             QFile f(svg);
             if (tmp.isValid() && f.open(QIODevice::WriteOnly) && f.write(p.svg) == p.svg.size()) {
                 f.close();
                 importVectorFile(this, m_canvas, &m_doc, svg);
+            } else {
+                QMessageBox::warning(this, QStringLiteral("Open"),
+                                     QStringLiteral("The drawing in %1 could not be imported.")
+                                         .arg(QFileInfo(path).fileName()));
             }
         }
         QString err;
@@ -2160,6 +2169,7 @@ void MainWindow::openPath(const QString &path, bool untitled)
     m_machine->setDocument(&m_doc);
     m_model->setDocument(&m_doc);
     m_dirty = false;
+    m_recovery.discard();             // the design it replaces was saved or let go
     if (m_untitledPath != path)
         removeUntitledFile();         // the untitled design it replaces
     m_untitled = untitled;
@@ -2197,6 +2207,70 @@ void MainWindow::showStartupWindow()
     recheck->setInterval(60 * 60 * 1000);
     connect(recheck, &QTimer::timeout, this, &MainWindow::checkForUpdate);
     recheck->start();
+    // Crash recovery, also only for the real window.
+    auto *autosaveTimer = new QTimer(this);
+    autosaveTimer->setInterval(2 * 60 * 1000);
+    connect(autosaveTimer, &QTimer::timeout, this, &MainWindow::autosave);
+    autosaveTimer->start();
+    QTimer::singleShot(0, this, &MainWindow::offerRecovery);
+}
+
+void MainWindow::autosave()
+{
+    if (!m_dirty || m_doc.filePath().isEmpty())
+        return;
+    QString err;
+    const QString copy = m_recovery.write(m_doc, m_untitled ? m_untitledPath : m_doc.filePath(),
+                                          m_untitled, &err);
+    if (copy.isEmpty()) {
+        if (!err.isEmpty())
+            statusBar()->showMessage(QStringLiteral("Could not write a recovery copy: %1").arg(err), 8000);
+        return;
+    }
+    m_bg.saveTo(copy);
+    m_model->saveTo(copy);
+}
+
+// A copy left by a session that did not close: open it as an untitled
+// design (Save As offers the original name), never over the user's file.
+void MainWindow::offerRecovery()
+{
+    for (const Recovery::Entry &e : m_recovery.pending()) {
+        const QString what = e.untitled ? QStringLiteral("an untitled design")
+                                        : QFileInfo(e.source).fileName();
+        const auto r = QMessageBox::question(
+            this, QStringLiteral("Recover unsaved work"),
+            QStringLiteral("phobiCCCP did not close normally. A recovery copy of %1 from %2 "
+                           "has changes that were never saved.\n\nOpen it? (No deletes it.)")
+                .arg(what, QLocale().toString(e.saved, QLocale::ShortFormat)),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (r != QMessageBox::Yes) {
+            Recovery::remove(e.copy);
+            continue;
+        }
+        if (!confirmDiscard(QStringLiteral("Save before opening the recovered design?")))
+            return;
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        QDir().mkpath(dir);
+        const QString scratch = dir + QStringLiteral("/untitled-%1.c2d")
+                                          .arg(QCoreApplication::applicationPid());
+        QFile::remove(scratch);
+        if (!QFile::copy(e.copy, scratch)) {
+            QMessageBox::warning(this, QStringLiteral("Recover unsaved work"),
+                                 QStringLiteral("Could not copy %1").arg(e.copy));
+            return;
+        }
+        m_dirty = false;
+        openPath(scratch, true);
+        if (QFileInfo(m_doc.filePath()) != QFileInfo(scratch))
+            return;
+        m_recovery.adopt(e.copy);     // kept until the next copy or a save
+        m_untitledFrom = e.untitled ? QString() : e.source;
+        m_dirty = true;
+        updateTitle();
+        statusBar()->showMessage(QStringLiteral("Recovered %1; save it to keep it").arg(what), 10000);
+        return;
+    }
 }
 
 void MainWindow::newUntitled(double width, double height, double thickness)
@@ -2304,8 +2378,8 @@ void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
     QStringList notes;
     for (int i = 0; i < p.files.size(); ++i) {
         const ReceivedFile &f = p.files.at(i);
-        if (f.role == QLatin1String("vectors"))
-            importVectorFile(this, m_canvas, &m_doc, paths.at(i));
+        if (f.role == QLatin1String("vectors"))   // in stock coordinates, like the model: not moved
+            importVectorFile(this, m_canvas, &m_doc, paths.at(i), {}, false);
         else if (f.role == QLatin1String("model")
                  && !m_model->addStlMesh(f.data, f.name, f.x, f.y, &err))
             notes << QStringLiteral("the model could not be read (%1)").arg(err);

@@ -105,6 +105,8 @@ int main(int argc, char **argv)
     check(fails(package({file("run.sh", "script", 1)}, {"x"})), "unknown role");
     check(fails(package({file("a.dxf", "vectors", 1), file("A.dxf", "vectors", 1)}, {"x", "y"})),
           "duplicate names");
+    check(fails(package({file("a", "vectors", 1), file("a ", "vectors", 1)}, {"x", "y"})),
+          "names that are the same once made safe");
     check(fails(package({file("a.stl", "model", -1)}, {})), "negative size");
     check(fails(package({file("a.stl", "model", 1.5)}, {})), "fractional size");
     check(fails(package({file("a.stl", "model", double(PackageReader::kMaxTotal)),
@@ -194,6 +196,45 @@ int main(int argc, char **argv)
         s.write("GET / HTTP/1.1\r\n\r\n");
         check(waitFor([&] { return s.canReadLine(); }) && s.readLine().startsWith("ERR "),
               "garbage gets ERR and is dropped");
+    }
+
+    // One transfer at a time: a second manifest while one is still being sent
+    // is told busy, so only one project's bytes are held in memory.
+    {
+        QTcpSocket a;
+        a.connectToHost(QHostAddress::LocalHost, rx.port());
+        a.waitForConnected(3000);
+        a.write(package({file("big.stl", "model", 1000)}, {"part of it"}));
+        a.flush();
+        waitFor([] { return false; }, 200);
+        QTcpSocket b;
+        b.connectToHost(QHostAddress::LocalHost, rx.port());
+        b.waitForConnected(3000);
+        b.write(goodPackage());
+        check(waitFor([&] { return b.canReadLine(); }) && b.readLine().startsWith("ERR phobiCCCP is busy"),
+              "second transfer while one is in progress is turned away");
+        check(a.state() == QAbstractSocket::ConnectedState, "the first one carries on");
+    }
+
+    // An absolute deadline: a sender that keeps the idle timer happy with a
+    // byte now and then is still cut off.
+    {
+        ProjectReceiver slow;
+        slow.setTimeouts(400, 600);
+        slow.start(0);
+        QTcpSocket s;
+        s.connectToHost(QHostAddress::LocalHost, slow.port());
+        s.waitForConnected(3000);
+        const QByteArray all = goodPackage();
+        int sent = 0;
+        QElapsedTimer t;
+        t.start();
+        while (!s.canReadLine() && s.state() == QAbstractSocket::ConnectedState && t.elapsed() < 5000) {
+            if (sent < all.size() - 1)
+                s.write(all.mid(sent++, 1));
+            waitFor([] { return false; }, 100);
+        }
+        check(s.readLine() == "ERR timed out\n" && t.elapsed() < 3000, "trickling sender hits the deadline");
     }
 
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");

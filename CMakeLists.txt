@@ -57,6 +57,7 @@ add_library(phobicccp_core STATIC
     src/backgroundimage.cpp
     src/imagetrace.cpp
     src/model3d.cpp
+    src/recovery.cpp
 )
 target_include_directories(phobicccp_core PUBLIC src)
 # The binary should be able to say which build it is (--version, --help);
@@ -169,6 +170,14 @@ add_test(NAME rehearsal COMMAND test_rehearsal)
 add_executable(test_surfacemap tests/test_surfacemap.cpp)
 target_link_libraries(test_surfacemap PRIVATE phobicccp_core)
 add_test(NAME surfacemap COMMAND test_surfacemap)
+# The streamer against a scripted controller on a pty (Linux; skips when no
+# pty opens as a serial port).
+if(UNIX AND NOT APPLE)
+    add_executable(test_streamer tests/test_streamer.cpp)
+    target_link_libraries(test_streamer PRIVATE phobicccp_core util)
+    add_test(NAME streamer COMMAND test_streamer)
+    set_tests_properties(streamer PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 add_executable(test_tiling tests/test_tiling.cpp)
 target_link_libraries(test_tiling PRIVATE phobicccp_core)
 add_test(NAME tiling COMMAND test_tiling)
@@ -195,7 +204,8 @@ add_test(NAME hardening COMMAND test_hardening
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
-    add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp src/canvasparametric.cpp)
+    add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/propertiespanel.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
     add_executable(test_canvasparametric tests/test_canvasparametric.cpp src/canvas.cpp

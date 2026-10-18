@@ -827,9 +827,10 @@ static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
             for (QPolygonF piece : clipper.polyline(poly)) {
                 if (piece.size() < 2)
                     continue;
-                // Climb = material on the left of travel (a clockwise
-                // spindle), as for the raster passes; conventional the other
-                // way. Probe the grid either side of every segment.
+                // Climb = material on the right of travel (a clockwise
+                // spindle: the tooth enters thick and leaves thin, as G41 and
+                // the 2D contours do), as for the raster passes; conventional
+                // the other way. Probe the grid either side of every segment.
                 if (p.direction != Cam3dParams::Zigzag) {
                     double score = 0;
                     for (int k = 0; k + 1 < piece.size(); ++k) {
@@ -843,7 +844,7 @@ static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
                                - cz.sample((m - left).x(), (m - left).y());
                     }
                     const bool materialLeft = score > 0;
-                    if (materialLeft != (p.direction == Cam3dParams::Climb))
+                    if (materialLeft == (p.direction == Cam3dParams::Climb))
                         std::reverse(piece.begin(), piece.end());
                 }
                 pieces.append(piece);
@@ -1007,9 +1008,10 @@ QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
         if (offsets.isEmpty() || oMax - offsets.last() > 0.05 * p.stepover)
             offsets.append(oMax);
 
-        // Climb: uncut material (the next pass, +nrm) on the left of travel
-        // → travel along +d for a clockwise spindle. Conventional: −d.
-        int dir = p.direction == Cam3dParams::Conventional ? -1 : 1;
+        // Climb: uncut material (the next pass, +nrm, on the left of +d) on
+        // the right of travel → travel along −d for a clockwise spindle.
+        // Conventional: +d.
+        int dir = p.direction == Cam3dParams::Climb ? -1 : 1;
         int passIndex = 0;
         for (double o : offsets) {
             // One pass over a fine relief with a big ball is a lot of sampling

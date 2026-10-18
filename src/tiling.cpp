@@ -107,9 +107,21 @@ static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
     };
     QVector<Op> out, block;
     bool blockCuts = false, inPreamble = false;
+    // A same-tool toolpath carries no tool change of its own: if the block
+    // that did is dropped here, the kept block must still load that tool.
+    int toolIn = -1;      // last tool change seen in the input
+    int toolOut = -1;     // last tool change kept in this tile
     auto flush = [&] {
-        if (blockCuts)
+        if (blockCuts) {
+            bool hasTool = false;
+            for (const Op &b : block)
+                if (b.kind == Op::Tool) { hasTool = true; toolOut = b.ival; }
+            if (!hasTool && toolIn >= 0 && toolIn != toolOut) {
+                out.append(Op::tool(toolIn));
+                toolOut = toolIn;
+            }
             out += block;
+        }
         block.clear();
         blockCuts = false;
     };
@@ -129,6 +141,8 @@ static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
                 blockCuts = true;
         }
         block.append(o);
+        if (o.kind == Op::Tool)
+            toolIn = o.ival;
     }
     flush();
     return out;
@@ -173,18 +187,97 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
     P3 cur{0, 0, safeZ};
     double plungeFeed = 0;
 
+    // The cutting path that follows op `i` (its own end excluded), as far as
+    // a ramp could need it: consecutive feeds and arcs, up to kRampLen.
+    const double kRampLen = 8.0;              // mm of the path used, at most
+    const double kRampSlope = 0.35;           // rise per mm along it (~20 deg)
+    auto pathAfter = [&](int i) {
+        QVector<P3> out;
+        if (i < 0)
+            return out;
+        P3 at{ops.at(i).x, ops.at(i).y, ops.at(i).z};
+        double len = 0;
+        for (int j = i + 1; j < ops.size() && len < kRampLen; ++j) {
+            const Op &o = ops.at(j);
+            if (o.kind == Op::Feed) {
+                const P3 to{o.x, o.y, o.z};
+                len += std::hypot(to.x - at.x, to.y - at.y);
+                out.append(to);
+                at = to;
+            } else if (o.kind == Op::Arc) {
+                for (const P3 &p : arcPoints(at, o)) {
+                    len += std::hypot(p.x - at.x, p.y - at.y);
+                    out.append(p);
+                    at = p;
+                }
+            } else if (o.kind != Op::Comment) {
+                break;
+            }
+        }
+        return out;
+    };
+
     // Emit one cutting piece a->b into tile k, reconnecting through safe Z
-    // when the tile's last position is not where the piece starts.
-    auto emitPiece = [&](int k, const P3 &a, const P3 &b, const Op &src, bool asArc) {
+    // when the tile's last position is not where the piece starts. `ahead`
+    // is the rest of the op's own path past b (a split arc), `opIndex` the
+    // op it came from, for the path after that (-1 when b is not its end).
+    //
+    // A cut split at a tile line comes back in at cutting depth, half in the
+    // slot the other tile cut and half in stock. Going straight down there is
+    // a full-depth plunge on the side of the bit. Instead the tool comes down
+    // above a point a few mm further along the cut and ramps back along it to
+    // the start, at the plunge rate, so the cut that follows passes over the
+    // ramp at full depth. Only where less than 1 mm of path stays in the tile
+    // does it still plunge.
+    auto emitPiece = [&](int k, const P3 &a, const P3 &b, const Op &src, bool asArc,
+                         const QVector<P3> &ahead, int opIndex) {
         TileState &t = tiles[k];
         const double dy = -k * tileHeight;
         if (!t.havePos || !same(t.pos, a)) {
             if (t.havePos && t.pos.z < safeZ - 1e-9)
                 t.ops.append(Op::rapid(t.pos.x, t.pos.y + dy, safeZ));
-            t.ops.append(Op::rapid(a.x, a.y + dy, safeZ));
-            if (a.z < safeZ - 1e-9)
-                t.ops.append(Op::feedTo(a.x, a.y + dy, a.z,
-                                        plungeFeed > 0 ? qMin(plungeFeed, src.feed) : src.feed));
+            const double down = plungeFeed > 0 ? qMin(plungeFeed, src.feed) : src.feed;
+            // The ramp's path: from a along the cut, while it stays in this
+            // tile, up to kRampLen. s[i] is the distance along it.
+            QVector<P3> q{a};
+            QVector<double> sAt{0.0};
+            if (a.z < safeZ - 1e-9) {
+                QVector<P3> path;
+                if (asArc)
+                    path = arcPoints(a, src);
+                else
+                    path.append(b);
+                path += ahead;
+                path += pathAfter(opIndex);   // empty when the piece was cut short
+                for (const P3 &p : path) {
+                    if (p.y < lo(k) - 1e-9 || p.y > hi(k) + 1e-9)
+                        break;
+                    const double step = std::hypot(p.x - q.last().x, p.y - q.last().y);
+                    if (sAt.last() + step >= kRampLen) {
+                        q.append(lerp(q.last(), p, (kRampLen - sAt.last()) / step));
+                        sAt.append(kRampLen);
+                        break;
+                    }
+                    q.append(p);
+                    sAt.append(sAt.last() + step);
+                }
+            }
+            if (sAt.last() >= 1.0) {
+                auto zAt = [&](int i) {
+                    return qMin(safeZ, qMax(q.at(i).z, a.z + sAt.at(i) * kRampSlope));
+                };
+                const int m = int(q.size()) - 1;
+                t.ops.append(Op::rapid(q.at(m).x, q.at(m).y + dy, safeZ));
+                if (zAt(m) < safeZ - 1e-9)
+                    t.ops.append(Op::feedTo(q.at(m).x, q.at(m).y + dy, zAt(m), down));
+                for (int i = m - 1; i > 0; --i)
+                    t.ops.append(Op::feedTo(q.at(i).x, q.at(i).y + dy, zAt(i), down));
+                t.ops.append(Op::feedTo(a.x, a.y + dy, a.z, down));
+            } else {
+                t.ops.append(Op::rapid(a.x, a.y + dy, safeZ));
+                if (a.z < safeZ - 1e-9)
+                    t.ops.append(Op::feedTo(a.x, a.y + dy, a.z, down));
+            }
         }
         if (asArc)
             t.ops.append(Op::arcTo(b.x, b.y + dy, b.z, src.ci, src.cj, src.cw, src.feed));
@@ -195,15 +288,18 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
         ++t.motions;
     };
 
-    auto emitSegment = [&](const P3 &a, const P3 &b, const Op &src) {
+    auto emitSegment = [&](const P3 &a, const P3 &b, const Op &src,
+                           const QVector<P3> &ahead, int opIndex) {
         for (int k = 0; k < n; ++k) {
             P3 ca, cb;
             if (clipToBand(a, b, lo(k), hi(k), &ca, &cb))
-                emitPiece(k, ca, cb, src, false);
+                emitPiece(k, ca, cb, src, false, same(cb, b) ? ahead : QVector<P3>(),
+                          same(cb, b) ? opIndex : -1);
         }
     };
 
-    for (const Op &op : ops) {
+    for (int i = 0; i < ops.size(); ++i) {
+        const Op &op = ops.at(i);
         switch (op.kind) {
         case Op::Dwell:
             // A pause belongs to where the tool is; tiles re-link their own
@@ -224,7 +320,7 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
             const P3 to{op.x, op.y, op.z};
             if (qAbs(to.x - cur.x) < 1e-9 && qAbs(to.y - cur.y) < 1e-9 && to.z < cur.z)
                 plungeFeed = op.feed;
-            emitSegment(cur, to, op);
+            emitSegment(cur, to, op, {}, i);
             cur = to;
             break;
         }
@@ -245,12 +341,12 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
             if (band < 0 && maxY <= hi(n - 1) + 1e-9 && minY >= lo(n - 1) - 1e-9)
                 band = n - 1;   // touching the top of the last tile
             if (band >= 0) {
-                emitPiece(band, cur, {op.x, op.y, op.z}, op, true);
+                emitPiece(band, cur, {op.x, op.y, op.z}, op, true, {}, i);
             } else {
                 P3 a = cur;
-                for (const P3 &p : pts) {
-                    emitSegment(a, p, op);
-                    a = p;
+                for (int j = 0; j < pts.size(); ++j) {
+                    emitSegment(a, pts.at(j), op, pts.mid(j + 1), i);
+                    a = pts.at(j);
                 }
             }
             cur = {op.x, op.y, op.z};

@@ -874,14 +874,28 @@ struct CutParams {
 
 // Ring-fill a centre region: concentric insets every `stepover`, innermost
 // first, as one job (a firstDelta of 0 starts on the region's own boundary —
-// used for rest regions, already in centre space).
-static void ringFillJob(const QPainterPath &area, double firstDelta, double stepover,
+// used for rest regions, already in centre space). Returns false when the
+// ring count ran into its bound with region still left to fill.
+static bool ringFillJob(const QPainterPath &area, double firstDelta, double stepover,
                         QList<Job> &jobs)
 {
     Job job;
     QList<QList<QPolygonF>> shells;
     double delta = firstDelta;
-    while (shells.size() < 500) {
+    // No point of the region lies more than half its narrower side from the
+    // boundary, so that many stepovers (and a couple spare) reach the centre
+    // of any real pocket. A fixed 500 left the middle of a 600 mm pocket at
+    // a 0.5 mm stepover uncut without a word. The hard bound only stops an
+    // absurd stepover from running for ever.
+    const QRectF bb = area.boundingRect();
+    const double reach = 0.5 * qMin(bb.width(), bb.height()) - firstDelta;
+    const int cap = int(qBound(2.0, std::ceil(reach / qMax(stepover, 1e-6)) + 3, 20000.0));
+    bool full = true;
+    while (true) {
+        if (shells.size() >= cap) {
+            full = insetRings(area, delta).isEmpty();
+            break;
+        }
         QList<QPolygonF> s;
         if (delta < 1e-9) {
             for (QPolygonF p : area.toSubpathPolygons())
@@ -901,6 +915,7 @@ static void ringFillJob(const QPainterPath &area, double firstDelta, double step
         job.rings.append(shells.at(k));
     if (!job.rings.isEmpty())
         jobs.append(job);
+    return full;
 }
 
 // Lead arcs for a closed tool-centre ring: quarter circles of radius
@@ -1231,6 +1246,16 @@ public:
         }
     }
 
+    // Whether followRing lifts over tabs on this ring at depth z.
+    static bool hasTabs(const QPolygonF &poly, double z, const CutParams &cp)
+    {
+        if (!(cp.tabWidth > 0.01 && z < cp.tabTop - 1e-9 && poly.isClosed() && poly.size() > 3))
+            return false;
+        const double len = perimeter(poly);
+        const int nTabs = qBound(3, int(len / 150.0) + 3, 8);
+        return qMin(cp.tabWidth, len / (3.0 * nTabs)) >= 1.0;
+    }
+
     // Follow one closed/open ring at depth z; arcs for circles; tab lifts when
     // z is below tabTop and tabWidth > 0.
     void followRing(const QPolygonF &poly, double z, const CutParams &cp)
@@ -1446,8 +1471,13 @@ public:
                 order.append(forward ? k : job.rings.size() - 1 - k);
 
             const QPolygonF &firstRing = job.rings.at(order.first());
+            // A ramp runs the loop at depth from vertex 0 and knows nothing
+            // of tabs: on a pass below the tab tops it would cut through every
+            // tab before the tabbed lap below lifts over them. Plunge there
+            // instead (vertex 0 is never inside a tab).
+            const bool ramp = cp.rampAngle > 0 && !hasTabs(firstRing, z, cp);
             if (first) {
-                if (cp.rampAngle > 0 && job.closed) {
+                if (ramp && job.closed) {
                     plungeTo(firstRing.first(), cp.zTop);
                     rampDescend(firstRing, cp.zTop, z, cp.rampAngle);
                 } else {
@@ -1455,7 +1485,7 @@ public:
                 }
                 first = false;
             } else if (job.closed) {
-                if (cp.rampAngle > 0)
+                if (ramp)
                     rampDescend(firstRing, z + cp.stepdown, z, cp.rampAngle);
                 else
                     plungeTo(pos(), z);   // in place — we ended here last pass
@@ -1633,15 +1663,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             return;
         QVector<Op> body;
         Emitter em(body, safeZ, 0, 0);
-        int curTp = -1, curRpm = -1;
+        int curTp = -1;
         QStringList names;
         for (const Deferred &d : orderDeferred(pending, lastPos)) {
             if (d.tp != curTp) {
                 body.append(Op::comment(d.name));
-                if (d.rpm != curRpm) {
-                    body.append(Op::spindle(d.rpm));
-                    curRpm = d.rpm;
-                }
+                // Every toolpath carries its spindle start, even at an
+                // unchanged rpm (the post drops the repeat): a tile that keeps
+                // this toolpath but not the one before it must still start it.
+                body.append(Op::spindle(d.rpm));
                 em.setFeeds(d.feed, d.plunge);
                 curTp = d.tp;
                 if (!names.contains(d.name))
@@ -1654,8 +1684,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             ops.append(Op::tool(pendingTool));
             lastTool = pendingTool;
         }
+        // No spindle stop here: the next toolpath with the same tool keeps it
+        // running; the post stops it before a tool change and at the end.
         ops.append(body);
-        ops.append(Op::spindle(0));
         res.done << names;
         pending.clear();
         pendingTool = -1;
@@ -1708,6 +1739,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         const double feed = numOr(speeds.value("feedrate"), 500);
         const double plunge = numOr(speeds.value("plungerate"), 100);
         const int rpm = int(numOr(speeds.value("rpm"), 10000));
+        if (!(feed > 0) || !(plunge > 0)) {
+            // GRBL refuses F0 or a negative F mid-job, after the spindle
+            // is already running.
+            res.skipped << QStringLiteral("%1 (feed and plunge rate must be above 0)").arg(name);
+            continue;
+        }
         const QJsonObject tool = j.value("tool").toObject();
         const int toolNo = int(numOr(tool.value("number"), 0));
         const double toolR = numOr(tool.value("diameter"), 6) / 2.0;
@@ -1730,23 +1767,26 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         // on both, and makeToolpath() creates contours with them switched on.
         // Reading them for cutouts only meant a contour taken to the full
         // stock thickness released the part on its last pass, spindle running.
-        auto readTabs = [&] {
+        // The tab height is measured from `floor`, the cut depth itself: a
+        // cutout's break-through goes into the spoilboard under the part,
+        // and counting it made every tab thinner by that much.
+        auto readTabs = [&](double floor) {
             if (j.value("ignore_tabs").toBool(true)
                 || numOr(j.value("tab_height"), 0) <= 0.01)
                 return;
-            cp.tabTop = cp.zBot + numOr(j.value("tab_height"), 0);
+            cp.tabTop = floor + numOr(j.value("tab_height"), 0);
             cp.tabWidth = qBound(1.0, numOr(j.value("tab_width"), 6.0), 30.0);
         };
         if (cutout) {
-            cp.zBot = depth(j.value("cut_depth"))
-                      + depth(j.value("break_through"));
+            const double floor = depth(j.value("cut_depth"));
+            cp.zBot = floor + depth(j.value("break_through"));
             cp.stepdown = qMax(0.05, numOr(j.value("depth_per_pass"), 1.0));
-            readTabs();
+            readTabs(floor);
         } else {
             cp.zBot = depth(j.value("end_depth"));
             cp.stepdown = qMax(0.05, numOr(j.value("stepdown"), 1.0));
             if (contour)
-                readTabs();
+                readTabs(cp.zBot);
         }
         if (j.value("enable_ramping").toBool(false))
             cp.rampAngle = qBound(1.0, numOr(j.value("ramp_angle"), 20.0), 45.0);
@@ -1787,10 +1827,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 // the relief).
                 Emitter em(body, safeZ, feed, plunge);
                 const double r = p3.tool.radius();
+                bool capped = false;
                 for (const RoughLevel &lv : roughLevels(*hm, p3, boundary, watch)) {
                     QList<Job> jobs;
                     for (const QPainterPath &comp : components(lv.region))
-                        ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs);
+                        capped |= !ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs);
                     CutParams lcp = cp;
                     lcp.zTop = lv.z + p3.stepdown;
                     lcp.zBot = lv.z;
@@ -1802,6 +1843,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     for (const Job &job : orderJobs(jobs, em.pos()))
                         em.runJob(job, lcp);
                 }
+                if (capped)
+                    res.notes << QStringLiteral("%1: too many clearing rings for the stepover, "
+                                                "the middle of a level is left uncut").arg(name);
                 lastPos = em.pos();
             } else {
                 body = finishOps(*hm, p3, boundary, nullptr, watch);
@@ -1828,7 +1872,6 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             ops.append(Op::comment(name));
             ops.append(Op::spindle(rpm));
             ops.append(body);
-            ops.append(Op::spindle(0));
             res.done << name;
             continue;
         }
@@ -2794,13 +2837,14 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             const bool helix = j.value("helix_entry").toBool(false) && !useRest;
             const double helixWant = qMax(0.0, numOr(j.value("helix_diameter"), 2 * toolR)) / 2;
             const double helixAngle = numOr(j.value("helix_angle"), 2);
+            bool capped = false;
             for (const QPainterPath &comp : components(regionOf(elems))) {
                 if (useRest) {
                     for (const QPainterPath &rc : restRegions(comp, toolR, prevR, leave))
-                        ringFillJob(rc, 0.0, stepover, jobs);
+                        capped |= !ringFillJob(rc, 0.0, stepover, jobs);
                 } else {
                     const int before = jobs.size();
-                    ringFillJob(comp, toolR + leave, stepover, jobs);
+                    capped |= !ringFillJob(comp, toolR + leave, stepover, jobs);
                     if (helix && jobs.size() > before) {
                         Job &job = jobs.last();
                         job.helix = helixIn(insetRings(comp, toolR + leave), helixWant, helixAngle);
@@ -2824,6 +2868,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     }
                 }
             }
+            if (capped)
+                res.notes << QStringLiteral("%1: too many rings for the stepover, "
+                                            "the middle of the pocket is left uncut").arg(name);
         }
 
         if (!jobs.isEmpty() && (pocket || contour || cutout)) {
@@ -2886,7 +2933,6 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         ops.append(Op::comment(name));
         ops.append(Op::spindle(rpm));
         ops.append(body);
-        ops.append(Op::spindle(0));
         res.done << name;
     }
     flush();

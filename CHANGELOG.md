@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.0 (build 71) — 2026-10-18
+## v1.2.0 (build 72) — 2026-10-18
 
 > Parametric sketching: constraints, driving dimensions and user parameters, Fusion style
 
@@ -33,12 +33,105 @@
   brackets (`plate_w / (2 in)`); a unit straight after a name is refused too.
 - A loop through a dimension (`p = d1 + 1`, then d1 = `p`) is refused, on the canvas and in
   the Parameters tab, and a parameter value that would make a constraint fail is refused
-  there instead of half-moving the drawing (constraints already red don't block it). The arrow keys on a bound toolpath field unbind it.
+  there instead of half-moving the drawing (constraints already red don't block it). The
+  arrow keys on a bound toolpath field unbind it.
 - Rectangles with Carbide Create's rounded or dog-bone corners can be moved by constraints
   but not resized (that would square the corners); a path segment curved by a node edit
   no longer counts as a line.
 - Constraints, dimensions and parameters are saved inside the `.c2d` (`phobic_parametric`
   in the params table); Carbide Create ignores them and still opens the file.
+
+## v1.1.20 (build 71) — 2026-10-18
+
+> Bug fixes from a full review: tabs survive ramping, 3D climb/conventional the right way round, no lost elements on save, crash recovery
+
+**Note:** existing 3D finish toolpaths set to Climb or Conventional now cut the other way,
+because the old direction was wrong (see below).
+
+**Machine and G-code**
+
+- A rejected line (`error:N`) mid-job now holds, then soft-resets the controller: the rest of
+  the buffered program is discarded and the spindle stops. Before, only a feed hold was sent,
+  and Resume could run the leftover lines untracked.
+- The spindle stays on between toolpaths that use the same tool (it was stopped and started
+  again right before the next plunge), and every start from stopped waits 3 s (`G4P3.00`)
+  for spin-up.
+- Pockets: the inward-offset limit is sized from the pocket, so big pockets with a small
+  stepover are no longer left uncut in the middle after 500 rings; an absurd case is
+  reported in the notes.
+- Cutout tabs are measured from the cut depth, not from below the break-through.
+- Tiling: a cut split at a tile line re-enters on a short ramp along its own path instead
+  of a straight half-engaged plunge; a tile that keeps only a same-tool toolpath still
+  loads that tool.
+- V-carve: the medial axis is pruned until nothing changes, so finely flattened curves no
+  longer leave hundreds of short spokes (an "O" was about 150 extra plunge/retract cycles).
+  While it waits to reset, Resume is refused, so the buffered lines can't run.
+- Speeding up a running spindle (same tool, higher rpm) also waits, in proportion.
+- Unplugging the gamepad mid-hold stops the jog the way a release does.
+- Ramping is turned off only on loops that actually get tabs.
+
+**Files and import**
+
+- Autosave and crash recovery: every 2 minutes while there are unsaved changes, a recovery
+  copy is written to the app's data folder (never over your file). After a crash, the next
+  start offers to open it.
+- Save keeps undecodable toolpath rows in their place in the machining order, keeps the
+  file's permissions, and saves through a symlink instead of replacing it.
+- Project receiver: an absolute time limit per connection, one transfer at a time, and file
+  names that become equal once made safe are refused.
+- DXF: spline flattening has a point budget and refuses absurd coordinates (a 20 KB file
+  took 74 s); joining lines is fast on 100k-line files; HPGL `IN` resets pen and mode.
+- Binary STL files with a wrong triangle count, padding or a "solid" header now open; a
+  file that isn't a mesh (NaN or absurd coordinates) is refused instead of imported.
+- Trace background image follows the background's rotation.
+- Sketches received with a part stay where the sender placed them, lined up with the STL.
+
+**Sketch and UI**
+
+- Resizing a Carbide Create rectangle with rounded or chamfered corners keeps the corners.
+- A 3D model rebuild with Preview on no longer cancels a drag or the pen tool.
+- Open paths, construction lines and sketch points are clickable within 7 px at any zoom.
+- Radius, width and height fields no longer accept 0 or negative sizes.
+- Delete + Undo puts elements back in their original order; the inlay male part is undoable.
+- Booleans and Offset ignore selected sketch points and construction geometry.
+- Text properties compare with what the field shows, so typing 9.52 over 9.53 counts.
+- Horizontal scrolling pans the canvas; Fit selection fits the shapes, not their click margin.
+
+**Also fixed**
+
+- Contour and cutout with ramping and tabs: passes below the tab tops plunge instead of
+  ramping. The ramp ran the whole loop at depth before the tabbed lap, so it cut through
+  every tab and released the part on the last pass.
+- 3D finish, raster and waterline: Climb and Conventional were swapped. Climb now keeps
+  the material on the right of travel (clockwise spindle), as the 2D toolpaths, bore and
+  adaptive already did.
+- G-code: `G90G21` (or `G90G20`) after every tool change, so "Continue anyway" after a
+  failed BitSetter probe no longer runs the rest of the job in relative mode.
+- G-code: a toolpath with feed or plunge rate 0 or below is skipped with a reason instead
+  of posting `F0`, which GRBL rejects mid-job with the spindle running.
+- G-code: `(` and `)` in toolpath names are blanked in comments; "Pocket (12)" ended the
+  comment early and other senders got `error:1`.
+- Machine: the probe indicator read "closed" whenever any input pin (limit, door, hold)
+  was active, which blocked BitZero and the surface map.
+- Machine: unplugging the gamepad while a jog button was held no longer sends one jog step.
+- Save: element rows this build could not decode are kept in the file, as toolpath rows
+  already were. They were deleted on the next save.
+- DXF: LINE, ELLIPSE and SPLINE with extrusion 0,0,-1 are no longer mirrored to negative X
+  (their coordinates are world coordinates); mirrored ellipse arcs keep their span.
+- DXF: spline-fit POLYLINEs import their fitted curve instead of disappearing.
+- DXF: a MINSERT array stops once the expansion limit is spent instead of looping on.
+- .cccp open: the project name is made safe before it becomes a file name; a name with
+  `/` silently lost the drawing, and `../` could write outside the temporary folder.
+- Project receiver: at most 3 connections at once, so a flood of connections from the
+  network can no longer use up memory.
+- Convert to path and Break: toolpaths on the original now machine every resulting piece,
+  not only the one that kept the original's id (text "OAK" cut only the outside of the O).
+- Model panel: a negative component height is no longer clamped to 0 after an STL
+  component was selected.
+- Text properties: toggling Bold or Italic no longer rewrites the height or arc radius
+  rounded to the field's decimals (9.525 became 9.53).
+- Canvas: horizontal scrolling no longer zooms out; switching tools mid circle-tangent
+  pick no longer leaves the picked-edge preview behind.
 
 ## v1.1.19 (build 70) — 2026-10-14
 

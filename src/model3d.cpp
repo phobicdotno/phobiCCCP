@@ -501,16 +501,11 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
         if (error) *error = QStringLiteral("Not an STL file (too short)");
         return false;
     }
-    // Binary: 80-byte header, uint32 count, 50 bytes per triangle. Size check
-    // is the reliable discriminator; "solid" headers exist on binary files.
-    bool binary = false;
-    if (bytes.size() >= 84) {
-        const quint32 n = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(bytes.constData() + 80));
-        if (qint64(84) + qint64(n) * 50 == bytes.size())
-            binary = true;
-    }
-    if (binary) {
-        const quint32 n = qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(bytes.constData() + 80));
+    // Binary: 80-byte header, uint32 count, 50 bytes per triangle. An exact
+    // size match is the reliable discriminator; "solid" headers exist on
+    // binary files (SolidWorks writes one), so failing that, text is tried
+    // first and binary again after it.
+    auto readBinary = [&](quint32 n) {
         tris->reserve(int(n));
         const uchar *p = reinterpret_cast<const uchar *>(bytes.constData()) + 84;
         for (quint32 i = 0; i < n; ++i, p += 50) {
@@ -520,16 +515,47 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
                     quint32 bits = qFromLittleEndian<quint32>(p + 12 + v * 12 + k * 4);
                     float f;
                     std::memcpy(&f, &bits, 4);
+                    // Not a mesh: a PNG or zip renamed .stl, or a corrupt
+                    // file, read as floats. NaN or 1e38 must not reach the
+                    // height model and the toolpaths.
+                    if (!std::isfinite(f) || std::fabs(f) > 1e6f) {
+                        tris->clear();
+                        if (error) *error = QStringLiteral("Not an STL file (triangle %1 has an "
+                                                           "invalid coordinate)").arg(i + 1);
+                        return false;
+                    }
                     t.v[v][k] = f;
                 }
             tris->append(t);
         }
         return true;
+    };
+    const quint32 count = bytes.size() >= 84
+        ? qFromLittleEndian<quint32>(reinterpret_cast<const uchar *>(bytes.constData() + 80)) : 0;
+    if (bytes.size() >= 84 && qint64(84) + qint64(count) * 50 == bytes.size())
+        return readBinary(count);
+    // Not exact: a wrong count, or padding after the triangles. The count is
+    // used when the data holds that many; otherwise as many as fit.
+    auto binaryFallback = [&]() {
+        if (bytes.size() < 84 + 50)
+            return false;
+        const qint64 fit = (bytes.size() - 84) / 50;
+        return readBinary(count > 0 && count <= fit ? count : quint32(fit));
+    };
+    // ASCII. A NUL never occurs in text, and nearly always in binary floats.
+    if (bytes.contains('\0')) {
+        if (binaryFallback())
+            return true;
+        if (error && error->isEmpty())
+            *error = QStringLiteral("Not an STL file (binary, but shorter than one triangle)");
+        return false;
     }
-    // ASCII
     const QString text = QString::fromLatin1(bytes);
     if (!text.trimmed().startsWith(QLatin1String("solid"), Qt::CaseInsensitive)) {
-        if (error) *error = QStringLiteral("Not an STL file (no binary size match, no 'solid' header)");
+        if (binaryFallback())
+            return true;
+        if (error && error->isEmpty())
+            *error = QStringLiteral("Not an STL file (no binary size match, no 'solid' header)");
         return false;
     }
     StlTriangle cur{};
@@ -550,7 +576,10 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
         }
     }
     if (tris->isEmpty()) {
-        if (error) *error = QStringLiteral("STL contains no triangles");
+        if (binaryFallback())
+            return true;
+        if (error && error->isEmpty())
+            *error = QStringLiteral("STL contains no triangles");
         return false;
     }
     return true;

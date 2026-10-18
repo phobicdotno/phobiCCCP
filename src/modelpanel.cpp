@@ -932,9 +932,9 @@ void ModelPanel::refreshProps()
     show(m_source, img || tex || stl);
     m_name->setText(c->name);
     m_shape->setCurrentIndex(m_shape->findData(int(c->shape)));
-    m_height->setValue(c->height);
     m_height->setSpecialValueText(QString());
-    m_height->setMinimum(stl ? 0 : -1000);
+    m_height->setMinimum(stl ? 0 : -1000);   // before setValue, which clamps
+    m_height->setValue(c->height);
     if (stl) m_height->setSpecialValueText(QStringLiteral("natural"));
     m_base->setValue(c->baseHeight);
     m_angle->setValue(c->angleDeg);

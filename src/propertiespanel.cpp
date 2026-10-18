@@ -66,12 +66,19 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     posLay->addWidget(m_y);
     form->addRow(QStringLiteral("Center"), posRow);
 
+    // Sizes must stay positive: a zero or negative radius / width / height
+    // regenerates a degenerate or inside-out shape. Only the center goes
+    // negative.
+    const double kMinSize = 0.01;
     m_radius = spin(10000);
+    m_radius->setMinimum(kMinSize);
     m_radiusRow = m_radius;
     form->addRow(QStringLiteral("Radius"), m_radius);
 
     m_width = spin(10000);
     m_height = spin(10000);
+    m_width->setMinimum(kMinSize);
+    m_height->setMinimum(kMinSize);
     m_sizeRow = new QWidget(this);
     auto *sizeLay = new QHBoxLayout(m_sizeRow);
     sizeLay->setContentsMargins(0, 0, 0, 0);
@@ -242,11 +249,14 @@ void PropertiesPanel::refresh()
         m_family->setCurrentFont(QFont(f.family()));
         m_familyShown = m_family->currentFont().family();   // substitute if not installed
         m_fontHeight->setValue(e->raw.value("font_height").toDouble(10.0));
+        m_fontHeightShown = m_fontHeight->value();
         m_bold->setChecked(f.bold());
         m_italic->setChecked(f.italic());
         m_arcOn->setChecked(arcOn);
         m_arcRadius->setValue(e->raw.value("arc_radius").toDouble(25.4));
         m_arcAngle->setValue(e->raw.value("arc_angle_offset").toDouble());
+        m_arcRadiusShown = m_arcRadius->value();
+        m_arcAngleShown = m_arcAngle->value();
         m_arcBottom->setChecked(e->raw.value("arc_text_on_bottom").toBool());
     }
     m_loading = false;
@@ -292,7 +302,9 @@ void PropertiesPanel::applyText()
         ch.insert("text", m_text->text());
     if (m_family->currentFont().family() != m_familyShown)
         ch.insert("family", m_family->currentFont().family());
-    if (!qFuzzyCompare(m_fontHeight->value(), e->raw.value("font_height").toDouble(10.0)))
+    // Compared with what the box showed, not the stored value: 9.525 shows as
+    // 9.53, so a Bold toggle must not write 9.53, and typing 9.52 must count.
+    if (m_fontHeight->value() != m_fontHeightShown)
         ch.insert("font_height", m_fontHeight->value());
     if (m_bold->isChecked() != f.bold())
         ch.insert("bold", m_bold->isChecked());
@@ -300,9 +312,9 @@ void PropertiesPanel::applyText()
         ch.insert("italic", m_italic->isChecked());
     if (m_arcOn->isChecked() != e->raw.value("arc_enabled").toBool())
         ch.insert("arc_enabled", m_arcOn->isChecked());
-    if (!qFuzzyCompare(m_arcRadius->value(), e->raw.value("arc_radius").toDouble(25.4)))
+    if (m_arcRadius->value() != m_arcRadiusShown)
         ch.insert("arc_radius", m_arcRadius->value());
-    if (!qFuzzyCompare(m_arcAngle->value() + 1000, e->raw.value("arc_angle_offset").toDouble() + 1000))
+    if (m_arcAngle->value() != m_arcAngleShown)
         ch.insert("arc_angle_offset", m_arcAngle->value());
     if (m_arcBottom->isChecked() != e->raw.value("arc_text_on_bottom").toBool())
         ch.insert("arc_text_on_bottom", m_arcBottom->isChecked());

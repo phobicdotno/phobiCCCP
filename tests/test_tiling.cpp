@@ -32,11 +32,16 @@ static void check(bool cond, const char *what)
 }
 
 // XY cutting length of an op list (feeds + arcs, Z-only moves excluded).
-static double xyCutLength(const QVector<c2d::Op> &ops)
+// XY length of the cutting moves. `levelOnly` leaves out moves that also
+// change Z (a tile's re-entry ramps), counting only the cut itself.
+static double xyCutLength(const QVector<c2d::Op> &ops, bool levelOnly = false)
 {
-    double len = 0, px = 0, py = 0;
+    double len = 0, px = 0, py = 0, pz = 0;
     for (const c2d::Op &op : ops) {
-        if (op.kind == c2d::Op::Feed) {
+        if (levelOnly && (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc)
+            && std::fabs(op.z - pz) > 1e-9) {
+            // a ramp: skipped
+        } else if (op.kind == c2d::Op::Feed) {
             len += std::hypot(op.x - px, op.y - py);
         } else if (op.kind == c2d::Op::Arc) {
             const double cx = px + op.ci, cy = py + op.cj, r = std::hypot(op.ci, op.cj);
@@ -49,6 +54,7 @@ static double xyCutLength(const QVector<c2d::Op> &ops)
         if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc || op.kind == c2d::Op::Rapid) {
             px = op.x;
             py = op.y;
+            pz = op.z;
         }
     }
     return len;
@@ -171,6 +177,30 @@ int main(int argc, char *argv[])
         check(cuts(t.at(1)) == 0 && toolsIn(t.at(1)).isEmpty(),
               "the middle tile cuts nothing and changes no tool");
     }
+    // Two toolpaths with the same tool: only the first carries the tool change.
+    // A tile that keeps only the second must still load the tool.
+    {
+        QVector<c2d::Op> j;
+        j.append(c2d::Op::tool(201));
+        j.append(c2d::Op::comment(QStringLiteral("low")));
+        j.append(c2d::Op::spindle(12000));
+        j.append(c2d::Op::rapid(10, 50, 5));
+        j.append(c2d::Op::feedTo(10, 50, -1, 400));
+        j.append(c2d::Op::feedTo(60, 50, -1, 400));     // tile 0 only
+        j.append(c2d::Op::spindle(0));                  // closes the first block
+        j.append(c2d::Op::comment(QStringLiteral("high")));
+        j.append(c2d::Op::spindle(12000));
+        j.append(c2d::Op::rapid(10, 250, 5));
+        j.append(c2d::Op::feedTo(10, 250, -1, 400));
+        j.append(c2d::Op::feedTo(60, 250, -1, 400));    // tile 2 only
+        j.append(c2d::Op::spindle(0));
+        const QVector<QVector<c2d::Op>> t = c2d::tileOps(j, 100.0, 5.0);
+        int tools2 = 0;
+        for (const c2d::Op &o : t.value(2))
+            if (o.kind == c2d::Op::Tool && o.ival == 201)
+                ++tools2;
+        check(t.size() == 3 && tools2 == 1, "a tile keeping only a same-tool toolpath still loads the tool");
+    }
 
     double total = 0;
     for (int k = 0; k < tiles.size(); ++k) {
@@ -202,7 +232,7 @@ int main(int argc, char *argv[])
                       "tile starts with a rapid at safe Z");
                 break;
             }
-        total += xyCutLength(tiles.at(k));
+        total += xyCutLength(tiles.at(k), true);
         const QString gcode = c2d::GrblPost(true).generate(tiles.at(k));
         check(gcode.startsWith(QLatin1String("G90")) && gcode.contains(QLatin1String("G21"))
                   && gcode.contains(QLatin1String("M03S18000"))
@@ -221,6 +251,32 @@ int main(int argc, char *argv[])
         yRange(tiles.at(1), &lo2, &hi2);
         check(std::fabs(hi1 - tileH) < 1e-6 && std::fabs(lo2) < 1e-6,
               "boundary-crossing motion is split exactly at the boundary");
+    }
+    // A cut coming back into the middle tile across a tile line is half in
+    // the other tile's slot and half in stock. That re-entry ramps down along
+    // the cut at the plunge rate; it used to be a straight full-depth plunge.
+    // The only plunge left is the program's own, at the circle's start
+    // (45, 100), which lies on the line and so in this tile.
+    {
+        double px = 0, py = 0, pz = safeZ;
+        int ramps = 0, plunges = 0;
+        for (const c2d::Op &op : tiles.at(1)) {
+            if (op.kind == c2d::Op::Feed && op.z < pz - 1e-9 && op.z < -1e-9) {
+                const bool own = std::hypot(op.x - 45, op.y - (100 - tileH)) < 1e-6;
+                if (std::hypot(op.x - px, op.y - py) < 1e-6 && !own)
+                    ++plunges;
+                else if (op.feed <= 300 + 1e-9)
+                    ++ramps;
+            }
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc || op.kind == c2d::Op::Rapid) {
+                px = op.x;
+                py = op.y;
+                pz = op.z;
+            }
+        }
+        std::fprintf(stderr, "middle tile: %d ramp(s), %d plunge(s) into the stock\n", ramps, plunges);
+        check(ramps > 0 && plunges == 0,
+              "a cut split at a tile line re-enters on a ramp, not a plunge");
     }
     // Peck-drill at Y = 250 lands in tile 3 at Y = 50 with both pecks.
     {

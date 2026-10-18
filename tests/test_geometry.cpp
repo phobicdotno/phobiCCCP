@@ -238,6 +238,116 @@ int main(int argc, char *argv[])
         check(g.gcode.contains(QLatin1String("Z-2.000")), "tabs lift to cut_depth - tab_height");
     }
 
+    // --- cutout tabs are measured from the cut depth, not the break-through.
+    // The break-through goes into the spoilboard; counting it made every tab
+    // thinner by that much (Z-2.500 here instead of Z-2.000).
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 5.0}, {"break_through", 0.5},
+                                 {"tab_height", 3.0}, {"ignore_tabs", false}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double minZ;
+        cutBounds(g.gcode, &minZ);
+        check(g.done.size() == 1 && approx(minZ, -5.5, 1e-3), "break-through cuts below cut_depth");
+        check(g.gcode.contains(QLatin1String("Z-2.000")) && !g.gcode.contains(QLatin1String("Z-2.500")),
+              "tabs keep their full height above the cut depth with a break-through");
+    }
+
+    // --- spindle: kept running between toolpaths that share a tool, stopped
+    // only for a tool change and at the end, and every start from standstill
+    // waits for spin-up before the first move.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1}});
+        r.addToolpath("contour", {{"ofset_dir", -1}, {"uuid", QStringLiteral("{tp-2}")},
+                                  {"name", QStringLiteral("u")}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        const QStringList l = g.gcode.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        const QString spin = QStringLiteral("G4P%1").arg(c2d::kSpindleSpinUpSec, 0, 'f', 2);
+        check(g.done.size() == 2 && l.filter(QStringLiteral("M03")).size() == 1
+                  && l.filter(QStringLiteral("M05")).size() == 1,
+              "same tool: one spindle start and one stop for two toolpaths");
+        const int on = int(l.indexOf(QStringLiteral("M03S10000")));
+        check(on > 0 && l.value(on + 1) == spin, "the spindle start waits for spin-up");
+        check(l.indexOf(QStringLiteral("M05")) == l.size() - 2, "the spindle stops at the end only");
+
+        Rig t;
+        t.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        t.addToolpath("contour", {{"ofset_dir", 1}});
+        t.addToolpath("contour", {{"ofset_dir", -1}, {"uuid", QStringLiteral("{tp-2}")},
+                                  {"name", QStringLiteral("u")},
+                                  {"tool", QJsonObject{{"diameter", 3.175}, {"number", 102}}}});
+        const QStringList m = c2d::exportGcode(t.doc).gcode.split(QLatin1Char('\n'),
+                                                                 Qt::SkipEmptyParts);
+        const int change = int(m.indexOf(QStringLiteral("M0 ;T102")));
+        check(change > 0 && m.value(change - 1) == QLatin1String("M05"),
+              "tool change: the spindle stops first");
+        int starts = 0;
+        for (int i = 0; i < m.size(); ++i)
+            if (m.at(i).startsWith(QLatin1String("M03")))
+                starts += m.value(i + 1) == spin ? 1 : -100;
+        check(starts == 2, "tool change: both starts wait for spin-up");
+    }
+
+    // --- spindle: speeding up a running spindle also waits -----------------
+    {
+        QVector<c2d::Op> ops;
+        ops.append(c2d::Op::spindle(10000));
+        ops.append(c2d::Op::spindle(20000));
+        ops.append(c2d::Op::spindle(15000));
+        const QStringList l = c2d::GrblPost(true).generate(ops).split(QLatin1Char('\n'));
+        const int up = int(l.indexOf(QStringLiteral("S20000")));
+        const int down = int(l.indexOf(QStringLiteral("S15000")));
+        check(up > 0 && l.value(up + 1).startsWith(QLatin1String("G4P")),
+              "a higher rpm on a running spindle waits for it");
+        check(down > 0 && !l.value(down + 1).startsWith(QLatin1String("G4P")),
+              "slowing down does not wait");
+    }
+
+    // --- ramping + tabs: the ramp must not cut through the tabs -------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 12.0}, {"depth_per_pass", 3.0},
+                                 {"tab_height", 3.0}, {"ignore_tabs", false},
+                                 {"enable_ramping", true}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double atBottom = 0, px = 0, py = 0, pz = 0;
+        for (const c2d::Op &op : g.ops) {
+            if ((op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc)
+                && op.z < -12 + 1e-6 && pz < -12 + 1e-6)
+                atBottom += std::hypot(op.x - px, op.y - py);
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                px = op.x; py = op.y; pz = op.z;
+            }
+        }
+        const double loop = 2 * (40 + 20) + 2 * M_PI * 3.175;
+        check(g.done.size() == 1 && atBottom > 0 && atBottom < loop - 1.0,
+              "ramped cutout with tabs: the last pass leaves the tabs standing");
+    }
+
+    // --- feed rate 0 is refused, not posted as F0 --------------------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("contour", {{"speeds", QJsonObject{{"feedrate", 0}, {"plungerate", 300},
+                                                         {"rpm", 10000}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.isEmpty() && g.skipped.size() == 1 && !g.gcode.contains(QLatin1String("F0")),
+              "a toolpath with feed 0 is skipped");
+    }
+
+    // --- comments: parentheses in a name do not end the comment early -------
+    {
+        QVector<c2d::Op> ops;
+        ops.append(c2d::Op::comment(QStringLiteral("Pocket (12)")));
+        const QString out = c2d::GrblPost(true).generate(ops);
+        check(out.contains(QLatin1String("(Pocket  12 )")) && !out.contains(QLatin1String("(12)")),
+              "toolpath names with ( ) make a valid G-code comment");
+    }
+
     // --- pocket: stays inside, has inner rings -----------------------------
     {
         Rig r;
@@ -258,6 +368,25 @@ int main(int argc, char *argv[])
                 p.y > 10 + 3.175 + 1.0 && p.y < 30 - 3.175 - 1.0)
                 inner = true;
         check(inner, "pocket has inner rings");
+    }
+
+    // --- pocket: a big pocket at a fine stepover is cleared to the middle.
+    // The ring fill stopped at a fixed 500 rings without a word; this one
+    // needs about 680.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({100, 100}, 140, 140, layer));
+        r.addToolpath("pocket_toolpath", {{"stepover", 0.1},
+                                          {"tool", QJsonObject{{"diameter", 3.175},
+                                                               {"number", 201}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double best = 1e9;
+        for (const c2d::Op &op : g.ops)
+            if (op.kind == c2d::Op::Feed)
+                best = std::min(best, std::hypot(op.x - 100, op.y - 100));
+        std::fprintf(stderr, "fine pocket: nearest cut to the centre %.3f mm\n", best);
+        check(g.done.size() == 1 && g.notes.isEmpty(), "fine pocket exports without a note");
+        check(best < 0.3, "fine pocket: the rings reach the centre");
     }
 
     // --- pocket rest machining: only what the 12.7 tool left in the corners --
@@ -504,7 +633,9 @@ int main(int argc, char *argv[])
         const QStringList lines = c2d::GrblPost(true).generate(ops).split(QChar('\n'));
         const int marker = int(lines.indexOf(QStringLiteral("M0 ;T2")));
         check(marker >= 0, "tool marker emitted");
-        const QString after = marker >= 0 ? lines.value(marker + 1) : QString();
+        check(marker >= 0 && lines.value(marker + 1) == QLatin1String("G90G21"),
+              "absolute mode restored after a tool change (a failed probe can leave G91)");
+        const QString after = marker >= 0 ? lines.value(marker + 2) : QString();
         check(after.startsWith(QLatin1String("G1")) && after.contains(QLatin1String("Z-1.000"))
                   && after.contains(QLatin1String("F500")),
               "first move after a tool change carries G, Z and F again");

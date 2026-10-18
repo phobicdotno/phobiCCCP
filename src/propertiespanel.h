@@ -40,6 +40,9 @@ private:
     Document *m_doc = nullptr;
     QString m_id;                 // single selected element ("" = none/multi)
     QString m_familyShown;        // combo family after refresh (may be a substitute)
+    // What the text spin boxes showed after refresh, already rounded to their
+    // decimals: an edit is a change from these, not from the stored value.
+    double m_fontHeightShown = 0, m_arcRadiusShown = 0, m_arcAngleShown = 0;
     bool m_loading = false;       // guard: setValue must not trigger apply
 
     QLabel *m_typeLabel;

@@ -20,11 +20,13 @@ static int toolMarkerNumber(const QString &line)
 }
 
 GrblStreamer::GrblStreamer(QObject *parent)
-    : QObject(parent), m_statusTimer(new QTimer(this))
+    : QObject(parent), m_statusTimer(new QTimer(this)), m_errorResetTimer(new QTimer(this))
 {
     qRegisterMetaType<c2d::MachineStatus>("c2d::MachineStatus");
     m_statusTimer->setInterval(250);
     connect(m_statusTimer, &QTimer::timeout, this, &GrblStreamer::requestStatus);
+    m_errorResetTimer->setInterval(100);
+    connect(m_errorResetTimer, &QTimer::timeout, this, &GrblStreamer::resetAfterError);
 }
 
 GrblStreamer::~GrblStreamer()
@@ -100,6 +102,7 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
 void GrblStreamer::disconnectPort()
 {
     m_statusTimer->stop();
+    m_errorResetTimer->stop();
     if (m_port) {
         m_port->close();
         m_port->deleteLater();
@@ -127,7 +130,11 @@ bool GrblStreamer::isConnected() const
 
 bool GrblStreamer::canSendCommand() const
 {
-    return isConnected() && !m_macroActive && (!m_streaming || m_waitingTool >= 0);
+    // Not while an error's reset is pending either: GRBL is still answering
+    // the program lines in its buffer, and those oks would be counted
+    // against whatever was sent now.
+    return isConnected() && !m_macroActive && !m_errorResetTimer->isActive()
+           && (!m_streaming || m_waitingTool >= 0);
 }
 
 void GrblStreamer::writeLine(const QString &line)
@@ -162,6 +169,10 @@ void GrblStreamer::requestStatus()
 
 void GrblStreamer::sendRealtime(char c)
 {
+    // No cycle start while holding before the reset after an error: GRBL
+    // would run the rest of the buffered program.
+    if (c == '~' && m_errorResetTimer->isActive())
+        return;
     if (isConnected())
         m_port->write(&c, 1);
 }
@@ -173,7 +184,7 @@ void GrblStreamer::jogCancel()
 
 void GrblStreamer::startStream(const QStringList &lines)
 {
-    if (!isConnected() || m_streaming || m_macroActive)
+    if (!isConnected() || m_streaming || m_macroActive || m_errorResetTimer->isActive())
         return;
     m_queue.clear();
     for (const QString &l : lines) {
@@ -251,6 +262,11 @@ void GrblStreamer::pauseStream()
 
 void GrblStreamer::resumeStream()
 {
+    if (m_errorResetTimer->isActive()) {     // see sendRealtime
+        emit errorOccurred(QStringLiteral("resume refused: the controller is being reset "
+                                          "after an error"));
+        return;
+    }
     if (isConnected())
         m_port->write("~", 1);
 }
@@ -259,10 +275,14 @@ void GrblStreamer::abortStream(const QString &why, bool holdMachine)
 {
     if (!m_streaming)
         return;
-    // A feed hold decelerates to a stop and keeps the machine's position, so
-    // the operator can look at the job before deciding; ctrl-X would stop it
-    // too but lose the work coordinates with it.
-    if (holdMachine && isConnected()) {
+    // A feed hold decelerates to a stop and keeps the machine's position.
+    // It is not the end of it: GRBL still holds the program lines already
+    // sent, and the spindle keeps turning, so a Resume (~) would run them
+    // with nothing tracking their acks. Once the hold has settled, a soft
+    // reset throws them away and stops the spindle, as cancelJob() does;
+    // ctrl-X while moving would lose the position, hence the hold first.
+    const bool reset = holdMachine && isConnected();
+    if (reset) {
         const char hold = '!';
         m_port->write(&hold, 1);
     }
@@ -272,8 +292,34 @@ void GrblStreamer::abortStream(const QString &why, bool holdMachine)
     m_inflightSizes.clear();
     m_inflightBytes = 0;
     m_hadError = true;
-    emit errorOccurred(QStringLiteral("program stopped: %1").arg(why));
+    emit errorOccurred(reset ? QStringLiteral("program stopped: %1 - holding, then resetting "
+                                              "the controller").arg(why)
+                             : QStringLiteral("program stopped: %1").arg(why));
+    if (reset) {
+        m_errorResetClock.start();
+        m_errorResetTimer->start();
+    }
     emit streamFinished(false);
+}
+
+// Polled after a held abort: soft-reset as soon as the hold has come to rest
+// (Hold:0), or after 5 s whatever the state, the same wait as cancelJob().
+// The first 300 ms are not trusted: the last status report may predate the
+// hold.
+void GrblStreamer::resetAfterError()
+{
+    if (!isConnected()) {
+        m_errorResetTimer->stop();
+        return;
+    }
+    const QString &st = m_status.state;
+    const bool still = m_errorResetClock.elapsed() >= 300
+                       && (st == QLatin1String("Hold:0") || st == QLatin1String("Idle"));
+    if (!still && m_errorResetClock.elapsed() < 5000)
+        return;
+    stopStream();                               // stops the timer too
+    emit errorOccurred(QStringLiteral("controller reset after the error: the rest of the "
+                                      "program was discarded and the spindle stopped"));
 }
 
 void GrblStreamer::stopStream()
@@ -282,6 +328,7 @@ void GrblStreamer::stopStream()
         return;
     const char reset = 0x18;                    // ctrl-X: GRBL soft reset
     m_port->write(&reset, 1);
+    m_errorResetTimer->stop();                  // this is the reset it waited for
     const bool wasProgram = m_streaming;
     m_streaming = false;
     m_waitingTool = -1;
@@ -351,7 +398,8 @@ void GrblStreamer::pump()
 
 void GrblStreamer::startMacro(const QStringList &lines)
 {
-    if (!isConnected() || m_macroActive || (m_streaming && m_waitingTool < 0)) {
+    if (!isConnected() || m_macroActive || m_errorResetTimer->isActive()
+        || (m_streaming && m_waitingTool < 0)) {
         emit macroFinished(false);
         return;
     }
@@ -520,7 +568,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     st.spindle = c.at(1).toDouble();
                 }
             } else if (p.startsWith("Pn:")) {
-                st.probePin = p.contains('P');
+                st.probePin = p.indexOf('P', 3) >= 0;   // past the "Pn:" itself
                 for (char a : {'X', 'Y', 'Z', 'A'})
                     if (p.indexOf(a, 3) >= 0)
                         st.limitPins += QLatin1Char(a);
@@ -543,6 +591,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
             resyncAdhoc(QStringLiteral("no ack while Idle"));
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
+        // Waiting to reset after an error: do it on the report that shows
+        // the hold at rest, not on the next poll, so a Resume can't slip in.
+        if (m_errorResetTimer->isActive())
+            resetAfterError();
         return;
     }
 

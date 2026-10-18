@@ -208,6 +208,49 @@ int main(int argc, char *argv[])
     va.corners(vec::CornerStyle::Fillet, 1);
     check(undo->index() == base, "no selection, no command");
 
+    // --- Booleans and Offset leave points and construction geometry alone -----------
+    {
+        Document bdoc;
+        const Element a = Element::makeCircle({100, 100}, 10, layer);
+        const Element b = Element::makeCircle({110, 100}, 10, layer);
+        const Element mark = Element::makePoint({105, 100}, layer);
+        const Element guide = Element::withConstruction(
+            Element::makeRectangle({105, 100}, 40, 4, layer), true);
+        for (const Element &e : {a, b, mark, guide})
+            bdoc.addElement(e);
+        canvas->setDocument(&bdoc);
+        QUndoStack *bu = canvas->undoStack();
+        const int b0 = bu->index();
+
+        canvas->selectIds({a.id, b.id, mark.id, guide.id});
+        va.boolean(vec::BoolOp::Union);
+        check(bu->index() == b0 + 1, "union is one undo step");
+        check(bdoc.elementById(mark.id) && bdoc.elementById(guide.id)
+              && !bdoc.elementById(a.id) && !bdoc.elementById(b.id),
+              "union welds the circles and keeps the point and the construction rect");
+        check(bdoc.elements().size() == 3, "union leaves a single weld beside them");
+        const QRectF weld = bdoc.elements().first().painterPath.boundingRect();
+        check(nearRect(weld, QRectF(90, 90, 30, 20), 0.05), "weld spans only the two circles");
+        bu->undo();
+
+        canvas->selectIds({mark.id, guide.id});
+        va.boolean(vec::BoolOp::Union);
+        check(bu->index() == b0, "a union of references only does nothing");
+
+        canvas->selectIds({a.id, mark.id, guide.id});
+        va.offsetBy(1, false);
+        check(bu->index() == b0 + 1 && bdoc.elementById(mark.id) && bdoc.elementById(guide.id)
+              && !bdoc.elementById(a.id) && bdoc.elements().size() == 4,
+              "offset replaces the circle only");
+        check(nearRect(bdoc.elements().at(0).painterPath.boundingRect(), QRectF(89, 89, 22, 22), 0.05),
+              "offset grows the circle");
+        bu->undo();
+        canvas->selectIds({mark.id});
+        va.offsetBy(1, true);
+        check(bu->index() == b0, "offsetting a point alone does nothing");
+        canvas->setDocument(&doc);
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

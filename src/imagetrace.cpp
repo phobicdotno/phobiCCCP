@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QLineF>
 #include <QPainter>
+#include <QTransform>
 #include <QUuid>
 #include <QtMath>
 
@@ -319,6 +320,15 @@ TraceResult traceImage(const QImage &src, const TraceOptions &o)
     const double tolPx = o.simplifyTolMm > 0 ? o.simplifyTolMm / s : 0;
     const double minAreaPx = o.minAreaMm2 > 0 ? o.minAreaMm2 / (s * s) : 0;
     const double H = mask.height();
+    // A rotated background: the same turn about the picture's centre as
+    // BackgroundImage::pixelToMm, so the outlines land on what is shown.
+    QTransform rot;
+    if (o.rotationDeg != 0) {
+        const QPointF c = o.origin + QPointF(mask.width() * s, H * s) / 2;
+        rot.translate(c.x(), c.y());
+        rot.rotate(o.rotationDeg);
+        rot.translate(-c.x(), -c.y());
+    }
 
     for (int k = 0; k < loops.size(); ++k) {
         const double aPx = areaPx[size_t(k)];       // negative = outer (Y-down walk)
@@ -327,7 +337,7 @@ TraceResult traceImage(const QImage &src, const TraceOptions &o)
         QPolygonF ring = simplifyClosed(loops[k], tolPx);
         // pixel lattice -> mm, Y-up, offset to the origin
         for (QPointF &p : ring)
-            p = QPointF(o.origin.x() + p.x() * s, o.origin.y() + (H - p.y()) * s);
+            p = rot.map(QPointF(o.origin.x() + p.x() * s, o.origin.y() + (H - p.y()) * s));
         TraceContour c;
         c.hole = aPx > 0;
         c.area = std::fabs(ringArea(ring));

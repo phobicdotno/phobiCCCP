@@ -182,6 +182,54 @@ int main(int argc, char *argv[])
             QSqlDatabase::removeDatabase(QStringLiteral("bad2"));
         }
 
+        // ...and it keeps its place in the machining order (CC orders by row
+        // id): an unreadable second toolpath stays second, not first.
+        {
+            const QString path = dir.filePath(QStringLiteral("midbadtp.c2d"));
+            QFile::remove(path);
+            check(QFile::copy(sample, path), "copy sample for the order case");
+            auto order = [](const QString &file, const QString &conn) {
+                QStringList uuids;
+                {
+                    QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                    db.setDatabaseName(file);
+                    if (db.open()) {
+                        QSqlQuery q(db);
+                        q.exec(QStringLiteral("SELECT uuid FROM items WHERE type='toolpath' ORDER BY id"));
+                        while (q.next())
+                            uuids << q.value(0).toString();
+                        db.close();
+                    }
+                }
+                QSqlDatabase::removeDatabase(conn);
+                return uuids;
+            };
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                            QStringLiteral("mid1"));
+                db.setDatabaseName(path);
+                check(db.open(), "open the order copy");
+                QSqlQuery q(db);
+                q.exec(QStringLiteral("UPDATE items SET data = x'deadbeef' WHERE id = "
+                                      "(SELECT id FROM items WHERE type='toolpath' ORDER BY id LIMIT 1 OFFSET 1)"));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(QStringLiteral("mid1"));
+            const QStringList before = order(path, QStringLiteral("mid2"));
+            c2d::Document doc;
+            QString err;
+            check(doc.load(path, &err) && doc.unreadableToolpaths().size() == 1,
+                  "the second toolpath is unreadable");
+            const QString out = dir.filePath(QStringLiteral("midbadtp-saved.c2d"));
+            check(doc.save(out, &err), "saving with an unreadable second toolpath");
+            check(order(out, QStringLiteral("mid3")) == before && before.size() >= 2,
+                  "the unreadable toolpath keeps its place in the order");
+            c2d::Document back;
+            check(back.load(out, &err) && back.unreadableToolpaths().size() == 1
+                      && back.toolpaths().size() == before.size() - 1,
+                  "its bytes are written back unchanged (still the same one row)");
+        }
+
         // Truncation at several points: the most common real-world damage.
         QFile in(sample);
         check(in.open(QIODevice::ReadOnly), "read sample");

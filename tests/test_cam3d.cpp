@@ -283,19 +283,19 @@ int main()
                                    {"direction", QStringLiteral("climb")}}));
         const c2d::GcodeResult g = c2d::exportGcode(doc);
         double along = 0, across = 0, px = 0, py = 0;
-        bool allUp = true;
+        bool allDown = true;
         for (const Op &o : g.ops) {
             if (o.kind == Op::Feed) {
                 along += std::fabs(o.y - py);
                 across += std::fabs(o.x - px);
-                if (std::fabs(o.y - py) > 1.0 && o.y < py)
-                    allUp = false;
+                if (std::fabs(o.y - py) > 1.0 && o.y > py)
+                    allDown = false;
             }
             px = o.x; py = o.y;
         }
         check(along > 20 * across, "finish: raster 90 runs along Y");
         check(approx(along, lenAlongX, lenAlongX * 0.02), "finish: raster 90 is the 0 pass set rotated");
-        check(allUp, "finish: climb one-way passes all travel +Y");
+        check(allDown, "finish: climb one-way passes all travel -Y (material on the right)");
         const c2d::JobStats st = c2d::computeStats(g.ops);
         check(st.rapidLen > st.cutLen * 0.5, "finish: one-way returns by rapid");
 
@@ -304,14 +304,14 @@ int main()
                                  {{"stepover", 0.5}, {"raster_angle", 90.0},
                                   {"direction", QStringLiteral("conventional")}}));
         const c2d::GcodeResult g2 = c2d::exportGcode(d2);
-        bool allDown = true;
+        bool allUp2 = true;
         py = 0;
         for (const Op &o : g2.ops) {
-            if (o.kind == Op::Feed && std::fabs(o.y - py) > 1.0 && o.y > py)
-                allDown = false;
+            if (o.kind == Op::Feed && std::fabs(o.y - py) > 1.0 && o.y < py)
+                allUp2 = false;
             py = o.y;
         }
-        check(allDown, "finish: conventional one-way passes all travel -Y");
+        check(allUp2, "finish: conventional one-way passes all travel +Y");
     }
 
     // --- both_directions adds the cross pass set ------------------------------
@@ -612,7 +612,7 @@ int main()
         check(worstGouge <= 0.002, "waterline: no vertex into the dome");
         check(worstMid <= 0.02, "waterline: chords stay out of the dome (0.02 mm)");
         check(touching >= onLevel * 0.95, "waterline: the tool follows the wall, not the air");
-        check(area10 > 0, "waterline climb: anticlockwise around the dome (material on the left)");
+        check(area10 < 0, "waterline climb: clockwise around the dome (material on the right)");
 
         // The level -10 loop is the circle where the ball touches the dome at
         // that height: tip at -10, centre on the offset sphere R + r.
@@ -640,7 +640,7 @@ int main()
                 px = o.x; py = o.y; pz = o.z;
             }
         }
-        check(areaC < 0, "waterline conventional: clockwise around the dome");
+        check(areaC > 0, "waterline conventional: anticlockwise around the dome (material on the left)");
 
         // Simulated against the dome: never into it, and the gouge check
         // agrees.

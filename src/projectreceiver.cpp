@@ -15,6 +15,7 @@
 #include <QUdpSocket>
 
 #include <cmath>
+#include <limits>
 
 namespace c2d {
 
@@ -85,14 +86,14 @@ bool PackageReader::parseManifest(const QByteArray &line)
         return fail(QStringLiteral("too many files (%1)").arg(files.size()));
     static const QRegularExpression okName(QStringLiteral("^[A-Za-z0-9_ -][A-Za-z0-9._ -]{0,99}$"));
     qint64 total = 0;
-    QStringList names;
+    QStringList names;   // as they will be saved: "a" and "a " are the same file
     for (const QJsonValue &v : files) {
         const QJsonObject f = v.toObject();
         ReceivedFile rf;
         rf.name = f.value(QStringLiteral("name")).toString();
         rf.role = f.value(QStringLiteral("role")).toString();
         const double size = f.value(QStringLiteral("size")).toDouble(-1);
-        if (!okName.match(rf.name).hasMatch() || names.contains(rf.name, Qt::CaseInsensitive))
+        if (!okName.match(rf.name).hasMatch() || names.contains(safeFileName(rf.name), Qt::CaseInsensitive))
             return fail(QStringLiteral("bad file name %1").arg(rf.name.left(40)));
         if (rf.role != QLatin1String("model") && rf.role != QLatin1String("vectors")
             && rf.role != QLatin1String("project"))
@@ -108,10 +109,18 @@ bool PackageReader::parseManifest(const QByteArray &line)
             rf.x = rf.y = 0;
         // No reserve(size): the size is the sender's word, the data grows as it arrives.
         m_project.files.append(rf);
-        names.append(rf.name);
+        names.append(safeFileName(rf.name));
         m_sizes.append(qint64(size));
     }
     return true;
+}
+
+qint64 PackageReader::announcedSize() const
+{
+    qint64 total = 0;
+    for (qint64 n : m_sizes)
+        total += n;
+    return total;
 }
 
 bool PackageReader::feed(const QByteArray &bytes)
@@ -205,6 +214,8 @@ QString saveReceived(const ReceivedProject &project, const QString &baseDir,
 struct ProjectReceiver::Conn {
     PackageReader reader;
     QTimer idle;
+    QTimer deadline;      // absolute: does not restart as bytes arrive
+    bool active = false;  // past its manifest: the one transfer being taken
 };
 
 ProjectReceiver::ProjectReceiver(QObject *parent) : QObject(parent) {}
@@ -279,14 +290,27 @@ void ProjectReceiver::onConnection()
 {
     while (m_tcp && m_tcp->hasPendingConnections()) {
         QTcpSocket *s = m_tcp->nextPendingConnection();
+        if (m_conns.size() >= kMaxConns) {
+            // As in drop(): a peer that never closes its end is cut off.
+            connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
+            QTimer::singleShot(5000, s, [s] { s->abort(); s->deleteLater(); });
+            s->write(QByteArrayLiteral("ERR busy\n"));
+            s->disconnectFromHost();
+            continue;
+        }
         auto *c = new Conn;
         m_conns.insert(s, c);
         c->idle.setSingleShot(true);
-        c->idle.setInterval(kIdleMs);
+        c->idle.setInterval(m_idleMs);
         connect(&c->idle, &QTimer::timeout, this, [this, s] {
             drop(s, QByteArrayLiteral("ERR timed out\n"));
         });
         c->idle.start();
+        c->deadline.setSingleShot(true);
+        connect(&c->deadline, &QTimer::timeout, this, [this, s] {
+            drop(s, QByteArrayLiteral("ERR timed out\n"));
+        });
+        c->deadline.start(m_deadlineMs);
         connect(s, &QTcpSocket::readyRead, this, [this, s] { onData(s); });
         connect(s, &QTcpSocket::disconnected, this, [this, s] { drop(s, {}); });
     }
@@ -305,13 +329,25 @@ void ProjectReceiver::onData(QTcpSocket *s)
         drop(s, "ERR " + c->reader.error().toUtf8() + '\n');
         return;
     }
-    if (c->reader.state() != PackageReader::Done)
+    const PackageReader::State st = c->reader.state();
+    if (!c->active && (st == PackageReader::Body || st == PackageReader::Done)) {
+        // The manifest is in: take this transfer only if no other is being
+        // sent or waiting for the user, so one project at a time is in memory.
+        bool busy = !m_waiting.isEmpty();
+        for (auto it = m_conns.cbegin(); it != m_conns.cend() && !busy; ++it)
+            busy = it.value() != c && it.value()->active;
+        if (busy) {
+            drop(s, QByteArrayLiteral("ERR phobiCCCP is busy with another project; try again shortly\n"));
+            return;
+        }
+        c->active = true;
+        const qint64 extra = c->reader.announcedSize() / kMinRate * 1000;
+        c->deadline.start(int(qMin<qint64>(m_deadlineMs + extra, std::numeric_limits<int>::max())));
+    }
+    if (st != PackageReader::Done)
         return;
     c->idle.stop();
-    if (!m_waiting.isEmpty()) {
-        drop(s, QByteArrayLiteral("ERR phobiCCCP is busy with another project; try again shortly\n"));
-        return;
-    }
+    c->deadline.stop();
     const int id = m_nextId++;
     m_waiting.insert(id, s);
     ReceivedProject p = c->reader.project();

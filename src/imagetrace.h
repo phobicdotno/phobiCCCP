@@ -29,6 +29,7 @@ struct TraceOptions
     bool smooth = false;         // corner-preserving Bézier smoothing
     double cornerAngleDeg = 60;  // direction change >= this stays a sharp corner
     QPointF origin;              // CC mm of the image's bottom-left corner
+    double rotationDeg = 0;      // about the image centre, CCW (Y-up), as a background image
 };
 
 struct TraceContour

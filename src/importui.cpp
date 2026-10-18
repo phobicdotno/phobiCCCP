@@ -109,7 +109,7 @@ private:
 } // namespace
 
 void importVectorFile(QWidget *parent, Canvas *canvas, Document *doc,
-                      const QString &pathIn, const QString &filterIn)
+                      const QString &pathIn, const QString &filterIn, bool autoPlace)
 {
     if (!doc || doc->filePath().isEmpty()) {
         QMessageBox::information(parent, QStringLiteral("Import"),
@@ -131,6 +131,7 @@ void importVectorFile(QWidget *parent, Canvas *canvas, Document *doc,
     opt.stockWidth = doc->boardWidth();
     opt.stockHeight = doc->boardHeight();
     opt.layer = doc->defaultLayer();
+    opt.autoPlace = autoPlace;
     const ImportResult r = importFile(path, opt);
     const QString name = QFileInfo(path).fileName();
 

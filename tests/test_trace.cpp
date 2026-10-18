@@ -356,6 +356,32 @@ int main(int argc, char *argv[])
         QSqlDatabase::removeDatabase(QStringLiteral("chk2"));
     }
 
+    // Tracing a rotated background: the outline of a black square in one
+    // corner of the picture lands where the background draws that corner.
+    {
+        c2d::BackgroundImage bg;
+        QImage pic(100, 50, QImage::Format_ARGB32);
+        pic.fill(Qt::white);
+        for (int y = 5; y < 15; ++y)
+            for (int x = 70; x < 80; ++x)
+                pic.setPixelColor(x, y, Qt::black);
+        bg.setImage(pic);
+        bg.x = 20;
+        bg.y = 10;
+        bg.setWidthMm(50);
+        bg.rotationDeg = 30;
+        c2d::TraceOptions o;
+        o.mmPerPixel = bg.mmPerPixel();
+        o.origin = QPointF(bg.x, bg.y);
+        o.rotationDeg = bg.rotationDeg;
+        const c2d::TraceResult r = c2d::traceImage(pic, o);
+        check(r.contours.size() == 1, "rotated trace: one square");
+        const QPointF want = bg.pixelToMm().map(QPointF(75, 10));
+        const QPointF got = r.contours.value(0).pts.boundingRect().center();
+        check(near(got.x(), want.x(), 0.05) && near(got.y(), want.y(), 0.05),
+              "rotated trace: outline on the rotated background's square");
+    }
+
     std::printf("test_trace: %d checks passed\n", g_checks);
     return 0;
 }
