@@ -50,13 +50,17 @@ public:
     void scale(double sx, double sy);
     void moveCopy(double dx, double dy, int copies, bool joinToolpaths);
     void corners(vec::CornerStyle style, double size);
+    // Booleans on the selection (Subtract: first selected minus the rest) and
+    // the dialog-free half of Offset… (delta > 0 grows). Both skip sketch
+    // points and construction geometry.
+    void boolean(vec::BoolOp op);
+    void offsetBy(double delta, bool keepInputs);
 
 private:
     void onSelection(const QStringList &ids);
     QVector<Element> orderedSelection() const;
     void updateEnabled();
 
-    void boolean(vec::BoolOp op);
     void offset();
     void align(vec::Align mode);
     void centerOnStock(vec::Center mode);

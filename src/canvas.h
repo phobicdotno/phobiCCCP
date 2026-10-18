@@ -79,7 +79,7 @@ public:
     // Replace a toolpath's JSON payload (undoable; from the toolpath panel).
     void editToolpath(const QString &uuid, const QJsonObject &newJson);
     // Insert generated elements plus a new toolpath in one shot (inlay male
-    // generator). Not undoable — delete the pieces manually to revert.
+    // generator), as one undo step.
     void insertGenerated(const QVector<Element> &els, const Toolpath &tp);
     QStringList selectedElementIds() const;
     Document *document() const { return m_doc; }
@@ -135,6 +135,11 @@ private:
     bool m_hudHasPos = false;
     void updateHud();
     void renderPreviewOps();
+    void removePreviewItems();          // drop the g-code overlay items only
+    QList<QGraphicsItem *> m_previewItems;
+    void clearPreview();                // drop the live outline (m_preview)
+    void syncHitTolerance();            // re-size the items' hit corridor to the zoom
+    double m_hitScale = 0;              // view scale the corridor was sized for
     QGraphicsPathItem *itemFor(const QString &id) const;
 
     // Node editor.

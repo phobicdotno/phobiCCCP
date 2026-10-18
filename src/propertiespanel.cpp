@@ -66,12 +66,19 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     posLay->addWidget(m_y);
     form->addRow(QStringLiteral("Center"), posRow);
 
+    // Sizes must stay positive: a zero or negative radius / width / height
+    // regenerates a degenerate or inside-out shape. Only the center goes
+    // negative.
+    const double kMinSize = 0.01;
     m_radius = spin(10000);
+    m_radius->setMinimum(kMinSize);
     m_radiusRow = m_radius;
     form->addRow(QStringLiteral("Radius"), m_radius);
 
     m_width = spin(10000);
     m_height = spin(10000);
+    m_width->setMinimum(kMinSize);
+    m_height->setMinimum(kMinSize);
     m_sizeRow = new QWidget(this);
     auto *sizeLay = new QHBoxLayout(m_sizeRow);
     sizeLay->setContentsMargins(0, 0, 0, 0);

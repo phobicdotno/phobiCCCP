@@ -807,6 +807,71 @@ Element Element::withConstruction(const Element &src, bool on)
     return fromJson(o);
 }
 
+// A rectangle whose outline is not makeRectangle's square — CC's rounded,
+// chamfered and other corner styles (corner_type != 0), or a turned one (a
+// rotation key): the rows in the file are the only description of its
+// corners. Resize it by moving each corner's nodes along with the corner:
+// every node shifts by half the size change, signed by the quadrant its
+// anchor sits in (in the rectangle's own, unturned frame), so the corners
+// keep their shape and size. When shrinking would push a node across a
+// centre line the corners no longer fit; the outline is then scaled instead
+// and becomes a path, like a stretched circle.
+static Element regenStyledRect(const Element &src, QPointF nc, double w, double h)
+{
+    const QJsonObject &r = src.raw;
+    const QPointF c0 = pt(r.value("center").toArray());
+    const double w0 = r.value("width").toDouble(), h0 = r.value("height").toDouble();
+    const double rot = r.value("rotation").toDouble();
+    QTransform toLocal, turn;
+    toLocal.rotate(-rot);
+    toLocal.translate(-c0.x(), -c0.y());
+    turn.rotate(rot);
+    const PathModel m = Element::pathModel(src);
+    if (m.isEmpty() || w0 <= 0 || h0 <= 0 || w <= 0 || h <= 0)
+        return src;
+
+    const double eps = 1e-9 * qMax(1.0, qMax(w0, h0));
+    const double dx = (w - w0) / 2.0, dy = (h - h0) / 2.0;
+    auto sgn = [eps](double v) { return v > eps ? 1.0 : (v < -eps ? -1.0 : 0.0); };
+    PathModel stretched = m;   // relative to the center, as the rows are stored
+    bool fits = true;
+    for (SubPath &s : stretched.subs) {
+        for (PathNode &n : s.nodes) {
+            const QPointF a = toLocal.map(n.p);
+            const double sx = sgn(a.x()), sy = sgn(a.y());
+            const QPointF d(sx * dx, sy * dy);
+            if ((sx != 0 && sgn(a.x() + d.x()) != sx) || (sy != 0 && sgn(a.y() + d.y()) != sy))
+                fits = false;
+            n.p = turn.map(a + d);
+            n.in = turn.map(toLocal.map(n.in) + d);
+            n.out = turn.map(toLocal.map(n.out) + d);
+        }
+    }
+    if (fits) {
+        QJsonObject o = r;   // keeps corner_type, radius, rotation and the identity
+        o.insert("center", xy(nc));
+        o.insert("position", xy(nc));
+        o.insert("width", w);
+        o.insert("height", h);
+        fillBezierRows(o, stretched);
+        return Element::fromJson(o);
+    }
+
+    QTransform scaled;
+    scaled.translate(nc.x(), nc.y());
+    scaled.rotate(rot);
+    scaled.scale(w / w0, h / h0);
+    scaled = toLocal * scaled;
+    PathModel out = m;
+    for (SubPath &s : out.subs)
+        for (PathNode &n : s.nodes) {
+            n.p = scaled.map(n.p);
+            n.in = scaled.map(n.in);
+            n.out = scaled.map(n.out);
+        }
+    return Element::withPathModel(src, out);
+}
+
 Element Element::regen(const Element &src, const QHash<QString, double> &p)
 {
     const QJsonObject &r = src.raw;
@@ -819,9 +884,18 @@ Element Element::regen(const Element &src, const QHash<QString, double> &p)
     if (src.geometryType == QLatin1String("circle")) {
         e = makeCircle({cx, cy}, p.value("radius", r.value("radius").toDouble()), layer);
     } else if (src.geometryType == QLatin1String("rectangle")) {
-        e = makeRectangle({cx, cy},
-                          p.value("width", r.value("width").toDouble()),
-                          p.value("height", r.value("height").toDouble()), layer);
+        // The corner radius and rotation are the rectangle's own: the
+        // properties panel's (hidden) radius / rotation fields do not apply.
+        const double w = p.value("width", r.value("width").toDouble());
+        const double h = p.value("height", r.value("height").toDouble());
+        if (r.value("corner_type").toInt() != 0 || !qFuzzyIsNull(r.value("rotation").toDouble()))
+            return regenStyledRect(src, {cx, cy}, w, h);
+        e = makeRectangle({cx, cy}, w, h, layer);
+        if (r.contains("radius")) {
+            QJsonObject o = e.raw;
+            o.insert("radius", r.value("radius"));
+            e.raw = o;
+        }
     } else if (src.geometryType == QLatin1String("regular_polygon")) {
         e = makePolygon({cx, cy},
                         p.value("radius", r.value("radius").toDouble()),
