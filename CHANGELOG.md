@@ -24,6 +24,8 @@ because the old direction was wrong (see below).
   loads that tool.
 - V-carve: the medial axis is pruned until nothing changes, so finely flattened curves no
   longer leave hundreds of short spokes (an "O" was about 150 extra plunge/retract cycles).
+  While it waits to reset, Resume is refused, so the buffered lines can't run.
+- Speeding up a running spindle (same tool, higher rpm) also waits, in proportion.
 - Unplugging the gamepad mid-hold stops the jog the way a release does.
 - Ramping is turned off only on loops that actually get tabs.
 
@@ -38,7 +40,9 @@ because the old direction was wrong (see below).
   names that become equal once made safe are refused.
 - DXF: spline flattening has a point budget and refuses absurd coordinates (a 20 KB file
   took 74 s); joining lines is fast on 100k-line files; HPGL `IN` resets pen and mode.
-- Binary STL files with a wrong triangle count, padding or a "solid" header now open.
+- Binary STL files with a wrong triangle count, padding or a "solid" header now open; a
+  file that isn't a mesh (NaN or absurd coordinates) is refused instead of imported.
+- Saving over a read-only file works again (the copied permissions are applied last).
 - Trace background image follows the background's rotation.
 - Sketches received with a part stay where the sender placed them, lined up with the STL.
 
@@ -51,7 +55,7 @@ because the old direction was wrong (see below).
 - Delete + Undo puts elements back in their original order; the inlay male part is undoable.
 - Booleans and Offset ignore selected sketch points and construction geometry.
 - Text properties compare with what the field shows, so typing 9.52 over 9.53 counts.
-- Horizontal scrolling pans the canvas.
+- Horizontal scrolling pans the canvas; Fit selection fits the shapes, not their click margin.
 
 **Also fixed**
 
