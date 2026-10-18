@@ -280,6 +280,12 @@ int main(int argc, char **argv)
             const quint32 n5 = 5;
             five.replace(80, 4, QByteArray(reinterpret_cast<const char *>(&n5), 4));
             check(parseStl(five, &t) && t.size() == 5, "STL: a count that fits is honoured");
+            QByteArray junk(84 + 50 * 4 + 3, '\0');
+            for (int i = 84; i < junk.size(); ++i)
+                junk[i] = char(0xff);                    // 0xffffffff is a NaN float
+            QString why;
+            check(!parseStl(junk, &t, &why) && t.isEmpty() && !why.isEmpty(),
+                  "STL: a binary file of NaNs is refused, not imported as a mesh");
         }
 
         Model3D m;

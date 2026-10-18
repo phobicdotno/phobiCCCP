@@ -21,6 +21,8 @@ Recovery::Recovery(const QString &dir)
                                 + QStringLiteral("/recovery")
                           : dir)
 {
+    static int instances = 0;
+    m_instance = instances++;
 }
 
 Recovery::~Recovery() = default;
@@ -32,6 +34,8 @@ QString Recovery::pathFor(const QString &source, bool untitled) const
     QString name;
     if (untitled) {
         name = QStringLiteral("untitled-%1").arg(QCoreApplication::applicationPid());
+        if (m_instance > 0)                     // a second window in this process
+            name += QStringLiteral("-%1").arg(m_instance);
     } else {
         const QFileInfo fi(source);
         const QString key = fi.exists() ? fi.canonicalFilePath() : fi.absoluteFilePath();
@@ -45,18 +49,18 @@ QString Recovery::write(const Document &doc, const QString &source, bool untitle
                         QString *error)
 {
     const QString copy = pathFor(source, untitled);
+    // A new copy is written before the old one is removed: if this write
+    // fails, the last good copy is still there.
+    std::unique_ptr<QLockFile> newLock;
     if (copy != m_current) {
-        discard();
         if (!QDir().mkpath(m_dir)) {
             if (error) *error = QStringLiteral("Cannot create %1").arg(m_dir);
             return {};
         }
-        auto lock = std::make_unique<QLockFile>(lockName(copy));
-        lock->setStaleLockTime(0);   // stale only when its process is gone
-        if (!lock->tryLock(0))
-            return {};               // another window has this file open
-        m_lock = std::move(lock);
-        m_current = copy;
+        newLock = std::make_unique<QLockFile>(lockName(copy));
+        newLock->setStaleLockTime(0);   // stale only when its process is gone
+        if (!newLock->tryLock(0))
+            return {};                  // another window has this file open
     }
     QFile side(sidecar(copy));
     if (!side.open(QIODevice::WriteOnly | QIODevice::Truncate)
@@ -66,10 +70,27 @@ QString Recovery::write(const Document &doc, const QString &source, bool untitle
     }
     side.close();
     // Document::save moves the document onto the path it writes; a copy
-    // keeps the caller's document on the user's file.
+    // keeps the caller's document on the user's file. save() also starts
+    // from the document's own container: when that file has gone (a pulled
+    // stick, a moved file), start from the last recovery copy instead.
     Document d = doc;
-    if (!d.save(copy, error))
+    if (!QFileInfo::exists(d.filePath())) {
+        if (QFileInfo::exists(copy))
+            d.setFilePath(copy);
+        else if (!m_current.isEmpty() && QFileInfo::exists(m_current))
+            d.setFilePath(m_current);
+    }
+    if (!d.save(copy, error)) {
+        if (newLock)
+            QFile::remove(sidecar(copy));
         return {};
+    }
+    if (newLock) {
+        if (!m_current.isEmpty())
+            remove(m_current);
+        m_lock = std::move(newLock);
+        m_current = copy;
+    }
     return copy;
 }
 

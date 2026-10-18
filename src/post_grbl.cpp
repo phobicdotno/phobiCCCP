@@ -267,8 +267,13 @@ QString GrblPost::generate(const QVector<Op> &ops) const
                 line(ln);
                 // From standstill: wait for the spindle to reach speed
                 // before anything moves into the stock.
+                // Speeding up a running spindle (same tool, higher rpm) takes
+                // part of that time too.
                 if (starting)
                     line(QStringLiteral("G4P") + QString::number(kSpindleSpinUpSec, 'f', 2));
+                else if (op.ival > lastRpm)
+                    line(QStringLiteral("G4P") + QString::number(
+                        kSpindleSpinUpSec * double(op.ival - lastRpm) / op.ival, 'f', 2));
                 spindleOn = true;
                 lastRpm = op.ival;
             }

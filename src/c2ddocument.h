@@ -45,6 +45,9 @@ public:
                             double thickness, QString *error = nullptr);
 
     QString filePath() const { return m_path; }
+    // The container save() starts from (and then writes to). Only for a
+    // copy that must be written from another container than its own file.
+    void setFilePath(const QString &path) { m_path = path; }
     const QHash<QString, QString> &params() const { return m_params; }
     // Params are normally only ever read from the container; this exists so a
     // caller (and the tests) can set one without a round trip through a file.

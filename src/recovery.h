@@ -52,6 +52,7 @@ private:
 
     QString m_dir;
     QString m_current;
+    int m_instance = 0;   // tells apart untitled designs of one process
     std::unique_ptr<QLockFile> m_lock;
 };
 

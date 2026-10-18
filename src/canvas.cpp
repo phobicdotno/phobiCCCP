@@ -972,8 +972,14 @@ void Canvas::zoomFit()
     // Something selected: fill the window with it, centred. Else the plate.
     QRectF sel;
     for (QGraphicsItem *it : m_scene->selectedItems())
-        if (it->data(0).isValid())
-            sel |= it->sceneBoundingRect();
+        if (it->data(0).isValid()) {
+            // The geometry, not the item's bounds: those include the wide
+            // invisible hit pen, which is mostly margin when zoomed out.
+            if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(it))
+                sel |= pi->mapRectToScene(pi->path().boundingRect());
+            else
+                sel |= it->sceneBoundingRect();
+        }
     if (sel.width() > 0 || sel.height() > 0) {
         const double m = qMax(qMax(sel.width(), sel.height()) * 0.04, 0.5);
         fitInView(sel.adjusted(-m, -m, m, m), Qt::KeepAspectRatio);

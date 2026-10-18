@@ -515,6 +515,15 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
                     quint32 bits = qFromLittleEndian<quint32>(p + 12 + v * 12 + k * 4);
                     float f;
                     std::memcpy(&f, &bits, 4);
+                    // Not a mesh: a PNG or zip renamed .stl, or a corrupt
+                    // file, read as floats. NaN or 1e38 must not reach the
+                    // height model and the toolpaths.
+                    if (!std::isfinite(f) || std::fabs(f) > 1e6f) {
+                        tris->clear();
+                        if (error) *error = QStringLiteral("Not an STL file (triangle %1 has an "
+                                                           "invalid coordinate)").arg(i + 1);
+                        return false;
+                    }
                     t.v[v][k] = f;
                 }
             tris->append(t);
@@ -537,14 +546,16 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
     if (bytes.contains('\0')) {
         if (binaryFallback())
             return true;
-        if (error) *error = QStringLiteral("Not an STL file (binary, but shorter than one triangle)");
+        if (error && error->isEmpty())
+            *error = QStringLiteral("Not an STL file (binary, but shorter than one triangle)");
         return false;
     }
     const QString text = QString::fromLatin1(bytes);
     if (!text.trimmed().startsWith(QLatin1String("solid"), Qt::CaseInsensitive)) {
         if (binaryFallback())
             return true;
-        if (error) *error = QStringLiteral("Not an STL file (no binary size match, no 'solid' header)");
+        if (error && error->isEmpty())
+            *error = QStringLiteral("Not an STL file (no binary size match, no 'solid' header)");
         return false;
     }
     StlTriangle cur{};
@@ -567,7 +578,8 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
     if (tris->isEmpty()) {
         if (binaryFallback())
             return true;
-        if (error) *error = QStringLiteral("STL contains no triangles");
+        if (error && error->isEmpty())
+            *error = QStringLiteral("STL contains no triangles");
         return false;
     }
     return true;

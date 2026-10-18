@@ -169,6 +169,10 @@ void GrblStreamer::requestStatus()
 
 void GrblStreamer::sendRealtime(char c)
 {
+    // No cycle start while holding before the reset after an error: GRBL
+    // would run the rest of the buffered program.
+    if (c == '~' && m_errorResetTimer->isActive())
+        return;
     if (isConnected())
         m_port->write(&c, 1);
 }
@@ -258,6 +262,11 @@ void GrblStreamer::pauseStream()
 
 void GrblStreamer::resumeStream()
 {
+    if (m_errorResetTimer->isActive()) {     // see sendRealtime
+        emit errorOccurred(QStringLiteral("resume refused: the controller is being reset "
+                                          "after an error"));
+        return;
+    }
     if (isConnected())
         m_port->write("~", 1);
 }
@@ -582,6 +591,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
             resyncAdhoc(QStringLiteral("no ack while Idle"));
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
+        // Waiting to reset after an error: do it on the report that shows
+        // the hold at rest, not on the next poll, so a Resume can't slip in.
+        if (m_errorResetTimer->isActive())
+            resetAfterError();
         return;
     }
 

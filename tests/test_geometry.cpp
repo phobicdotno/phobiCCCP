@@ -291,6 +291,21 @@ int main(int argc, char *argv[])
         check(starts == 2, "tool change: both starts wait for spin-up");
     }
 
+    // --- spindle: speeding up a running spindle also waits -----------------
+    {
+        QVector<c2d::Op> ops;
+        ops.append(c2d::Op::spindle(10000));
+        ops.append(c2d::Op::spindle(20000));
+        ops.append(c2d::Op::spindle(15000));
+        const QStringList l = c2d::GrblPost(true).generate(ops).split(QLatin1Char('\n'));
+        const int up = int(l.indexOf(QStringLiteral("S20000")));
+        const int down = int(l.indexOf(QStringLiteral("S15000")));
+        check(up > 0 && l.value(up + 1).startsWith(QLatin1String("G4P")),
+              "a higher rpm on a running spindle waits for it");
+        check(down > 0 && !l.value(down + 1).startsWith(QLatin1String("G4P")),
+              "slowing down does not wait");
+    }
+
     // --- ramping + tabs: the ramp must not cut through the tabs -------------
     {
         Rig r;

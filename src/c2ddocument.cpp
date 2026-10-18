@@ -177,11 +177,15 @@ bool Document::save(const QString &destPath, QString *error)
         return false;
     }
     // The saved file keeps the permissions the one it replaces had (a shared
-    // group-writable file stays so); a new file is rw-r--r--.
-    QFile::setPermissions(tmpPath, QFileInfo::exists(realDest)
-                                       ? QFile::permissions(realDest)
-                                       : QFileDevice::ReadOwner | QFileDevice::WriteOwner
-                                             | QFileDevice::ReadGroup | QFileDevice::ReadOther);
+    // group-writable file stays so); a new file is rw-r--r--. They are
+    // applied just before the rename: a read-only original copied onto the
+    // staging file now would make SQLite open it read-only and fail the save.
+    const QFileDevice::Permissions finalPerms =
+        QFileInfo::exists(realDest) ? QFile::permissions(realDest)
+                                    : QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                          | QFileDevice::ReadGroup | QFileDevice::ReadOther;
+    QFile::setPermissions(tmpPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                       | QFileDevice::ReadGroup | QFileDevice::ReadOther);
 
     const QString conn = QStringLiteral("c2dw_%1").arg(QUuid::createUuid().toString());
     bool ok = true;
@@ -346,6 +350,8 @@ bool Document::save(const QString &destPath, QString *error)
         QFile::remove(tmpPath);          // the destination was never touched
         return false;
     }
+
+    QFile::setPermissions(tmpPath, finalPerms);
 
     // 5) Move the finished container into place. rename(2) replaces the
     //    destination atomically within a directory, so an interrupted save
