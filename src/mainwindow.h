@@ -2,6 +2,7 @@
 #include "c2ddocument.h"
 #include "backgroundimage.h"
 #include "canvas.h"
+#include "recovery.h"
 #include <QMainWindow>
 
 class QAction;
@@ -79,6 +80,10 @@ private:
     void updateTitle();
     void openPath(const QString &path, bool untitled);
     void removeUntitledFile();    // the scratch file behind an untitled design
+    // Crash recovery (recovery.h): a copy of the unsaved design every couple
+    // of minutes, offered again at start-up if the session died.
+    void autosave();
+    void offerRecovery();
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
     void setReceiving(bool on);
     void onProjectReceived(int id, const ReceivedProject &project);
@@ -133,6 +138,7 @@ private:
     QString m_untitledPath;
     Document m_doc;
     BackgroundImage m_bg;        // tracing background (params + sqlar/background.png)
+    Recovery m_recovery;
 };
 
 } // namespace c2d

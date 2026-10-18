@@ -56,6 +56,7 @@ add_library(phobicccp_core STATIC
     src/backgroundimage.cpp
     src/imagetrace.cpp
     src/model3d.cpp
+    src/recovery.cpp
 )
 target_include_directories(phobicccp_core PUBLIC src)
 # The binary should be able to say which build it is (--version, --help);
