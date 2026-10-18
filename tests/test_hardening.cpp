@@ -174,6 +174,39 @@ int main(int argc, char *argv[])
         check(oval > 1.0 && oval < 8.0, "medial axis: an oval has a short real axis");
         std::printf("medial axis: square %.2f, rotated %.2f, oval %.2f mm\n",
                     axisLength(sq), axisLength(rsq), oval);
+
+        // A circle flattened finely (0.005 mm chord error, ~120 sides of
+        // well under 1 mm) left a tree of junction stubs near the centre
+        // once the vertex spurs were pruned: 148 chains for r = 15, each one
+        // a rapid, a plunge, a feed and a retract. Its axis is one point.
+        for (const double r : {5.0, 15.0, 40.0}) {
+            const int n = int(std::ceil(2 * M_PI / (2 * std::acos(1 - 0.005 / r))));
+            const auto c = c2d::medialAxis({circlePoly(r, n)});
+            std::printf("medial axis: circle r=%.0f (%d sides): %d chain(s), %.3f mm\n",
+                        r, n, int(c.size()), axisLength(c));
+            check(c.size() <= 2 && axisLength(c) < 0.5,
+                  "medial axis: a finely flattened circle collapses to (about) a point");
+        }
+        // ...without eating real branches: a square keeps its four corner
+        // spokes, a rounded slot its full spine.
+        {
+            QPolygonF slot;
+            for (int i = 0; i <= 200; ++i) {
+                const double a = -M_PI / 2 + M_PI * i / 200;
+                slot << QPointF(15 + 5 * std::cos(a), 5 * std::sin(a));
+            }
+            for (int i = 0; i <= 200; ++i) {
+                const double a = M_PI / 2 + M_PI * i / 200;
+                slot << QPointF(-15 + 5 * std::cos(a), 5 * std::sin(a));
+            }
+            slot << slot.first();
+            const auto s = c2d::medialAxis({slot});
+            std::printf("medial axis: slot %d chain(s), %.3f mm\n", int(s.size()), axisLength(s));
+            check(std::fabs(axisLength(s) - 30.0) < 0.3, "medial axis: a slot keeps its spine");
+            const auto sq2 = c2d::medialAxis({rectPoly(0, 0, 20, 20)});
+            check(sq2.size() == 4 && std::fabs(axisLength(sq2) - 56.57) < 0.2,
+                  "medial axis: the square still has its four corner spokes");
+        }
     } else {
         std::printf("medial axis: Voronoi backend not built, section skipped\n");
     }
