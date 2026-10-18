@@ -21,6 +21,7 @@ bool Document::load(const QString &path, QString *error)
     m_toolpaths.clear();
     m_groups.clear();
     m_unreadableToolpaths.clear();
+    m_keptToolpaths.clear();
     m_unreadableElements.clear();
     m_path = path;
 
@@ -81,7 +82,7 @@ bool Document::load(const QString &path, QString *error)
             QSqlQuery q(db);
             // Row order is CC's machining order for toolpaths; make it explicit.
             q.exec(QStringLiteral(
-                "SELECT type, sz, data, uuid FROM items "
+                "SELECT type, sz, data, uuid, name, version FROM items "
                 "WHERE type IN ('element','toolpath','toolpath_group') ORDER BY id"));
             while (q.next()) {
                 const QString type = q.value(0).toString();
@@ -92,9 +93,11 @@ bool Document::load(const QString &path, QString *error)
                 if (obj.isEmpty()) {
                     // Remember it so save() leaves the row alone rather than
                     // dropping a toolpath this build simply cannot read.
-                    if (type == QLatin1String("toolpath"))
+                    if (type == QLatin1String("toolpath")) {
                         m_unreadableToolpaths.insert(q.value(3).toString());
-                    else if (type == QLatin1String("element"))
+                        m_keptToolpaths.append({q.value(3), q.value(4), q.value(5), q.value(1),
+                                                q.value(2), int(m_toolpaths.size())});
+                    } else if (type == QLatin1String("element"))
                         m_unreadableElements.insert(q.value(3).toString());
                     continue;
                 }
@@ -137,7 +140,8 @@ bool Document::load(const QString &path, QString *error)
         m_toolpaths.clear();
         m_groups.clear();
         m_unreadableToolpaths.clear();
-    m_unreadableElements.clear();
+        m_keptToolpaths.clear();
+        m_unreadableElements.clear();
         return false;
     }
     return true;
@@ -158,14 +162,26 @@ bool Document::save(const QString &destPath, QString *error)
     //    disk, a source on a stick that has been pulled, a failing statement -
     //    and the SQL rollback cannot undo a file replacement. The temporary is
     //    moved over the destination only after the transaction commits.
-    const QString tmpPath = destPath + QStringLiteral(".phobisave");
+    //    A symlinked destination is saved through: staging beside the link
+    //    and renaming over it would replace the link with a plain file.
+    QString realDest = destPath;
+    {
+        const QFileInfo fi(destPath);
+        if (fi.isSymLink())
+            realDest = fi.exists() ? fi.canonicalFilePath() : fi.symLinkTarget();
+    }
+    const QString tmpPath = realDest + QStringLiteral(".phobisave");
     QFile::remove(tmpPath);
     if (!QFile::copy(m_path, tmpPath)) {
         if (error) *error = QStringLiteral("Could not stage a copy at %1").arg(tmpPath);
         return false;
     }
-    QFile::setPermissions(tmpPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner |
-                                   QFileDevice::ReadGroup | QFileDevice::ReadOther);
+    // The saved file keeps the permissions the one it replaces had (a shared
+    // group-writable file stays so); a new file is rw-r--r--.
+    QFile::setPermissions(tmpPath, QFileInfo::exists(realDest)
+                                       ? QFile::permissions(realDest)
+                                       : QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                             | QFileDevice::ReadGroup | QFileDevice::ReadOther);
 
     const QString conn = QStringLiteral("c2dw_%1").arg(QUuid::createUuid().toString());
     bool ok = true;
@@ -230,25 +246,14 @@ bool Document::save(const QString &destPath, QString *error)
         //     deleted toolpath simply has no row any more; every kept, moved
         //     or new one gets a fresh id in sequence, and since CC lists
         //     toolpaths by row id the in-memory order is what it shows and
-        //     machines. Group membership rides inside each payload
-        //     (`toolpath_group`), so the group rows are left untouched.
+        //     machines. Rows this build could not decode are written back
+        //     byte for byte where they were among the others; left at their
+        //     old low ids they jumped to the front of the machining order.
+        //     Group membership rides inside each payload (`toolpath_group`),
+        //     so the group rows are left untouched.
         if (ok) {
             QSqlQuery deltp(db);
-            bool delOk = false;
-            if (m_unreadableToolpaths.isEmpty()) {
-                delOk = deltp.exec(QStringLiteral("DELETE FROM items WHERE type='toolpath'"));
-            } else {
-                // Keep the rows we could not decode exactly as they are.
-                QStringList marks;
-                for (int i = 0; i < m_unreadableToolpaths.size(); ++i)
-                    marks << QStringLiteral("?");
-                deltp.prepare(QStringLiteral("DELETE FROM items WHERE type='toolpath' "
-                                             "AND uuid NOT IN (%1)").arg(marks.join(QChar(','))));
-                for (const QString &u : m_unreadableToolpaths)
-                    deltp.addBindValue(u);
-                delOk = deltp.exec();
-            }
-            if (!delOk) {
+            if (!deltp.exec(QStringLiteral("DELETE FROM items WHERE type='toolpath'"))) {
                 if (error) *error = deltp.lastError().text();
                 ok = false;
             }
@@ -257,20 +262,33 @@ bool Document::save(const QString &destPath, QString *error)
             QSqlQuery tpins(db);
             tpins.prepare(QStringLiteral(
                 "INSERT INTO items(uuid,name,type,version,sz,data) "
-                "VALUES(?,?,'toolpath','J1',?,?)"));
-            for (const Toolpath &t : m_toolpaths) {
+                "VALUES(?,?,'toolpath',?,?,?)"));
+            auto insert = [&](const QVariant &uuid, const QVariant &name, const QVariant &version,
+                              const QVariant &sz, const QVariant &data) {
+                tpins.addBindValue(uuid);
+                tpins.addBindValue(name);              // items.name mirrors the type
+                tpins.addBindValue(version);
+                tpins.addBindValue(sz);
+                tpins.addBindValue(data);
+                if (tpins.exec())
+                    return true;
+                if (error) *error = tpins.lastError().text();
+                return false;
+            };
+            int kept = 0;
+            for (int i = 0; ok && i <= m_toolpaths.size(); ++i) {
+                // Positions past the end (toolpaths deleted since) go last.
+                while (ok && kept < m_keptToolpaths.size()
+                       && (m_keptToolpaths.at(kept).position <= i || i == m_toolpaths.size())) {
+                    const KeptRow &r = m_keptToolpaths.at(kept++);
+                    ok = insert(r.uuid, r.name, r.version, r.sz, r.data);
+                }
+                if (!ok || i == m_toolpaths.size())
+                    break;
+                const Toolpath &t = m_toolpaths.at(i);
                 const QByteArray json =
                     QJsonDocument(t.json).toJson(QJsonDocument::Indented);
-                const QByteArray comp = zlibDeflate(json);
-                tpins.addBindValue(t.uuid);
-                tpins.addBindValue(t.type);            // items.name mirrors the type
-                tpins.addBindValue(json.size());
-                tpins.addBindValue(comp);
-                if (!tpins.exec()) {
-                    if (error) *error = tpins.lastError().text();
-                    ok = false;
-                    break;
-                }
+                ok = insert(t.uuid, t.type, QStringLiteral("J1"), json.size(), zlibDeflate(json));
             }
         }
 
@@ -278,7 +296,7 @@ bool Document::save(const QString &destPath, QString *error)
         //     includes the rows we could not decode and therefore kept.
         if (ok && m_params.contains(QStringLiteral("num_toolpaths"))) {
             const QString n = QString::number(m_toolpaths.size()
-                                              + m_unreadableToolpaths.size());
+                                              + m_keptToolpaths.size());
             QSqlQuery pq(db);
             pq.prepare(QStringLiteral("UPDATE params SET value=? WHERE key='num_toolpaths'"));
             pq.addBindValue(n);
@@ -333,11 +351,11 @@ bool Document::save(const QString &destPath, QString *error)
     //    destination atomically within a directory, so an interrupted save
     //    leaves either the old file or the new one, never a half-written one.
     if (std::rename(QFile::encodeName(tmpPath).constData(),
-                    QFile::encodeName(destPath).constData()) != 0) {
+                    QFile::encodeName(realDest).constData()) != 0) {
         // Non-POSIX or an odd filesystem: fall back to remove-then-rename,
         // which is not atomic but still only runs on known-good content.
-        QFile::remove(destPath);
-        if (!QFile::rename(tmpPath, destPath)) {
+        QFile::remove(realDest);
+        if (!QFile::rename(tmpPath, realDest)) {
             if (error) *error = QStringLiteral("Could not move the saved file into %1").arg(destPath);
             QFile::remove(tmpPath);
             return false;

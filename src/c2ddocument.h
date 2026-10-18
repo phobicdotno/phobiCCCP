@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QSet>
 #include <QString>
+#include <QVariant>
 #include <QVector>
 
 // Reads a modern (v7/v8 SQLite) Carbide Create .c2d container: opens the
@@ -157,6 +158,11 @@ private:
     QString m_path;
     QHash<QString, QString> m_params;
     QSet<QString> m_unreadableToolpaths;
+    // The undecodable toolpath rows themselves, as read, with how many
+    // readable toolpaths came before each: save() writes them back in the
+    // same place in the machining order (CC orders by row id).
+    struct KeptRow { QVariant uuid, name, version, sz, data; int position = 0; };
+    QVector<KeptRow> m_keptToolpaths;
     QSet<QString> m_unreadableElements;   // same, for element rows
     QVector<Element> m_elements;
     QVector<Toolpath> m_toolpaths;

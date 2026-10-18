@@ -4,6 +4,8 @@
 #include "../src/element.h"
 
 #include <QCoreApplication>
+#include <QFile>
+#include <QFileInfo>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -72,6 +74,28 @@ int main(int argc, char **argv)
         const QString again = dir.filePath(QStringLiteral("again.c2d"));
         check(bad.save(again, &err), "save with an undecodable element");
         check(count(again, "recount") == 2, "the undecodable element row survives the save");
+    }
+    // Saving over an existing file keeps its permissions, and saving
+    // through a symlink updates the file it points at, not the link.
+    {
+        const QString target = dir.filePath(QStringLiteral("shared.c2d"));
+        check(doc.save(target, &err), "save the shared file");
+        const QFileDevice::Permissions perms = QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                               | QFileDevice::ReadGroup | QFileDevice::WriteGroup;
+        QFile::setPermissions(target, perms);
+        check(doc.save(target, &err), "save over it");
+        check((QFile::permissions(target) & 0x7077) == (perms & 0x7077),
+              "the saved file keeps the permissions it had");
+
+        const QString link = dir.filePath(QStringLiteral("link.c2d"));
+        check(QFile::link(target, link), "make a symlink to it");
+        doc.elementsRef().append(
+            c2d::Element::makeCircle(QPointF(20, 20), 5, doc.defaultLayer()));
+        check(doc.save(link, &err), "save through the symlink");
+        check(QFileInfo(link).isSymLink(), "the symlink is still a symlink");
+        c2d::Document viaTarget;
+        check(viaTarget.load(target, &err) && viaTarget.elements().size() == doc.elements().size(),
+              "the file it points at was updated");
     }
     if (!err.isEmpty())
         std::printf("     last error: %s\n", qPrintable(err));
