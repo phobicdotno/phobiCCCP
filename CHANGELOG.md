@@ -2,7 +2,58 @@
 
 ## v1.1.20 (build 71) — 2026-10-18
 
-> Bug fixes from a full review: tabs survive ramping, 3D climb/conventional the right way round, no lost elements on save
+> Bug fixes from a full review: tabs survive ramping, 3D climb/conventional the right way round, no lost elements on save, crash recovery
+
+**Note:** existing 3D finish toolpaths set to Climb or Conventional now cut the other way,
+because the old direction was wrong (see below).
+
+**Machine and G-code**
+
+- A rejected line (`error:N`) mid-job now holds, then soft-resets the controller: the rest of
+  the buffered program is discarded and the spindle stops. Before, only a feed hold was sent,
+  and Resume could run the leftover lines untracked.
+- The spindle stays on between toolpaths that use the same tool (it was stopped and started
+  again right before the next plunge), and every start from stopped waits 3 s (`G4P3.00`)
+  for spin-up.
+- Pockets: the inward-offset limit is sized from the pocket, so big pockets with a small
+  stepover are no longer left uncut in the middle after 500 rings; an absurd case is
+  reported in the notes.
+- Cutout tabs are measured from the cut depth, not from below the break-through.
+- Tiling: a cut split at a tile line re-enters on a short ramp along its own path instead
+  of a straight half-engaged plunge; a tile that keeps only a same-tool toolpath still
+  loads that tool.
+- V-carve: the medial axis is pruned until nothing changes, so finely flattened curves no
+  longer leave hundreds of short spokes (an "O" was about 150 extra plunge/retract cycles).
+- Unplugging the gamepad mid-hold stops the jog the way a release does.
+- Ramping is turned off only on loops that actually get tabs.
+
+**Files and import**
+
+- Autosave and crash recovery: every 2 minutes while there are unsaved changes, a recovery
+  copy is written to the app's data folder (never over your file). After a crash, the next
+  start offers to open it.
+- Save keeps undecodable toolpath rows in their place in the machining order, keeps the
+  file's permissions, and saves through a symlink instead of replacing it.
+- Project receiver: an absolute time limit per connection, one transfer at a time, and file
+  names that become equal once made safe are refused.
+- DXF: spline flattening has a point budget and refuses absurd coordinates (a 20 KB file
+  took 74 s); joining lines is fast on 100k-line files; HPGL `IN` resets pen and mode.
+- Binary STL files with a wrong triangle count, padding or a "solid" header now open.
+- Trace background image follows the background's rotation.
+- Sketches received with a part stay where the sender placed them, lined up with the STL.
+
+**Sketch and UI**
+
+- Resizing a Carbide Create rectangle with rounded or chamfered corners keeps the corners.
+- A 3D model rebuild with Preview on no longer cancels a drag or the pen tool.
+- Open paths, construction lines and sketch points are clickable within 7 px at any zoom.
+- Radius, width and height fields no longer accept 0 or negative sizes.
+- Delete + Undo puts elements back in their original order; the inlay male part is undoable.
+- Booleans and Offset ignore selected sketch points and construction geometry.
+- Text properties compare with what the field shows, so typing 9.52 over 9.53 counts.
+- Horizontal scrolling pans the canvas.
+
+**Also fixed**
 
 - Contour and cutout with ramping and tabs: passes below the tab tops plunge instead of
   ramping. The ramp ran the whole loop at depth before the tabbed lap, so it cut through
