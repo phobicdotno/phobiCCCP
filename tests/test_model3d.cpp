@@ -260,6 +260,27 @@ int main(int argc, char **argv)
         }
         QVector<StlTriangle> trisB;
         check(parseStl(bin, &trisB) && trisB.size() == 6 && trisB.at(0).v[2][2] == 10.0f, "STL: binary parse");
+        // Binary files whose size does not match their count exactly, with
+        // the "solid" header SolidWorks writes: padding after the triangles,
+        // a zero count, a count larger than the data.
+        {
+            QByteArray sw = bin;
+            sw.replace(0, 12, "solid part  ");
+            QVector<StlTriangle> t;
+            check(parseStl(sw + QByteArray(7, ' '), &t) && t.size() == 6
+                      && t.at(0).v[2][2] == 10.0f, "STL: solid header, trailing padding");
+            QByteArray zero = sw;
+            zero.replace(80, 4, QByteArray(4, '\0'));
+            check(parseStl(zero, &t) && t.size() == 6, "STL: solid header, count 0");
+            QByteArray big = sw;
+            const quint32 many = 1000;
+            big.replace(80, 4, QByteArray(reinterpret_cast<const char *>(&many), 4));
+            check(parseStl(big, &t) && t.size() == 6, "STL: count larger than the data");
+            QByteArray five = bin;
+            const quint32 n5 = 5;
+            five.replace(80, 4, QByteArray(reinterpret_cast<const char *>(&n5), 4));
+            check(parseStl(five, &t) && t.size() == 5, "STL: a count that fits is honoured");
+        }
 
         Model3D m;
         m.resolution = 0.25;
