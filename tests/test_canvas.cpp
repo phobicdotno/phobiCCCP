@@ -11,8 +11,12 @@
 #include "../src/canvas.h"
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
+#include "../src/propertiespanel.h"
 
 #include <QApplication>
+#include <QDoubleSpinBox>
+#include <QGraphicsItem>
+#include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QTest>
@@ -588,6 +592,246 @@ int main(int argc, char *argv[])
         check(got == want, "Shift adds the next area");
         click(&ac, {600, 600});                     // empty space
         check(ac.selectedElementIds().isEmpty(), "area click on nothing clears");
+    }
+
+    // --- a CC rectangle's corner style survives a resize --------------------------------
+    // Element::regen rebuilt every rectangle as makeRectangle's square: a rounded
+    // one lost its corners on the first drag of the resize handle or W x H edit.
+    {
+        const double k = 0.5522847498307936 * 5;   // 5 mm corners, as CC rounds them
+        c2d::SubPath sp;
+        sp.closed = true;
+        auto node = [](QPointF p, QPointF in, QPointF out) {
+            c2d::PathNode n;
+            n.p = p; n.in = in; n.out = out;
+            return n;
+        };
+        sp.nodes = {node({20, -5}, {20, -5 - k}, {20, -5}), node({20, 5}, {20, 5}, {20, 5 + k}),
+                    node({15, 10}, {15 + k, 10}, {15, 10}), node({-15, 10}, {-15, 10}, {-15 - k, 10}),
+                    node({-20, 5}, {-20, 5 + k}, {-20, 5}), node({-20, -5}, {-20, -5}, {-20, -5 - k}),
+                    node({-15, -10}, {-15 - k, -10}, {-15, -10}), node({15, -10}, {15, -10}, {15 + k, -10})};
+        c2d::PathModel m;
+        m.subs.append(sp);
+        // Rows relative to the center, as CC stores a rectangle.
+        QJsonObject o = c2d::Element::makeRectangle({50, 50}, 40, 20, doc.defaultLayer()).raw;
+        const QJsonObject rows = c2d::Element::makeBezierPath(m, doc.defaultLayer()).raw;
+        for (const char *key : {"points", "cp1", "cp2", "point_type", "smooth"})
+            o.insert(QLatin1String(key), rows.value(QLatin1String(key)));
+        o.insert("corner_type", 1);
+        o.insert("radius", 5.0);
+        const c2d::Element rounded = c2d::Element::fromJson(o);
+        check(near(rounded.painterPath.boundingRect().topLeft(), {30, 40}), "rounded rect specimen in place");
+
+        const c2d::Element big = c2d::Element::regen(rounded, {{"width", 60.0}, {"height", 30.0}});
+        check(big.geometryType == QLatin1String("rectangle") && big.id == rounded.id
+              && big.raw.value("corner_type").toInt() == 1 && big.raw.value("radius").toDouble() == 5.0,
+              "resized rounded rect stays a rectangle with its corner style");
+        const QRectF bb = big.painterPath.boundingRect();
+        check(std::fabs(bb.width() - 60) < 1e-6 && std::fabs(bb.height() - 30) < 1e-6
+              && near(bb.center(), {50, 50}), "rounded rect resized about its center");
+        const c2d::PathModel bm = c2d::Element::pathModel(big);
+        bool corner = false, edge = false;
+        for (const c2d::PathNode &n : bm.subs.value(0).nodes) {
+            corner = corner || (near(n.p, {80, 40}) && near(n.in, {80, 40 - k}));
+            edge = edge || near(n.p, {75, 35});
+        }
+        check(bm.subs.size() == 1 && bm.subs.first().nodes.size() == 8 && corner && edge,
+              "the 5 mm corner arcs keep their radius");
+
+        // Too small for its corners: scaled, as a path, still the size asked for.
+        const c2d::Element tiny = c2d::Element::regen(rounded, {{"width", 8.0}});
+        const QRectF tb = tiny.painterPath.boundingRect();
+        check(tiny.geometryType == QLatin1String("path") && tiny.id == rounded.id
+              && std::fabs(tb.width() - 8) < 1e-6 && std::fabs(tb.height() - 20) < 1e-6,
+              "a rect too small for its corners is scaled instead");
+
+        // Square corners still regenerate parametrically.
+        const c2d::Element sq = c2d::Element::makeRectangle({0, 0}, 10, 10, doc.defaultLayer());
+        check(c2d::Element::regen(sq, {{"width", 20.0}}).painterPath.boundingRect().width() == 20,
+              "square rect regen unchanged");
+    }
+
+    // --- the background toolpath preview never interrupts a drag ---------------------
+    // setToolpathPreview used to rebuild the whole scene: a select drag lost
+    // its item, a node drag its grab, the pen tool its outline.
+    {
+        c2d::Document pdoc;
+        c2d::Canvas pc;
+        pc.resize(900, 700);
+        pc.show();
+        pc.setDocument(&pdoc);
+        pc.resetTransform();
+        pc.scale(3, -3);
+        pc.centerOn(QPointF(100, 100));
+        const c2d::Element box = c2d::Element::makeRectangle({100, 100}, 20, 20, pdoc.defaultLayer());
+        pdoc.addElement(box);
+        pc.rebuild();
+        const QVector<c2d::Op> ops{c2d::Op::rapid(0, 0, 5), c2d::Op::feedTo(0, 0, -1, 100),
+                                   c2d::Op::feedTo(50, 0, -1, 100)};
+        const int bare = pc.scene()->items().size();
+        pc.setToolpathPreview(ops);
+        check(pc.scene()->items().size() > bare && pc.hasToolpathPreview(), "preview overlay drawn");
+
+        pc.setTool(c2d::Canvas::Select);
+        QTest::mousePress(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {95, 95}));
+        QTest::mouseMove(pc.viewport(), vp(&pc, {100, 95}));
+        QTest::mouseMove(pc.viewport(), vp(&pc, {105, 95}));
+        pc.setToolpathPreview(ops);                 // the model panel finished a rebuild
+        QTest::mouseMove(pc.viewport(), vp(&pc, {115, 95}));
+        QTest::mouseRelease(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {115, 95}));
+        check(near(pdoc.elementById(box.id)->painterPath.boundingRect().center(), {120, 100}, 0.5),
+              "select drag survives a preview refresh");
+
+        const c2d::Element line = c2d::Element::makePath({{50, 150}, {150, 150}}, false, pdoc.defaultLayer());
+        pdoc.addElement(line);
+        pc.rebuild();
+        pc.selectElements({line.id});
+        pc.setTool(c2d::Canvas::NodeEdit);
+        QTest::mousePress(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {150, 150}));
+        QTest::mouseMove(pc.viewport(), vp(&pc, {150, 160}));
+        pc.setToolpathPreview(ops);
+        QTest::mouseMove(pc.viewport(), vp(&pc, {150, 170}));
+        QTest::mouseRelease(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {150, 170}));
+        check(near(row(pdoc.elementById(line.id)->raw, "points", 1), {150, 170}, 0.5),
+              "node drag survives a preview refresh");
+
+        pc.selectElements({});
+        pc.setTool(c2d::Canvas::DrawPath);
+        const int elems = pdoc.elements().size();
+        click(&pc, {20, 20});
+        pc.setToolpathPreview(ops);
+        click(&pc, {40, 20});
+        QTest::keyClick(&pc, Qt::Key_Return);
+        check(pdoc.elements().size() == elems + 1
+              && c2d::Element::pathModel(pdoc.elements().last()).subs.value(0).nodes.size() == 2,
+              "pen path survives a preview refresh");
+        pc.clearToolpathPreview();
+        check(!pc.hasToolpathPreview() && pc.scene()->items().size() == pdoc.elements().size(),
+              "clearing the preview removes only the overlay");
+
+        // A second press while a resize is live replaces its outline, never orphans it.
+        pc.setTool(c2d::Canvas::Select);
+        pc.selectElements({box.id});
+        auto loose = [&] {
+            int n = 0;
+            for (QGraphicsItem *it : pc.scene()->items())
+                if (!it->data(0).isValid())
+                    ++n;
+            return n;
+        };
+        const QPointF handle(130, 110);              // top-right corner of the moved box
+        QTest::mousePress(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, handle));
+        const int one = loose();
+        QTest::mousePress(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, handle));
+        check(one == 1 && loose() == 1, "re-grabbing the resize handle keeps one outline");
+        QTest::mouseRelease(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {135, 115}));
+        check(loose() == 0 && std::fabs(pdoc.elementById(box.id)->raw.value("width").toDouble() - 30) < 0.5,
+              "resize commits and drops its outline");
+    }
+
+    // --- open paths are picked within a few screen pixels at any zoom -----------------
+    {
+        c2d::Document hdoc;
+        c2d::Canvas hc;
+        hc.resize(900, 700);
+        hc.show();
+        hc.setDocument(&hdoc);
+        hc.resetTransform();
+        hc.scale(3, -3);
+        hc.centerOn(QPointF(100, 100));
+        const c2d::Element line = c2d::Element::makePath({{50, 100}, {150, 100}}, false, hdoc.defaultLayer());
+        const c2d::Element pt = c2d::Element::makePoint({100, 130}, hdoc.defaultLayer());
+        hdoc.addElement(line);
+        hdoc.addElement(pt);
+        hc.rebuild();
+        hc.setTool(c2d::Canvas::Select);
+        click(&hc, {100, 101.7});                    // 5 px off at 3 px/mm
+        check(hc.selectedElementIds() == QStringList{line.id}, "open path picked 5 px off");
+        click(&hc, {100, 104});                      // 12 px off
+        check(hc.selectedElementIds().isEmpty(), "open path not picked 12 px off");
+        click(&hc, {101.5, 130});                    // 4.5 px off the point
+        check(hc.selectedElementIds() == QStringList{pt.id}, "sketch point picked a few px off");
+
+        hc.resetTransform();
+        hc.scale(0.5, -0.5);                         // zoomed far out
+        hc.centerOn(QPointF(100, 100));
+        click(&hc, {100, 110});                      // 5 px off
+        check(hc.selectedElementIds() == QStringList{line.id}, "zoomed out: still picked 5 px off");
+        hc.resetTransform();
+        hc.scale(40, -40);                           // zoomed far in
+        hc.centerOn(QPointF(100, 100));
+        click(&hc, {100, 100.5});                    // 20 px off
+        check(hc.selectedElementIds().isEmpty(), "zoomed in: not picked 20 px off");
+
+        // Node editor: a double-click 5 px off the open path, inside the item's
+        // corridor and the node editor's segment tolerance alike, inserts a node.
+        hc.resetTransform();
+        hc.scale(3, -3);
+        hc.centerOn(QPointF(100, 100));
+        hc.selectElements({line.id});
+        hc.setTool(c2d::Canvas::NodeEdit);
+        QTest::mouseDClick(hc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&hc, {100, 101.7}));
+        check(hdoc.elementById(line.id)->raw.value("points").toArray().size() == 3,
+              "double-click near an open path inserts a node");
+    }
+
+    // --- delete + undo keeps the z-order; the inlay generator is undoable ------------
+    {
+        c2d::Document zdoc;
+        c2d::Canvas zc;
+        zc.setDocument(&zdoc);
+        QVector<c2d::Element> els;
+        for (int i = 0; i < 4; ++i) {
+            els.append(c2d::Element::makeCircle({10.0 + 20 * i, 10}, 5, zdoc.defaultLayer()));
+            zdoc.addElement(els.last());
+        }
+        auto order = [&] {
+            QStringList ids;
+            for (const c2d::Element &e : zdoc.elements())
+                ids << e.id;
+            return ids;
+        };
+        zc.rebuild();
+        const QStringList before = order();
+        zc.selectElements({els.at(2).id, els.at(0).id});
+        zc.deleteSelected();
+        check(order() == QStringList({els.at(1).id, els.at(3).id}), "delete removes the selection");
+        zc.undoStack()->undo();
+        check(order() == before, "undo delete restores the original order");
+        zc.undoStack()->redo();
+        zc.undoStack()->undo();
+        check(order() == before, "redo + undo delete keeps the order");
+
+        const int steps = zc.undoStack()->index();
+        const c2d::Element gen = c2d::Element::makeRectangle({50, 50}, 10, 10, zdoc.defaultLayer());
+        c2d::Toolpath male;
+        male.uuid = QStringLiteral("{male}");
+        male.json.insert("name", QStringLiteral("pocket (inlay male)"));
+        male.json.insert("elements", QJsonArray{QJsonObject{{"uuid", gen.id}}});
+        zc.insertGenerated({gen}, male);
+        check(zc.undoStack()->index() == steps + 1 && zdoc.elementById(gen.id)
+              && zdoc.toolpathByUuid(male.uuid), "inlay male is one undo step");
+        zc.undoStack()->undo();
+        check(!zdoc.elementById(gen.id) && !zdoc.toolpathByUuid(male.uuid) && order() == before,
+              "undo removes the generated vectors and toolpath");
+        zc.undoStack()->redo();
+        check(zdoc.elementById(gen.id) && zdoc.toolpathByUuid(male.uuid), "redo puts them back");
+    }
+
+    // --- properties: sizes stay positive, the center may go negative ------------------
+    {
+        c2d::PropertiesPanel panel(&canvas);
+        int negative = 0, positive = 0;
+        for (QDoubleSpinBox *s : panel.findChildren<QDoubleSpinBox *>()) {
+            if (s->suffix() != QStringLiteral(" mm") || s->maximum() != 10000 || s->decimals() != 3)
+                continue;
+            if (s->minimum() < 0)
+                ++negative;
+            else if (s->minimum() > 0)
+                ++positive;
+        }
+        check(negative == 2 && positive == 3,
+              "center x/y go negative; radius, width and height have a positive minimum");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

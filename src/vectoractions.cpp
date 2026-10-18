@@ -572,11 +572,25 @@ void VectorActions::pushMoves(const QStringList &ids, const QVector<QPointF> &de
     m_canvas->undoStack()->push(new MoveManyCmd(m_canvas, m_canvas->document(), ids, deltas, text));
 }
 
+// Sketch points and construction geometry are references, never material:
+// Booleans and Offset leave them out (and so never consume them).
+static QVector<Element> shapesOnly(const QVector<Element> &els)
+{
+    QVector<Element> out;
+    for (const Element &e : els)
+        if (!Element::isPoint(e) && !Element::isConstruction(e))
+            out.append(e);
+    return out;
+}
+
 void VectorActions::boolean(vec::BoolOp op)
 {
-    const QVector<Element> inputs = orderedSelection();
-    if (inputs.size() < 2)
+    const QVector<Element> inputs = shapesOnly(orderedSelection());
+    if (inputs.size() < 2) {
+        if (!orderedSelection().isEmpty())
+            emit m_canvas->statusHint(tr("Booleans need at least two closed vectors"));
         return;
+    }
     // Only closed vectors take part - booleanElements skips the rest. They
     // must also be the only ones replaced: handing the whole selection to
     // pushReplace deleted every open path in it, without it ever having
@@ -614,9 +628,11 @@ void VectorActions::boolean(vec::BoolOp op)
 
 void VectorActions::offset()
 {
-    const QVector<Element> inputs = orderedSelection();
-    if (inputs.isEmpty())
+    if (shapesOnly(orderedSelection()).isEmpty()) {
+        if (!orderedSelection().isEmpty())
+            emit m_canvas->statusHint(tr("Offset: points and construction geometry are not offset"));
         return;
+    }
 
     QDialog dlg(m_canvas->window());
     dlg.setWindowTitle(tr("Offset vectors"));
@@ -646,13 +662,20 @@ void VectorActions::offset()
     if (dlg.exec() != QDialog::Accepted)
         return;
 
-    const double delta = inside->isChecked() ? -dist->value() : dist->value();
+    offsetBy(inside->isChecked() ? -dist->value() : dist->value(), keep->isChecked());
+}
+
+void VectorActions::offsetBy(double delta, bool keepInputs)
+{
+    const QVector<Element> inputs = shapesOnly(orderedSelection());
+    if (inputs.isEmpty())
+        return;
     const QVector<Element> results = vec::offsetElements(inputs, delta);
     if (results.isEmpty()) {
         emit m_canvas->statusHint(tr("Offset: nothing left — inset larger than the shape"));
         return;
     }
-    pushReplace(inputs, results, keep->isChecked(),
+    pushReplace(inputs, results, keepInputs,
                 tr("offset %1 vector(s) by %2 mm").arg(inputs.size()).arg(delta));
     emit m_canvas->statusHint(tr("Offset by %1 mm: %2 closed path(s)").arg(delta).arg(results.size()));
 }

@@ -190,7 +190,7 @@ add_test(NAME hardening COMMAND test_hardening
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
-    add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp)
+    add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp src/propertiespanel.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
     add_executable(test_about tests/test_about.cpp src/aboutdialog.cpp data/tools.qrc)
