@@ -12,6 +12,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -122,6 +123,110 @@ static bool isClosed(const c2d::Element &e)
 {
     const QJsonArray pt = e.raw.value("point_type").toArray();
     return !pt.isEmpty() && pt.last().toInt() == 4;
+}
+
+// The O(n^2) joinSubpaths as it was before its endpoints were indexed: the
+// indexed one must make exactly the same path.
+static bool samePt(const QPointF &a, const QPointF &b, double eps)
+{
+    return std::fabs(a.x() - b.x()) < eps && std::fabs(a.y() - b.y()) < eps;
+}
+
+static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
+{
+    struct Seg { bool curve; QPointF a, c1, c2, b; };
+    struct Sub { QVector<Seg> segs; bool closed; };
+    QVector<Sub> subs;
+    QPointF start;
+    for (int i = 0; i < p.elementCount(); ++i) {
+        const QPainterPath::Element e = p.elementAt(i);
+        if (e.isMoveTo()) {
+            start = QPointF(e.x, e.y);
+            subs.append({{}, false});
+        } else if (subs.isEmpty()) {
+            continue;
+        } else if (e.isLineTo()) {
+            const QPointF prev = subs.last().segs.isEmpty() ? start : subs.last().segs.last().b;
+            subs.last().segs.append({false, prev, prev, QPointF(e.x, e.y), QPointF(e.x, e.y)});
+        } else if (e.isCurveTo() && i + 2 < p.elementCount()) {
+            const QPointF prev = subs.last().segs.isEmpty() ? start : subs.last().segs.last().b;
+            const QPainterPath::Element c2 = p.elementAt(i + 1), end = p.elementAt(i + 2);
+            subs.last().segs.append({true, prev, QPointF(e.x, e.y), QPointF(c2.x, c2.y),
+                                     QPointF(end.x, end.y)});
+            i += 2;
+        }
+    }
+    for (Sub &s : subs)
+        s.closed = !s.segs.isEmpty() && samePt(s.segs.first().a, s.segs.last().b, tol);
+
+    auto reversed = [](QVector<Seg> v) {
+        std::reverse(v.begin(), v.end());
+        for (Seg &g : v) {
+            std::swap(g.a, g.b);
+            std::swap(g.c1, g.c2);
+        }
+        return v;
+    };
+    QVector<bool> used(subs.size(), false);
+    QPainterPath out;
+    auto write = [&out](const QVector<Seg> &segs, bool close) {
+        out.moveTo(segs.first().a);
+        for (const Seg &g : segs)
+            if (g.curve)
+                out.cubicTo(g.c1, g.c2, g.b);
+            else
+                out.lineTo(g.b);
+        if (close)
+            out.closeSubpath();
+    };
+    for (int i = 0; i < subs.size(); ++i) {
+        if (used[i] || subs[i].segs.isEmpty())
+            continue;
+        used[i] = true;
+        if (subs[i].closed) {
+            write(subs[i].segs, false);
+            continue;
+        }
+        QVector<Seg> chain = subs[i].segs;
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (int j = 0; j < subs.size(); ++j) {
+                if (used[j] || subs[j].closed || subs[j].segs.isEmpty())
+                    continue;
+                const QVector<Seg> &o = subs[j].segs;
+                if (samePt(chain.last().b, o.first().a, tol)) {
+                    chain += o;
+                } else if (samePt(chain.last().b, o.last().b, tol)) {
+                    chain += reversed(o);
+                } else if (samePt(chain.first().a, o.last().b, tol)) {
+                    chain = o + chain;
+                } else if (samePt(chain.first().a, o.first().a, tol)) {
+                    chain = reversed(o) + chain;
+                } else {
+                    continue;
+                }
+                used[j] = true;
+                grew = true;
+            }
+        }
+        const bool close = chain.size() > 1 && samePt(chain.first().a, chain.last().b, tol);
+        if (close)
+            chain.last().b = chain.first().a;
+        write(chain, close);
+    }
+    return out;
+}
+
+static bool samePath(const QPainterPath &a, const QPainterPath &b)
+{
+    if (a.elementCount() != b.elementCount())
+        return false;
+    for (int i = 0; i < a.elementCount(); ++i) {
+        const QPainterPath::Element x = a.elementAt(i), y = b.elementAt(i);
+        if (x.type != y.type || x.x != y.x || x.y != y.y)
+            return false;
+    }
+    return true;
 }
 
 int main(int argc, char **argv)
@@ -404,6 +509,91 @@ int main(int argc, char **argv)
     check(c2d::isImportableFile(QStringLiteral("a.PLT")) && c2d::isImportableFile(QStringLiteral("b.ai"))
               && c2d::isImportableFile(QStringLiteral("c.pdf")) && !c2d::isImportableFile(QStringLiteral("d.c2d")),
           "importable suffixes");
+
+    // joinSubpaths with its endpoint grid: same output as the old O(n^2)
+    // sweep on scrambled pieces snapped to a coarse grid (many shared ends,
+    // forks, reversed and near-miss pieces, curves, closed loops).
+    {
+        std::srand(7);
+        for (int round = 0; round < 6; ++round) {
+            QPainterPath in;
+            const double tol = round % 2 ? 0.01 : 0.5;
+            for (int k = 0; k < 400; ++k) {
+                auto pt = [&] {
+                    const double jit = (std::rand() % 3 - 1) * tol * 0.4;
+                    return QPointF(std::rand() % 12 * 1.0 + jit, std::rand() % 12 * 1.0 - jit);
+                };
+                const QPointF a = pt();
+                in.moveTo(a);
+                const int segs = 1 + std::rand() % 3;
+                for (int g = 0; g < segs; ++g) {
+                    if (std::rand() % 4 == 0)
+                        in.cubicTo(pt(), pt(), pt());
+                    else
+                        in.lineTo(pt());
+                }
+                if (std::rand() % 10 == 0)
+                    in.lineTo(a);
+            }
+            check(samePath(c2d::joinSubpaths(in, tol), joinSubpathsSlow(in, tol)),
+                  "joinSubpaths: same output as the quadratic version");
+        }
+        // 100k loose lines forming one long zig-zag, given in scrambled order.
+        QVector<int> order(100000);
+        for (int i = 0; i < order.size(); ++i)
+            order[i] = i;
+        for (int i = order.size() - 1; i > 0; --i)
+            std::swap(order[i], order[std::rand() % (i + 1)]);
+        QPainterPath lines;
+        for (int i : order) {
+            lines.moveTo(i * 0.1, (i % 2) * 1.0);
+            lines.lineTo((i + 1) * 0.1, ((i + 1) % 2) * 1.0);
+        }
+        QElapsedTimer t;
+        t.start();
+        const QPainterPath joined = c2d::joinSubpaths(lines, 0.01);
+        int moves = 0;
+        for (int i = 0; i < joined.elementCount(); ++i)
+            moves += joined.elementAt(i).isMoveTo();
+        check(moves == 1 && joined.elementCount() == 100001, "joinSubpaths: 100k lines into one chain");
+        check(t.elapsed() < 5000, "joinSubpaths: 100k lines in seconds, not a minute");
+    }
+
+    // SPLINE flattening is bounded: a 1000-point spline zig-zagging over a
+    // hundred metres stays within the point budget and finishes quickly;
+    // coordinates no machine has are refused.
+    {
+        auto spline = [](double amp) {
+            QByteArray d = "0\nSECTION\n2\nENTITIES\n0\nSPLINE\n70\n8\n71\n3\n";
+            for (int i = 0; i < 1000; ++i)
+                d += "10\n" + QByteArray::number(i * 10) + "\n20\n"
+                     + QByteArray::number(i % 2 ? amp : -amp) + "\n";
+            return d + "0\nENDSEC\n0\nEOF\n";
+        };
+        QElapsedTimer t;
+        t.start();
+        const c2d::ImportResult big = c2d::importDxfData(spline(5e4), opts(0, 0), "big.dxf");
+        int rows = 0;
+        for (const c2d::Element &e : big.elements)
+            rows += e.raw.value("points").toArray().size();
+        check(big.ok && rows <= 1000002, "SPLINE: flattened points capped");
+        check(t.elapsed() < 10000, "SPLINE: a hostile spline imports in seconds");
+        const c2d::ImportResult absurd = c2d::importDxfData(spline(1e9), opts(0, 0), "absurd.dxf");
+        check(absurd.ok && absurd.elements.isEmpty() && absurd.skipped == 1,
+              "SPLINE: kilometre-scale coordinates refused");
+        check(t.elapsed() < 10000, "SPLINE: refused without flattening");
+    }
+
+    // HPGL IN resets the plotter: pen up (PA after it moves, not draws) and
+    // absolute coordinates.
+    {
+        const c2d::ImportResult r = c2d::importHpglData(
+            "IN;PD;PA400,0;IN;PA800,800;PD1600,800;PU;", opts(0, 0), "in.plt");
+        check(r.ok && r.elements.size() == 2, "HPGL IN: pen up after it (no stray line to 800,800)");
+        const c2d::ImportResult a = c2d::importHpglData(
+            "PR;PU400,400;IN;PD800,0;PU;", opts(0, 0), "in2.plt");
+        check(a.ok && std::abs(a.bounds.width() - 10.0) < 0.1, "HPGL IN: back to absolute coordinates");
+    }
 
     std::printf("test_import: %d checks OK\n", g_checks);
     return 0;
