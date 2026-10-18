@@ -569,7 +569,7 @@ void VectorActions::pushMoves(const QStringList &ids, const QVector<QPointF> &de
         if (!qFuzzyIsNull(d.x()) || !qFuzzyIsNull(d.y())) { any = true; break; }
     if (!any)
         return;
-    m_canvas->undoStack()->push(new MoveManyCmd(m_canvas, m_canvas->document(), ids, deltas, text));
+    m_canvas->pushEdit(new MoveManyCmd(m_canvas, m_canvas->document(), ids, deltas, text), ids);
 }
 
 void VectorActions::boolean(vec::BoolOp op)
@@ -944,8 +944,10 @@ void VectorActions::pushReshape(const QVector<Element> &before, const QVector<El
 {
     if (before.isEmpty())
         return;
-    m_canvas->undoStack()->push(
-        new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text));
+    QStringList ids;
+    for (const Element &e : after)
+        ids << e.id;
+    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids);
 }
 
 void VectorActions::rotate(double deg)

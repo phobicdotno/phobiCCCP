@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.2.0 (build 71) — 2026-10-18
+
+> Parametric sketching: constraints, driving dimensions and user parameters, Fusion style
+
+- **Constrain** tool (G, hold for the list): Coincident, Horizontal, Vertical, Parallel,
+  Perpendicular, Tangent, Equal, Collinear, Concentric, Midpoint, Fix and Symmetric. Pick
+  the geometry and the drawing obeys at once; each one is a single undo step. Duplicates
+  and constraints that would conflict are refused with a status message.
+- **Dimension** tool (D): a line gives its length, a circle its diameter (Shift: radius),
+  two lines their angle (or their distance when parallel), two points a horizontal,
+  vertical or aligned distance, depending on where the label is placed. Type a number or
+  an expression in the inline editor; Esc keeps the measured value.
+- **Parameters** tab beside Document and Model (Ctrl+Shift+P): user parameters with
+  name, expression, value and comment, the stock size as built-ins (`stock_w`, `stock_h`,
+  `stock_t`), the dimensions d1, d2 … with their expressions, and the constraint list.
+  A chip says whether the sketch is fully constrained, how many degrees of freedom are
+  left, or which constraints can't hold. Renaming a parameter renames it everywhere.
+- Expressions take `+ - * / ^`, brackets, units (mm, cm, m, in, ft, `"`, deg, rad),
+  `pi` and sin/cos/tan/asin/acos/atan/atan2, sqrt, abs, min, max, round, floor, ceil.
+- Toolpath number fields take expressions too: `1/8 in` is just 3.175 mm, while text
+  naming a parameter (`stock_t / 2`) binds the field, shown in violet with ƒx, so it
+  follows the parameter. Typing a plain number unbinds it.
+- Moving, scaling or node-editing constrained geometry re-solves in the same undo step.
+  Fully constrained shapes turn teal; dimensions driven by a parameter carry an ƒx tag.
+  View > Constraints and Dimensions (Ctrl+Shift+K) hides the overlay.
+- Constraints, dimensions and parameters are saved inside the `.c2d` (`phobic_parametric`
+  in the params table); Carbide Create ignores them and still opens the file.
+
 ## v1.1.19 (build 70) — 2026-10-14
 
 > Opens Syntexophobic .cccp project files as the finished part

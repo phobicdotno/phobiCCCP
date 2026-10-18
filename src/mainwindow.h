@@ -22,6 +22,7 @@ class ProjectReceiver;
 struct ReceivedProject;
 class MachinePanel;
 class ModelPanel;
+class ParametersPanel;
 class PropertiesPanel;
 class SimPanel;
 class ToolStrip;
@@ -33,6 +34,7 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(QWidget *parent = nullptr);
     void openFile(const QString &path);
+    void showParameters();          // Design page, Parameters tab
     // A blank design the size of the machine in Settings, not yet saved
     // anywhere: what the window starts on when no file is given.
     // A blank untitled design; the stock is the machine bed unless a size is given (mm).
@@ -102,6 +104,7 @@ private:
     Canvas *m_canvas;
     QPlainTextEdit *m_info;      // params + item summary sidebar
     PropertiesPanel *m_props;    // numeric editor for the selection
+    ParametersPanel *m_parameters; // user parameters, dimensions, constraints (Design tab)
     ToolpathPanel *m_tp;         // toolpath list + parameter editor
     MachinePanel *m_machine;     // GRBL serial control + streaming (Machine page)
     IsoPreview *m_iso;           // isometric animated route preview (Simulate page)

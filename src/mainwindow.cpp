@@ -17,6 +17,7 @@
 #include "projectreceiver.h"
 #include "tiling.h"
 #include <QInputDialog>
+#include "parameterspanel.h"
 #include "propertiespanel.h"
 #include "simpanel.h"
 #include "toolpathpanel.h"
@@ -330,6 +331,15 @@ static QIcon toolIcon(const QString &kind)
     p.setRenderHint(QPainter::Antialiasing);
     if (drawModeIcon(p, kind))
         return QIcon(pm);
+    // Constraints ("con-<type>") and the dimension tool: the canvas glyphs.
+    if (kind.startsWith(QLatin1String("con-")) || kind == QLatin1String("dimension")) {
+        const int t = kind == QLatin1String("dimension") ? int(Constraint::Distance)
+                                                         : kind.mid(4).toInt();
+        p.drawPixmap(QRectF(0, 0, 20, 20),
+                     constraintPixmap(Constraint::Type(t), QColor(0xd8, 0xdc, 0xe4), 20, 3.0),
+                     QRectF(0, 0, 60, 60));
+        return QIcon(pm);
+    }
     QPen pen(QColor(0xd8, 0xdc, 0xe4), 1.6);
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
@@ -495,6 +505,14 @@ static QIcon toolIcon(const QString &kind)
             for (int y = 4; y <= 16; y += 6)
                 p.drawPoint(QPointF(x, y));
         p.drawEllipse(QPointF(10, 10), 3.2, 3.2);
+    } else if (kind == "fx") {              // parameters: an italic ƒx
+        QFont f;
+        f.setPixelSize(14);
+        f.setItalic(true);
+        f.setBold(true);
+        p.setFont(f);
+        p.setPen(QColor(0xc3, 0xa6, 0xff));
+        p.drawText(QRectF(0, 0, 20, 20), Qt::AlignCenter, QStringLiteral("\u0192x"));
     } else if (kind == "properties") {      // three sliders
         for (int i = 0; i < 3; ++i) {
             const double y = 5 + i * 5, k = (i == 1) ? 13 : (i == 0 ? 7 : 10);
@@ -568,6 +586,7 @@ MainWindow::MainWindow(QWidget *parent)
     // hidden and shown again re-split the column every time, and their
     // minimum heights outgrow the 800 px shop screen.
     m_props = new PropertiesPanel(m_canvas, this);
+    m_parameters = new ParametersPanel(m_canvas, this);
     m_tp = new ToolpathPanel(m_canvas, this);
     m_tp->setTypeIcons(toolpathIcon);
     m_info = new QPlainTextEdit(this);
@@ -618,6 +637,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_docTabs->setIconSize(QSize(18, 18));
     m_docTabs->addTab(m_info, toolIcon(QStringLiteral("document")), QStringLiteral("Document"));
     m_docTabs->addTab(scrolled(m_model), toolIcon(QStringLiteral("model")), QStringLiteral("Model"));
+    m_docTabs->addTab(scrolled(m_parameters), toolIcon(QStringLiteral("fx")), QStringLiteral("Parameters"));
     m_designPage = new QSplitter(Qt::Vertical, this);
     m_designPage->addWidget(titled(QStringLiteral("Properties"), QStringLiteral("properties"),
                                    scrolled(m_props)));
@@ -822,6 +842,23 @@ MainWindow::MainWindow(QWidget *parent)
     // View > Full Screen: the window covers the whole display, panel and all.
     // Remembered, so the shop PC comes back up the way it was left.
     auto *viewMenu = m_menuBar->addMenu(QStringLiteral("&View"));
+    {
+        QAction *showCon = viewMenu->addAction(QStringLiteral("&Constraints and Dimensions"));
+        showCon->setCheckable(true);
+        showCon->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_K));
+        showCon->setToolTip(QStringLiteral("Show the constraint symbols and dimensions on the drawing"));
+        const bool on = QSettings().value(QStringLiteral("ui/showConstraints"), true).toBool();
+        showCon->setChecked(on);
+        m_canvas->setShowConstraints(on);
+        connect(showCon, &QAction::toggled, this, [this](bool on) {
+            m_canvas->setShowConstraints(on);
+            QSettings().setValue(QStringLiteral("ui/showConstraints"), on);
+        });
+        QAction *paramsAct = viewMenu->addAction(QStringLiteral("&Parameters"));
+        paramsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P));
+        connect(paramsAct, &QAction::triggered, this, &MainWindow::showParameters);
+        viewMenu->addSeparator();
+    }
     m_fullScreenAct = viewMenu->addAction(QStringLiteral("&Full Screen"));
     m_fullScreenAct->setCheckable(true);
     m_fullScreenAct->setShortcut(QKeySequence(Qt::Key_F11));
@@ -949,6 +986,21 @@ MainWindow::MainWindow(QWidget *parent)
             QStringLiteral("Break: click a curve to split it where other curves cross it  (B)"));
     addTool(QStringLiteral("Measure"), QStringLiteral("measure"), Canvas::Measure, Qt::Key_M,
             QStringLiteral("Measure: drag between two points for the distance, ΔX, ΔY and angle  (M)"));
+    QAction *conAct = addTool(QStringLiteral("Constrain"), QStringLiteral("con-0"), Canvas::Constrain,
+            Qt::Key_G,
+            QStringLiteral("Constrain (G) — hold for Coincident / Horizontal / Vertical / Parallel / "
+                           "Perpendicular / Tangent / Equal / Concentric / Midpoint / Collinear / Fix / Symmetric"));
+    {
+        QList<Mode> modes;
+        for (int t = Constraint::Coincident; t <= Constraint::Symmetric; ++t)
+            modes.append({Constraint::typeName(Constraint::Type(t)),
+                          QStringLiteral("con-%1").arg(t), t});
+        addModes(conAct, modes,
+                 [this](int m) { m_canvas->setConstraintType(Constraint::Type(m)); });
+    }
+    addTool(QStringLiteral("Dimension"), QStringLiteral("dimension"), Canvas::Dimension, Qt::Key_D,
+            QStringLiteral("Dimension (D): click a line, two points, a point and a line, two lines or a circle, "
+                           "place it, then type a value or an expression"));
     addTool(QStringLiteral("Nodes"), QStringLiteral("nodes"), Canvas::NodeEdit, Qt::Key_N,
             QStringLiteral("Edit nodes: drag anchors/handles, double-click to insert, Del to remove, right-click for Corner/Smooth/Symmetric  (N)"));
     addTool(QStringLiteral("Text"), QStringLiteral("text"), Canvas::DrawText, Qt::Key_T,
@@ -1131,6 +1183,9 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_canvas, &Canvas::statusHint, this, [this](const QString &m) {
         statusBar()->showMessage(m);
+    });
+    connect(m_parameters, &ParametersPanel::message, this, [this](const QString &m) {
+        statusBar()->showMessage(m, 8000);
     });
 
     statusBar()->showMessage(QStringLiteral("Open a .c2d file to begin"));
@@ -1551,6 +1606,13 @@ void MainWindow::applySplits()
     m_designPage->setSizes(ds);
 }
 
+void MainWindow::showParameters()
+{
+    setMode(Mode::Design, false);
+    // scrolled(): the panel sits in a scroll area's viewport.
+    m_docTabs->setCurrentWidget(m_parameters->parentWidget()->parentWidget());
+}
+
 void MainWindow::setMode(Mode m, bool autoRun)
 {
     m_mode = m;
@@ -1574,6 +1636,7 @@ void MainWindow::setMode(Mode m, bool autoRun)
             b->setVisible(design || tp);
     }
     m_rightStack->setCurrentWidget(design ? m_designPage : m_tpPage);
+    m_canvas->setParametricVisible(design);
     if (design || tp)
         applySplits();
     if (tp) {
@@ -2092,6 +2155,7 @@ void MainWindow::openPath(const QString &path, bool untitled)
     m_bg.loadFrom(path);
     m_canvas->setDocument(&m_doc);
     m_props->setDocument(&m_doc);
+    m_parameters->setDocument(&m_doc);
     m_tp->setDocument(&m_doc);
     m_machine->setDocument(&m_doc);
     m_model->setDocument(&m_doc);

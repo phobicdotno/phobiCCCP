@@ -449,7 +449,7 @@ static void printUsage()
         "  --export <in.c2d> <out.nc>                    export g-code\n"
         "  --export-tiled <in.c2d> <outbase> [tile_mm]   one complete program per tile\n"
         "  --selftest <in.c2d> <out.c2d>                 create/save/export self-check\n"
-        "  --shot <in.c2d> <out.png> [preview|machine|simulation|model]\n"
+        "  --shot <in.c2d> <out.png> [preview|machine|simulation|model|parameters]\n"
         "                                                render the GUI to a PNG\n"
         "\n"
         "Machine (GRBL over serial; <port> is e.g. /dev/ttyACM0):\n"
@@ -1232,6 +1232,8 @@ int main(int argc, char *argv[])
                     w.showSimulation();
                 else if (step == "model")
                     w.showModel();
+                else if (step == "parameters")
+                    w.showParameters();
                 else if (step == "toollib") {
                     // The tool library with PHOBIC_TOOL (number) selected.
                     const QString out = QString::fromLocal8Bit(argv[3]);

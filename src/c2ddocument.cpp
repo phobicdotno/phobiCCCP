@@ -21,6 +21,7 @@ bool Document::load(const QString &path, QString *error)
     m_toolpaths.clear();
     m_groups.clear();
     m_unreadableToolpaths.clear();
+    m_parametric = Parametric();
     m_path = path;
 
     if (!QFileInfo::exists(path)) {
@@ -125,6 +126,11 @@ bool Document::load(const QString &path, QString *error)
     QSqlDatabase::removeDatabase(conn);
     if (notAContainer)
         return false;
+    // Parameters and constraints ride in one params row of their own; they
+    // live in m_parametric while the file is open and are written back by save().
+    if (m_params.contains(Parametric::paramKey()))
+        m_parametric = Parametric::fromJson(
+            QJsonDocument::fromJson(m_params.take(Parametric::paramKey()).toUtf8()).object());
     if (!readFailed.isEmpty()) {
         if (error)
             *error = QStringLiteral("%1 could not be read to the end: %2")
@@ -273,6 +279,32 @@ bool Document::save(const QString &destPath, QString *error)
                                  .arg(pq.lastError().text());
                 ok = false;
             }
+        }
+
+        // 3d) Parameters and constraints: one params row, gone when there are
+        //     none. Delete-then-insert: a CC file's params.key need not be unique.
+        if (ok) {
+            QSqlQuery pq(db);
+            pq.prepare(QStringLiteral("DELETE FROM params WHERE key=?"));
+            pq.addBindValue(Parametric::paramKey());
+            ok = pq.exec();
+            // Constraints on geometry that has since been deleted stay in
+            // memory (an undo can bring the geometry back) but not in the file.
+            Parametric kept = m_parametric;
+            kept.constraints.clear();
+            for (const Constraint &c : m_parametric.constraints)
+                if (param::resolves(*this, c))
+                    kept.constraints.append(c);
+            if (ok && !kept.isEmpty()) {
+                pq.prepare(QStringLiteral("INSERT INTO params(key,value) VALUES(?,?)"));
+                pq.addBindValue(Parametric::paramKey());
+                pq.addBindValue(QString::fromUtf8(
+                    QJsonDocument(kept.toJson()).toJson(QJsonDocument::Compact)));
+                ok = pq.exec();
+            }
+            if (!ok && error)
+                *error = QStringLiteral("Could not save the parameters: %1")
+                             .arg(pq.lastError().text());
         }
 
         // 4) Blank stale renders / g-code so CC regenerates them on next open.

@@ -32,6 +32,8 @@ public:
     // arrow survive the refresh that follows every edit.
     void setToolpath(const QString &uuid, const QString &type, const QJsonObject &json);
     void clear();
+    // Number fields evaluate expressions against this document's parameters.
+    void setDocument(const Document *doc) { m_doc = doc; }
 
     struct Field;   // one designed field (toolpathform.cpp)
 
@@ -43,10 +45,14 @@ private:
     void rebuild();
     void updateValues();
     void commit(const QString &key, const QJsonValue &v);
+    // Set `key` and its expression binding (empty object: unbound) at once.
+    void commitBound(const QString &key, const QJsonValue &v, const QJsonObject &binding);
+    QString bindingOf(const QString &key) const;
     QWidget *card(const QString &id, const QString &title, bool openByDefault, QVBoxLayout **body);
     QWidget *editorFor(const QString &key, const Field &f);
     void refreshEnabled();
 
+    const Document *m_doc = nullptr;
     QString m_uuid, m_type;
     QJsonObject m_json;
     QStringList m_keys;                    // flat keys of m_json, the rebuild signature
