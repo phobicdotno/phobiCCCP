@@ -289,12 +289,11 @@ bool Document::save(const QString &destPath, QString *error)
             pq.addBindValue(Parametric::paramKey());
             ok = pq.exec();
             // Constraints on geometry that has since been deleted stay in
-            // memory (an undo can bring the geometry back) but not in the file.
-            Parametric kept = m_parametric;
-            kept.constraints.clear();
-            for (const Constraint &c : m_parametric.constraints)
-                if (param::resolves(*this, c))
-                    kept.constraints.append(c);
+            // memory (an undo can bring the geometry back) but not in the
+            // file; a dimension expressions still use is kept as a parameter.
+            Document pruned = *this;
+            param::prune(pruned);
+            const Parametric kept = pruned.parametric();
             if (ok && !kept.isEmpty()) {
                 pq.prepare(QStringLiteral("INSERT INTO params(key,value) VALUES(?,?)"));
                 pq.addBindValue(Parametric::paramKey());

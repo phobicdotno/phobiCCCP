@@ -120,7 +120,8 @@ public:
         const QString t = strip(text);
         double v = 0;
         if (m_eval && isExpr(t) && m_eval(t, &v, nullptr)) {
-            m_typed = t;
+            if (!m_stepping)
+                m_typed = t;
             return property("depth").toBool() ? std::fabs(v) : v;
         }
         return QDoubleSpinBox::valueFromText(text);
@@ -130,10 +131,16 @@ public:
         if (!isExpr(strip(input)))
             QDoubleSpinBox::fixup(input);
     }
+    // The arrows give a plain number, so the field unbinds. The base stepBy
+    // re-reads the shown text, which may still be the bound expression;
+    // that read must not count as typing it.
     void stepBy(int steps) override
     {
         m_typed.clear();
+        m_stepping = true;
         QDoubleSpinBox::stepBy(steps);
+        m_stepping = false;
+        m_typed.clear();
     }
 
 protected:
@@ -180,6 +187,7 @@ private:
     Eval m_eval;
     QString m_expr, m_baseTip;
     mutable QString m_typed;
+    bool m_stepping = false;
 };
 
 class Combo : public QComboBox

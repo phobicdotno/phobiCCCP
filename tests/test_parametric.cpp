@@ -103,6 +103,16 @@ int main(int argc, char **argv)
     check(approx(eval("sqrt(16) + abs(-2)"), 6), "sqrt and abs");
     check(approx(eval("pi"), M_PI), "pi");
     check(approx(eval("1e3"), 1000), "exponent");
+    check(approx(eval("-2^2"), -4), "unary minus binds looser than ^");
+    check(approx(eval("2^-1"), 0.5), "a negative exponent");
+    check(approx(eval("-2 in"), -50.8), "a negative length with a unit");
+    eval("w / 2 in", &ok);
+    check(!ok, "after a name and a divide, a unit needs brackets");
+    check(approx(eval("w / (2 in)"), 100 / 50.8), "the bracketed form");
+    check(approx(eval("w * 2 in"), 100 * 50.8), "after a name, the unit is the number's (times)");
+    check(approx(eval("2 in * w"), 50.8 * 100), "unit before a name");
+    eval("w in", &ok);
+    check(!ok, "a unit after a name is refused");
     check(approx(eval("12,5"), 12.5), "decimal comma");
     eval("nope + 1", &ok);
     check(!ok, "unknown name fails");
@@ -374,6 +384,128 @@ int main(int argc, char **argv)
         // Deleting the circle leaves dangling constraints for prune().
         d.removeElementById(c.id);
         check(param::prune(d) == 2 && d.parametric().constraints.isEmpty(), "prune drops dangling");
+    }
+
+    // ---- a loop through a dimension is caught with the edit in place ----------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element c = Element::makeCircle({50, 50}, 10, layer);
+        d.addElement(c);
+        addCon(d, Constraint::Radius, {ref(GeoRef::Circle, c.id, -1)}, "10");
+        d.parametricRef().params = {{"p", "d1 + 1", ""}};
+        Parametric after = d.parametric();
+        after.constraints[0].expr = "p";
+        // The old values know p (11), so the edit alone looks fine...
+        double v = 0;
+        check(param::evaluateIn(d, "p", &v) && approx(v, 11), "p evaluates before the edit");
+        // ...but with it in place p and d1 go round in a loop.
+        const QString e = param::newError(d, d.parametric(), after);
+        check(e.contains("loop"), "the loop is reported");
+        check(param::newError(d, d.parametric(), d.parametric()).isEmpty(), "no edit, no new error");
+    }
+
+    // ---- constraints follow their nodes, not node numbers -----------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element path = Element::makePath({{0, 0}, {10, 0}, {20, 0}, {30, 5}, {40, 0}}, false, layer);
+        d.addElement(path);
+        addCon(d, Constraint::Fix, {ref(GeoRef::Point, path.id, 3)});
+        addCon(d, Constraint::Distance, {ref(GeoRef::Line, path.id, 3)}, "");   // node 3 -> 4
+        d.parametricRef().params = {{"len", "d1 * 2", ""}};
+        check(param::solve(d).ok, "path solves");
+        const Document before = d;
+        // Delete node 1: node 3 is now node 2, segment 3 is now segment 2.
+        PathModel m = Element::pathModel(*d.elementById(path.id));
+        check(m.subs[0].removeNode(1), "remove node 1");
+        d.replaceElement(Element::withPathModel(*d.elementById(path.id), m));
+        QStringList dropped;
+        check(param::reconcile(before, d, &dropped) == 0 && dropped.isEmpty(), "nothing dropped");
+        check(d.parametric().constraints.at(0).refs.at(0).index == 2, "Fix moved to node 2");
+        check(d.parametric().constraints.at(1).refs.at(0).index == 2, "the line moved to segment 2");
+        check(param::solve(d).ok, "solves after the delete");
+        check(QLineF(pt(d, ref(GeoRef::Point, path.id, 2)), QPointF(30, 5)).length() < 1e-6,
+              "the fixed node stays where it was");
+        check(QLineF(pt(d, ref(GeoRef::Point, path.id, 1)), QPointF(20, 0)).length() < 1e-6,
+              "and the other nodes too");
+
+        // Deleting the fixed node drops its Fix; the line through it goes too,
+        // and d1, which len uses, lives on as a parameter.
+        const Document before2 = d;
+        PathModel m2 = Element::pathModel(*d.elementById(path.id));
+        check(m2.subs[0].removeNode(2), "remove the fixed node");
+        d.replaceElement(Element::withPathModel(*d.elementById(path.id), m2));
+        check(param::reconcile(before2, d, &dropped) == 2, "both constraints dropped");
+        check(d.parametric().constraints.isEmpty(), "none left");
+        const int di = d.parametric().indexOfParam("d1");
+        check(di >= 0, "d1 kept as a parameter");
+        double v = 0;
+        check(param::evaluateIn(d, "len", &v) && approx(v, 2 * QLineF(QPointF(30, 5), QPointF(40, 0)).length(), 1e-2),
+              "len still evaluates");
+    }
+
+    // ---- a chain of dropped dimensions all stay as parameters ------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element r = Element::makeRectangle({40, 30}, 20, 10, layer);
+        d.addElement(r);
+        addCon(d, Constraint::Distance, {ref(GeoRef::Line, r.id, 0)}, "20");     // d1
+        addCon(d, Constraint::Distance, {ref(GeoRef::Line, r.id, 1)}, "d1 / 2"); // d2
+        d.parametricRef().params = {{"x", "d2", ""}};
+        check(param::solve(d).ok, "rect solves");
+        d.removeElementById(r.id);
+        check(param::prune(d) == 2, "both dimensions dropped");
+        double v = 0;
+        check(d.parametric().indexOfParam("d1") >= 0 && d.parametric().indexOfParam("d2") >= 0,
+              "d2 and the d1 it uses both kept");
+        check(param::evaluateIn(d, "x", &v) && approx(v, 10), "x still evaluates");
+        // A closed path whose last node sits on its first keeps its number.
+        const Element path = Element::makePath({{0, 0}, {10, 0}, {10, 10}, {0, 0}}, false, layer);
+        d.addElement(path);
+        const int last = Element::pathModel(path).subs[0].nodes.size() - 1;
+        addCon(d, Constraint::Fix, {ref(GeoRef::Point, path.id, last)});
+        const Document before = d;
+        PathModel m = Element::pathModel(path);
+        check(m.subs[0].removeNode(1), "remove node 1");
+        d.replaceElement(Element::withPathModel(path, m));
+        param::reconcile(before, d);
+        check(d.parametric().constraints.last().refs.at(0).index == last - 1, "the last node stays the last");
+    }
+
+    // ---- a line that a node edit curved is no longer a line -------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element path = Element::makePath({{0, 0}, {10, 0}, {20, 0}}, false, layer);
+        d.addElement(path);
+        addCon(d, Constraint::Horizontal, {ref(GeoRef::Line, path.id, 0)});
+        PathModel m = Element::pathModel(*d.elementById(path.id));
+        m.subs[0].nodes[0].out = QPointF(3, 4);
+        d.replaceElement(Element::withPathModel(*d.elementById(path.id), m));
+        check(!param::resolves(d, d.parametric().constraints.first()), "a curved segment is not a line");
+        check(param::prune(d) == 1, "prune drops it");
+    }
+
+    // ---- the solver never squares a rounded rectangle -------------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        Element r = Element::makeRectangle({40, 30}, 20, 10, layer);
+        r.raw.insert("corner_type", 1);
+        r.raw.insert("radius", 2.0);
+        r = Element::fromJson(r.raw);
+        d.addElement(r);
+        addCon(d, Constraint::Coincident, {ref(GeoRef::Point, r.id, -1), GeoRef::origin()});
+        check(param::solve(d).ok, "a rounded rectangle moves");
+        const Element *re = d.elementById(r.id);
+        check(re->raw.value("corner_type").toInt() == 1 && approx(re->raw.value("width").toDouble(), 20),
+              "its corners and size are kept");
+        check(QLineF(pt(d, ref(GeoRef::Point, r.id, -1)), QPointF(0, 0)).length() < 1e-6, "centred on 0,0");
+        addCon(d, Constraint::Distance, {ref(GeoRef::Line, r.id, 0)}, "30");
+        check(!param::solve(d).ok, "its size can't be driven");
+        check(approx(d.elementById(r.id)->raw.value("width").toDouble(), 20), "and is left alone");
     }
 
     std::printf("parametric: %d checks passed\n", g_checks);

@@ -102,23 +102,21 @@ private:
         }
         return m_s.mid(start, m_pos - start);
     }
-    // An optional unit straight after a number or a parenthesis.
-    void unit(double *v)
+    // An optional unit at the current position: its factor, or 0 for none.
+    double unit()
     {
         const int save = m_pos;
         skip();
         if (m_pos < m_s.size() && m_s.at(m_pos) == QLatin1Char('"')) {
             ++m_pos;
-            *v *= 25.4;
-            return;
+            return 25.4;
         }
         const QString id = ident();
         double f = 1;
-        if (!id.isEmpty() && isUnit(id, &f)) {
-            *v *= f;
-            return;
-        }
+        if (!id.isEmpty() && isUnit(id, &f))
+            return f;
         m_pos = save;
+        return 0;
     }
 
     bool expr(double *v)
@@ -139,39 +137,45 @@ private:
             }
         }
     }
-    // A unit after a product scales the product so far: "1/4 in" is a
-    // quarter inch, "3 cm + 2 mm" is 32.
+    // A unit after a product of plain numbers scales the whole product:
+    // "1/4 in" is a quarter inch, "3 cm + 2 mm" is 32. With a name in the
+    // product, "x * 2 in" is still x times 2 inches, but after a divide it
+    // is ambiguous ("x / 2 in": by 2, or by 2 inches?), so it is refused
+    // and asks for brackets; so is a unit right after a name, which is in
+    // mm already.
     bool term(double *v)
     {
-        if (!power(v))
+        int names = m_names;
+        if (!unary(v))
             return false;
+        bool named = m_names != names, lastNamed = named;
+        bool divided = false;
         for (;;) {
-            unit(v);
-            if (eat(QLatin1Char('*'))) {
-                double r;
-                if (!power(&r)) return false;
+            if (const double f = unit()) {
+                if (lastNamed)
+                    return err(QStringLiteral("a unit can't follow a name; it is in mm already"));
+                if (named && divided)
+                    return err(QStringLiteral("put the unit in brackets with its number: x / (2 in)"));
+                *v *= f;
+            }
+            const bool mul = eat(QLatin1Char('*'));
+            if (!mul && !eat(QLatin1Char('/')))
+                return true;
+            double r;
+            names = m_names;
+            if (!unary(&r)) return false;
+            lastNamed = m_names != names;
+            named = named || lastNamed;
+            divided = !mul;
+            if (mul) {
                 *v *= r;
-            } else if (eat(QLatin1Char('/'))) {
-                double r;
-                if (!power(&r)) return false;
+            } else {
                 if (r == 0) return err(QStringLiteral("division by zero"));
                 *v /= r;
-            } else {
-                return true;
             }
         }
     }
-    bool power(double *v)
-    {
-        if (!unary(v))
-            return false;
-        if (eat(QLatin1Char('^'))) {
-            double r;
-            if (!power(&r)) return false;   // right-associative
-            *v = std::pow(*v, r);
-        }
-        return true;
-    }
+    // Unary minus binds looser than ^: -2^2 is -4, 2^-1 is 0.5.
     bool unary(double *v)
     {
         if (eat(QLatin1Char('-'))) {
@@ -181,7 +185,18 @@ private:
         }
         if (eat(QLatin1Char('+')))
             return unary(v);
-        return primary(v);
+        return power(v);
+    }
+    bool power(double *v)
+    {
+        if (!primary(v))
+            return false;
+        if (eat(QLatin1Char('^'))) {
+            double r;
+            if (!unary(&r)) return false;   // right-associative
+            *v = std::pow(*v, r);
+        }
+        return true;
     }
     bool primary(double *v)
     {
@@ -248,6 +263,7 @@ private:
             return err(QStringLiteral("'%1' needs a number before it").arg(id));
         if (!m_lookup || !m_lookup(id, v))
             return err(QStringLiteral("unknown name '%1'").arg(id));
+        ++m_names;
         return true;
     }
     bool call(const QString &f, const QVector<double> &a, double *v)
@@ -293,6 +309,7 @@ private:
     const Lookup &m_lookup;
     int m_pos = 0;
     int m_calls = 0;        // function calls open around the current position
+    int m_names = 0;        // names read so far
     QString m_error;
 };
 
@@ -585,24 +602,32 @@ QHash<QString, double> values(const Document &doc, const Parametric &p, QStringL
             order << c.name;
         }
 
-    QSet<QString> busy, failed;
+    QStringList stack;               // names being evaluated, outermost first
+    QSet<QString> failed, looped;
     std::function<bool(const QString &, double *)> resolve;
     resolve = [&](const QString &name, double *v) -> bool {
         if (out.contains(name)) { *v = out.value(name); return true; }
         if (failed.contains(name) || !exprs.contains(name))
             return false;
-        if (busy.contains(name)) {
-            failed.insert(name);
-            if (errors) *errors << QStringLiteral("%1: refers to itself").arg(name);
+        if (stack.contains(name)) {
+            // A loop: every name from here round to here again is in it.
+            const QStringList loop = stack.mid(stack.indexOf(name)) << name;
+            for (int k = 0; k + 1 < loop.size(); ++k)
+                if (!looped.contains(loop.at(k))) {
+                    looped.insert(loop.at(k));
+                    if (errors)
+                        *errors << QStringLiteral("%1: goes round in a loop (%2)")
+                                       .arg(loop.at(k), loop.join(QStringLiteral(" \u2192 ")));
+                }
             return false;
         }
-        busy.insert(name);
+        stack << name;
         QString why;
         double r = 0;
         const bool ok = evaluate(exprs.value(name), resolve, &r, &why);
-        busy.remove(name);
+        stack.removeLast();
         if (!ok) {
-            if (!failed.contains(name) && errors)
+            if (!failed.contains(name) && !looped.contains(name) && errors)
                 *errors << QStringLiteral("%1: %2").arg(name, why);
             failed.insert(name);
             return false;
@@ -616,6 +641,20 @@ QHash<QString, double> values(const Document &doc, const Parametric &p, QStringL
         resolve(n, &v);
     }
     return out;
+}
+
+QString newError(const Document &doc, const Parametric &before, const Parametric &after)
+{
+    QStringList was, now;
+    values(doc, before, &was);
+    values(doc, after, &now);
+    QSet<QString> broken;
+    for (const QString &e : was)
+        broken.insert(e.section(QLatin1Char(':'), 0, 0));
+    for (const QString &e : now)
+        if (!broken.contains(e.section(QLatin1Char(':'), 0, 0)))
+            return e;
+    return QString();
 }
 
 bool evaluateIn(const Document &doc, const QString &expr, double *value, QString *error)
@@ -646,6 +685,7 @@ struct Body {
     PathModel model;                // path
     QHash<quint64, int> nodeVar;    // (sub,node) -> variable offset within the body
     int pathNodes = 0;              // all nodes of the path
+    bool rounded = false;           // rectangle with CC corners: its size stays
 };
 
 quint64 nodeKey(int sub, int node) { return (quint64(quint32(sub)) << 32) | quint32(node); }
@@ -661,6 +701,9 @@ bool bodyFor(const Element &e, Body *b)
     } else if (g == QLatin1String("rectangle")) {
         b->t = Body::Rect;
         b->n = 4;
+        // Rebuilding a rectangle squares CC's rounded / dog-bone corners, so
+        // the solver may only move one of those, never resize it.
+        b->rounded = e.raw.value("corner_type").toInt() != 0;
     } else if (g == QLatin1String("regular_polygon")) {
         b->t = Body::Polygon;
         b->n = 3;
@@ -729,9 +772,15 @@ bool fits(const Body &b, const GeoRef &r)
         switch (b.t) {
         case Body::Rect:    return r.index >= 0 && r.index < 4;
         case Body::Polygon: return r.index >= 0 && r.index < b.sides;
-        case Body::Path:
-            return r.sub >= 0 && r.sub < b.model.subs.size() && r.index >= 0
-                   && r.index < b.model.subs.at(r.sub).segmentCount();
+        case Body::Path: {
+            if (r.sub < 0 || r.sub >= b.model.subs.size() || r.index < 0
+                || r.index >= b.model.subs.at(r.sub).segmentCount())
+                return false;
+            // Only a straight segment is a line; a node edit can curve it.
+            const PathNode *na, *nb;
+            b.model.subs.at(r.sub).segment(r.index, &na, &nb);
+            return !na->hasOut() && !nb->hasIn();
+        }
         default:            return false;
         }
     case GeoRef::Circle:
@@ -862,6 +911,12 @@ Element written(const Body &b, const double *x)
         p.insert("cx", v[0]); p.insert("cy", v[1]); p.insert("radius", std::fabs(v[2]));
         return Element::regen(*b.src, p);
     case Body::Rect:
+        if (b.rounded) {
+            Element e = *b.src;
+            const QPointF c = arrXy(e.raw.value("center"));
+            e.translate(v[0] - c.x(), v[1] - c.y());
+            return e;
+        }
         p.insert("cx", v[0]); p.insert("cy", v[1]);
         p.insert("width", std::fabs(v[2])); p.insert("height", std::fabs(v[3]));
         return Element::regen(*b.src, p);
@@ -1368,10 +1423,13 @@ struct Problem {
 QVector<bool> freeMask(const System &s)
 {
     QVector<bool> isFree(s.x().size(), true);
-    for (const Body &b : s.bodies())
+    for (const Body &b : s.bodies()) {
         if (b.locked)
             for (int k = 0; k < b.n; ++k)
                 isFree[b.off + k] = false;
+        if (b.rounded)
+            isFree[b.off + 2] = isFree[b.off + 3] = false;
+    }
     return isFree;
 }
 
@@ -1851,14 +1909,158 @@ QStringList unsatisfied(const Document &doc)
     return out;
 }
 
+namespace {
+
+const Element *elementIn(const Document &doc, const QString &id)
+{
+    for (const Element &e : doc.elements())
+        if (e.id == id)
+            return &e;
+    return nullptr;
+}
+
+// What a reference's numbers mean: the element kind and, for a path, how
+// many nodes each subpath has. While it holds, (sub, index) still names
+// the same node.
+QString layoutOf(const Element &e)
+{
+    QString out = e.geometryType;
+    if (e.geometryType == QLatin1String("path"))
+        for (const SubPath &s : Element::pathModel(e).subs)
+            out += QStringLiteral("|%1%2").arg(s.nodes.size()).arg(s.closed ? 'c' : 'o');
+    return out;
+}
+
+bool near(QPointF a, QPointF b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 1e-4; }
+
+// The reference in `doc` to the same geometry `r` was in `before`: the
+// point, line or circle at the same place. False when there is none.
+bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef *out)
+{
+    QPointF a, b, c;
+    double rad = 0;
+    if (r.kind == GeoRef::Point && !point(before, r, &a))
+        return false;
+    if (r.kind == GeoRef::Line && !line(before, r, &a, &b))
+        return false;
+    if (r.kind == GeoRef::Circle && !circle(before, r, &c, &rad))
+        return false;
+    // Several can sit at the same place (a closed path's last node on its
+    // first): take the one numbered closest to where it was.
+    bool found = false;
+    int best = 0;
+    for (const RefShape &s : shapesOf(doc, r.id)) {
+        if (s.ref.kind != r.kind)
+            continue;
+        const bool same = r.kind == GeoRef::Point ? near(s.a, a)
+                        : r.kind == GeoRef::Line  ? (near(s.a, a) && near(s.b, b)) || (near(s.a, b) && near(s.b, a))
+                                                  : near(s.a, c) && std::fabs(s.r - rad) < 1e-4;
+        // A rectangle or polygon center is never one of its corners.
+        if (!same || (r.kind == GeoRef::Point && (s.ref.index == -1) != (r.index == -1)))
+            continue;
+        const int score = std::abs(s.ref.sub - r.sub) * 100000 + std::abs(s.ref.index - r.index);
+        if (!found || score < best) {
+            *out = s.ref;
+            best = score;
+            found = true;
+        }
+    }
+    return found;
+}
+
+} // namespace
+
+QSet<QString> usedNames(const Document &doc, const Parametric &p)
+{
+    QSet<QString> used;
+    for (const UserParameter &up : p.params)
+        for (const QString &n : namesIn(up.expr)) used.insert(n);
+    for (const Constraint &c : p.constraints)
+        if (c.isDimension())
+            for (const QString &n : namesIn(c.expr)) used.insert(n);
+    for (const Toolpath &tp : doc.toolpaths()) {
+        const QJsonObject binds = tp.json.value(QStringLiteral("phobic_expr")).toObject();
+        for (auto it = binds.constBegin(); it != binds.constEnd(); ++it)
+            for (const QString &n : namesIn(it.value().toObject().value(QStringLiteral("expr")).toString()))
+                used.insert(n);
+    }
+    return used;
+}
+
 int prune(Document &doc)
 {
-    QVector<Constraint> &cs = doc.parametricRef().constraints;
-    const int before = cs.size();
-    cs.erase(std::remove_if(cs.begin(), cs.end(),
-                            [&](const Constraint &c) { return !resolves(doc, c); }),
-             cs.end());
-    return before - cs.size();
+    return reconcile(doc, doc);   // same numbering: only what no longer resolves goes
+}
+
+int reconcile(const Document &before, Document &doc, QStringList *dropped, bool *changed)
+{
+    if (changed) *changed = false;
+    Parametric p = doc.parametric();
+    if (p.constraints.isEmpty())
+        return 0;
+    QHash<QString, bool> sameLayout;     // element id -> its numbering still holds
+    auto keepsNumbers = [&](const QString &id) {
+        auto it = sameLayout.constFind(id);
+        if (it != sameLayout.constEnd())
+            return it.value();
+        const Element *o = elementIn(before, id), *n = elementIn(doc, id);
+        const bool same = o && n && layoutOf(*o) == layoutOf(*n);
+        sameLayout.insert(id, same);
+        return same;
+    };
+
+    QVector<Constraint> kept;
+    QVector<Constraint> gone;
+    bool moved = false;
+    for (Constraint c : p.constraints) {
+        bool ok = true;
+        for (GeoRef &r : c.refs) {
+            if (r.isOrigin() || keepsNumbers(r.id))
+                continue;
+            GeoRef to;
+            if (!follow(before, doc, r, &to)) { ok = false; break; }
+            moved = moved || !(to == r);
+            r = to;
+        }
+        if (ok && resolves(doc, c))
+            kept << c;
+        else
+            gone << c;
+    }
+    p.constraints = kept;
+    if (gone.isEmpty()) {
+        if (moved) {
+            doc.setParametric(p);       // references moved to new numbers
+            if (changed) *changed = true;
+        }
+        return 0;
+    }
+
+    // A dropped dimension other expressions still use lives on as a user
+    // parameter of the same name and value, so they keep working.
+    // A converted dimension can use another dropped one (d2 = d1 * 2), so
+    // go round until no more are needed.
+    for (const Constraint &c : gone)
+        if (dropped) *dropped << c.uid;
+    QSet<QString> asParams;
+    for (bool more = true; more;) {
+        more = false;
+        const QSet<QString> used = usedNames(doc, p);
+        for (const Constraint &c : gone) {
+            if (!c.isDimension() || c.name.isEmpty() || asParams.contains(c.name) || !used.contains(c.name))
+                continue;
+            UserParameter up;
+            up.name = c.name;
+            up.expr = c.expr.trimmed().isEmpty() ? formatNumber(c.value) : c.expr;
+            up.comment = QStringLiteral("was a dimension on deleted geometry");
+            p.params << up;
+            asParams.insert(c.name);
+            more = true;
+        }
+    }
+    doc.setParametric(p);
+    if (changed) *changed = true;
+    return gone.size();
 }
 
 } // namespace param

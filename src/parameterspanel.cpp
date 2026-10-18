@@ -447,20 +447,20 @@ void ParametersPanel::paramEdited(QTableWidgetItem *it)
     if (it->column() == 0) {
         done = text == up.name || rename(up.name, text);
     } else if (it->column() == 1) {
+        if (text == up.expr)
+            return;
         Parametric after = m_doc->parametric();
         after.params[i].expr = text;
-        QStringList errors;
-        param::values(*m_doc, after, &errors);
-        for (const QString &e : errors)
-            if (e.startsWith(up.name + QLatin1Char(':'))) {
-                emit message(tr("%1 = %2: %3").arg(up.name, text, e.mid(up.name.size() + 1).trimmed()));
-                refresh();
-                return;
-            }
-        done = text == up.expr
-               || m_canvas->applyParametric(after, tr("%1 = %2").arg(up.name, text), true);
-        if (text != up.expr)
-            emit message(tr("%1 = %2").arg(up.name, text));
+        if (const QString e = param::newError(*m_doc, m_doc->parametric(), after); !e.isEmpty()) {
+            emit message(tr("%1 = %2: %3").arg(up.name, text, e));
+            refresh();
+            return;
+        }
+        // Like a dimension typed on the canvas: a value the constraints
+        // can't reach is refused rather than half-applied.
+        done = m_canvas->applyParametric(after, tr("%1 = %2").arg(up.name, text));
+        emit message(done ? tr("%1 = %2").arg(up.name, text)
+                          : tr("%1 = %2 can't be reached with the constraints").arg(up.name, text));
     } else if (it->column() == 3) {
         Parametric after = m_doc->parametric();
         after.params[i].comment = it->text();
@@ -486,13 +486,15 @@ void ParametersPanel::dimensionEdited(QTableWidgetItem *it)
     } else if (it->column() == 2) {
         double v;
         QString why;
+        Parametric after = m_doc->parametric();
+        after.constraints[i].expr = text;
         if (param::namesIn(text).contains(c.name)) {
             why = tr("can't be defined by itself");
         } else if (!param::evaluateIn(*m_doc, text, &v, &why)) {
             // why says it
+        } else if (const QString e = param::newError(*m_doc, m_doc->parametric(), after); !e.isEmpty()) {
+            why = e;
         } else {
-            Parametric after = m_doc->parametric();
-            after.constraints[i].expr = text;
             done = text == c.expr || m_canvas->applyParametric(after, tr("%1 = %2").arg(c.name, text));
             if (!done)
                 why = tr("can't be reached with the other constraints");

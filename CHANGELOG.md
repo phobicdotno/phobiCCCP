@@ -25,6 +25,18 @@
 - Moving, scaling or node-editing constrained geometry re-solves in the same undo step.
   Fully constrained shapes turn teal; dimensions driven by a parameter carry an ƒx tag.
   View > Constraints and Dimensions (Ctrl+Shift+K) hides the overlay.
+- Constraints stay on the geometry they were put on: deleting or inserting a node, a
+  fillet, a trim or a convert-to-path moves them to the same points and lines, and those
+  whose geometry is gone go with it in the same undo step. A dimension that expressions or
+  toolpath fields still use becomes a user parameter of the same name, also on save.
+- Expressions: `-2^2` is -4. `plate_w / 2 in` is refused as ambiguous and asks for
+  brackets (`plate_w / (2 in)`); a unit straight after a name is refused too.
+- A loop through a dimension (`p = d1 + 1`, then d1 = `p`) is refused, on the canvas and in
+  the Parameters tab, and a parameter value that would make a constraint fail is refused
+  there instead of half-moving the drawing (constraints already red don't block it). The arrow keys on a bound toolpath field unbind it.
+- Rectangles with Carbide Create's rounded or dog-bone corners can be moved by constraints
+  but not resized (that would square the corners); a path segment curved by a node edit
+  no longer counts as a line.
 - Constraints, dimensions and parameters are saved inside the `.c2d` (`phobic_parametric`
   in the params table); Carbide Create ignores them and still opens the file.
 

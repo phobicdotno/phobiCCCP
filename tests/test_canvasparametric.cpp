@@ -12,9 +12,12 @@
 #include "../src/canvas.h"
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
+#include "../src/parameterspanel.h"
 
 #include <QApplication>
+#include <QHeaderView>
 #include <QLineEdit>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUndoStack>
@@ -35,6 +38,20 @@ static void check(bool cond, const char *what)
         std::exit(1);
     }
 }
+
+// Replace one element, as a node delete or a fillet does.
+class SwapCmd : public QUndoCommand
+{
+public:
+    SwapCmd(Canvas *c, Document *d, const Element &before, const Element &after)
+        : QUndoCommand(QStringLiteral("swap")), m_c(c), m_d(d), m_before(before), m_after(after) {}
+    void redo() override { m_d->replaceElement(m_after); m_c->rebuild(); }
+    void undo() override { m_d->replaceElement(m_before); m_c->rebuild(); }
+private:
+    Canvas *m_c;
+    Document *m_d;
+    Element m_before, m_after;
+};
 
 static QPoint vp(Canvas *c, QPointF mm) { return c->mapFromScene(mm); }
 
@@ -181,6 +198,43 @@ int main(int argc, char *argv[])
     undo->undo();
     check(approx(QLineF(node(doc, id, 1), n1).length(), 0), "one undo restores");
 
+    // --- the Parameters tab refuses what can't hold ---------------------------------
+    {
+        ParametersPanel panel(&canvas);
+        panel.setDocument(&doc);
+        QTableWidget *params = nullptr, *dims = nullptr;
+        for (QTableWidget *t : panel.findChildren<QTableWidget *>())
+            (t->horizontalHeaderItem(t->columnCount() - 1)->text() == QLatin1String("Comment") ? params : dims) = t;
+        check(params && dims, "both tables");
+        const QPointF a0 = node(doc, id, 0), a1 = node(doc, id, 1);
+        const int steps = undo->count();
+        // plate is row 3 (after stock_w, stock_h, stock_t): -5 can't be a length.
+        params->item(3, 1)->setText(QStringLiteral("-5"));
+        check(doc.parametric().params.at(0).expr == QLatin1String("64"), "an unreachable value is refused");
+        check(undo->count() == steps && approx(QLineF(node(doc, id, 0), a0).length(), 0)
+                  && approx(QLineF(node(doc, id, 1), a1).length(), 0), "and nothing moved");
+        // q uses d1; d1 = q would go round in a loop.
+        Parametric p = doc.parametric();
+        p.params.append({QStringLiteral("q"), QStringLiteral("d1 + 1"), QString()});
+        check(canvas.applyParametric(p, QStringLiteral("add q")), "add q");
+        int d1row = -1;
+        for (int r = 0; r < dims->rowCount(); ++r)
+            if (dims->item(r, 0)->text() == QLatin1String("d1"))
+                d1row = r;
+        check(d1row >= 0, "d1 row");
+        dims->item(d1row, 2)->setText(QStringLiteral("q"));
+        check(doc.parametric().constraints.last().expr == QLatin1String("plate"), "a loop through q is refused");
+        // The canvas editor refuses it too.
+        canvas.editDimension(doc.parametric().constraints.last().uid);
+        QLineEdit *ed = canvas.viewport()->findChild<QLineEdit *>(QStringLiteral("dimEdit"));
+        ed->selectAll();
+        QTest::keyClicks(ed, QStringLiteral("q * 2"));
+        QTest::keyClick(ed, Qt::Key_Return);
+        check(ed->isVisible() && doc.parametric().constraints.last().expr == QLatin1String("plate"),
+              "the canvas editor refuses the loop");
+        QTest::keyClick(ed, Qt::Key_Escape);
+    }
+
     // --- Delete removes a selected constraint --------------------------------------
     canvas.setTool(Canvas::Select);
     const QString vuid = doc.parametric().constraints.at(1).uid;
@@ -189,6 +243,80 @@ int main(int argc, char *argv[])
     QTest::keyClick(&canvas, Qt::Key_Delete);
     check(doc.parametric().indexOfUid(vuid) < 0, "Delete removes the constraint");
     check(doc.elementById(id) != nullptr, "and leaves the shape");
+
+    // Deleting the shape takes its constraints along in the same undo step; d1,
+    // which q uses, stays as a parameter.
+    {
+        const int nCons = doc.parametric().constraints.size();
+        const int steps = undo->count();
+        canvas.selectElements({id});
+        canvas.deleteSelected();
+        check(undo->count() == steps + 1, "delete is one undo step");
+        check(doc.parametric().constraints.isEmpty(), "its constraints went with it");
+        check(doc.parametric().indexOfParam(QStringLiteral("d1")) >= 0, "d1 lives on as a parameter");
+        double v = 0;
+        check(param::evaluateIn(doc, QStringLiteral("q"), &v) && approx(v, 65), "q still evaluates");
+        undo->undo();
+        check(doc.elementById(id) && doc.parametric().constraints.size() == nCons
+                  && doc.parametric().indexOfParam(QStringLiteral("d1")) < 0, "undo brings it all back");
+    }
+
+    // A node delete renumbers the constraints after it; undo puts the old
+    // numbers back with the node.
+    {
+        const Element open = Element::makePath({{150, 20}, {160, 30}, {170, 20}, {190, 20}}, false,
+                                               doc.defaultLayer());
+        doc.addElement(open);
+        Parametric p = doc.parametric();
+        Constraint h;
+        h.type = Constraint::Horizontal;
+        GeoRef seg;
+        seg.kind = GeoRef::Line; seg.id = open.id; seg.index = 2;           // node 2 -> 3
+        h.refs = {seg};
+        h.uid = p.nextUid();
+        p.constraints.append(h);
+        check(canvas.applyParametric(p, QStringLiteral("add H")), "H on the last segment");
+        PathModel m = Element::pathModel(*doc.elementById(open.id));
+        check(m.subs[0].removeNode(1), "remove node 1");
+        const Element was = *doc.elementById(open.id);
+        canvas.pushEdit(new SwapCmd(&canvas, &doc, was, Element::withPathModel(was, m)), {open.id});
+        const int at = doc.parametric().indexOfUid(h.uid);
+        check(at >= 0 && doc.parametric().constraints.at(at).refs.at(0).index == 1, "H moved to segment 1");
+        undo->undo();
+        check(doc.parametric().constraints.at(doc.parametric().indexOfUid(h.uid)).refs.at(0).index == 2,
+              "undo puts it back on segment 2");
+        undo->redo();
+        check(doc.parametric().constraints.at(doc.parametric().indexOfUid(h.uid)).refs.at(0).index == 1,
+              "redo moves it again");
+    }
+
+    // A constraint that already can't hold doesn't block an unrelated edit.
+    {
+        const Element round = [&] {
+            Element r = Element::makeRectangle({240, 40}, 20, 10, doc.defaultLayer());
+            r.raw.insert("corner_type", 1);
+            return Element::fromJson(r.raw);
+        }();
+        doc.addElement(round);
+        Parametric p = doc.parametric();
+        Constraint w;
+        w.type = Constraint::Distance;
+        GeoRef e;
+        e.kind = GeoRef::Line; e.id = round.id; e.index = 0;
+        w.refs = {e};
+        w.uid = p.nextUid();
+        w.name = p.nextDimensionName();
+        w.expr = QStringLiteral("30");                 // can't: its size is locked
+        p.constraints.append(w);
+        check(canvas.applyParametric(p, QStringLiteral("width"), true), "added, failing");
+        check(param::unsatisfied(doc).contains(w.uid), "it is red");
+        Parametric p2 = doc.parametric();
+        p2.params.append({QStringLiteral("depth2"), QStringLiteral("stock_t / 2"), QString()});
+        check(canvas.applyParametric(p2, QStringLiteral("add depth2")), "an unrelated edit still goes in");
+        Parametric p3 = doc.parametric();
+        p3.constraints.removeAt(p3.indexOfUid(w.uid));
+        check(canvas.applyParametric(p3, QStringLiteral("drop width"), true), "clean up");
+    }
 
     // Freedom: a closed quad with H, parallel and a length still slides about.
     canvas.rebuild();

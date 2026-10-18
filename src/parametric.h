@@ -125,6 +125,10 @@ namespace param {
 // left out and reported in *errors as "name: why".
 QHash<QString, double> values(const Document &doc, const Parametric &p,
                               QStringList *errors = nullptr);
+// The first error ("name: why") that `after` has and `before` hadn't, or
+// empty. Catches loops through other names ("p = d1 + 1", then d1 = p),
+// which checking the edited expression against the old values misses.
+QString newError(const Document &doc, const Parametric &before, const Parametric &after);
 // Evaluate `expr` against the document's current parameters.
 bool evaluateIn(const Document &doc, const QString &expr, double *value,
                 QString *error = nullptr);
@@ -183,7 +187,19 @@ Freedom freedom(const Document &doc);
 // uids of the constraints that do not hold right now (worse than 1e-6 mm).
 QStringList unsatisfied(const Document &doc);
 
-// Drop constraints whose geometry no longer exists. Returns how many.
+// After an edit: keep every constraint on the geometry it was put on. An
+// element whose node numbering changed (a node deleted or inserted, a
+// fillet, a rectangle turned into a path) has its references moved to the
+// point, line or circle at the same place in `doc`; constraints whose
+// geometry is gone, or no longer a line, are dropped. A dropped dimension
+// that expressions or toolpath fields still use becomes a user parameter of
+// the same name. Returns how many were dropped (their uids in *dropped);
+// *changed says whether the constraints changed at all.
+int reconcile(const Document &before, Document &doc, QStringList *dropped = nullptr,
+              bool *changed = nullptr);
+// Every name the expressions in `p` and the document's toolpath fields use.
+QSet<QString> usedNames(const Document &doc, const Parametric &p);
+// reconcile() against the document itself: drops what no longer resolves.
 int prune(Document &doc);
 
 } // namespace param

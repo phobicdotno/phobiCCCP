@@ -388,10 +388,10 @@ void Canvas::convertToPaths(const QStringList &ids)
         return;
     }
     if (before.size() == 1 && after.size() == 1) {
-        m_undo->push(new EditCmd(this, m_doc, before.first(), after.first()));
+        pushEdit(new EditCmd(this, m_doc, before.first(), after.first()), ids);
     } else {
-        m_undo->push(new ReplaceCmd(this, m_doc, before, after,
-                                    tr("convert %1 element(s) to paths").arg(before.size())));
+        pushEdit(new ReplaceCmd(this, m_doc, before, after,
+                                tr("convert %1 element(s) to paths").arg(before.size())), ids);
     }
     QStringList newIds;
     for (const Element &e : after)
@@ -1459,9 +1459,9 @@ void Canvas::modifyAt(const QPointF &q)
         if (!hit)
             return;
         if (rest.isEmpty())
-            m_undo->push(new DeleteCmd(this, m_doc, {before}));
+            pushEdit(new DeleteCmd(this, m_doc, {before}), {before.id});
         else
-            m_undo->push(new EditCmd(this, m_doc, before, Element::withPathModel(before, rest)));
+            pushEdit(new EditCmd(this, m_doc, before, Element::withPathModel(before, rest)), {before.id});
         emit statusHint(rest.isEmpty() ? tr("Trimmed: nothing crossed it, so the whole curve went")
                                        : tr("Trimmed"));
         break;
@@ -1471,7 +1471,7 @@ void Canvas::modifyAt(const QPointF &q)
             emit statusHint(tr("Nothing ahead to extend to (closed curves have no ends)"));
             return;
         }
-        m_undo->push(new EditCmd(this, m_doc, before, Element::withPathModel(before, m)));
+        pushEdit(new EditCmd(this, m_doc, before, Element::withPathModel(before, m)), {before.id});
         emit statusHint(tr("Extended"));
         break;
     }
@@ -1486,8 +1486,8 @@ void Canvas::modifyAt(const QPointF &q)
         const QJsonObject layer = before.raw.value("layer").toObject();
         for (int i = 1; i < parts.size(); ++i)
             after.append(Element::makeBezierPath(parts.at(i), layer));
-        m_undo->push(new ReplaceCmd(this, m_doc, {before}, after,
-                                    tr("break into %1 pieces").arg(after.size())));
+        pushEdit(new ReplaceCmd(this, m_doc, {before}, after,
+                                tr("break into %1 pieces").arg(after.size())), {before.id});
         emit statusHint(tr("Broken into %1 pieces").arg(after.size()));
         break;
     }
@@ -2210,7 +2210,7 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
             if (Element *e = m_doc->elementById(id))
                 victims.append(*e);
         if (!victims.isEmpty())
-            m_undo->push(new DeleteCmd(this, m_doc, victims));
+            pushEdit(new DeleteCmd(this, m_doc, victims), {});
     });
     menu.exec(event->globalPos());
 }
@@ -2281,7 +2281,7 @@ void Canvas::deleteSelected()
                 victims.append(*e);
     }
     if (!victims.isEmpty())
-        m_undo->push(new DeleteCmd(this, m_doc, victims));
+        pushEdit(new DeleteCmd(this, m_doc, victims), {});
 }
 
 void Canvas::wheelEvent(QWheelEvent *event)

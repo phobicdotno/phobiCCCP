@@ -260,11 +260,19 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched)
         return;
     }
     const QString text = cmd->text();
+    const Document before = *m_doc;     // cheap: implicitly shared
     m_undo->beginMacro(text);
     m_undo->push(cmd);
     const ParamState s0 = stateOf(m_doc);
+    // Constraints follow their geometry through node deletes and inserts,
+    // fillets and conversions; those on geometry that is gone go too.
+    QStringList dropped;
+    bool renumbered = false;
+    param::reconcile(before, *m_doc, &dropped, &renumbered);
+    if (!dropped.isEmpty() && dropped.contains(m_selConstraint))
+        selectConstraint(QString());
     const param::SolveResult r = param::solve(*m_doc, QSet<QString>(touched.begin(), touched.end()));
-    if (!r.changed.isEmpty())
+    if (!r.changed.isEmpty() || renumbered)
         m_undo->push(new SnapshotCmd(this, m_doc, s0, stateOf(m_doc), text));
     m_undo->endMacro();
     if (!r.ok) {
@@ -272,6 +280,10 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched)
         emit statusHint(r.failing.size() == 1
             ? tr("1 constraint can't hold after this edit — shown in red")
             : tr("%1 constraints can't hold after this edit — shown in red").arg(r.failing.size()));
+    } else if (!dropped.isEmpty()) {
+        emit statusHint(dropped.size() == 1
+            ? tr("1 constraint went with the geometry it was on")
+            : tr("%1 constraints went with the geometry they were on").arg(dropped.size()));
     }
 }
 
@@ -285,10 +297,22 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
     m_doc->setParametric(after);
     if (mutate)
         mutate(*m_doc);
-    const param::SolveResult r = param::solve(*m_doc, keep, allowFailing);
+    param::SolveResult r = param::solve(*m_doc, keep, allowFailing);
     if (!r.ok && !allowFailing) {
-        restore(m_doc, s0);
-        return false;
+        // Constraints that were red before don't block an unrelated edit;
+        // only one that makes something else fail is refused.
+        Document was = *m_doc;
+        was.setElements(s0.els);
+        was.setParametric(s0.par);
+        const QStringList red = param::unsatisfied(was);
+        bool news = false;
+        for (const QString &uid : r.failing)
+            news = news || !red.contains(uid);
+        if (news) {
+            restore(m_doc, s0);
+            return false;
+        }
+        r = param::solve(*m_doc, keep, true);
     }
     param::applyToolpathBindings(*m_doc);
     const ParamState s1 = stateOf(m_doc);
@@ -312,7 +336,11 @@ void Canvas::deleteConstraint(const QString &uid)
     const QString what = after.constraints.at(i).isDimension()
         ? tr("delete dimension %1").arg(after.constraints.at(i).name)
         : tr("delete %1 constraint").arg(Constraint::typeName(after.constraints.at(i).type).toLower());
-    after.constraints.removeAt(i);
+    const Constraint gone = after.constraints.takeAt(i);
+    // Expressions that use the dimension keep its value as a parameter.
+    if (gone.isDimension() && param::usedNames(*m_doc, after).contains(gone.name))
+        after.params.append({gone.name, gone.expr.trimmed().isEmpty() ? param::formatNumber(gone.value) : gone.expr,
+                             tr("was dimension %1").arg(gone.name)});
     selectConstraint(QString());
     applyParametric(after, what, true);
     emit statusHint(what);
@@ -1155,19 +1183,27 @@ void Canvas::commitDimEditor(bool escape)
         emit statusHint(tr("%1 must be more than 0").arg(Constraint::typeName(c.type)));
         return;
     }
-    closeDimEditor();
     c.expr = text;
     Parametric after = m_doc->parametric();
     if (m_dimEditingNew) {
         after.constraints.append(c);
     } else {
         const int i = after.indexOfUid(c.uid);
-        if (i < 0)
+        if (i < 0 || after.constraints[i].expr == text) {
+            closeDimEditor();
             return;
-        if (after.constraints[i].expr == text)
-            return;
+        }
         after.constraints[i].expr = text;
     }
+    // A loop through other names ("p = d1 + 1", then d1 = p) only shows
+    // with the edit in place.
+    if (const QString e = param::newError(*m_doc, m_doc->parametric(), after); !e.isEmpty()) {
+        m_dimEdit->setStyleSheet(m_dimEdit->styleSheet().replace(QStringLiteral("#f2a536"),
+                                                                 QStringLiteral("#e85c5c")));
+        emit statusHint(tr("%1 — %2").arg(text, e));
+        return;
+    }
+    closeDimEditor();
     const QString what = m_dimEditingNew ? tr("add dimension %1 = %2").arg(c.name, text)
                                          : tr("%1 = %2").arg(c.name, text);
     if (applyParametric(after, what)) {

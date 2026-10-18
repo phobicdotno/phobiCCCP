@@ -557,8 +557,11 @@ QVector<Element> VectorActions::orderedSelection() const
 void VectorActions::pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
                                 bool keepInputs, const QString &text)
 {
-    m_canvas->undoStack()->push(
-        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text));
+    QStringList ids;
+    for (const Element &e : inputs)
+        ids << e.id;
+    m_canvas->pushEdit(
+        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text), ids);
 }
 
 void VectorActions::pushMoves(const QStringList &ids, const QVector<QPointF> &deltas,

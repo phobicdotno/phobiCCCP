@@ -168,6 +168,16 @@ int main(int argc, char *argv[])
         app.processEvents();
         check(end->styleSheet().contains(QStringLiteral("c3a6ff")) && end->toolTip().contains(QStringLiteral("depth")),
               "a bound field shows it");
+        // The arrows give a plain number, so they unbind it too.
+        end->setFocus();
+        QTest::keyClick(end, Qt::Key_Up);
+        check(!last.contains(QStringLiteral("phobic_expr")) && last.value("end_depth").toString() != QLatin1String("-6.000"),
+              "an arrow step unbinds the field");
+        // Bind it again for the plain-number check below.
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("depth"));
+        QTest::keyClick(end, Qt::Key_Return);
+        check(last.value("phobic_expr").toObject().contains(QStringLiteral("end_depth")), "bound again");
         // "1/4 in" is just a number: no binding.
         end->setFocus();
         end->selectAll();

@@ -199,7 +199,7 @@ if(Qt6Test_FOUND)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
     add_executable(test_canvasparametric tests/test_canvasparametric.cpp src/canvas.cpp
-                   src/canvasparametric.cpp)
+                   src/canvasparametric.cpp src/parameterspanel.cpp)
     target_link_libraries(test_canvasparametric PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvasparametric COMMAND test_canvasparametric)
     add_executable(test_about tests/test_about.cpp src/aboutdialog.cpp data/tools.qrc)
