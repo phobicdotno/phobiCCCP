@@ -1231,6 +1231,16 @@ public:
         }
     }
 
+    // Whether followRing lifts over tabs on this ring at depth z.
+    static bool hasTabs(const QPolygonF &poly, double z, const CutParams &cp)
+    {
+        if (!(cp.tabWidth > 0.01 && z < cp.tabTop - 1e-9 && poly.isClosed() && poly.size() > 3))
+            return false;
+        const double len = perimeter(poly);
+        const int nTabs = qBound(3, int(len / 150.0) + 3, 8);
+        return qMin(cp.tabWidth, len / (3.0 * nTabs)) >= 1.0;
+    }
+
     // Follow one closed/open ring at depth z; arcs for circles; tab lifts when
     // z is below tabTop and tabWidth > 0.
     void followRing(const QPolygonF &poly, double z, const CutParams &cp)
@@ -1450,8 +1460,7 @@ public:
             // of tabs: on a pass below the tab tops it would cut through every
             // tab before the tabbed lap below lifts over them. Plunge there
             // instead (vertex 0 is never inside a tab).
-            const bool ramp = cp.rampAngle > 0
-                              && !(cp.tabWidth > 0.01 && z < cp.tabTop - 1e-9);
+            const bool ramp = cp.rampAngle > 0 && !hasTabs(firstRing, z, cp);
             if (first) {
                 if (ramp && job.closed) {
                     plungeTo(firstRing.first(), cp.zTop);

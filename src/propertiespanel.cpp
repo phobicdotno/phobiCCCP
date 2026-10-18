@@ -14,19 +14,8 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
-#include <cmath>
 
 namespace c2d {
-
-namespace {
-// A spin box rounds what it shows to its decimals; only count it as edited
-// when it differs from the stored value by more than that rounding, or a
-// Bold toggle on 9.525 mm text also rewrites the height to 9.53.
-bool edited(const QDoubleSpinBox *s, double stored)
-{
-    return std::fabs(s->value() - stored) > 0.5 * std::pow(10.0, -s->decimals()) + 1e-12;
-}
-} // namespace
 
 QDoubleSpinBox *PropertiesPanel::spin(double max)
 {
@@ -253,11 +242,14 @@ void PropertiesPanel::refresh()
         m_family->setCurrentFont(QFont(f.family()));
         m_familyShown = m_family->currentFont().family();   // substitute if not installed
         m_fontHeight->setValue(e->raw.value("font_height").toDouble(10.0));
+        m_fontHeightShown = m_fontHeight->value();
         m_bold->setChecked(f.bold());
         m_italic->setChecked(f.italic());
         m_arcOn->setChecked(arcOn);
         m_arcRadius->setValue(e->raw.value("arc_radius").toDouble(25.4));
         m_arcAngle->setValue(e->raw.value("arc_angle_offset").toDouble());
+        m_arcRadiusShown = m_arcRadius->value();
+        m_arcAngleShown = m_arcAngle->value();
         m_arcBottom->setChecked(e->raw.value("arc_text_on_bottom").toBool());
     }
     m_loading = false;
@@ -303,7 +295,9 @@ void PropertiesPanel::applyText()
         ch.insert("text", m_text->text());
     if (m_family->currentFont().family() != m_familyShown)
         ch.insert("family", m_family->currentFont().family());
-    if (edited(m_fontHeight, e->raw.value("font_height").toDouble(10.0)))
+    // Compared with what the box showed, not the stored value: 9.525 shows as
+    // 9.53, so a Bold toggle must not write 9.53, and typing 9.52 must count.
+    if (m_fontHeight->value() != m_fontHeightShown)
         ch.insert("font_height", m_fontHeight->value());
     if (m_bold->isChecked() != f.bold())
         ch.insert("bold", m_bold->isChecked());
@@ -311,9 +305,9 @@ void PropertiesPanel::applyText()
         ch.insert("italic", m_italic->isChecked());
     if (m_arcOn->isChecked() != e->raw.value("arc_enabled").toBool())
         ch.insert("arc_enabled", m_arcOn->isChecked());
-    if (edited(m_arcRadius, e->raw.value("arc_radius").toDouble(25.4)))
+    if (m_arcRadius->value() != m_arcRadiusShown)
         ch.insert("arc_radius", m_arcRadius->value());
-    if (edited(m_arcAngle, e->raw.value("arc_angle_offset").toDouble()))
+    if (m_arcAngle->value() != m_arcAngleShown)
         ch.insert("arc_angle_offset", m_arcAngle->value());
     if (m_arcBottom->isChecked() != e->raw.value("arc_text_on_bottom").toBool())
         ch.insert("arc_text_on_bottom", m_arcBottom->isChecked());

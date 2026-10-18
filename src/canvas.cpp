@@ -2309,7 +2309,7 @@ void Canvas::deleteSelected()
 void Canvas::wheelEvent(QWheelEvent *event)
 {
     const int dy = event->angleDelta().y();
-    if (dy == 0) { event->ignore(); return; }   // horizontal scroll: not a zoom
+    if (dy == 0) { QGraphicsView::wheelEvent(event); return; }   // horizontal scroll: pan, not zoom
     const double factor = dy > 0 ? 1.15 : 1.0 / 1.15;
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     scale(factor, factor);

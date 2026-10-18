@@ -1149,7 +1149,10 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_pad, &Gamepad::disconnected, this, [this] {
         m_padLabel->setText(QStringLiteral("gamepad: none"));
         m_padLabel->setEnabled(false);
-        stopHoldJog();                    // a release we will never see
+        // A release we will never see. A held jog stops the way a release
+        // stops it (with the second cancel for a $J= still in GRBL's buffer);
+        // a press not yet held is dropped, not taken as a tap.
+        if (m_holdJogging) endHoldJog(); else stopHoldJog();
         m_padAxisDir[0] = m_padAxisDir[1] = 0;
         log(QStringLiteral("gamepad disconnected"));
     });

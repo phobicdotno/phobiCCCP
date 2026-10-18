@@ -231,6 +231,9 @@ int main(int argc, char *argv[])
           "a toolpath on the text machines every converted contour");
     undo->undo();
     check(tpRefs() == 1, "undo puts the toolpath back on the text");
+    undo->redo();
+    check(tpRefs() == glyphs.size(), "redo retargets the toolpath again");
+    undo->undo();
     check(doc.elementById(text.id)->geometryType == QLatin1String("text") && doc.elements().size() == 5,
           "text conversion undoes");
 

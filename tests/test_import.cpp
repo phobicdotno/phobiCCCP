@@ -312,6 +312,19 @@ int main(int argc, char **argv)
             check(ln.ok && ln.elements.size() == 1, "dxf: mirrored-extrusion line imports");
             check(!ln.relocated && rectNear(ln.bounds, 100, 50, 120, 60), "dxf: a LINE's world coordinates are not flipped");
         }
+        // A half ellipse (0..pi) with extrusion 0,0,-1: centre and axis stay
+        // put; the minor axis points the other way, so it is the lower half.
+        {
+            const QByteArray dxf =
+                "0\nSECTION\n2\nENTITIES\n"
+                "0\nELLIPSE\n8\n0\n10\n100\n20\n50\n11\n20\n21\n0\n40\n0.5\n"
+                "41\n0\n42\n3.14159265358979\n230\n-1\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult el = c2d::importDxfData(dxf, opts(200, 200), QStringLiteral("mirell"));
+            check(el.ok && el.elements.size() == 1 && !el.relocated
+                      && rectNear(el.bounds, 80, 40, 120, 50, 0.05),
+                  "dxf: mirrored-extrusion ellipse arc is the lower half, in place");
+        }
         // A spline-fit POLYLINE: the frame (flag 16) is skipped, the fitted
         // vertices (flag 8) are the curve.
         {
