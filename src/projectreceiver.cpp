@@ -291,9 +291,11 @@ void ProjectReceiver::onConnection()
     while (m_tcp && m_tcp->hasPendingConnections()) {
         QTcpSocket *s = m_tcp->nextPendingConnection();
         if (m_conns.size() >= kMaxConns) {
+            // As in drop(): a peer that never closes its end is cut off.
+            connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
+            QTimer::singleShot(5000, s, [s] { s->abort(); s->deleteLater(); });
             s->write(QByteArrayLiteral("ERR busy\n"));
             s->disconnectFromHost();
-            connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
             continue;
         }
         auto *c = new Conn;
