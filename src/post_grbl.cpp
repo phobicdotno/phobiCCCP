@@ -52,9 +52,19 @@ JobStats computeStats(const QVector<Op> &ops)
         s.minY = qMin(s.minY, y); s.maxY = qMax(s.maxY, y);
         s.minZ = qMin(s.minZ, z); s.maxZ = qMax(s.maxZ, z);
     };
+    bool spinning = false;
     for (const Op &op : ops) {
         if (op.kind == Op::Dwell)
             s.timeSec += qMax(0.0, op.feed);
+        // The post's spin-up wait: every start from standstill, and a tool
+        // change stops the spindle.
+        if (op.kind == Op::Spindle) {
+            if (op.ival > 0 && !spinning)
+                s.timeSec += kSpindleSpinUpSec;
+            spinning = op.ival > 0;
+        } else if (op.kind == Op::Tool) {
+            spinning = false;
+        }
         if (op.kind != Op::Rapid && op.kind != Op::Feed && op.kind != Op::Arc)
             continue;
         grow(op.x, op.y, op.z);
@@ -111,12 +121,17 @@ QStringList airCutTransform(const QStringList &lines, double lift)
 {
     static const QRegularExpression zWord(QStringLiteral("Z(-?[0-9]+\\.?[0-9]*)"));
     QStringList out;
+    bool afterStart = false;
     for (const QString &raw : lines) {
         const QString l = raw.trimmed();
+        // The spin-up wait right after a dropped start has nothing to wait for.
+        const bool spinUp = afterStart && l.startsWith(QLatin1String("G4P"));
+        afterStart = l.startsWith(QLatin1String("M03")) || l.startsWith(QLatin1String("M04"));
+        if (spinUp)
+            continue;
         // Drop spindle control: M03/M04 starts, bare S rpm changes, M05 stops.
         // (`M0 ;T` tool-change pauses survive — they contain no motion.)
-        if (l.startsWith(QLatin1String("M03")) || l.startsWith(QLatin1String("M04"))
-            || l == QLatin1String("M05")
+        if (afterStart || l == QLatin1String("M05")
             || (l.size() > 1 && l.at(0) == QChar('S') && l.at(1).isDigit()))
             continue;
         if (l.startsWith(QChar('(')) || l.startsWith(QChar(';'))) {
@@ -247,8 +262,13 @@ QString GrblPost::generate(const QVector<Op> &ops) const
             } else if (!spindleOn || op.ival != lastRpm) {
                 QString ln;
                 if (!spindleOn) ln += QStringLiteral("M03");
+                const bool starting = !spindleOn;
                 ln += QStringLiteral("S") + QString::number(op.ival);
                 line(ln);
+                // From standstill: wait for the spindle to reach speed
+                // before anything moves into the stock.
+                if (starting)
+                    line(QStringLiteral("G4P") + QString::number(kSpindleSpinUpSec, 'f', 2));
                 spindleOn = true;
                 lastRpm = op.ival;
             }

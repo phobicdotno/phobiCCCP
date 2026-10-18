@@ -10,6 +10,12 @@
 // drive a Shapeoko directly over serial with no .egc and no Carbide Motion.
 namespace c2d {
 
+// Seconds GRBL waits after an M03 that starts the spindle from standstill
+// (start of the job, after a tool change) before the first move, so the bit
+// is at speed before it plunges. A speed change on a running spindle does
+// not wait.
+constexpr double kSpindleSpinUpSec = 3.0;
+
 struct Op {
     enum Kind { Rapid, Feed, Arc, Spindle, Tool, Comment, Dwell } kind;
     double x = 0, y = 0, z = 0;   // Rapid/Feed/Arc target (mm)
