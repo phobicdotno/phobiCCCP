@@ -27,8 +27,9 @@ public:
     explicit TraceDialog(QWidget *parent = nullptr);
 
     // Picture to trace; `widthMm` is the initial target width, `origin` the
-    // initial insert position (CC mm of the image's bottom-left corner).
-    void setImage(const QImage &img, double widthMm, QPointF origin);
+    // initial insert position (CC mm of the image's bottom-left corner),
+    // `rotationDeg` the background's turn about its centre (kept as is).
+    void setImage(const QImage &img, double widthMm, QPointF origin, double rotationDeg = 0);
 
     TraceOptions options() const;
     const TraceResult &result() const { return m_result; }
@@ -45,6 +46,7 @@ private:
     void updateHeightLabel();
 
     QImage m_image;
+    double m_rotationDeg = 0;
     TraceResult m_result;
     TracePreview *m_preview;
     QSlider *m_threshold;

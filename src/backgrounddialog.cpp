@@ -215,6 +215,7 @@ void installImageMenus(QMenu *fileMenu, QWidget *window, Canvas *canvas,
         QImage img;
         double widthMm = 0;
         QPointF origin(0, 0);
+        double rotationDeg = 0;
         bool fromBackground = false;
         if (!bg->isNull()) {
             QMessageBox q(QMessageBox::Question, QObject::tr("Trace image"),
@@ -232,6 +233,7 @@ void installImageMenus(QMenu *fileMenu, QWidget *window, Canvas *canvas,
             img = bg->image;
             widthMm = bg->widthMm();
             origin = QPointF(bg->x, bg->y);
+            rotationDeg = bg->rotationDeg;
         } else {
             const QString path = QFileDialog::getOpenFileName(
                 window, QObject::tr("Trace image"), {}, imageFilter());
@@ -251,7 +253,7 @@ void installImageMenus(QMenu *fileMenu, QWidget *window, Canvas *canvas,
                 widthMm = bw;
         }
         TraceDialog dlg(window);
-        dlg.setImage(img, widthMm, origin);
+        dlg.setImage(img, widthMm, origin, rotationDeg);
         if (dlg.exec() != QDialog::Accepted)
             return;
         const QVector<Element> els = dlg.elements(doc->defaultLayer());

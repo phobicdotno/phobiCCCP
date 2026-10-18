@@ -63,6 +63,8 @@ public:
     bool feed(const QByteArray &bytes);
     State state() const { return m_state; }
     QString error() const { return m_error; }
+    // Total announced size of the files, once the manifest is read.
+    qint64 announcedSize() const;
     const ReceivedProject &project() const { return m_project; }
 
 private:
@@ -93,8 +95,13 @@ class ProjectReceiver : public QObject
 public:
     static constexpr quint16 kPort = 47652;
     static constexpr int kIdleMs = 60 * 1000;   // a sender that goes quiet mid-transfer is dropped
-    // Each connection may buffer up to kMaxTotal; without a cap a few
-    // connections from anyone on the network could exhaust memory.
+    // A sender that trickles a byte now and then still has to finish within
+    // kDeadlineMs plus one second per kMinRate bytes it announced.
+    static constexpr int kDeadlineMs = 2 * 60 * 1000;
+    static constexpr qint64 kMinRate = 256 * 1024;
+    // Only one transfer past its manifest is held at a time (a second one is
+    // told busy), so at most kMaxTotal is buffered; the cap only bounds the
+    // connections still sending their hello and manifest.
     static constexpr int kMaxConns = 3;
 
     explicit ProjectReceiver(QObject *parent = nullptr);
@@ -109,6 +116,9 @@ public:
     // The user's decision on transfer `id` (from received()): the sender gets
     // "OK <message>" or "ERR <message>" and the connection is closed.
     void answer(int id, bool ok, const QString &message);
+
+    // For tests: shorter timeouts than kIdleMs and kDeadlineMs (base part).
+    void setTimeouts(int idleMs, int deadlineMs) { m_idleMs = idleMs; m_deadlineMs = deadlineMs; }
 
 signals:
     // A complete project arrived; call answer(id, …) once the user decided.
@@ -127,6 +137,8 @@ private:
     QHash<QTcpSocket *, Conn *> m_conns;
     QHash<int, QTcpSocket *> m_waiting;   // complete, waiting for answer()
     int m_nextId = 1;
+    int m_idleMs = kIdleMs;
+    int m_deadlineMs = kDeadlineMs;
 };
 
 } // namespace c2d

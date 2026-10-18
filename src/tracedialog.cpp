@@ -69,6 +69,14 @@ protected:
         t.translate(0, m_img.height());
         t.scale(1.0 / mmpp, -1.0 / mmpp);
         t.translate(-m_opts.origin.x(), -m_opts.origin.y());
+        if (m_opts.rotationDeg != 0) {
+            // The outlines are turned with the background; the preview shows
+            // the picture upright, so turn them back.
+            const QPointF c = m_opts.origin + QPointF(m_img.width(), m_img.height()) * mmpp / 2;
+            t.translate(c.x(), c.y());
+            t.rotate(-m_opts.rotationDeg);
+            t.translate(-c.x(), -c.y());
+        }
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setBrush(Qt::NoBrush);
         p.setTransform(t, true);
@@ -289,9 +297,10 @@ TraceDialog::TraceDialog(QWidget *parent)
     connect(m_showMask, &QCheckBox::toggled, this, &TraceDialog::scheduleTrace);
 }
 
-void TraceDialog::setImage(const QImage &img, double widthMm, QPointF origin)
+void TraceDialog::setImage(const QImage &img, double widthMm, QPointF origin, double rotationDeg)
 {
     m_image = img;
+    m_rotationDeg = rotationDeg;
     m_preview->setImage(img);
     m_width->setValue(widthMm > 0 ? widthMm : 100);
     m_posX->setValue(origin.x());
@@ -325,6 +334,7 @@ TraceOptions TraceDialog::options() const
     o.smooth = m_smooth->isChecked();
     o.cornerAngleDeg = m_cornerAngle->value();
     o.origin = QPointF(m_posX->value(), m_posY->value());
+    o.rotationDeg = m_rotationDeg;
     return o;
 }
 
