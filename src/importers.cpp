@@ -1049,8 +1049,13 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
     }
     --ctx.budget;
     const QVector<Pair> &ps = e.pairs;
-    const QTransform xf = ocs(ps) * xfIn;
     const QString &t = e.type;
+    // LINE, ELLIPSE and SPLINE coordinates are already in world coordinates;
+    // only OCS entities (ARC, CIRCLE, polylines, INSERT) are mirrored by an
+    // extrusion of 0,0,-1. Flipping a LINE's X put it at negative X.
+    const bool world = t == QLatin1String("LINE") || t == QLatin1String("ELLIPSE")
+                       || t == QLatin1String("SPLINE");
+    const QTransform xf = (world ? QTransform() : ocs(ps)) * xfIn;
     QPainterPath p;   // drawing units (before xf)
 
     if (t == QLatin1String("LINE")) {
@@ -1077,7 +1082,9 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
         QVector<double> bulge;
         for (const QVector<Pair> &v : e.vertices) {
             const int vf = pairI(v, 70);
-            if (vf & (16 | 8)) continue;   // spline frame control point / 3D mesh vertex
+            // 16 = spline frame control point: skip it. 8 = a vertex made by
+            // spline fitting, which IS the curve; skipping both left nothing.
+            if (vf & 16) continue;
             pts.append(QPointF(pairD(v, 10), pairD(v, 20)));
             bulge.append(pairD(v, 42));
         }
@@ -1097,8 +1104,12 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
         const double ratio = pairD(ps, 40, 1);
         const double rx = std::hypot(maj.x(), maj.y());
         const double rot = std::atan2(maj.y(), maj.x());
-        const double a0 = pairD(ps, 41, 0);
+        double a0 = pairD(ps, 41, 0);
         const double sweep = arcSweep(a0, pairD(ps, 42, 2 * M_PI));
+        // Extrusion 0,0,-1 points the minor axis the other way: parameter t
+        // there is -t here, so the arc a0..a0+sweep is -(a0+sweep)..-a0.
+        if (pairD(ps, 230, 1) < 0)
+            a0 = -(a0 + sweep);
         if (rx > 0 && ratio > 0 && sweep > 0) {
             appendArc(p, c, rx, rx * ratio, rot, a0, sweep, true);
             if (std::fabs(sweep - 2 * M_PI) < 1e-9)
@@ -1131,6 +1142,13 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
                 local = local * QTransform::fromScale(sx, sy);
                 QTransform rt; rt.rotate(rot);
                 local = local * rt * QTransform::fromTranslate(ins.x() + c * colSp, ins.y() + r * rowSp);
+                // Spent: one more call records it, then stop the array
+                // instead of looping rows x cols x entities for nothing.
+                if (ctx.budget <= 0) {
+                    if (!b.entities.isEmpty())
+                        emitEntity(ctx, b.entities.first(), local * xf, depth + 1);
+                    return;
+                }
                 for (const Entity &sub : b.entities)
                     emitEntity(ctx, sub, local * xf, depth + 1);
             }

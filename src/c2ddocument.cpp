@@ -21,6 +21,7 @@ bool Document::load(const QString &path, QString *error)
     m_toolpaths.clear();
     m_groups.clear();
     m_unreadableToolpaths.clear();
+    m_unreadableElements.clear();
     m_path = path;
 
     if (!QFileInfo::exists(path)) {
@@ -93,6 +94,8 @@ bool Document::load(const QString &path, QString *error)
                     // dropping a toolpath this build simply cannot read.
                     if (type == QLatin1String("toolpath"))
                         m_unreadableToolpaths.insert(q.value(3).toString());
+                    else if (type == QLatin1String("element"))
+                        m_unreadableElements.insert(q.value(3).toString());
                     continue;
                 }
 
@@ -134,6 +137,7 @@ bool Document::load(const QString &path, QString *error)
         m_toolpaths.clear();
         m_groups.clear();
         m_unreadableToolpaths.clear();
+    m_unreadableElements.clear();
         return false;
     }
     return true;
@@ -178,8 +182,23 @@ bool Document::save(const QString &destPath, QString *error)
         db.transaction();
 
         // 2) Drop existing element rows (toolpaths/layer/model untouched).
+        // Rows this build could not decode stay as they are, like toolpaths
+        // below: a save must not delete what it merely failed to read.
         QSqlQuery del(db);
-        if (!del.exec(QStringLiteral("DELETE FROM items WHERE type='element'"))) {
+        bool delElOk = false;
+        if (m_unreadableElements.isEmpty()) {
+            delElOk = del.exec(QStringLiteral("DELETE FROM items WHERE type='element'"));
+        } else {
+            QStringList marks;
+            for (int i = 0; i < m_unreadableElements.size(); ++i)
+                marks << QStringLiteral("?");
+            del.prepare(QStringLiteral("DELETE FROM items WHERE type='element' "
+                                       "AND uuid NOT IN (%1)").arg(marks.join(QChar(','))));
+            for (const QString &u : m_unreadableElements)
+                del.addBindValue(u);
+            delElOk = del.exec();
+        }
+        if (!delElOk) {
             if (error) *error = del.lastError().text();
             ok = false;
         }

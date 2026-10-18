@@ -1446,8 +1446,14 @@ public:
                 order.append(forward ? k : job.rings.size() - 1 - k);
 
             const QPolygonF &firstRing = job.rings.at(order.first());
+            // A ramp runs the loop at depth from vertex 0 and knows nothing
+            // of tabs: on a pass below the tab tops it would cut through every
+            // tab before the tabbed lap below lifts over them. Plunge there
+            // instead (vertex 0 is never inside a tab).
+            const bool ramp = cp.rampAngle > 0
+                              && !(cp.tabWidth > 0.01 && z < cp.tabTop - 1e-9);
             if (first) {
-                if (cp.rampAngle > 0 && job.closed) {
+                if (ramp && job.closed) {
                     plungeTo(firstRing.first(), cp.zTop);
                     rampDescend(firstRing, cp.zTop, z, cp.rampAngle);
                 } else {
@@ -1455,7 +1461,7 @@ public:
                 }
                 first = false;
             } else if (job.closed) {
-                if (cp.rampAngle > 0)
+                if (ramp)
                     rampDescend(firstRing, z + cp.stepdown, z, cp.rampAngle);
                 else
                     plungeTo(pos(), z);   // in place — we ended here last pass
@@ -1708,6 +1714,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         const double feed = numOr(speeds.value("feedrate"), 500);
         const double plunge = numOr(speeds.value("plungerate"), 100);
         const int rpm = int(numOr(speeds.value("rpm"), 10000));
+        if (!(feed > 0) || !(plunge > 0)) {
+            // GRBL refuses F0 or a negative F mid-job, after the spindle
+            // is already running.
+            res.skipped << QStringLiteral("%1 (feed and plunge rate must be above 0)").arg(name);
+            continue;
+        }
         const QJsonObject tool = j.value("tool").toObject();
         const int toolNo = int(numOr(tool.value("number"), 0));
         const double toolR = numOr(tool.value("diameter"), 6) / 2.0;

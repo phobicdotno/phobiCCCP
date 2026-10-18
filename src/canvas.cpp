@@ -5,6 +5,7 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QGraphicsScene>
+#include <QHash>
 #include <QToolButton>
 #include <QLabel>
 #include <QHBoxLayout>
@@ -164,11 +165,54 @@ private:
 class ReplaceCmd : public QUndoCommand
 {
 public:
+    // `piecesOf` maps each replaced element's id to the ids of the elements
+    // that take its place (convert to paths, break): every toolpath that
+    // machined it then machines all of them, not only the piece that kept
+    // its id.
     ReplaceCmd(Canvas *c, Document *d, const QVector<Element> &before,
-               const QVector<Element> &after, const QString &text)
-        : m_c(c), m_d(d), m_before(before), m_after(after) { setText(text); }
-    void redo() override { swap(m_before, m_after); }
-    void undo() override { swap(m_after, m_before); }
+               const QVector<Element> &after, const QString &text,
+               const QHash<QString, QStringList> &piecesOf = {})
+        : m_c(c), m_d(d), m_before(before), m_after(after)
+    {
+        setText(text);
+        QSet<QString> afterIds;
+        for (const Element &e : after)
+            afterIds.insert(e.id);
+        for (const Toolpath &t : d->toolpaths()) {
+            const QJsonArray refs = t.json.value("elements").toArray();
+            QJsonArray kept;
+            QSet<QString> seen;
+            bool hit = false;
+            for (const QJsonValue &v : refs) {
+                const QString id = v.toObject().value("uuid").toString();
+                if (!piecesOf.contains(id)) {
+                    if (!seen.contains(id)) { kept.append(v); seen.insert(id); }
+                    continue;
+                }
+                hit = true;
+                for (const QString &n : piecesOf.value(id))
+                    if (afterIds.contains(n) && !seen.contains(n)) {
+                        kept.append(QJsonObject{{QStringLiteral("uuid"), n}});
+                        seen.insert(n);
+                    }
+            }
+            if (!hit || kept == refs)
+                continue;
+            Toolpath tpAfter = t;
+            tpAfter.json.insert(QStringLiteral("elements"), kept);
+            m_tps.append({t, tpAfter});
+        }
+    }
+    void redo() override
+    {
+        for (const auto &p : m_tps) m_d->replaceToolpath(p.second);
+        swap(m_before, m_after);
+    }
+    void undo() override
+    {
+        for (const auto &p : m_tps) m_d->replaceToolpath(p.first);
+        swap(m_after, m_before);
+    }
 private:
     void swap(const QVector<Element> &out, const QVector<Element> &in)
     {
@@ -177,6 +221,7 @@ private:
         refresh(m_c);
     }
     Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+    QVector<QPair<Toolpath, Toolpath>> m_tps;
 };
 
 class TpEditCmd : public QUndoCommand
@@ -369,12 +414,16 @@ void Canvas::convertToPaths(const QStringList &ids)
     if (!m_doc)
         return;
     QVector<Element> before, after;
+    QHash<QString, QStringList> piecesOf;
     for (const QString &id : ids) {
         Element *e = m_doc->elementById(id);
         if (!e || e->geometryType == QLatin1String("path"))
             continue;
         before.append(*e);
-        after += Element::toPaths(*e);
+        const QVector<Element> pieces = Element::toPaths(*e);
+        for (const Element &p : pieces)
+            piecesOf[e->id] << p.id;
+        after += pieces;
     }
     if (before.isEmpty())
         return;
@@ -389,7 +438,8 @@ void Canvas::convertToPaths(const QStringList &ids)
         m_undo->push(new EditCmd(this, m_doc, before.first(), after.first()));
     } else {
         m_undo->push(new ReplaceCmd(this, m_doc, before, after,
-                                    tr("convert %1 element(s) to paths").arg(before.size())));
+                                    tr("convert %1 element(s) to paths").arg(before.size()),
+                                    piecesOf));
     }
     QStringList newIds;
     for (const Element &e : after)
@@ -778,7 +828,7 @@ QPointF Canvas::snap(QPointF p) const
 void Canvas::setTool(Tool t)
 {
     if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool)
-        || !m_splinePts.isEmpty())
+        || !m_splinePts.isEmpty() || !m_tanLines.isEmpty() || m_preview)
         cancelDrawing();
     m_tool = t;
     m_drawing = false;
@@ -1478,8 +1528,11 @@ void Canvas::modifyAt(const QPointF &q)
         const QJsonObject layer = before.raw.value("layer").toObject();
         for (int i = 1; i < parts.size(); ++i)
             after.append(Element::makeBezierPath(parts.at(i), layer));
+        QHash<QString, QStringList> piecesOf;
+        for (const Element &e : after)
+            piecesOf[before.id] << e.id;
         m_undo->push(new ReplaceCmd(this, m_doc, {before}, after,
-                                    tr("break into %1 pieces").arg(after.size())));
+                                    tr("break into %1 pieces").arg(after.size()), piecesOf));
         emit statusHint(tr("Broken into %1 pieces").arg(after.size()));
         break;
     }
@@ -2255,7 +2308,9 @@ void Canvas::deleteSelected()
 
 void Canvas::wheelEvent(QWheelEvent *event)
 {
-    const double factor = event->angleDelta().y() > 0 ? 1.15 : 1.0 / 1.15;
+    const int dy = event->angleDelta().y();
+    if (dy == 0) { event->ignore(); return; }   // horizontal scroll: not a zoom
+    const double factor = dy > 0 ? 1.15 : 1.0 / 1.15;
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     scale(factor, factor);
     emitZoom();

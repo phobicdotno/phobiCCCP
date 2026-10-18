@@ -4,6 +4,8 @@
 #include "../src/element.h"
 
 #include <QCoreApplication>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <cstdio>
 
@@ -39,6 +41,38 @@ int main(int argc, char **argv)
     c2d::Document back;
     check(back.load(saved, &err), "reload saved");
     check(back.elements().size() == 1, "element survives round trip");
+
+    // An element row this build cannot decode must survive a save: save()
+    // used to delete every element row and rewrite only what it had read.
+    {
+        back.elementsRef().append(
+            c2d::Element::makeCircle(QPointF(50, 50), 10, back.defaultLayer()));
+        check(back.save(saved, &err), "save with two elements");
+        auto count = [&](const QString &path, const char *conn) {
+            int n = -1;
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                            QLatin1String(conn));
+                db.setDatabaseName(path);
+                if (db.open()) {
+                    QSqlQuery q(db);
+                    if (q.exec(QStringLiteral("SELECT count(*) FROM items WHERE type='element'")) && q.next())
+                        n = q.value(0).toInt();
+                    q.exec(QStringLiteral("UPDATE items SET data = x'deadbeef' WHERE id = "
+                                          "(SELECT min(id) FROM items WHERE type='element')"));
+                }
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(QLatin1String(conn));
+            return n;
+        };
+        check(count(saved, "corrupt") == 2, "two element rows written");   // and corrupts one
+        c2d::Document bad;
+        check(bad.load(saved, &err) && bad.elements().size() == 1, "the undecodable element is skipped");
+        const QString again = dir.filePath(QStringLiteral("again.c2d"));
+        check(bad.save(again, &err), "save with an undecodable element");
+        check(count(again, "recount") == 2, "the undecodable element row survives the save");
+    }
     if (!err.isEmpty())
         std::printf("     last error: %s\n", qPrintable(err));
     return g_fail ? 1 : 0;

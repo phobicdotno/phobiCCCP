@@ -1149,7 +1149,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_pad, &Gamepad::disconnected, this, [this] {
         m_padLabel->setText(QStringLiteral("gamepad: none"));
         m_padLabel->setEnabled(false);
-        endHoldJog();                     // a release we will never see
+        stopHoldJog();                    // a release we will never see
         m_padAxisDir[0] = m_padAxisDir[1] = 0;
         log(QStringLiteral("gamepad disconnected"));
     });

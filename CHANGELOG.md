@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.1.20 (build 71) — 2026-10-18
+
+> Bug fixes from a full review: tabs survive ramping, 3D climb/conventional the right way round, no lost elements on save
+
+- Contour and cutout with ramping and tabs: passes below the tab tops plunge instead of
+  ramping. The ramp ran the whole loop at depth before the tabbed lap, so it cut through
+  every tab and released the part on the last pass.
+- 3D finish, raster and waterline: Climb and Conventional were swapped. Climb now keeps
+  the material on the right of travel (clockwise spindle), as the 2D toolpaths, bore and
+  adaptive already did.
+- G-code: `G90G21` (or `G90G20`) after every tool change, so "Continue anyway" after a
+  failed BitSetter probe no longer runs the rest of the job in relative mode.
+- G-code: a toolpath with feed or plunge rate 0 or below is skipped with a reason instead
+  of posting `F0`, which GRBL rejects mid-job with the spindle running.
+- G-code: `(` and `)` in toolpath names are blanked in comments; "Pocket (12)" ended the
+  comment early and other senders got `error:1`.
+- Machine: the probe indicator read "closed" whenever any input pin (limit, door, hold)
+  was active, which blocked BitZero and the surface map.
+- Machine: unplugging the gamepad while a jog button was held no longer sends one jog step.
+- Save: element rows this build could not decode are kept in the file, as toolpath rows
+  already were. They were deleted on the next save.
+- DXF: LINE, ELLIPSE and SPLINE with extrusion 0,0,-1 are no longer mirrored to negative X
+  (their coordinates are world coordinates); mirrored ellipse arcs keep their span.
+- DXF: spline-fit POLYLINEs import their fitted curve instead of disappearing.
+- DXF: a MINSERT array stops once the expansion limit is spent instead of looping on.
+- .cccp open: the project name is made safe before it becomes a file name; a name with
+  `/` silently lost the drawing, and `../` could write outside the temporary folder.
+- Project receiver: at most 3 connections at once, so a flood of connections from the
+  network can no longer use up memory.
+- Convert to path and Break: toolpaths on the original now machine every resulting piece,
+  not only the one that kept the original's id (text "OAK" cut only the outside of the O).
+- Model panel: a negative component height is no longer clamped to 0 after an STL
+  component was selected.
+- Text properties: toggling Bold or Italic no longer rewrites the height or arc radius
+  rounded to the field's decimals (9.525 became 9.53).
+- Canvas: horizontal scrolling no longer zooms out; switching tools mid circle-tangent
+  pick no longer leaves the picked-edge preview behind.
+
 ## v1.1.19 (build 70) — 2026-10-14
 
 > Opens Syntexophobic .cccp project files as the finished part

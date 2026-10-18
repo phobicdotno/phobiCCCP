@@ -238,6 +238,48 @@ int main(int argc, char *argv[])
         check(g.gcode.contains(QLatin1String("Z-2.000")), "tabs lift to cut_depth - tab_height");
     }
 
+    // --- ramping + tabs: the ramp must not cut through the tabs -------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 12.0}, {"depth_per_pass", 3.0},
+                                 {"tab_height", 3.0}, {"ignore_tabs", false},
+                                 {"enable_ramping", true}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double atBottom = 0, px = 0, py = 0, pz = 0;
+        for (const c2d::Op &op : g.ops) {
+            if ((op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc)
+                && op.z < -12 + 1e-6 && pz < -12 + 1e-6)
+                atBottom += std::hypot(op.x - px, op.y - py);
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                px = op.x; py = op.y; pz = op.z;
+            }
+        }
+        const double loop = 2 * (40 + 20) + 2 * M_PI * 3.175;
+        check(g.done.size() == 1 && atBottom > 0 && atBottom < loop - 1.0,
+              "ramped cutout with tabs: the last pass leaves the tabs standing");
+    }
+
+    // --- feed rate 0 is refused, not posted as F0 --------------------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("contour", {{"speeds", QJsonObject{{"feedrate", 0}, {"plungerate", 300},
+                                                         {"rpm", 10000}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.isEmpty() && g.skipped.size() == 1 && !g.gcode.contains(QLatin1String("F0")),
+              "a toolpath with feed 0 is skipped");
+    }
+
+    // --- comments: parentheses in a name do not end the comment early -------
+    {
+        QVector<c2d::Op> ops;
+        ops.append(c2d::Op::comment(QStringLiteral("Pocket (12)")));
+        const QString out = c2d::GrblPost(true).generate(ops);
+        check(out.contains(QLatin1String("(Pocket  12 )")) && !out.contains(QLatin1String("(12)")),
+              "toolpath names with ( ) make a valid G-code comment");
+    }
+
     // --- pocket: stays inside, has inner rings -----------------------------
     {
         Rig r;
@@ -504,7 +546,9 @@ int main(int argc, char *argv[])
         const QStringList lines = c2d::GrblPost(true).generate(ops).split(QChar('\n'));
         const int marker = int(lines.indexOf(QStringLiteral("M0 ;T2")));
         check(marker >= 0, "tool marker emitted");
-        const QString after = marker >= 0 ? lines.value(marker + 1) : QString();
+        check(marker >= 0 && lines.value(marker + 1) == QLatin1String("G90G21"),
+              "absolute mode restored after a tool change (a failed probe can leave G91)");
+        const QString after = marker >= 0 ? lines.value(marker + 2) : QString();
         check(after.startsWith(QLatin1String("G1")) && after.contains(QLatin1String("Z-1.000"))
                   && after.contains(QLatin1String("F500")),
               "first move after a tool change carries G, Z and F again");

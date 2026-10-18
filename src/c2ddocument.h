@@ -157,6 +157,7 @@ private:
     QString m_path;
     QHash<QString, QString> m_params;
     QSet<QString> m_unreadableToolpaths;
+    QSet<QString> m_unreadableElements;   // same, for element rows
     QVector<Element> m_elements;
     QVector<Toolpath> m_toolpaths;
     QVector<ToolpathGroup> m_groups;

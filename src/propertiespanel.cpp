@@ -14,8 +14,19 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <cmath>
 
 namespace c2d {
+
+namespace {
+// A spin box rounds what it shows to its decimals; only count it as edited
+// when it differs from the stored value by more than that rounding, or a
+// Bold toggle on 9.525 mm text also rewrites the height to 9.53.
+bool edited(const QDoubleSpinBox *s, double stored)
+{
+    return std::fabs(s->value() - stored) > 0.5 * std::pow(10.0, -s->decimals()) + 1e-12;
+}
+} // namespace
 
 QDoubleSpinBox *PropertiesPanel::spin(double max)
 {
@@ -292,7 +303,7 @@ void PropertiesPanel::applyText()
         ch.insert("text", m_text->text());
     if (m_family->currentFont().family() != m_familyShown)
         ch.insert("family", m_family->currentFont().family());
-    if (!qFuzzyCompare(m_fontHeight->value(), e->raw.value("font_height").toDouble(10.0)))
+    if (edited(m_fontHeight, e->raw.value("font_height").toDouble(10.0)))
         ch.insert("font_height", m_fontHeight->value());
     if (m_bold->isChecked() != f.bold())
         ch.insert("bold", m_bold->isChecked());
@@ -300,9 +311,9 @@ void PropertiesPanel::applyText()
         ch.insert("italic", m_italic->isChecked());
     if (m_arcOn->isChecked() != e->raw.value("arc_enabled").toBool())
         ch.insert("arc_enabled", m_arcOn->isChecked());
-    if (!qFuzzyCompare(m_arcRadius->value(), e->raw.value("arc_radius").toDouble(25.4)))
+    if (edited(m_arcRadius, e->raw.value("arc_radius").toDouble(25.4)))
         ch.insert("arc_radius", m_arcRadius->value());
-    if (!qFuzzyCompare(m_arcAngle->value() + 1000, e->raw.value("arc_angle_offset").toDouble() + 1000))
+    if (edited(m_arcAngle, e->raw.value("arc_angle_offset").toDouble()))
         ch.insert("arc_angle_offset", m_arcAngle->value());
     if (m_arcBottom->isChecked() != e->raw.value("arc_text_on_bottom").toBool())
         ch.insert("arc_text_on_bottom", m_arcBottom->isChecked());

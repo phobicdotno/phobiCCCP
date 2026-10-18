@@ -279,6 +279,12 @@ void ProjectReceiver::onConnection()
 {
     while (m_tcp && m_tcp->hasPendingConnections()) {
         QTcpSocket *s = m_tcp->nextPendingConnection();
+        if (m_conns.size() >= kMaxConns) {
+            s->write(QByteArrayLiteral("ERR busy\n"));
+            s->disconnectFromHost();
+            connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
+            continue;
+        }
         auto *c = new Conn;
         m_conns.insert(s, c);
         c->idle.setSingleShot(true);

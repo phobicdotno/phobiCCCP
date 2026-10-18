@@ -93,6 +93,9 @@ class ProjectReceiver : public QObject
 public:
     static constexpr quint16 kPort = 47652;
     static constexpr int kIdleMs = 60 * 1000;   // a sender that goes quiet mid-transfer is dropped
+    // Each connection may buffer up to kMaxTotal; without a cap a few
+    // connections from anyone on the network could exhaust memory.
+    static constexpr int kMaxConns = 3;
 
     explicit ProjectReceiver(QObject *parent = nullptr);
     ~ProjectReceiver() override;

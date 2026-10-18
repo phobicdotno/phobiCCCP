@@ -2028,11 +2028,17 @@ void MainWindow::openFile(const QString &path)
             newUntitled();
         if (!p.svg.isEmpty()) {
             QTemporaryDir tmp;
-            const QString svg = tmp.filePath(p.name + QStringLiteral(".svg"));
+            // The name comes from the file: "Bracket A/B" or "../../x" must
+            // not become a path outside the temporary folder.
+            const QString svg = tmp.filePath(safeFileName(p.name) + QStringLiteral(".svg"));
             QFile f(svg);
             if (tmp.isValid() && f.open(QIODevice::WriteOnly) && f.write(p.svg) == p.svg.size()) {
                 f.close();
                 importVectorFile(this, m_canvas, &m_doc, svg);
+            } else {
+                QMessageBox::warning(this, QStringLiteral("Open"),
+                                     QStringLiteral("The drawing in %1 could not be imported.")
+                                         .arg(QFileInfo(path).fileName()));
             }
         }
         QString err;

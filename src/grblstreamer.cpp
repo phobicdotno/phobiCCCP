@@ -520,7 +520,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     st.spindle = c.at(1).toDouble();
                 }
             } else if (p.startsWith("Pn:")) {
-                st.probePin = p.contains('P');
+                st.probePin = p.indexOf('P', 3) >= 0;   // past the "Pn:" itself
                 for (char a : {'X', 'Y', 'Z', 'A'})
                     if (p.indexOf(a, 3) >= 0)
                         st.limitPins += QLatin1Char(a);

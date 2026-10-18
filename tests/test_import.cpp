@@ -301,6 +301,33 @@ int main(int argc, char **argv)
                   "dxf: the joined square is closed with four sides");
             check(!isClosed(sq.elements.at(1)), "dxf: the loose line stays open");
         }
+        // Extrusion 0,0,-1 mirrors OCS entities only: a LINE is stored in
+        // world coordinates and must stay at +X.
+        {
+            const QByteArray dxf =
+                "0\nSECTION\n2\nENTITIES\n"
+                "0\nLINE\n8\n0\n10\n100\n20\n50\n11\n120\n21\n60\n230\n-1\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult ln = c2d::importDxfData(dxf, opts(200, 200), QStringLiteral("mirline"));
+            check(ln.ok && ln.elements.size() == 1, "dxf: mirrored-extrusion line imports");
+            check(!ln.relocated && rectNear(ln.bounds, 100, 50, 120, 60), "dxf: a LINE's world coordinates are not flipped");
+        }
+        // A spline-fit POLYLINE: the frame (flag 16) is skipped, the fitted
+        // vertices (flag 8) are the curve.
+        {
+            const QByteArray dxf =
+                "0\nSECTION\n2\nENTITIES\n"
+                "0\nPOLYLINE\n8\n0\n66\n1\n70\n4\n"
+                "0\nVERTEX\n8\n0\n10\n0\n20\n0\n70\n16\n"
+                "0\nVERTEX\n8\n0\n10\n10\n20\n10\n70\n16\n"
+                "0\nVERTEX\n8\n0\n10\n0\n20\n0\n70\n8\n"
+                "0\nVERTEX\n8\n0\n10\n5\n20\n4\n70\n8\n"
+                "0\nVERTEX\n8\n0\n10\n10\n20\n10\n70\n8\n"
+                "0\nSEQEND\n8\n0\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult sp = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("splinefit"));
+            check(sp.ok && sp.elements.size() == 1, "dxf: a spline-fit polyline keeps its fitted curve");
+        }
         r = c2d::importDxfData("garbage\n", opts(0, 0), QStringLiteral("x"));
         check(!r.ok, "non-dxf rejected");
         r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg'/>", opts(0, 0));

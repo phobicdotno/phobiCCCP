@@ -210,10 +210,27 @@ int main(int argc, char *argv[])
     undo->undo();
     check(!doc.elementById(text.id)->raw.value("arc_enabled").toBool(), "text edit undoes");
     const QVector<c2d::Element> glyphs = c2d::Element::toPaths(*doc.elementById(text.id));
+    {
+        c2d::Toolpath tp;
+        tp.uuid = QStringLiteral("{tp-text}");
+        tp.type = QStringLiteral("pocket_toolpath");
+        tp.json = QJsonObject{{"uuid", tp.uuid}, {"type", tp.type},
+                              {"elements", QJsonArray{QJsonObject{{"uuid", text.id}}}}};
+        doc.addToolpath(tp);
+    }
+    auto tpRefs = [&] {
+        for (const c2d::Toolpath &t : doc.toolpaths())
+            if (t.uuid == QLatin1String("{tp-text}"))
+                return int(t.json.value("elements").toArray().size());
+        return -1;
+    };
     canvas.convertToPaths({text.id});
     check(doc.elementById(text.id)->geometryType == QLatin1String("path")
           && doc.elements().size() == 4 + glyphs.size(), "text converts to one path per contour");
+    check(glyphs.size() > 1 && tpRefs() == glyphs.size(),
+          "a toolpath on the text machines every converted contour");
     undo->undo();
+    check(tpRefs() == 1, "undo puts the toolpath back on the text");
     check(doc.elementById(text.id)->geometryType == QLatin1String("text") && doc.elements().size() == 5,
           "text conversion undoes");
 

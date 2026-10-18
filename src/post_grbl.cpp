@@ -231,6 +231,11 @@ QString GrblPost::generate(const QVector<Op> &ops) const
         switch (op.kind) {
         case Op::Comment: {
             QString t = op.text;
+            // GRBL ends a comment at the first ')': "(Pocket (12))" leaves a
+            // stray ')' that other senders stream and GRBL rejects.
+            for (QChar &ch : t)
+                if (ch == u'(' || ch == u')' || ch == u'\n' || ch == u'\r')
+                    ch = u' ';
             if (t.length() > 12)
                 t = t.left(9) + QStringLiteral("...");
             line(QStringLiteral("(") + t + QStringLiteral(")"));
@@ -255,6 +260,10 @@ QString GrblPost::generate(const QVector<Op> &ops) const
                 if (spindleOn) { line(QStringLiteral("M05")); spindleOn = false; }
                 // GRBL post: pause for a manual tool change, tool number in comment.
                 line(QStringLiteral("M0 ;T") + QString::number(op.ival));
+                // A probe macro that failed half way (ALARM on G38.2) can
+                // leave GRBL in G91; "Continue anyway" must not run the rest
+                // of the job as relative moves.
+                line(m_metric ? QStringLiteral("G90G21") : QStringLiteral("G90G20"));
                 // The sender runs a probe macro here (G53 moves, its own F),
                 // so nothing modal survives: the next move must carry every word.
                 X.last.clear(); Y.last.clear(); Z.last.clear(); F.last.clear(); G.last.clear();
