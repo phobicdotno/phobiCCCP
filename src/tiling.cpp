@@ -107,9 +107,21 @@ static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
     };
     QVector<Op> out, block;
     bool blockCuts = false, inPreamble = false;
+    // A same-tool toolpath carries no tool change of its own: if the block
+    // that did is dropped here, the kept block must still load that tool.
+    int toolIn = -1;      // last tool change seen in the input
+    int toolOut = -1;     // last tool change kept in this tile
     auto flush = [&] {
-        if (blockCuts)
+        if (blockCuts) {
+            bool hasTool = false;
+            for (const Op &b : block)
+                if (b.kind == Op::Tool) { hasTool = true; toolOut = b.ival; }
+            if (!hasTool && toolIn >= 0 && toolIn != toolOut) {
+                out.append(Op::tool(toolIn));
+                toolOut = toolIn;
+            }
             out += block;
+        }
         block.clear();
         blockCuts = false;
     };
@@ -129,6 +141,8 @@ static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
                 blockCuts = true;
         }
         block.append(o);
+        if (o.kind == Op::Tool)
+            toolIn = o.ival;
     }
     flush();
     return out;

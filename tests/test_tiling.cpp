@@ -177,6 +177,30 @@ int main(int argc, char *argv[])
         check(cuts(t.at(1)) == 0 && toolsIn(t.at(1)).isEmpty(),
               "the middle tile cuts nothing and changes no tool");
     }
+    // Two toolpaths with the same tool: only the first carries the tool change.
+    // A tile that keeps only the second must still load the tool.
+    {
+        QVector<c2d::Op> j;
+        j.append(c2d::Op::tool(201));
+        j.append(c2d::Op::comment(QStringLiteral("low")));
+        j.append(c2d::Op::spindle(12000));
+        j.append(c2d::Op::rapid(10, 50, 5));
+        j.append(c2d::Op::feedTo(10, 50, -1, 400));
+        j.append(c2d::Op::feedTo(60, 50, -1, 400));     // tile 0 only
+        j.append(c2d::Op::spindle(0));                  // closes the first block
+        j.append(c2d::Op::comment(QStringLiteral("high")));
+        j.append(c2d::Op::spindle(12000));
+        j.append(c2d::Op::rapid(10, 250, 5));
+        j.append(c2d::Op::feedTo(10, 250, -1, 400));
+        j.append(c2d::Op::feedTo(60, 250, -1, 400));    // tile 2 only
+        j.append(c2d::Op::spindle(0));
+        const QVector<QVector<c2d::Op>> t = c2d::tileOps(j, 100.0, 5.0);
+        int tools2 = 0;
+        for (const c2d::Op &o : t.value(2))
+            if (o.kind == c2d::Op::Tool && o.ival == 201)
+                ++tools2;
+        check(t.size() == 3 && tools2 == 1, "a tile keeping only a same-tool toolpath still loads the tool");
+    }
 
     double total = 0;
     for (int k = 0; k < tiles.size(); ++k) {
