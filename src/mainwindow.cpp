@@ -2246,8 +2246,8 @@ void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
     QStringList notes;
     for (int i = 0; i < p.files.size(); ++i) {
         const ReceivedFile &f = p.files.at(i);
-        if (f.role == QLatin1String("vectors"))
-            importVectorFile(this, m_canvas, &m_doc, paths.at(i));
+        if (f.role == QLatin1String("vectors"))   // in stock coordinates, like the model: not moved
+            importVectorFile(this, m_canvas, &m_doc, paths.at(i), {}, false);
         else if (f.role == QLatin1String("model")
                  && !m_model->addStlMesh(f.data, f.name, f.x, f.y, &err))
             notes << QStringLiteral("the model could not be read (%1)").arg(err);
