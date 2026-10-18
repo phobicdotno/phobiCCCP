@@ -42,7 +42,6 @@ because the old direction was wrong (see below).
   took 74 s); joining lines is fast on 100k-line files; HPGL `IN` resets pen and mode.
 - Binary STL files with a wrong triangle count, padding or a "solid" header now open; a
   file that isn't a mesh (NaN or absurd coordinates) is refused instead of imported.
-- Saving over a read-only file works again (the copied permissions are applied last).
 - Trace background image follows the background's rotation.
 - Sketches received with a part stay where the sender placed them, lined up with the STL.
 
