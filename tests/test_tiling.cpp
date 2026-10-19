@@ -137,6 +137,37 @@ int main(int argc, char *argv[])
     const QVector<QVector<c2d::Op>> tiles = c2d::tileOps(ops, tileH, safeZ);
     check(tiles.size() == 3, "tileOps returns three tiles");
 
+    // A tool change in a tile whose last cut ended down in the stock: up to
+    // safe Z first (rapids are not copied into tiles), and a dwell stays.
+    {
+        QVector<c2d::Op> j;
+        j.append(c2d::Op::tool(201));
+        j.append(c2d::Op::spindle(10000));
+        j.append(c2d::Op::rapid(10, 50, 5));
+        j.append(c2d::Op::feedTo(10, 50, -3, 400));
+        j.append(c2d::Op::dwell(0.5));
+        j.append(c2d::Op::feedTo(50, 50, -3, 400));
+        j.append(c2d::Op::rapid(50, 50, 5));
+        j.append(c2d::Op::spindle(0));
+        j.append(c2d::Op::tool(102));
+        j.append(c2d::Op::spindle(12000));
+        j.append(c2d::Op::rapid(10, 60, 5));
+        j.append(c2d::Op::feedTo(10, 60, -1, 400));
+        j.append(c2d::Op::spindle(0));
+        const QVector<QVector<c2d::Op>> t = c2d::tileOps(j, 100.0, 5.0);
+        bool up = true, dwell = false;
+        double z = 5;
+        for (const c2d::Op &o : t.first()) {
+            if (o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Feed)
+                z = o.z;
+            if ((o.kind == c2d::Op::Tool || o.kind == c2d::Op::Spindle) && z < 5 - 1e-9)
+                up = false;
+            dwell |= o.kind == c2d::Op::Dwell;
+        }
+        check(up, "the spindle stops and the bit changes only at safe Z");
+        check(dwell, "a dwell is kept in its tile");
+    }
+
     // A toolpath whose cuts all land in one tile must not leave its tool
     // change and spindle start behind in the tiles it never reaches.
     {

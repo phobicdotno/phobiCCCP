@@ -255,6 +255,9 @@ class _NumBoxState extends State<NumBox> {
             fillColor: widget.big ? C.base : C.base,
           ),
           onSubmitted: (_) => _commit(),
+          // A finger tap elsewhere does not take the focus on a pad: commit
+          // here, before the tap selects another shape or presses OK.
+          onTapOutside: (_) => _focus.unfocus(),
         ),
       );
 }

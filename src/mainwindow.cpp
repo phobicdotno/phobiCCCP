@@ -21,6 +21,8 @@
 #include <QLineEdit>
 #include <QJsonDocument>
 #include <QUuid>
+#include <QRandomGenerator>
+#include <QScopeGuard>
 #include "tiling.h"
 #include <QInputDialog>
 #include "parameterspanel.h"
@@ -2095,14 +2097,19 @@ void MainWindow::openFile(const QString &path)
         }
         if (!confirmDiscard(QStringLiteral("Save before opening another file?")))
             return;
+        const bool wasDirty = m_dirty;
         m_dirty = false;
         // The stock: the part plus 10 mm all round, as thick as the part.
         const QJsonArray size = p.info.value(QStringLiteral("size")).toArray();
         constexpr double kMargin = 10.0;
-        if (size.size() == 3 && size[0].toDouble() > 0 && size[1].toDouble() > 0)
-            newUntitled(size[0].toDouble() + 2 * kMargin, size[1].toDouble() + 2 * kMargin, size[2].toDouble());
-        else
-            newUntitled();
+        const bool started = size.size() == 3 && size[0].toDouble() > 0 && size[1].toDouble() > 0
+            ? newUntitled(size[0].toDouble() + 2 * kMargin, size[1].toDouble() + 2 * kMargin, size[2].toDouble())
+            : newUntitled();
+        // Never import into the design the user was leaving.
+        if (!started) {
+            m_dirty = wasDirty;
+            return;
+        }
         if (!p.svg.isEmpty()) {
             QTemporaryDir tmp;
             // The name comes from the file: "Bracket A/B" or "../../x" must
@@ -2134,8 +2141,12 @@ void MainWindow::openFile(const QString &path)
     if (isImportableFile(path)) {
         if (!confirmDiscard(QStringLiteral("Save before opening another file?")))
             return;
+        const bool wasDirty = m_dirty;
         m_dirty = false;
-        newUntitled();
+        if (!newUntitled()) {   // never import into the design the user was leaving
+            m_dirty = wasDirty;
+            return;
+        }
         importVectorFile(this, m_canvas, &m_doc, path);
         m_untitledFrom = path;         // shown in the header; Save As offers name.c2d
         rememberRecent(path);          // a DXF you keep coming back to belongs in Open Recent too
@@ -2284,7 +2295,7 @@ void MainWindow::offerRecovery()
     }
 }
 
-void MainWindow::newUntitled(double width, double height, double thickness)
+bool MainWindow::newUntitled(double width, double height, double thickness)
 {
     QSettings st;
     const auto machine = appsettings::machine(st);
@@ -2296,10 +2307,13 @@ void MainWindow::newUntitled(double width, double height, double thickness)
     if (!Document::createBlank(path, width > 0 ? width : machine.width, height > 0 ? height : machine.height,
                                thickness > 0 ? thickness : appsettings::kBlankThickness, &err)) {
         statusBar()->showMessage(QStringLiteral("Could not start a blank design: %1").arg(err));
-        return;
+        return false;
     }
     openPath(path, true);
+    if (QFileInfo(m_doc.filePath()) != QFileInfo(path))
+        return false;
     statusBar()->showMessage(QStringLiteral("New design — %1").arg(machine.label), 6000);
+    return true;
 }
 
 // ---- projects from Syntexophobic -----------------------------------------
@@ -2326,8 +2340,16 @@ void MainWindow::setReceiving(bool on)
         m_receiver = nullptr;
         return;
     }
-    connect(m_receiver, &ProjectReceiver::received, this, &MainWindow::onProjectReceived);
-    connect(m_receiver, &ProjectReceiver::request, this, &MainWindow::onPadRequest);
+    // Queued: the handlers ask questions (a nested event loop), and the socket
+    // that emitted must not be deleted under its own readyRead meanwhile.
+    connect(m_receiver, &ProjectReceiver::received, this,
+            [this](int id, const ReceivedProject &p) {
+                QTimer::singleShot(0, this, [this, id, p] { onProjectReceived(id, p); });
+            });
+    connect(m_receiver, &ProjectReceiver::request, this,
+            [this](int id, const QJsonObject &req, const QString &peer) {
+                QTimer::singleShot(0, this, [this, id, req, peer] { onPadRequest(id, req, peer); });
+            });
     refreshDiscovery();
 }
 
@@ -2346,18 +2368,31 @@ void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
         what << QStringLiteral("the project with its history");
     const QString sender = p.from.isEmpty() ? p.peer
                                             : QStringLiteral("%1 (%2)").arg(p.from, p.peer);
+    // Never swap the document under a running job, nor in the middle of a
+    // pad's send.
+    if (m_linkBusy || m_machine->isBusy()) {
+        if (m_receiver)
+            m_receiver->answer(id, false, QStringLiteral("%1 is busy; try again when the machine is done").arg(host));
+        return;
+    }
+    m_linkBusy = true;
+    const auto release = qScopeGuard([this] { m_linkBusy = false; });
     if (isMinimized())
         showNormal();
     raise();
     activateWindow();
-    const auto r = QMessageBox::question(
-        this, QStringLiteral("Project from Syntexophobic"),
-        QStringLiteral("%1 on %2 sends \u201c%3\u201d: %4.\n\nOpen it as a new design?")
-            .arg(p.app.isEmpty() ? QStringLiteral("Syntexophobic") : p.app, sender, p.name,
-                 what.join(QStringLiteral(", "))),
-        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    // The sender's own words are shown as they are, never as rich text.
+    QMessageBox ask(QMessageBox::Question, QStringLiteral("Project from Syntexophobic"),
+                    QStringLiteral("%1 on %2 sends \u201c%3\u201d: %4.\n\nOpen it as a new design?")
+                        .arg(p.app.isEmpty() ? QStringLiteral("Syntexophobic") : p.app, sender, p.name,
+                             what.join(QStringLiteral(", "))),
+                    QMessageBox::Yes | QMessageBox::No, this);
+    ask.setTextFormat(Qt::PlainText);
+    ask.setDefaultButton(QMessageBox::Yes);
+    const int r = ask.exec();
     if (r != QMessageBox::Yes
-        || !confirmDiscard(QStringLiteral("Save before opening the received project?"))) {
+        || !confirmDiscard(QStringLiteral("Save before opening the received project?"))
+        || m_machine->isBusy()) {
         if (m_receiver)
             m_receiver->answer(id, false, QStringLiteral("declined on %1").arg(host));
         return;
@@ -2490,7 +2525,13 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
     const QString op = req.value(QStringLiteral("op")).toString();
     QJsonObject reply;
     padlink::Store store(padDir());
-    if (op == QLatin1String("info")) {
+    const bool changes = op == QLatin1String("put") || op == QLatin1String("machine")
+                         || op == QLatin1String("send");
+    if (changes && m_linkBusy) {
+        // Another send (or a received project) is waiting on a question here.
+        reply = padError(QStringLiteral("%1 is busy with another design; try again shortly")
+                             .arg(QSysInfo::machineHostName()));
+    } else if (op == QLatin1String("info")) {
         reply = padInfo();
     } else if (op == QLatin1String("tools")) {
         reply = padlink::toolsJson();
@@ -2513,7 +2554,9 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
         reply = switchMachine(req.value(QStringLiteral("id")).toString(), &why) ? padInfo()
                                                                               : padError(why);
     } else if (op == QLatin1String("send")) {
-        reply = padSend(req, peer);
+        m_linkBusy = true;
+        reply = padSend(id, req, peer);
+        m_linkBusy = false;
     } else {
         reply = padError(QStringLiteral("unknown request %1").arg(op.left(20)));
     }
@@ -2521,7 +2564,7 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
         m_receiver->respond(id, reply);
 }
 
-QJsonObject MainWindow::padSend(const QJsonObject &req, const QString &peer)
+QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &peer)
 {
     const QString host = QSysInfo::machineHostName();
     const QJsonObject design = req.value(QStringLiteral("design")).toObject();
@@ -2534,8 +2577,12 @@ QJsonObject MainWindow::padSend(const QJsonObject &req, const QString &peer)
         return padError(QStringLiteral("%1 is busy with the machine; try again when it is done").arg(host));
     const QString machineId = req.value(QStringLiteral("machine")).toString();
     QString why;
-    if (!machineId.isEmpty() && !switchMachine(machineId, &why))
-        return padError(why);
+    bool knownMachine = machineId.isEmpty();
+    QSettings st;
+    for (const auto &p : machineprofiles::list(st))
+        knownMachine = knownMachine || p.id == machineId;
+    if (!knownMachine)
+        return padError(QStringLiteral("no such machine on %1").arg(host));
     padlink::Store(padDir()).put(design);   // sent is also synced
 
     const bool start = req.value(QStringLiteral("start")).toBool();
@@ -2549,6 +2596,16 @@ QJsonObject MainWindow::padSend(const QJsonObject &req, const QString &peer)
     if (!confirmDiscard(QStringLiteral("%1 sends “%2”. Save before opening it?")
                             .arg(sender, name)))
         return padError(QStringLiteral("declined on %1").arg(host));
+    // The question may have taken a while: the pad may have given up, and
+    // then nothing is opened or started for it.
+    if (m_receiver && !m_receiver->isWaiting(id))
+        return padError(QStringLiteral("the pad stopped waiting"));
+    if (m_machine->isBusy())
+        return padError(QStringLiteral("%1 is busy with the machine; try again when it is done").arg(host));
+    // Switched only now it is certain to be opened (switching resets the
+    // machine's connection and homing).
+    if (!machineId.isEmpty() && !switchMachine(machineId, &why))
+        return padError(why);
 
     ReceivedProject folder;   // no files: only the folder, named like a received project
     folder.name = name;
@@ -2567,7 +2624,13 @@ QJsonObject MainWindow::padSend(const QJsonObject &req, const QString &peer)
     if (QFileInfo(m_doc.filePath()) != QFileInfo(c2dPath))
         return padError(QStringLiteral("%1 did not open on %2").arg(QFileInfo(c2dPath).fileName(), host));
     statusBar()->showMessage(QStringLiteral("“%1” from %2").arg(name, sender), 10000);
-    padlink::Links(padDir()).set(c2dPath, design.value(QStringLiteral("id")).toString(), true);
+    // A shape that could not be made here would be gone after a save here,
+    // so then a pad edit must not replace the file either.
+    bool padOnly = true;
+    for (const QString &n : notes)
+        padOnly = padOnly && !n.startsWith(QLatin1String("shape "));
+    padlink::Links(padDir()).set(c2dPath, design.value(QStringLiteral("id")).toString(), padOnly,
+                                 design.value(QStringLiteral("modified")).toDouble());
 
     QJsonObject reply{{QStringLiteral("ok"), true}, {QStringLiteral("started"), false},
                       {QStringLiteral("notes"), QJsonArray::fromStringList(notes)}};
@@ -2578,6 +2641,8 @@ QJsonObject MainWindow::padSend(const QJsonObject &req, const QString &peer)
         if (!padsMayStart())
             notStarted = QStringLiteral("starting from a pad is off on %1 (Machine > Pads may start cutting)")
                              .arg(host);
+        else if (m_receiver && !m_receiver->isWaiting(id))
+            notStarted = QStringLiteral("the pad stopped waiting");
         else if (!m_machine->startFromRemote(&notStarted) && notStarted.isEmpty())
             notStarted = QStringLiteral("the machine did not start");
         if (notStarted.isEmpty()) {
@@ -2600,9 +2665,22 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     if (id.isEmpty())
         return;
     padlink::Store store(padDir());
-    const QJsonObject base = store.get(id);
+    QJsonObject base = store.get(id);
     if (base.isEmpty() || base.value(QStringLiteral("deleted")).toBool())
         return;
+    // A pad changed the design after this file was made from it (and it was
+    // not rebuilt, as it was open with changes or holds what a pad cannot).
+    // Sharing this file over it would silently undo that edit everywhere, so
+    // it goes to the pads as a design of its own.
+    const double fileFrom = links.modified(c2dPath);
+    QString forkedFrom;
+    if (fileFrom > 0 && base.value(QStringLiteral("modified")).toDouble() > fileFrom) {
+        forkedFrom = base.value(QStringLiteral("name")).toString();
+        base.insert(QStringLiteral("id"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+        base.insert(QStringLiteral("name"), QStringLiteral("%1 (%2)").arg(forkedFrom.left(40),
+                                                                         QSysInfo::machineHostName().left(19)));
+        base.insert(QStringLiteral("modified"), 0);
+    }
     QStringList lost;
     QString err;
     QJsonObject d = padlink::designFromDocument(c2dPath, base, &lost, &err);
@@ -2619,15 +2697,25 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     // bound to them), so such a design is not rebuilt from a pad.
     if (!m_doc.parametric().isEmpty())
         lost << QStringLiteral("the constraints and parameters");
-    // Newer than what the pads have, even with this computer's clock behind.
-    d.insert(QStringLiteral("modified"),
-             qMax(double(QDateTime::currentMSecsSinceEpoch()),
-                  base.value(QStringLiteral("modified")).toDouble() + 1));
+    // Newer than what the pads have, even with this computer's clock behind;
+    // then not just +1, as a pad editing the same copy would pick that too,
+    // and equal times count as the same copy.
+    const double now = double(QDateTime::currentMSecsSinceEpoch());
+    const double was = base.value(QStringLiteral("modified")).toDouble();
+    const double modified = now > was ? now : was + 1 + QRandomGenerator::global()->bounded(1000);
+    d.insert(QStringLiteral("modified"), modified);
     if (!store.put(d, &err)) {
         statusBar()->showMessage(QStringLiteral("Not sent to the pads: %1").arg(err), 10000);
         return;
     }
-    links.set(c2dPath, id, lost.isEmpty());
+    links.set(c2dPath, d.value(QStringLiteral("id")).toString(), lost.isEmpty(), modified);
+    if (!forkedFrom.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Saved %1. “%2” had changed on a pad since, so the "
+                                                "pads get this as “%3” and keep their own")
+                                     .arg(c2dPath, forkedFrom, d.value(QStringLiteral("name")).toString()),
+                                 10000);
+        return;
+    }
     statusBar()->showMessage(
         lost.isEmpty() ? QStringLiteral("Saved %1, and the pads get the change").arg(c2dPath)
                        : QStringLiteral("Saved %1. The pads get the change without %2, so a pad "
@@ -2673,11 +2761,22 @@ void MainWindow::padDesignChanged(const QString &id)
                                          .arg(name, err), 10000);
             continue;
         }
-        QFile::remove(path);
-        if (!QFile::rename(tmp, path)) {
+        // The old file is moved aside, not deleted, until the new one is in.
+        const QString old = path + QStringLiteral(".pad-old");
+        QFile::remove(old);
+        if (!QFile::rename(path, old)) {
+            QFile::remove(tmp);
             statusBar()->showMessage(QStringLiteral("Could not replace %1").arg(path), 10000);
             continue;
         }
+        if (!QFile::rename(tmp, path)) {
+            QFile::rename(old, path);
+            QFile::remove(tmp);
+            statusBar()->showMessage(QStringLiteral("Could not replace %1").arg(path), 10000);
+            continue;
+        }
+        QFile::remove(old);
+        links.set(path, id, true, d.value(QStringLiteral("modified")).toDouble());
         if (open)
             openPath(path, false);
         statusBar()->showMessage(QStringLiteral("“%1” updated from a pad").arg(name), 10000);

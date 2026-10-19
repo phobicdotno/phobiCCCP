@@ -39,7 +39,7 @@ public:
     // A blank design the size of the machine in Settings, not yet saved
     // anywhere: what the window starts on when no file is given.
     // A blank untitled design; the stock is the machine bed unless a size is given (mm).
-    void newUntitled(double width = 0, double height = 0, double thickness = 0);
+    bool newUntitled(double width = 0, double height = 0, double thickness = 0);   // false: nothing opened
     // show(), or full screen if it was left that way (View > Full Screen).
     void showStartupWindow();
     void showToolpathPreview();   // Toolpaths mode with the overlay on (used by --shot)
@@ -93,7 +93,7 @@ private:
     // tool library, design sync, machine switch, and designs sent to be
     // opened (and cut, when the pad asks and this computer allows it).
     void onPadRequest(int id, const QJsonObject &request, const QString &peer);
-    QJsonObject padSend(const QJsonObject &request, const QString &peer);
+    QJsonObject padSend(int id, const QJsonObject &request, const QString &peer);
     QJsonObject padInfo();
     void refreshDiscovery();
     // A design sent from a pad stays linked to its .c2d both ways: saving the
@@ -148,6 +148,10 @@ private:
     QAction *m_modeActs[4] = {};
     ModelPanel *m_model;         // 3D modelling components + composited relief
     ProjectReceiver *m_receiver = nullptr;   // listens while receiving is on
+    // A received project or a pad's send is being answered: its questions and
+    // the program export run the event loop, and another one must not open a
+    // design (or start the machine) in the middle of it.
+    bool m_linkBusy = false;
     QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
     QAction *m_previewAct;       // toolpath overlay toggle

@@ -302,12 +302,28 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
         const Op &op = ops.at(i);
         switch (op.kind) {
         case Op::Dwell:
-            // A pause belongs to where the tool is; tiles re-link their own
-            // pieces, so it is simply dropped rather than repeated in each.
+            // A pause belongs to where the tool is: the tile whose last piece
+            // ended there (a drill's dwell at the bottom of its hole).
+            for (TileState &t : tiles)
+                if (t.havePos && same(t.pos, cur)) {
+                    t.ops.append(op);
+                    break;
+                }
             break;
-        case Op::Comment:
         case Op::Spindle:
         case Op::Tool:
+            // Rapids are not copied, so a tile may still be down in its last
+            // cut: up to safe Z before the spindle stops or the bit changes.
+            for (int k = 0; k < n; ++k) {
+                TileState &t = tiles[k];
+                if (t.havePos && t.pos.z < safeZ - 1e-9) {
+                    t.ops.append(Op::rapid(t.pos.x, t.pos.y - k * tileHeight, safeZ));
+                    t.pos.z = safeZ;
+                }
+                t.ops.append(op);
+            }
+            break;
+        case Op::Comment:
             for (TileState &t : tiles)
                 t.ops.append(op);
             break;

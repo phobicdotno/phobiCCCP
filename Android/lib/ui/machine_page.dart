@@ -152,6 +152,11 @@ class _MachinePageState extends State<MachinePage> {
             padding: const EdgeInsets.only(top: 6),
             child: Text(c.error!, style: const TextStyle(color: Color(0xFFE05050), fontSize: 12)),
           ),
+        if (c.warning != null && online)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text(c.warning!, style: const TextStyle(color: Color(0xFFE0A040), fontSize: 12)),
+          ),
         if (info != null) ...[
           const SizedBox(height: 8),
           Container(

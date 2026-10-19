@@ -45,6 +45,13 @@ public:
     static bool createBlank(const QString &path, double width, double height,
                             double thickness, QString *error = nullptr);
 
+private:
+    // Params and toolpath groups from memory into a blank container at path,
+    // for a save whose source file is gone.
+    bool restoreInto(const QString &path, QString *error) const;
+
+public:
+
     QString filePath() const { return m_path; }
     // The container save() starts from (and then writes to). Only for a
     // copy that must be written from another container than its own file.

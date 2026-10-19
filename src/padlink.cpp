@@ -352,13 +352,21 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
     d.insert(QStringLiteral("stock"), QJsonObject{{QStringLiteral("width"), doc.boardWidth()},
                                                    {QStringLiteral("height"), doc.boardHeight()},
                                                    {QStringLiteral("thickness"), thickness}});
-    QString material = base.value(QStringLiteral("material")).toString();
+    // The material the document was built with (feeds are looked up in it),
+    // and the pad's own: one this library does not know was built as
+    // softwood, and stays as the pad had it rather than turn into softwood
+    // on the first save here.
+    const QString padMaterial = base.value(QStringLiteral("material")).toString();
+    bool known = padMaterial.isEmpty();
+    for (const LibraryMaterial &m : lib.materials())
+        known = known || m.id == padMaterial;
+    QString material = known ? padMaterial : QStringLiteral("softwood");
     const QString ccMaterial = doc.params().value(QStringLiteral("material"));
     for (const LibraryMaterial &m : lib.materials())
         for (const QString &n : m.ccNames)
             if (n.compare(ccMaterial, Qt::CaseInsensitive) == 0)
                 material = m.id;
-    d.insert(QStringLiteral("material"), material);
+    d.insert(QStringLiteral("material"), known || material != QLatin1String("softwood") ? material : padMaterial);
 
     QJsonArray shapes;
     QHash<QString, QStringList> padIds;   // element id -> pad shape ids
@@ -515,6 +523,11 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         if (have != j)
             lose(QStringLiteral("toolpath settings made here (feeds, passes, ramps, ...)"));
     }
+    // Toolpaths still waiting for their shapes were left out of the document
+    // (buildDocument); keep them, or a save here would take them off every pad.
+    for (const QJsonValue &v : base.value(QStringLiteral("toolpaths")).toArray())
+        if (v.toObject().value(QStringLiteral("shapes")).toArray().isEmpty() && toolpaths.size() < kMaxToolpaths)
+            toolpaths.append(v);
     d.insert(QStringLiteral("toolpaths"), toolpaths);
     if (lostOut)
         *lostOut = lost;
@@ -537,7 +550,7 @@ QString canonical(const QString &path)
 Links::Links(const QString &dir) : m_file(QDir(dir).filePath(QStringLiteral(".links.json")))
 {
     QFile f(m_file);
-    if (f.size() < 4 * 1024 * 1024 && f.open(QIODevice::ReadOnly))
+    if (f.size() < 64 * 1024 * 1024 && f.open(QIODevice::ReadOnly))
         m_links = QJsonDocument::fromJson(f.readAll()).object();
 }
 
@@ -560,10 +573,17 @@ bool Links::padOnly(const QString &c2dPath) const
     return m_links.value(canonical(c2dPath)).toObject().value(QStringLiteral("padOnly")).toBool();
 }
 
-void Links::set(const QString &c2dPath, const QString &id, bool padOnly)
+double Links::modified(const QString &c2dPath) const
 {
-    m_links.insert(canonical(c2dPath), QJsonObject{{QStringLiteral("id"), id},
-                                                   {QStringLiteral("padOnly"), padOnly}});
+    return m_links.value(canonical(c2dPath)).toObject().value(QStringLiteral("modified")).toDouble();
+}
+
+void Links::set(const QString &c2dPath, const QString &id, bool padOnly, double modified)
+{
+    QJsonObject o{{QStringLiteral("id"), id}, {QStringLiteral("padOnly"), padOnly}};
+    if (modified > 0)
+        o.insert(QStringLiteral("modified"), modified);
+    m_links.insert(canonical(c2dPath), o);
     write();
 }
 

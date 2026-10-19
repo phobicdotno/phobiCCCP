@@ -85,6 +85,10 @@ ToolPick pickTool(const Document &doc, CutterKind kind)
             const QJsonObject tool = j.value(QLatin1String(key)).toObject();
             if (tool.isEmpty() || kindOf(tool) != kind)
                 continue;
+            // A ball nose (CC type 1) from a 3D finish is no default for a
+            // 2D cut, nor its fine 3D stepover and stepdown.
+            if (kind == Flat && int(tool.value("type").toDouble(0)) == 1)
+                continue;
             const bool pocketTool = QLatin1String(key) == QLatin1String("tool_pocket");
             p.tool = tool;
             p.speeds = j.value(pocketTool ? "speeds_pocket" : "speeds").toObject();

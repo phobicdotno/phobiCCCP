@@ -87,7 +87,7 @@ public slots:
     void startStream(const QStringList &lines); // run a whole program
     void continueAfterToolChange();             // resume past a tool marker
     void pauseStream();                         // '!' feed hold
-    void resumeStream();                        // '~' cycle start
+    bool resumeStream();                        // '~' cycle start (false: refused)
     void stopStream();                          // abort: soft reset (ctrl-X)
     void requestStatus();                       // '?' realtime report
     void sendRealtime(char c);                  // override bytes (0x90-0x97 &c.)

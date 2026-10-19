@@ -119,6 +119,8 @@ public:
     static constexpr int kMaxConns = 8;
     // One API request line; a design with many path points is the big one.
     static constexpr qint64 kMaxRequest = 16LL * 1024 * 1024;
+    // Lines that are not a request before the connection is cut off.
+    static constexpr int kMaxBadLines = 16;
 
     explicit ProjectReceiver(QObject *parent = nullptr);
     ~ProjectReceiver() override;
@@ -136,6 +138,8 @@ public:
     // Answer API request `id` (from request()); the next request on that
     // connection is read once this is sent.
     void respond(int id, const QJsonObject &reply);
+    // True while the pad that sent request `id` is still there to hear the answer.
+    bool isWaiting(int id) const { return m_apiWaiting.contains(id); }
     // Merged into every discovery answer.
     void setDiscoveryExtra(const QJsonObject &extra) { m_discoveryExtra = extra; }
 

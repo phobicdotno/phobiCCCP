@@ -16,7 +16,10 @@ class Protocol {
 
 class CccpException implements Exception {
   final String message;
-  CccpException(this.message);
+
+  /// phobiCCCP answered, and said no (the link itself is fine).
+  final bool refused;
+  CccpException(this.message, {this.refused = false});
   @override
   String toString() => message;
 }
@@ -39,6 +42,8 @@ class CccpConnection {
 
   CccpConnection._(this._socket) {
     _socket.listen(_onData, onDone: _onDone, onError: (_) => _onDone(), cancelOnError: true);
+    // A write to a computer that has gone away fails here, not at add().
+    _socket.done.catchError((_) {});
   }
 
   static Future<CccpConnection> open(String host, {int port = Protocol.port, Duration timeout = const Duration(seconds: 4)}) async {
@@ -108,11 +113,16 @@ class CccpConnection {
       final w = Completer<String?>();
       _waiting = w;
       line = await w.future.timeout(timeout, onTimeout: () {
-        _waiting = null;
+        // A late answer must not be taken for the next request's.
+        close();
         throw CccpException('phobiCCCP did not answer');
       });
     }
     if (line == null) throw CccpException('phobiCCCP closed the connection');
+    // Turned away before the hello was read (src/projectreceiver.cpp).
+    if (line.startsWith('ERR ')) {
+      throw CccpException(line.trim() == 'ERR busy' ? 'phobiCCCP is busy with other pads; try again' : 'phobiCCCP said no');
+    }
     final Object? reply;
     try {
       reply = jsonDecode(line);
@@ -121,7 +131,7 @@ class CccpConnection {
     }
     if (reply is! Map) throw CccpException('phobiCCCP sent something unreadable');
     final m = reply.cast<String, Object?>();
-    if (m['ok'] != true) throw CccpException(m['error'] is String ? m['error'] as String : 'phobiCCCP said no');
+    if (m['ok'] != true) throw CccpException(m['error'] is String ? m['error'] as String : 'phobiCCCP said no', refused: true);
     return m;
   }
 
@@ -148,10 +158,19 @@ class CccpConnection {
 
   /// Open [d] on that computer, on [machine] (its id; empty for the one in use),
   /// and start cutting it when [start] and the computer allows it.
-  Future<SendResult> send(Design d, {required String machine, required bool start, required String from}) async =>
-      SendResult.fromJson(await request(
+  Future<SendResult> send(Design d, {required String machine, required bool start, required String from}) async {
+    try {
+      return SendResult.fromJson(await request(
           {'op': 'send', 'design': d.toJson(), 'machine': machine, 'start': start, 'from': from},
           timeout: sendTimeout));
+    } on CccpException catch (e) {
+      if (e.refused) rethrow;
+      // It got there and may be waiting on someone at the computer: sending
+      // again could open (and start) it twice.
+      throw CccpException('No answer from phobiCCCP. It may still open${start ? ' and start' : ''} it there; '
+          'check the computer before sending again');
+    }
+  }
 
   void close() {
     _closed = true;

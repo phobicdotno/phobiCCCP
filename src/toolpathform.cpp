@@ -190,6 +190,21 @@ private:
     bool m_stepping = false;
 };
 
+class IntSpin : public QSpinBox
+{
+public:
+    using QSpinBox::QSpinBox;
+
+protected:
+    void wheelEvent(QWheelEvent *e) override
+    {
+        if (hasFocus())
+            QSpinBox::wheelEvent(e);
+        else
+            e->ignore();
+    }
+};
+
 class Combo : public QComboBox
 {
 public:
@@ -598,6 +613,10 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
             at = c->count() - 1;
         }
         c->setCurrentIndex(at);
+        QVariantList values;   // for updateValues()
+        for (const auto &ch : f.choices)
+            values.append(ch.first.toVariant());
+        c->setProperty("choices", values);
         const auto choices = f.choices;
         connect(c, &QComboBox::activated, this, [this, key, choices](int i) {
             if (i < choices.size())
@@ -606,7 +625,7 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
         return c;
     }
     case Field::Int: {
-        auto *s = new QSpinBox(this);
+        auto *s = new IntSpin(this);
         s->setRange(int(f.min), int(f.max));
         s->setValue(int(numberOf(v)));
         s->setKeyboardTracking(false);
@@ -870,6 +889,25 @@ void ToolpathForm::updateValues()
         } else if (auto *le = qobject_cast<QLineEdit *>(w)) {
             if (!le->hasFocus())
                 le->setText(v.toString());
+        } else if (auto *cb = qobject_cast<QComboBox *>(w)) {
+            // Undo/redo of a side, mode or direction must show in the box too.
+            const QVariantList choices = cb->property("choices").toList();
+            int at = -1;
+            for (int i = 0; i < choices.size() && at < 0; ++i) {
+                const QJsonValue c = QJsonValue::fromVariant(choices.at(i));
+                if (c == v || (v.isDouble() && c.isDouble()
+                               && qFuzzyCompare(v.toDouble() + 1, c.toDouble() + 1)))
+                    at = i;
+            }
+            if (at < 0) {   // a value with no name: the extra item, as built
+                const QString text = v.isString() ? v.toString() : QString::number(v.toDouble());
+                if (cb->count() > choices.size())
+                    cb->setItemText(choices.size(), text);
+                else
+                    cb->addItem(text);
+                at = int(choices.size());
+            }
+            cb->setCurrentIndex(at);
         }
     }
     m_loading = false;

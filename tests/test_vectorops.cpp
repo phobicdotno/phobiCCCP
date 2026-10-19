@@ -184,6 +184,17 @@ int main(int argc, char **argv)
         check(vec::offsetElements({sqA}, -11).isEmpty(), "over-inset vanishes");
     }
 
+    // --- overlapping shapes weld; a shape inside another is a hole ---------
+    {
+        const Element right = Element::makeRectangle({20, 10}, 20, 20, layer);   // 10..30
+        const QVector<Element> out = vec::offsetElements({sqA, right}, 1.0);
+        check(out.size() == 1, "offset of two overlapping squares is one ring");
+        const QRectF bb = bounds(out);
+        check(approx(bb.left(), -1, 1e-3) && approx(bb.right(), 31, 1e-3), "around both of them");
+        const Element inner = Element::makeRectangle({10, 10}, 8, 8, layer);
+        check(vec::offsetElements({sqA, inner}, 1.0).size() == 2, "a square inside another still offsets as a ring");
+    }
+
     // --- offset of a ring (square with hole): hole shrinks when growing ---
     {
         const QVector<Element> out = vec::offsetElements({sqA, hole}, 1.0);
