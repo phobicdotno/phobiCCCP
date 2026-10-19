@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.2.4 (build 77) — 2026-10-19
+
+> The pad gets the Area fill tool, like the desktop
+
+- **Pad: Area tool.** Next to Pan on the pad's tool bar, with the desktop's icon. A tap selects
+  only the area it lands in, bounded by every closed shape around it; where shapes overlap, the
+  tapped piece is added as a closed path and selected, so a pocket made from it cuts only that
+  piece. Undo takes the added path away. Text is not a boundary on the pad (it has no glyph
+  outlines); everything else matches the desktop.
+- Desktop: the Area tool's tooltip now says what it does (a fill, not the shape and its islands).
+- New check: a 3 mm pocket on the same area as a 10 mm one above it cuts only the corners
+  (68 mm of cutting travel instead of 613 mm on a 40 × 20 mm pocket).
+
 ## v1.2.3 (build 76) — 2026-10-19
 
 > The Toolpaths side scrolls by dragging, and a toolpath moves only after a half-second hold

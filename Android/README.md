@@ -27,7 +27,8 @@ laid out for a pad in landscape.
 
 Designs are 2.5D, cut from the top: rectangles, circles, polygons, text, paths and drill
 points, with contour (outside / inside / on), pocket, drill and engrave toolpaths, each of
-which can be ticked off as on the desktop.
+which can be ticked off as on the desktop. The Area tool picks just the area tapped, like a fill:
+where shapes overlap, the tapped piece becomes a closed path, so a pocket cuts only that piece.
 
 The fonts in `fonts/` (Inter, Liberation Sans for text on the drawing, DejaVu Sans Mono)
 are the ones the desktop uses; their licences are in `fonts/LICENSE.txt`.

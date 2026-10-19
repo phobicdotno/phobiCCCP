@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../app_state.dart';
+import '../fill.dart';
 import '../model.dart';
 import 'canvas.dart';
 import 'icons.dart';
@@ -150,6 +151,7 @@ class _MainWindowState extends State<MainWindow> {
       _status = switch (t) {
         DrawTool.select => 'Select — tap to select, drag to move or to select an area',
         DrawTool.hand => 'Pan — drag to move the view',
+        DrawTool.area => 'Area — tap inside an area, like a fill: selects just that area (not the shapes inside it)',
         DrawTool.circle => 'Circle — drag from the center out',
         DrawTool.rect => 'Rectangle — drag corner to corner',
         DrawTool.polygon => 'Polygon — drag from the center out',
@@ -172,10 +174,50 @@ class _MainWindowState extends State<MainWindow> {
     _say('Added ${s.describe().toLowerCase()}');
   }
 
+  /// Area (fill tool), as on the desktop: the area around the tap, bounded
+  /// by every closed shape. Rings that are existing shapes select those;
+  /// any other ring (where shapes overlap) is added as a closed path.
+  void _fillAt(double x, double y) {
+    final d = _d;
+    if (d == null) return;
+    final closed = [
+      for (final s in d.shapes)
+        if (shapeRing(s) case final r?) (s.id, r)
+    ];
+    final face = fillFace([for (final c in closed) c.$2], (x, y));
+    if (face.isEmpty) {
+      setState(() => _sel = {});
+      return;
+    }
+    final ids = <String>{};
+    final fresh = <List<Pt>>[];
+    for (final ring in face) {
+      final match = closed.where((c) => sameRing(c.$2, ring)).firstOrNull;
+      if (match != null) {
+        ids.add(match.$1);
+      } else {
+        fresh.add(ring);
+      }
+    }
+    if (fresh.isNotEmpty) {
+      var next = d;
+      for (final ring in fresh) {
+        final s = Shape(id: next.nextShapeId(), type: Shape.path, points: [for (final p in ring) [p.$1, p.$2]], closed: true);
+        next = next.copyWith(shapes: [...next.shapes, s]);
+        ids.add(s.id);
+      }
+      _commit(next);
+      _say('Area — the overlap was added as a closed path, so a toolpath cuts only this area');
+    }
+    setState(() => _sel = ids);
+  }
+
   Future<void> _tapAt(double x, double y) async {
     final d = _d;
     if (d == null) return;
     switch (_tool) {
+      case DrawTool.area:
+        _fillAt(x, y);
       case DrawTool.point:
         _addShape(Shape(id: d.nextShapeId(), type: Shape.point, x: x, y: y));
       case DrawTool.text:
@@ -663,6 +705,7 @@ class _MainWindowState extends State<MainWindow> {
     final items = <Widget>[
       tool(DrawTool.select, 'select', 'Select'),
       tool(DrawTool.hand, 'hand', 'Pan'),
+      tool(DrawTool.area, 'area', 'Area: tap inside an area to select just it, like a fill, for a pocket'),
       if (_mode == 0) ...[
         tool(DrawTool.circle, 'circle', 'Circle'),
         tool(DrawTool.rect, 'rect', 'Rectangle'),
