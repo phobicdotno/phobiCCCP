@@ -1007,6 +1007,11 @@ QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
             offsets.append(o);
         if (offsets.isEmpty() || oMax - offsets.last() > 0.05 * p.stepover)
             offsets.append(oMax);
+        // A pass exactly on the boundary's edge is dropped by the clip on one
+        // side only (the lower or left edge): keep both just inside.
+        offsets.first() += 1e-3;
+        if (offsets.size() > 1 && offsets.last() >= oMax - 1e-9)
+            offsets.last() -= 1e-3;
 
         // Climb: uncut material (the next pass, +nrm, on the left of +d) on
         // the right of travel → travel along −d for a clockwise spindle.

@@ -1,4 +1,5 @@
 #include "toolpathform.h"
+#include "c2ddocument.h"
 #include "tooldiagram.h"
 #include "toollibrary.h"
 
@@ -20,6 +21,7 @@
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <cmath>
+#include <functional>
 
 namespace c2d {
 
@@ -64,16 +66,140 @@ protected:
 
 // Number fields ignore the wheel unless they have focus: scrolling the
 // panel must not change a depth on the way past.
+//
+// They also take an expression: "stock_t + 0.5", "1/4 in", "plate_w / 2".
+// One that names a parameter binds the field to it (the toolpath's
+// `phobic_expr`), so the value follows when the parameter changes; a bound
+// field shows its value in violet and its expression while it is edited.
 class Spin : public QDoubleSpinBox
 {
 public:
     using QDoubleSpinBox::QDoubleSpinBox;
+    using Eval = std::function<bool(const QString &, double *, QString *)>;
+    void setEvaluator(const Eval &e) { m_eval = e; }
+    // The field's own tooltip, shown under the binding and alone without one.
+    void setBaseTip(const QString &tip)
+    {
+        m_baseTip = tip;
+        const QString e = m_expr;
+        m_expr = QStringLiteral("\x01");
+        setBinding(e);
+    }
+    void setBinding(const QString &expr)
+    {
+        if (expr == m_expr)
+            return;
+        if (m_expr.isEmpty() && m_baseTip.isEmpty())
+            m_baseTip = toolTip();
+        m_expr = expr;
+        setStyleSheet(expr.isEmpty() ? QString() : QStringLiteral("color: #c3a6ff;"));
+        setToolTip(expr.isEmpty() ? m_baseTip
+                                  : QStringLiteral("\u0192x  = %1\nType a number to unbind it.\n%2")
+                                        .arg(expr, m_baseTip));
+    }
+    QString binding() const { return m_expr; }
+    // The expression the last typed text was (empty: a plain number, or
+    // the arrows). Typing or stepping starts a new edit; editingFinished
+    // takes it.
+    QString typed() const { return m_typed; }
+    QString takeTyped() { QString t = m_typed; m_typed.clear(); return t; }
+
+    QValidator::State validate(QString &input, int &pos) const override
+    {
+        const QValidator::State plain = QDoubleSpinBox::validate(input, pos);
+        if (plain == QValidator::Acceptable || !m_eval)
+            return plain;
+        const QString t = strip(input);
+        if (!isExpr(t))
+            return plain;
+        double v;
+        return m_eval(t, &v, nullptr) ? QValidator::Acceptable : QValidator::Intermediate;
+    }
+    double valueFromText(const QString &text) const override
+    {
+        const QString t = strip(text);
+        double v = 0;
+        if (m_eval && isExpr(t) && m_eval(t, &v, nullptr)) {
+            if (!m_stepping)
+                m_typed = t;
+            return property("depth").toBool() ? std::fabs(v) : v;
+        }
+        return QDoubleSpinBox::valueFromText(text);
+    }
+    void fixup(QString &input) const override
+    {
+        if (!isExpr(strip(input)))
+            QDoubleSpinBox::fixup(input);
+    }
+    // The arrows give a plain number, so the field unbinds. The base stepBy
+    // re-reads the shown text, which may still be the bound expression;
+    // that read must not count as typing it.
+    void stepBy(int steps) override
+    {
+        m_typed.clear();
+        m_stepping = true;
+        QDoubleSpinBox::stepBy(steps);
+        m_stepping = false;
+        m_typed.clear();
+    }
 
 protected:
     void wheelEvent(QWheelEvent *e) override
     {
         if (hasFocus())
             QDoubleSpinBox::wheelEvent(e);
+        else
+            e->ignore();
+    }
+    void keyPressEvent(QKeyEvent *e) override
+    {
+        if (e->key() != Qt::Key_Return && e->key() != Qt::Key_Enter)
+            m_typed.clear();
+        QDoubleSpinBox::keyPressEvent(e);
+    }
+    void focusInEvent(QFocusEvent *e) override
+    {
+        QDoubleSpinBox::focusInEvent(e);
+        if (!m_expr.isEmpty()) {
+            lineEdit()->setText(m_expr);
+            lineEdit()->selectAll();
+        }
+    }
+
+private:
+    QString strip(QString t) const
+    {
+        t = t.trimmed();
+        if (!suffix().isEmpty() && t.endsWith(suffix().trimmed()))
+            t.chop(suffix().trimmed().size());
+        return t.trimmed();
+    }
+    static bool isExpr(const QString &t)
+    {
+        for (int i = 0; i < t.size(); ++i) {
+            const QChar c = t.at(i);
+            if (c.isLetter() || c == QLatin1Char('(') || c == QLatin1Char('*') || c == QLatin1Char('/')
+                || c == QLatin1Char('^') || c == QLatin1Char('"') || (i > 0 && (c == QLatin1Char('+') || c == QLatin1Char('-'))))
+                return true;
+        }
+        return false;
+    }
+    Eval m_eval;
+    QString m_expr, m_baseTip;
+    mutable QString m_typed;
+    bool m_stepping = false;
+};
+
+class IntSpin : public QSpinBox
+{
+public:
+    using QSpinBox::QSpinBox;
+
+protected:
+    void wheelEvent(QWheelEvent *e) override
+    {
+        if (hasFocus())
+            QSpinBox::wheelEvent(e);
         else
             e->ignore();
     }
@@ -355,7 +481,7 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     add(QStringLiteral("tab_width"), mm(QStringLiteral("tabs"), QStringLiteral("Width"), 500));
 
     // Rest machining
-    add(QStringLiteral("rest_auto"), sw(QStringLiteral("rest"), QStringLiteral("Start where the toolpaths above stopped")));
+    add(QStringLiteral("rest_auto"), sw(QStringLiteral("rest"), QStringLiteral("Skip what the toolpaths above cut")));
     add(QStringLiteral("rest_overlap"), enabledBy(mm(QStringLiteral("rest"), QStringLiteral("Overlap"), 50),
                                                   QStringLiteral("rest_auto")));
     add(QStringLiteral("enable_rest"), sw(QStringLiteral("rest"), QStringLiteral("Only what a bigger tool left")));
@@ -487,6 +613,10 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
             at = c->count() - 1;
         }
         c->setCurrentIndex(at);
+        QVariantList values;   // for updateValues()
+        for (const auto &ch : f.choices)
+            values.append(ch.first.toVariant());
+        c->setProperty("choices", values);
         const auto choices = f.choices;
         connect(c, &QComboBox::activated, this, [this, key, choices](int i) {
             if (i < choices.size())
@@ -495,7 +625,7 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
         return c;
     }
     case Field::Int: {
-        auto *s = new QSpinBox(this);
+        auto *s = new IntSpin(this);
         s->setRange(int(f.min), int(f.max));
         s->setValue(int(numberOf(v)));
         s->setKeyboardTracking(false);
@@ -513,22 +643,55 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
         s->setKeyboardTracking(false);
         s->setProperty("depth", f.kind == Field::Depth);
         s->setValue(f.kind == Field::Depth ? std::fabs(numberOf(v)) : numberOf(v));
+        s->setEvaluator([this](const QString &e, double *out, QString *why) {
+            return m_doc && param::evaluateIn(*m_doc, e, out, why);
+        });
+        s->setBinding(bindingOf(key));
         const bool isDepth = f.kind == Field::Depth;
-        connect(s, &QDoubleSpinBox::valueChanged, this, [this, key, isDepth](double d) {
+        // The JSON value for d, in the file's own convention.
+        auto encode = [this, key, isDepth](double d, bool *negative) {
             const QJsonValue orig = flatGet(m_json, key);
-            if (!isDepth) {
-                commit(key, orig.isString() ? QJsonValue(QString::number(d)) : QJsonValue(d));
-                return;
-            }
+            *negative = false;
+            if (!isDepth)
+                return orig.isString() ? QJsonValue(QString::number(d)) : QJsonValue(d);
             // Keep the file's depth convention: its sign, and string vs number.
-            bool negative = orig.isString() ? orig.toString().trimmed().startsWith(QLatin1Char('-'))
-                                            : orig.toDouble() < 0;
-            if (!negative && numberOf(orig) == 0)
+            bool neg = orig.isString() ? orig.toString().trimmed().startsWith(QLatin1Char('-'))
+                                       : orig.toDouble() < 0;
+            if (!neg && numberOf(orig) == 0)
                 for (const char *k : {"end_depth", "start_depth", "max_depth", "cut_depth"})
                     if (m_json.value(QLatin1String(k)).toString().trimmed().startsWith(QLatin1Char('-')))
-                        negative = true;
-            const double out = negative ? -d : d;
-            commit(key, orig.isString() ? QJsonValue(QString::number(out, 'f', 3)) : QJsonValue(out));
+                        neg = true;
+            *negative = neg;
+            const double out = neg ? -d : d;
+            return orig.isString() ? QJsonValue(QString::number(out, 'f', 3)) : QJsonValue(out);
+        };
+        // Bind when the typed text names a parameter, unbind on a plain number.
+        auto bindFor = [key, isDepth, this](const QString &typed, bool negative) {
+            if (typed.isEmpty() || param::namesIn(typed).isEmpty())
+                return QJsonObject();
+            QJsonObject b;
+            b.insert("expr", typed);
+            if (isDepth && negative)
+                b.insert("neg", true);
+            if (flatGet(m_json, key).isString())
+                b.insert("str", true);
+            return b;
+        };
+        connect(s, &QDoubleSpinBox::valueChanged, this, [this, s, key, encode, bindFor](double d) {
+            bool negative = false;
+            const QJsonValue out = encode(d, &negative);
+            commitBound(key, out, bindFor(s->typed(), negative));
+        });
+        connect(s, &QAbstractSpinBox::editingFinished, this, [this, s, key, encode, bindFor] {
+            // Same value, new expression (or a number over a bound field).
+            const QString typed = s->takeTyped();
+            const QString shown = s->text().trimmed();
+            bool negative = false;
+            const QJsonValue out = encode(s->value(), &negative);
+            const QJsonObject b = bindFor(typed, negative);
+            if (b.value("expr").toString() != bindingOf(key)
+                && (!b.isEmpty() || !param::namesIn(shown).contains(bindingOf(key))))
+                commitBound(key, out, b);
         });
         return s;
     }
@@ -619,7 +782,10 @@ void ToolpathForm::rebuild()
             label->setObjectName(QStringLiteral("tpLabel"));
             label->setToolTip(kf.second.tip.isEmpty() ? kf.first : kf.second.tip + QStringLiteral("\n(") + kf.first + QLatin1Char(')'));
             QWidget *ed = editorFor(kf.first, kf.second);
-            ed->setToolTip(label->toolTip());
+            if (auto *bs = dynamic_cast<Spin *>(ed))
+                bs->setBaseTip(label->toolTip());
+            else
+                ed->setToolTip(label->toolTip());
             const bool isSwitch = kf.second.kind == Field::Bool || kf.second.kind == Field::InvBool;
             row->addWidget(label, 1);
             row->addWidget(stepper(ed, this), isSwitch ? 0 : 1, isSwitch ? Qt::AlignRight : Qt::Alignment());
@@ -672,7 +838,10 @@ void ToolpathForm::rebuild()
                     ed = e;
                     row->addWidget(ed, 1);
                 }
-                ed->setToolTip(k);
+                if (auto *bs = dynamic_cast<Spin *>(ed))
+                    bs->setBaseTip(k);
+                else
+                    ed->setToolTip(k);
                 label->setToolTip(k);
                 body->addLayout(row);
                 m_editors.insert(k, ed);
@@ -712,12 +881,33 @@ void ToolpathForm::updateValues()
         } else if (auto *sp = qobject_cast<QDoubleSpinBox *>(w)) {
             if (!sp->hasFocus())
                 sp->setValue(sp->property("depth").toBool() ? std::fabs(numberOf(v)) : numberOf(v));
+            if (auto *bs = dynamic_cast<Spin *>(sp))
+                bs->setBinding(bindingOf(it.key()));
         } else if (auto *ip = qobject_cast<QSpinBox *>(w)) {
             if (!ip->hasFocus())
                 ip->setValue(int(numberOf(v)));
         } else if (auto *le = qobject_cast<QLineEdit *>(w)) {
             if (!le->hasFocus())
                 le->setText(v.toString());
+        } else if (auto *cb = qobject_cast<QComboBox *>(w)) {
+            // Undo/redo of a side, mode or direction must show in the box too.
+            const QVariantList choices = cb->property("choices").toList();
+            int at = -1;
+            for (int i = 0; i < choices.size() && at < 0; ++i) {
+                const QJsonValue c = QJsonValue::fromVariant(choices.at(i));
+                if (c == v || (v.isDouble() && c.isDouble()
+                               && qFuzzyCompare(v.toDouble() + 1, c.toDouble() + 1)))
+                    at = i;
+            }
+            if (at < 0) {   // a value with no name: the extra item, as built
+                const QString text = v.isString() ? v.toString() : QString::number(v.toDouble());
+                if (cb->count() > choices.size())
+                    cb->setItemText(choices.size(), text);
+                else
+                    cb->addItem(text);
+                at = int(choices.size());
+            }
+            cb->setCurrentIndex(at);
         }
     }
     m_loading = false;
@@ -735,6 +925,34 @@ void ToolpathForm::refreshEnabled()
                 label->setEnabled(on);
         }
     }
+}
+
+QString ToolpathForm::bindingOf(const QString &key) const
+{
+    return m_json.value(QStringLiteral("phobic_expr")).toObject().value(key).toObject()
+        .value(QStringLiteral("expr")).toString();
+}
+
+void ToolpathForm::commitBound(const QString &key, const QJsonValue &v, const QJsonObject &binding)
+{
+    if (m_loading || m_uuid.isEmpty())
+        return;
+    QJsonObject binds = m_json.value(QStringLiteral("phobic_expr")).toObject();
+    if (binding.isEmpty())
+        binds.remove(key);
+    else
+        binds.insert(key, binding);
+    QJsonObject j = m_json;
+    flatSet(j, key, v);
+    if (binds.isEmpty())
+        j.remove(QStringLiteral("phobic_expr"));
+    else
+        j.insert(QStringLiteral("phobic_expr"), binds);
+    if (j == m_json)
+        return;
+    m_json = j;
+    refreshEnabled();
+    emit edited(m_json);
 }
 
 void ToolpathForm::commit(const QString &key, const QJsonValue &v)

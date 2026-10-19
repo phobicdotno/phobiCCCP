@@ -17,7 +17,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
-const appVersion = '1.1.22';
+const appVersion = '1.2.3';
 
 class MainWindow extends StatefulWidget {
   final AppState app;
@@ -40,6 +40,7 @@ class _MainWindowState extends State<MainWindow> {
   List<List<double>>? _pathDraft;
   final _zoom = CanvasZoom();
   String _status = '';
+  bool _saving = false;
 
   @override
   void initState() {
@@ -60,7 +61,7 @@ class _MainWindowState extends State<MainWindow> {
   // another pad): show it in place of ours.
   void _synced() {
     final cur = _d;
-    if (!mounted) return;
+    if (!mounted || _saving) return;
     if (cur == null) {
       setState(() {});
       return;
@@ -77,6 +78,9 @@ class _MainWindowState extends State<MainWindow> {
       } else {
         _d = d;
         _sel = _sel.where((id) => d.shape(id) != null).toSet();
+        // Undoing past it would put the old copy back everywhere.
+        _undo.clear();
+        _redo.clear();
         _status = '“${d.name}” was updated from phobiCCCP';
       }
     });
@@ -93,22 +97,46 @@ class _MainWindowState extends State<MainWindow> {
     if (d != null) app.lastDesign = d.id;
   }
 
+  /// Save [d] as our edit, without taking our own save for one from elsewhere.
+  Design _save(Design d) {
+    _saving = true;
+    try {
+      return app.saveDesign(d);
+    } finally {
+      _saving = false;
+    }
+  }
+
+  /// A newer copy came in after this edit was begun: it is shown instead, as
+  /// saving the edit would silently undo it everywhere.
+  bool _stale() {
+    final cur = _d;
+    final stored = cur == null ? null : app.design(cur.id);
+    if (cur == null || stored == null || stored.modified <= cur.modified) return false;
+    _synced();
+    _say('“${stored.name}” changed on another pad or computer; your last change was not kept');
+    return true;
+  }
+
   void _commit(Design next, {Design? before}) {
+    if (_stale()) return;
     final prev = before ?? _d;
     if (prev != null) _undo.add(prev);
     if (_undo.length > 100) _undo.removeAt(0);
     _redo.clear();
-    setState(() => _d = app.saveDesign(next));
+    final saved = _save(next);
+    setState(() => _d = saved);
   }
 
   void _undoRedo(bool undo) {
     final from = undo ? _undo : _redo, to = undo ? _redo : _undo;
     final cur = _d;
-    if (from.isEmpty || cur == null) return;
+    if (from.isEmpty || cur == null || _stale()) return;
     to.add(cur);
     final d = from.removeLast();
+    final saved = _save(d);
     setState(() {
-      _d = app.saveDesign(d);
+      _d = saved;
       _sel = _sel.where((id) => d.shape(id) != null).toSet();
     });
   }
@@ -152,7 +180,11 @@ class _MainWindowState extends State<MainWindow> {
         _addShape(Shape(id: d.nextShapeId(), type: Shape.point, x: x, y: y));
       case DrawTool.text:
         final t = await _askText();
-        if (t != null) _addShape(Shape(id: d.nextShapeId(), type: Shape.text, x: x, y: y, label: t.$1, size: t.$2));
+        // The design may have been replaced while the box was open.
+        final now = _d;
+        if (t != null && now != null && mounted) {
+          _addShape(Shape(id: now.nextShapeId(), type: Shape.text, x: x, y: y, label: t.$1, size: t.$2));
+        }
       case DrawTool.path:
         final pts = _pathDraft ?? [];
         final slop = 8 / (_zoom.fit * _zoom.zoom);
@@ -261,7 +293,15 @@ class _MainWindowState extends State<MainWindow> {
         title: 'Text',
         content: StatefulBuilder(
           builder: (ctx, set) => Column(mainAxisSize: MainAxisSize.min, children: [
-            FormRow('Text', SizedBox(height: 34, child: TextField(controller: c, autofocus: true)), labelWidth: 96),
+            FormRow(
+                'Text',
+                SizedBox(
+                    height: 34,
+                    child: TextField(
+                        controller: c,
+                        autofocus: true,
+                        inputFormatters: [LengthLimitingTextInputFormatter(Shape.maxText)])),
+                labelWidth: 96),
             FormRow('Height', NumBox(h, (v) => set(() => h = v), min: 0.5, max: 1000, decimals: 2), labelWidth: 96),
           ]),
         ),

@@ -31,6 +31,68 @@ static QList<QPolygonF> finePolygons(const QPainterPath &path, double tol)
     return out;
 }
 
+QVector<QPolygonF> fillFace(const QVector<QPainterPath> &closed, const QPointF &at, double tol)
+{
+    QVector<QPainterPath> in, out;
+    for (const QPainterPath &p : closed) {
+        QPainterPath eo = p;
+        eo.setFillRule(Qt::OddEvenFill);
+        (eo.contains(at) ? in : out) << eo;
+    }
+    if (in.isEmpty())
+        return {};
+    auto pathOf = [](const QVector<QPolygonF> &rings) {
+        QPainterPath r;
+        r.setFillRule(Qt::OddEvenFill);
+        for (const QPolygonF &g : rings) {
+            r.addPolygon(g);
+            r.closeSubpath();
+        }
+        return r;
+    };
+    QVector<QPolygonF> face = in.size() == 1 ? booleanRings(in, {}, BoolOp::Union, tol)
+                                             : booleanRings(in, {}, BoolOp::Intersect, tol);
+    if (!out.isEmpty() && !face.isEmpty())
+        face = booleanRings({pathOf(face)}, out, BoolOp::Subtract, tol);
+    // The piece holding `at`: the smallest ring around it is its outline;
+    // its holes are the rings inside that outline not inside another of them.
+    int outer = -1;
+    double best = 0;
+    for (int i = 0; i < face.size(); ++i)
+        if (face.at(i).containsPoint(at, Qt::OddEvenFill)) {
+            const double a = std::fabs(ringArea(face.at(i)));
+            if (outer < 0 || a < best) {
+                outer = i;
+                best = a;
+            }
+        }
+    if (outer < 0)
+        return {};
+    const QPolygonF &o = face.at(outer);
+    auto within = [](const QPolygonF &inner, const QPolygonF &around) {
+        for (const QPointF &q : inner)
+            if (!around.containsPoint(q, Qt::OddEvenFill))
+                return false;
+        return true;
+    };
+    QVector<int> holes;
+    for (int i = 0; i < face.size(); ++i)
+        if (i != outer && !face.at(i).containsPoint(at, Qt::OddEvenFill) && within(face.at(i), o)
+            && std::fabs(ringArea(face.at(i))) < best)
+            holes << i;
+    QVector<QPolygonF> res{o};
+    for (int i : holes) {
+        bool nested = false;
+        for (int k : holes)
+            if (k != i && std::fabs(ringArea(face.at(k))) > std::fabs(ringArea(face.at(i)))
+                && within(face.at(i), face.at(k)))
+                nested = true;
+        if (!nested)
+            res << face.at(i);
+    }
+    return res;
+}
+
 double ringArea(const QPolygonF &ring)
 {
     double a = 0;
@@ -144,13 +206,50 @@ QVector<QPolygonF> booleanRings(const QVector<QPainterPath> &subjects,
     return rings(result, tol);
 }
 
+// The region a set of elements encloses, for an offset: an element wholly
+// inside an odd number of others is a hole (a ring drawn as two circles),
+// while elements that only overlap weld together. One even-odd pass over
+// everything would turn an overlap into a hole.
+static C2::Paths64 nestedRegion(const QVector<QPainterPath> &paths, double tol)
+{
+    QVector<C2::Paths64> regions;
+    for (const QPainterPath &pp : paths) {
+        C2::Paths64 r = regionOf({pp}, tol);
+        if (!r.empty())
+            regions.append(std::move(r));
+    }
+    if (regions.size() > 200)    // containment is pairwise; keep it bounded
+        return regionOf(paths, tol);
+    QVector<int> depth(regions.size(), 0);
+    int deepest = 0;
+    for (int i = 0; i < regions.size(); ++i) {
+        for (int j = 0; j < regions.size(); ++j)
+            if (i != j && C2::Difference(regions.at(i), regions.at(j), C2::FillRule::NonZero).empty()
+                && !(C2::Difference(regions.at(j), regions.at(i), C2::FillRule::NonZero).empty() && j > i))
+                ++depth[i];
+        deepest = qMax(deepest, depth.at(i));
+    }
+    C2::Paths64 out;
+    for (int d = 0; d <= deepest; ++d) {
+        C2::Paths64 level;
+        for (int i = 0; i < regions.size(); ++i)
+            if (depth.at(i) == d)
+                level.insert(level.end(), regions.at(i).begin(), regions.at(i).end());
+        if (level.empty())
+            continue;
+        out = d % 2 == 0 ? C2::Union(out, level, C2::FillRule::NonZero)
+                         : C2::Difference(out, level, C2::FillRule::NonZero);
+    }
+    return out;
+}
+
 QVector<QPolygonF> offsetRings(const QVector<QPainterPath> &closed,
                                const QVector<QPainterPath> &open, double delta, double tol)
 {
     const double arcTol = tol * kScale;
     C2::Paths64 out;
     if (!closed.isEmpty()) {
-        const C2::Paths64 region = regionOf(closed, tol);
+        const C2::Paths64 region = nestedRegion(closed, tol);
         if (!region.empty())
             out = C2::InflatePaths(region, delta * kScale, C2::JoinType::Round,
                                    C2::EndType::Polygon, 2.0, arcTol);

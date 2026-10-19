@@ -17,8 +17,11 @@ class Computer {
   final Desktop desktop;
   final DesktopInfo? info;
   final String? error;
+
+  /// Designs it would not take; it still answers, and can still be sent to.
+  final String? warning;
   final int lastSync, toolsAt;
-  const Computer(this.desktop, {this.info, this.error, this.lastSync = 0, this.toolsAt = 0});
+  const Computer(this.desktop, {this.info, this.error, this.warning, this.lastSync = 0, this.toolsAt = 0});
 
   String get name => desktop.host.isEmpty ? desktop.address : desktop.host;
   bool reachable(int now) => info != null && error == null && desktop.online(now);
@@ -59,8 +62,8 @@ class AppState extends ChangeNotifier {
   Set<String> get manualHosts => settings.manualHosts;
 
   void start() {
-    _tick();
-    _timer = Timer.periodic(round, (_) => _tick());
+    unawaited(_tick());
+    _timer = Timer.periodic(round, (_) => unawaited(_tick()));
   }
 
   @override
@@ -81,6 +84,8 @@ class AppState extends ChangeNotifier {
     try {
       await _discover();
       await _syncAll();
+    } catch (_) {
+      // Shown per computer; nothing else to do until the next round.
     } finally {
       _busy = false;
     }
@@ -96,13 +101,20 @@ class AppState extends ChangeNotifier {
       found = [];
     }
     final byId = {for (final c in computers) c.desktop.id: c};
-    for (final d in found) {
-      final c = byId[d.id];
-      byId[d.id] = c == null ? Computer(d) : Computer(d, info: c.info, error: c.error, lastSync: c.lastSync, toolsAt: c.toolsAt);
+    for (final d0 in found) {
+      final c = byId[d0.id];
+      // Heard on the LAN too: still the one typed in, not a second computer.
+      final d = d0.typed.isEmpty && c != null && c.desktop.typed.isNotEmpty ? d0.withTyped(c.desktop.typed) : d0;
+      byId[d.id] = c == null
+          ? Computer(d)
+          : Computer(d, info: c.info, error: c.error, warning: c.warning, lastSync: c.lastSync, toolsAt: c.toolsAt);
     }
-    // A computer typed in but not answering still shows, as offline.
-    byId.removeWhere((k, _) => k.startsWith('manual:'));
-    for (final h in settings.manualHosts) {
+    // A computer typed in but not answering still shows, as offline; one
+    // already listed keeps what its last sync learned.
+    final manual = settings.manualHosts;
+    byId.removeWhere((k, c) =>
+        k.startsWith('manual:') && (!manual.contains(c.desktop.typed) || byId.values.any((o) => !o.desktop.id.startsWith('manual:') && o.desktop.typed == c.desktop.typed)));
+    for (final h in manual) {
       if (!byId.values.any((c) => c.desktop.typed == h)) {
         byId['manual:$h'] = Computer(Desktop(id: 'manual:$h', host: h, address: h, typed: h));
       }
@@ -118,26 +130,38 @@ class AppState extends ChangeNotifier {
     if (targets.isEmpty) return;
     syncing = true;
     _changed();
-    for (final c in targets) {
-      final withTools = t - c.toolsAt > toolsEvery || tools.isEmpty;
-      Computer next;
-      try {
-        final r = await syncWith(c.desktop, store, withTools: withTools);
-        next = Computer(c.desktop.seenAt(now), info: r.info, lastSync: now, toolsAt: r.tools != null ? now : c.toolsAt);
-        final lib = r.tools;
-        if (lib != null && !lib.isEmpty) {
-          tools = lib;
-          settings.tools = lib;
+    try {
+      for (final c in targets) {
+        final withTools = t - c.toolsAt > toolsEvery || tools.isEmpty;
+        Computer next;
+        try {
+          final r = await syncWith(c.desktop, store, withTools: withTools, onPulled: () {
+            designs = store.live();
+            _changed();
+          });
+          next = Computer(c.desktop.seenAt(now),
+              info: r.info,
+              warning: r.refused.isEmpty ? null : 'Not taken: ${r.refused.join('; ')}',
+              lastSync: now,
+              toolsAt: r.tools != null ? now : c.toolsAt);
+          final lib = r.tools;
+          if (lib != null && !lib.isEmpty) {
+            tools = lib;
+            settings.tools = lib;
+          }
+        } catch (e) {
+          next = Computer(c.desktop, info: c.info, error: '$e', lastSync: c.lastSync, toolsAt: c.toolsAt);
         }
-      } catch (e) {
-        next = Computer(c.desktop, info: c.info, error: '$e', lastSync: c.lastSync, toolsAt: c.toolsAt);
+        computers = [for (final x in computers) x.desktop.id == c.desktop.id ? next : x];
+        _changed();
       }
-      computers = [for (final x in computers) x.desktop.id == c.desktop.id ? next : x];
+    } finally {
+      syncing = false;
+      try {
+        designs = store.live();
+      } catch (_) {}
       _changed();
     }
-    syncing = false;
-    designs = store.live();
-    _changed();
   }
 
   /// Sync shortly, once the edits stop coming.
@@ -148,7 +172,7 @@ class AppState extends ChangeNotifier {
         _syncSoon();
       } else {
         _busy = true;
-        _syncAll().whenComplete(() => _busy = false);
+        unawaited(_syncAll().catchError((_) {}).whenComplete(() => _busy = false));
       }
     });
   }
@@ -213,7 +237,7 @@ class AppState extends ChangeNotifier {
     final info = await CccpConnection.use(c.desktop.address, c.desktop.port, (k) => k.selectMachine(machineId));
     computers = [
       for (final x in computers)
-        x.desktop.id == c.desktop.id ? Computer(x.desktop, info: info, lastSync: x.lastSync, toolsAt: x.toolsAt) : x
+        x.desktop.id == c.desktop.id ? Computer(x.desktop, info: info, warning: x.warning, lastSync: x.lastSync, toolsAt: x.toolsAt) : x
     ];
     _changed();
   }

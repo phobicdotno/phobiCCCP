@@ -1,4 +1,6 @@
+#include <numeric>
 #include "canvas.h"
+#include "vectorops.h"
 #include "sketchgeom.h"
 #include "backgroundimage.h"
 #include "sketch.h"
@@ -45,6 +47,7 @@ static const QColor kElement(0xd8, 0xdc, 0xe4);
 static const QColor kSelected(0xf2, 0xa5, 0x36);   // amber
 static const QColor kPreview(0x5c, 0xc8, 0x8a);
 static const QColor kConstruction(0x8a, 0xa4, 0xc8);   // dashed reference lines
+static const QColor kFullyConstrained(0x7c, 0xd6, 0xc2);   // nothing can move it any more
 
 // How close (screen px) a click must land to pick a curve or a node: the
 // element items' hit corridor and the node editor's hit tests share it, so a
@@ -58,9 +61,9 @@ class ElemItem : public QGraphicsPathItem
 {
 public:
     ElemItem(const QPainterPath &path, bool closed, bool construction = false,
-             bool point = false)
+             bool point = false, bool fully = false)
         : QGraphicsPathItem(path), m_closed(closed && !construction && !point),
-          m_construction(construction), m_point(point)
+          m_construction(construction), m_point(point), m_fully(fully)
     {
         setAcceptHoverEvents(true);
     }
@@ -75,7 +78,8 @@ public:
             pen.setColor(QColor(0x9f, 0xc8, 0xf2));
             pen.setWidthF(1.8);
         } else {
-            pen.setColor(m_construction ? kConstruction : kElement);
+            pen.setColor(m_fully ? kFullyConstrained
+                                 : m_construction ? kConstruction : kElement);
             pen.setWidthF(1.3);
         }
         // Construction geometry is dashed (and never filled); a sketch
@@ -131,7 +135,7 @@ protected:
 
 private:
     bool m_closed;
-    bool m_construction, m_point;
+    bool m_construction, m_point, m_fully;
     bool m_hover = false;
 };
 
@@ -240,6 +244,15 @@ public:
         : m_c(c), m_d(d), m_before(before), m_after(after)
     {
         setText(text);
+        // Where the originals were: undo puts them back there (z-order and
+        // machining order), not at the end.
+        const QVector<Element> &all = d->elements();
+        for (const Element &e : before) {
+            int at = int(all.size());
+            for (int i = 0; i < all.size(); ++i)
+                if (all.at(i).id == e.id) { at = i; break; }
+            m_beforeAt.append(at);
+        }
         QSet<QString> afterIds;
         for (const Element &e : after)
             afterIds.insert(e.id);
@@ -276,7 +289,15 @@ public:
     void undo() override
     {
         for (const auto &p : m_tps) m_d->replaceToolpath(p.first);
-        swap(m_after, m_before);
+        for (const Element &e : m_after) m_d->removeElementById(e.id);
+        QVector<int> order(m_before.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [this](int a, int b) { return m_beforeAt.at(a) < m_beforeAt.at(b); });
+        QVector<Element> &els = m_d->elementsRef();
+        for (int k : order)                             // low index first
+            els.insert(qMin(m_beforeAt.at(k), int(els.size())), m_before.at(k));
+        refresh(m_c);
     }
 private:
     void swap(const QVector<Element> &out, const QVector<Element> &in)
@@ -286,6 +307,7 @@ private:
         refresh(m_c);
     }
     Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+    QVector<int> m_beforeAt;
     QVector<QPair<Toolpath, Toolpath>> m_tps;
 };
 
@@ -435,41 +457,85 @@ QGraphicsPathItem *Canvas::itemFor(const QString &id) const
     return nullptr;
 }
 
+// Area (fill tool): the face the click is in, bounded by every closed shape
+// around it and any it overlaps - not whole shapes. A face whose rings are
+// existing shapes (a shape, or a shape and its islands) selects those; any
+// other ring (where shapes overlap) is added as a closed path, so the
+// toolpath made from the selection cuts only that face.
 void Canvas::selectAreaAt(const QPointF &p, bool add)
 {
     QList<QPair<QString, QPainterPath>> closed;
+    QVector<QPainterPath> paths;
     for (QGraphicsItem *it : m_scene->items())
         if (auto *e = dynamic_cast<ElemItem *>(it))
-            if (e->isClosed() && e->data(0).isValid())
+            if (e->isClosed() && e->data(0).isValid()) {
                 closed.append({e->data(0).toString(), e->mapToScene(e->path())});
-    int outer = -1;
-    double best = 0;
-    for (int i = 0; i < closed.size(); ++i) {
-        if (!closed[i].second.contains(p))
-            continue;
-        const QRectF b = closed[i].second.boundingRect();
-        if (outer < 0 || b.width() * b.height() < best) {
-            outer = i;
-            best = b.width() * b.height();
-        }
-    }
+                paths << closed.last().second;
+            }
     QStringList ids = add ? selectedElementIds() : QStringList();
-    if (outer >= 0) {
-        const QPainterPath &op = closed[outer].second;
-        QList<int> inside;
-        for (int i = 0; i < closed.size(); ++i)
-            if (i != outer && op.contains(closed[i].second))
-                inside << i;
-        if (!ids.contains(closed[outer].first))
-            ids << closed[outer].first;
-        for (int i : inside) {
-            bool nested = false;    // inside another island: not this pocket's
-            for (int j : inside)
-                if (j != i && closed[j].second.contains(closed[i].second))
-                    nested = true;
-            if (!nested && !ids.contains(closed[i].first))
-                ids << closed[i].first;
+    const QVector<QPolygonF> face = vec::fillFace(paths, p);
+    if (face.isEmpty() || !m_doc) {
+        selectElements(ids);
+        return;
+    }
+    auto pathOf = [](const QVector<QPolygonF> &rings) {
+        QPainterPath r;
+        r.setFillRule(Qt::OddEvenFill);
+        for (const QPolygonF &g : rings) {
+            r.addPolygon(g);
+            r.closeSubpath();
         }
+        return r;
+    };
+    auto area = [](const QVector<QPolygonF> &rings) {
+        double a = 0;
+        for (const QPolygonF &g : rings)
+            a += vec::ringArea(g);
+        return std::fabs(a);
+    };
+    // Same region: what is in one and not the other is a sliver at most.
+    auto same = [&](const QPainterPath &a, const QPainterPath &b) {
+        if (!a.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(b.boundingRect())
+            || !b.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(a.boundingRect()))
+            return false;
+        const double diff = area(vec::booleanRings({a}, {b}, vec::BoolOp::Subtract))
+                            + area(vec::booleanRings({b}, {a}, vec::BoolOp::Subtract));
+        const double whole = area(vec::booleanRings({a}, {}, vec::BoolOp::Union));
+        return diff <= 0.002 * whole + 0.01;
+    };
+    auto keep = [&ids](const QString &id) {
+        if (!ids.contains(id))
+            ids << id;
+    };
+    // One shape is the whole face (a text glyph with its counter, say).
+    for (const auto &c : closed)
+        if (same(pathOf(face), c.second)) {
+            keep(c.first);
+            selectElements(ids);
+            return;
+        }
+    QVector<QPolygonF> fresh;
+    for (const QPolygonF &ring : face) {
+        QString match;
+        for (const auto &c : closed)
+            if (same(pathOf({ring}), c.second)) {
+                match = c.first;
+                break;
+            }
+        if (match.isEmpty())
+            fresh << ring;
+        else
+            keep(match);
+    }
+    if (!fresh.isEmpty()) {
+        const QVector<Element> els = vec::elementsFromRings(fresh, m_doc->defaultLayer());
+        m_undo->beginMacro(tr("fill area"));
+        for (const Element &e : els) {
+            m_undo->push(new AddCmd(this, m_doc, e));
+            keep(e.id);
+        }
+        m_undo->endMacro();
+        emit statusHint(tr("Area — the overlap was added as a closed path, so a toolpath cuts only this area"));
     }
     selectElements(ids);
 }
@@ -524,11 +590,11 @@ void Canvas::convertToPaths(const QStringList &ids)
         return;
     }
     if (before.size() == 1 && after.size() == 1) {
-        m_undo->push(new EditCmd(this, m_doc, before.first(), after.first()));
+        pushEdit(new EditCmd(this, m_doc, before.first(), after.first()), ids);
     } else {
-        m_undo->push(new ReplaceCmd(this, m_doc, before, after,
-                                    tr("convert %1 element(s) to paths").arg(before.size()),
-                                    piecesOf));
+        pushEdit(new ReplaceCmd(this, m_doc, before, after,
+                                tr("convert %1 element(s) to paths").arg(before.size()),
+                                piecesOf), ids);
     }
     QStringList newIds;
     for (const Element &e : after)
@@ -580,7 +646,7 @@ void Canvas::editElement(const QString &id, const QHash<QString, double> &params
     const Element after = Element::regen(*e, params);
     if (after.raw == e->raw)
         return;
-    m_undo->push(new EditCmd(this, m_doc, *e, after));
+    pushEdit(new EditCmd(this, m_doc, *e, after), {id});
 }
 
 void Canvas::moveElementBy(const QString &id, double dx, double dy)
@@ -588,7 +654,7 @@ void Canvas::moveElementBy(const QString &id, double dx, double dy)
     if (!m_doc || (qFuzzyIsNull(dx) && qFuzzyIsNull(dy)))
         return;
     if (m_doc->elementById(id))
-        m_undo->push(new MoveCmd(this, m_doc, {{id, QPointF(dx, dy)}}));
+        pushEdit(new MoveCmd(this, m_doc, {{id, QPointF(dx, dy)}}), {id});
 }
 
 QStringList Canvas::selectedElementIds() const
@@ -682,6 +748,7 @@ void Canvas::drawForeground(QPainter *p, const QRectF &rect)
         }
         p->restore();
     }
+    drawParametric(p);
     if (m_tool == NodeEdit && !m_model.isEmpty()) {
         drawNodes(p);
         return;
@@ -850,7 +917,7 @@ void Canvas::commitModel(const QString &what)
     const int keepSub = m_selSub, keepNode = m_selNode;
     auto *cmd = new EditCmd(this, m_doc, *e, after);
     cmd->setText(what);
-    m_undo->push(cmd);               // rebuild() re-decodes the model
+    pushEdit(cmd, {m_editId});       // rebuild() re-decodes the model
     m_selSub = keepSub;
     m_selNode = keepNode;
     if (m_selSub >= m_model.subs.size()
@@ -951,10 +1018,14 @@ void Canvas::setTool(Tool t)
                                           : tr("Polygon (inscribed) — press at the center, drag to a corner")); break;
     case DrawPath:    emit statusHint(tr("Path — click = corner, click-drag = curve; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
-    case SelectArea:  emit statusHint(tr("Area — click inside a closed shape: selects it and the shapes inside it (islands); Shift adds")); break;
+    case SelectArea:  emit statusHint(tr("Area — click inside an area, like a fill: selects just that area (not the shapes inside it); Shift adds")); break;
     case Pan:         emit statusHint(tr("Hand — drag to move the view; the wheel or - / + zoom")); break;
     case NodeEdit:    emit statusHint(tr("Nodes — drag anchors/handles (Alt breaks symmetry), double-click a segment to add, Del removes, right-click a node for its kind")); break;
+    case Constrain:
+    case Dimension:   break;   // resetPicks() below says what to click
     }
+    if (t == Constrain || t == Dimension || !m_picks.isEmpty() || m_dimPlacing)
+        resetPicks();
     if (t == NodeEdit)
         syncEditTarget();
     else {
@@ -1015,6 +1086,7 @@ void Canvas::rebuild()
 
     const bool selectable = (m_tool == Select || m_tool == NodeEdit || m_tool == Pan
                              || m_tool == SelectArea);
+    refreshParametricState();
     m_hitScale = qAbs(transform().m11());
     const double hitTol = pxToMm(kHitPx);
     for (const Element &e : m_doc->elements()) {
@@ -1025,7 +1097,7 @@ void Canvas::rebuild()
             for (const auto &v : e.raw.value("point_type").toArray())
                 if (v.toInt() == 4) { closed = true; break; }
         auto *item = new ElemItem(e.painterPath, closed, Element::isConstruction(e),
-                                  Element::isPoint(e));
+                                  Element::isPoint(e), m_full.contains(e.id));
         item->setHitTolerance(hitTol);
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
@@ -1613,9 +1685,9 @@ void Canvas::modifyAt(const QPointF &q)
         if (!hit)
             return;
         if (rest.isEmpty())
-            m_undo->push(new DeleteCmd(this, m_doc, {before}));
+            pushEdit(new DeleteCmd(this, m_doc, {before}), {before.id});
         else
-            m_undo->push(new EditCmd(this, m_doc, before, Element::withPathModel(before, rest)));
+            pushEdit(new EditCmd(this, m_doc, before, Element::withPathModel(before, rest)), {before.id});
         emit statusHint(rest.isEmpty() ? tr("Trimmed: nothing crossed it, so the whole curve went")
                                        : tr("Trimmed"));
         break;
@@ -1625,7 +1697,7 @@ void Canvas::modifyAt(const QPointF &q)
             emit statusHint(tr("Nothing ahead to extend to (closed curves have no ends)"));
             return;
         }
-        m_undo->push(new EditCmd(this, m_doc, before, Element::withPathModel(before, m)));
+        pushEdit(new EditCmd(this, m_doc, before, Element::withPathModel(before, m)), {before.id});
         emit statusHint(tr("Extended"));
         break;
     }
@@ -1643,8 +1715,8 @@ void Canvas::modifyAt(const QPointF &q)
         QHash<QString, QStringList> piecesOf;
         for (const Element &e : after)
             piecesOf[before.id] << e.id;
-        m_undo->push(new ReplaceCmd(this, m_doc, {before}, after,
-                                    tr("break into %1 pieces").arg(after.size()), piecesOf));
+        pushEdit(new ReplaceCmd(this, m_doc, {before}, after,
+                                tr("break into %1 pieces").arg(after.size()), piecesOf), {before.id});
         emit statusHint(tr("Broken into %1 pieces").arg(after.size()));
         break;
     }
@@ -1772,9 +1844,10 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         event->accept();
         return;
     }
+    if (parametricPress(event))
+        return;
 
-    // Select closed area: the innermost closed shape around the click, plus
-    // the closed shapes directly inside it - what a pocket needs.
+    // Select closed area: the face around the click, like a fill tool.
     if (m_tool == SelectArea && event->button() == Qt::LeftButton) {
         selectAreaAt(mapToScene(event->pos()), event->modifiers() & Qt::ShiftModifier);
         event->accept();
@@ -1979,6 +2052,8 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
 
     const QPointF cc = mapToScene(event->pos());
     emit cursorMoved(cc);
+    if (parametricMove(event))
+        return;
 
     if (m_resizing && m_preview && m_doc) {
         if (Element *e = m_doc->elementById(m_resizeId)) {
@@ -2115,6 +2190,8 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         event->accept();
         return;
     }
+    if (parametricRelease(event))
+        return;
 
     if (m_tool == NodeEdit && m_grab != GrabNone) {
         m_grab = GrabNone;
@@ -2233,8 +2310,12 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
                 moves.append({it->data(0).toString(), d});
             }
         }
-        if (!moves.isEmpty())
-            m_undo->push(new MoveCmd(this, m_doc, moves));
+        if (!moves.isEmpty()) {
+            QStringList moved;
+            for (const auto &mv : moves)
+                moved << mv.first;
+            pushEdit(new MoveCmd(this, m_doc, moves), moved);
+        }
         else if (dragged)
             // Every delta snapped away. Without this the items keep the pos()
             // the drag gave them: the shape sits in its new place on screen
@@ -2247,6 +2328,15 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
 void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
 {
     syncHitTolerance();
+    if (overlayOn() && event->button() == Qt::LeftButton) {
+        const QString uid = hitConstraint(event->pos());
+        const int i = m_doc ? m_doc->parametric().indexOfUid(uid) : -1;
+        if (i >= 0 && m_doc->parametric().constraints.at(i).isDimension()) {
+            editDimension(uid);
+            event->accept();
+            return;
+        }
+    }
     if (m_tool == DrawPath && !m_penNodes.isEmpty()) {
         finishPath(false);
         event->accept();
@@ -2278,6 +2368,8 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
 void Canvas::contextMenuEvent(QContextMenuEvent *event)
 {
     if (!m_doc)
+        return;
+    if (parametricMenu(event))
         return;
     const QPointF pos = mapToScene(event->pos());
     QMenu menu(this);
@@ -2347,13 +2439,15 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
             if (Element *e = m_doc->elementById(id))
                 victims.append(*e);
         if (!victims.isEmpty())
-            m_undo->push(new DeleteCmd(this, m_doc, victims));
+            pushEdit(new DeleteCmd(this, m_doc, victims), {});
     });
     menu.exec(event->globalPos());
 }
 
 void Canvas::keyPressEvent(QKeyEvent *event)
 {
+    if (parametricKey(event))
+        return;
     if (m_tool == NodeEdit && m_selSub >= 0 && m_doc
         && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
         if (m_model.subs[m_selSub].removeNode(m_selNode)) {
@@ -2416,7 +2510,7 @@ void Canvas::deleteSelected()
                 victims.append(*e);
     }
     if (!victims.isEmpty())
-        m_undo->push(new DeleteCmd(this, m_doc, victims));
+        pushEdit(new DeleteCmd(this, m_doc, victims), {});
 }
 
 void Canvas::wheelEvent(QWheelEvent *event)

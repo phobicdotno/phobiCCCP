@@ -1,5 +1,6 @@
 #pragma once
 #include "element.h"
+#include "parametric.h"
 #include <QHash>
 #include <QSet>
 #include <QString>
@@ -44,6 +45,13 @@ public:
     static bool createBlank(const QString &path, double width, double height,
                             double thickness, QString *error = nullptr);
 
+private:
+    // Params and toolpath groups from memory into a blank container at path,
+    // for a save whose source file is gone.
+    bool restoreInto(const QString &path, QString *error) const;
+
+public:
+
     QString filePath() const { return m_path; }
     // The container save() starts from (and then writes to). Only for a
     // copy that must be written from another container than its own file.
@@ -55,6 +63,16 @@ public:
     const QVector<Element> &elements() const { return m_elements; }
     QVector<Element> &elementsRef() { return m_elements; }   // for editing
     const QVector<Toolpath> &toolpaths() const { return m_toolpaths; }
+    QVector<Toolpath> &toolpathsRef() { return m_toolpaths; }    // for editing
+    // Whole-state swaps for the parametric undo steps (canvas SnapshotCmd).
+    void setElements(const QVector<Element> &els) { m_elements = els; }
+    void setToolpaths(const QVector<Toolpath> &tps) { m_toolpaths = tps; }
+
+    // User parameters, constraints and driving dimensions (parametric.h).
+    // Loaded from and saved to params.phobic_parametric.
+    const Parametric &parametric() const { return m_parametric; }
+    Parametric &parametricRef() { return m_parametric; }
+    void setParametric(const Parametric &p) { m_parametric = p; }
 
     void addElement(const Element &e) { m_elements.append(e); }
     bool removeElementById(const QString &id)
@@ -170,6 +188,7 @@ private:
     QVector<Element> m_elements;
     QVector<Toolpath> m_toolpaths;
     QVector<ToolpathGroup> m_groups;
+    Parametric m_parametric;
 };
 
 } // namespace c2d

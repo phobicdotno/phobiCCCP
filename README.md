@@ -54,6 +54,8 @@ Four modes, in the order of the work: **Design → Toolpaths → Simulate → Ma
 
 ![BitZero probing page: plate, cycle, live probe contact, Begin](docs/screenshots/bitzero.png)
 
+![Parameters tab: user parameters, driving dimensions with ƒx tags, constraint badges](docs/screenshots/parameters.png)
+
 ## A job, start to finish
 
 1. **Design** – open a `.c2d` (or start on the blank design sized to the
@@ -82,6 +84,21 @@ under [CLI](#cli).
 - Saves them back so Carbide Create 8 still opens them (round-trip verified);
   toolpath edits and newly created toolpaths are written into the container
 - All 5 element types render: circle, rectangle, regular polygon, path, text
+
+**Parametric sketching** (Fusion style)
+- **Constrain** (G, hold for the list): coincident, horizontal, vertical,
+  parallel, perpendicular, tangent, equal, collinear, concentric, midpoint,
+  fix and symmetric; the drawing obeys at once, one undo step each
+- **Dimension** (D): lengths, distances (horizontal, vertical or aligned by
+  where the label goes), diameters (Shift: radius) and angles; type a value
+  or an expression such as `plate_w / 2 - 10`
+- **Parameters** tab: user parameters with expressions and comments, the
+  stock size as `stock_w`, `stock_h`, `stock_t`, every dimension and
+  constraint, and a chip that says fully constrained / degrees of freedom
+  left / what can't hold. Fully constrained shapes turn teal
+- Toolpath number fields take expressions (`1/4 in`, `stock_t / 2`); one that
+  names a parameter stays bound (violet, ƒx) and follows it
+- Saved inside the `.c2d`; Carbide Create ignores it
 
 **Vector editing** (Carbide Create parity)
 - **Booleans**: Union (weld), Subtract, Intersect (Edit → Vectors, icon bar);
@@ -155,6 +172,12 @@ under [CLI](#cli).
 - **Tool library** with Carbide 3D's cutters and per-material speeds & feeds
   (Toolpaths → Tool library…; values that are guesses are flagged as such)
 - **Rest machining** for pockets (`enable_rest` / `rest_diameter`)
+- **No re-cutting**: a pocket or adaptive toolpath that overlaps what the
+  toolpaths above it already cleared cuts only what is left (`rest_auto`,
+  on by default), each pass skipping the area already cut to that depth
+- **Area tool works like a fill**: a click selects just the area it lands in,
+  bounded by every shape around it; where shapes overlap, that piece is added
+  as a closed path so a toolpath cuts only it
 - **Toolpath tiling** (File → Export G-code (tiled)… or `--export-tiled`):
   one complete program per tile, Y-shifted, cuts split cleanly at the
   boundary

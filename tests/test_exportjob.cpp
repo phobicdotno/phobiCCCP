@@ -90,9 +90,15 @@ int main(int argc, char *argv[])
                                 QStringLiteral("X50.000Y60.000Z1.000"),
                                 QStringLiteral("G0X0Y0Z10.000"), QStringLiteral("M05")};
         const QStringList o = c2d::safeRapidsTransform(in);
-        const int a = int(o.indexOf(QStringLiteral("G0X10.000Y20.000")));
-        check(a > 0 && o.value(a + 1) == QLatin1String("G0Z2.540"),
-              "first rapid after a tool change: XY across, then Z down");
+        // Without a BitSetter the bit is wherever the operator left it after
+        // the change, maybe just above the stock: up first, then across.
+        const int a = int(o.indexOf(QStringLiteral("G0Z2.540")));
+        check(a > 0 && o.value(a + 1) == QLatin1String("G0X10.000Y20.000"),
+              "first rapid after a tool change: Z up, then XY across");
+        const QStringList start = c2d::safeRapidsTransform(
+            {QStringLiteral("G90"), QStringLiteral("G0X10.000Y20.000Z2.540")});
+        check(start.value(1) == QLatin1String("G0X10.000Y20.000") && start.value(2) == QLatin1String("G0Z2.540"),
+              "first rapid of the program (the sender rose to the top): across, then down");
         const int b = int(o.indexOf(QStringLiteral("G0X50.000Y60.000")));
         check(b > 0 && o.value(b + 1) == QLatin1String("G0Z1.000"),
               "a modal G0 that descends: across, then down");

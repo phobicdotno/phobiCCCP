@@ -55,9 +55,10 @@ QStringList airCutTransform(const QStringList &lines, double lift);
 
 // Rapids never move down and sideways at once: a G0 with both XY and Z is
 // split so the machine rises first and then travels, or travels first and
-// then descends. Z starts out (and is again after every `M0 ;T` tool change,
-// which parks at the top) as "at the top", so the first move into a job is
-// always XY across, then Z down.
+// then descends. Z starts out as "at the top" (the sender rises there before
+// the program), so the first move into a job is XY across, then Z down.
+// After every `M0 ;T` tool change it is unknown - without a BitSetter the
+// bit is wherever the operator jogged it - so the next rapid rises first.
 QStringList safeRapidsTransform(const QStringList &lines);
 
 class GrblPost

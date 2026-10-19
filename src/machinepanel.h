@@ -114,6 +114,7 @@ private:
     void loadSettings();
     void saveSettings();
     void updateOffsetLabels();
+    void forgetReference();
     // `remoteWhy` set: started from a pad, nothing is asked here and a
     // refusal is written there instead of shown.
     bool runProgram(QString *remoteWhy = nullptr);

@@ -234,6 +234,30 @@ static void testBackToPad(const QString &dir)
     check(lost.isEmpty() && !offBack.value("toolpaths").toArray().at(0).toObject().value("enabled").toBool(true),
           "and comes back off, with nothing lost");
 
+    // A toolpath still waiting for shapes, and a material this library does
+    // not know, are not built here, but a save here must not take them off
+    // the pads.
+    {
+        QJsonObject waiting = d;
+        QJsonArray tps2 = waiting.value("toolpaths").toArray();
+        QJsonObject empty = tps2.at(0).toObject();
+        empty.insert("name", "Later");
+        empty.insert("shapes", QJsonArray());
+        tps2.append(empty);
+        waiting.insert("toolpaths", tps2);
+        waiting.insert("material", "unobtainium");
+        const QString wPath = QDir(dir).filePath("waiting.c2d");
+        QStringList notes;
+        const bool wBuilt = padlink::buildDocument(waiting, wPath, &notes, &err);
+        check(wBuilt && notes.filter("unobtainium").size() == 1 && notes.filter("Later").size() == 1,
+              "an empty toolpath and an unknown material are noted");
+        const QJsonObject wBack = padlink::designFromDocument(wPath, waiting, &lost, &err);
+        const QJsonArray wTps = wBack.value("toolpaths").toArray();
+        check(wTps.size() == tps2.size() && wTps.last().toObject().value("name").toString() == QLatin1String("Later"),
+              "the toolpath waiting for shapes comes back");
+        check(wBack.value("material").toString() == QLatin1String("unobtainium"), "and so does the material");
+    }
+
     // Edits only phobiCCCP can hold.
     Document doc;
     doc.load(path, &err);
@@ -266,6 +290,9 @@ static void testLinks(const QString &dir)
     check(l.pathsFor("sign-1").size() == 1, "and found from the design");
     padlink::Store store(pad);
     check(store.list().isEmpty(), "the links file is not a design");
+    check(l.modified(file) == 0, "no design time known for an old link");
+    l.set(file, "sign-1", true, 1760850000123.0);
+    check(padlink::Links(pad).modified(file) == 1760850000123.0, "the design time the file holds is kept");
     l.set(file, "sign-1", false);
     check(!l.padOnly(file), "marked as holding more than the pad can");
     l.remove(file);

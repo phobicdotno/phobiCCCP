@@ -4,6 +4,7 @@
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../model.dart';
 import 'icons.dart';
@@ -52,8 +53,9 @@ class PropertiesPanel extends StatelessWidget {
             FormRow(
               'Center',
               pair(
-                NumBox(s.x + w / 2, (v) => onChange(s.copyWith(x: v - w / 2))),
-                NumBox(s.y + h / 2, (v) => onChange(s.copyWith(y: v - h / 2))),
+                // The corner has to stay inside ±10000 mm too (padlink check()).
+                NumBox(s.x + w / 2, (v) => onChange(s.copyWith(x: v - w / 2)), min: -10000 + w / 2, max: 10000 - w / 2),
+                NumBox(s.y + h / 2, (v) => onChange(s.copyWith(y: v - h / 2)), min: -10000 + h / 2, max: 10000 - h / 2),
               ),
             ),
           );
@@ -167,6 +169,7 @@ class _TextBoxState extends State<_TextBox> {
     child: TextField(
       controller: _c,
       style: const TextStyle(fontSize: 13),
+      inputFormatters: [LengthLimitingTextInputFormatter(Shape.maxText)],
       onSubmitted: (t) => t.trim().isEmpty ? null : widget.onChanged(t),
       onTapOutside: (_) {
         if (_c.text.trim().isNotEmpty && _c.text != widget.value) widget.onChanged(_c.text);
@@ -526,7 +529,7 @@ class ToolpathsPanel extends StatelessWidget {
         ),
         PCard(
           title: 'Depth',
-          child: Column(children: [_row('End', StepperField(t.depth, (v) => onChange(i, t.copyWith(depth: v)), max: 1000))]),
+          child: Column(children: [_row('End', StepperField(t.depth, (v) => onChange(i, t.copyWith(depth: v)), min: 0.01, max: 1000))]),
         ),
         if (t.type == 'profile')
           PCard(

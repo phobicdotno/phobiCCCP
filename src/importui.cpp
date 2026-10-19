@@ -1,4 +1,5 @@
 #include "importui.h"
+#include "cccpfile.h"
 #include "canvas.h"
 #include "c2ddocument.h"
 #include "importers.h"
@@ -61,7 +62,7 @@ QString localFile(const QMimeData *mime)
             continue;
         const QString p = u.toLocalFile();
         const QString s = QFileInfo(p).suffix().toLower();
-        if (isImportableFile(p) || s == QLatin1String("c2d"))
+        if (isImportableFile(p) || s == QLatin1String("c2d") || isCccpFile(p))
             return p;
     }
     return QString();
@@ -89,7 +90,8 @@ public:
             if (p.isEmpty())
                 return false;
             de->acceptProposedAction();
-            if (QFileInfo(p).suffix().compare(QLatin1String("c2d"), Qt::CaseInsensitive) == 0) {
+            if (QFileInfo(p).suffix().compare(QLatin1String("c2d"), Qt::CaseInsensitive) == 0
+                || isCccpFile(p)) {
                 if (m_open) m_open(p);
             } else {
                 importVectorFile(m_parent, m_canvas, m_doc, p);
