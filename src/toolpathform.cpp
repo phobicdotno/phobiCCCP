@@ -355,7 +355,7 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     add(QStringLiteral("tab_width"), mm(QStringLiteral("tabs"), QStringLiteral("Width"), 500));
 
     // Rest machining
-    add(QStringLiteral("rest_auto"), sw(QStringLiteral("rest"), QStringLiteral("Start where the toolpaths above stopped")));
+    add(QStringLiteral("rest_auto"), sw(QStringLiteral("rest"), QStringLiteral("Skip what the toolpaths above cut")));
     add(QStringLiteral("rest_overlap"), enabledBy(mm(QStringLiteral("rest"), QStringLiteral("Overlap"), 50),
                                                   QStringLiteral("rest_auto")));
     add(QStringLiteral("enable_rest"), sw(QStringLiteral("rest"), QStringLiteral("Only what a bigger tool left")));

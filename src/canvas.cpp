@@ -1,4 +1,5 @@
 #include "canvas.h"
+#include "vectorops.h"
 #include "sketchgeom.h"
 #include "backgroundimage.h"
 #include "sketch.h"
@@ -435,41 +436,85 @@ QGraphicsPathItem *Canvas::itemFor(const QString &id) const
     return nullptr;
 }
 
+// Area (fill tool): the face the click is in, bounded by every closed shape
+// around it and any it overlaps - not whole shapes. A face whose rings are
+// existing shapes (a shape, or a shape and its islands) selects those; any
+// other ring (where shapes overlap) is added as a closed path, so the
+// toolpath made from the selection cuts only that face.
 void Canvas::selectAreaAt(const QPointF &p, bool add)
 {
     QList<QPair<QString, QPainterPath>> closed;
+    QVector<QPainterPath> paths;
     for (QGraphicsItem *it : m_scene->items())
         if (auto *e = dynamic_cast<ElemItem *>(it))
-            if (e->isClosed() && e->data(0).isValid())
+            if (e->isClosed() && e->data(0).isValid()) {
                 closed.append({e->data(0).toString(), e->mapToScene(e->path())});
-    int outer = -1;
-    double best = 0;
-    for (int i = 0; i < closed.size(); ++i) {
-        if (!closed[i].second.contains(p))
-            continue;
-        const QRectF b = closed[i].second.boundingRect();
-        if (outer < 0 || b.width() * b.height() < best) {
-            outer = i;
-            best = b.width() * b.height();
-        }
-    }
+                paths << closed.last().second;
+            }
     QStringList ids = add ? selectedElementIds() : QStringList();
-    if (outer >= 0) {
-        const QPainterPath &op = closed[outer].second;
-        QList<int> inside;
-        for (int i = 0; i < closed.size(); ++i)
-            if (i != outer && op.contains(closed[i].second))
-                inside << i;
-        if (!ids.contains(closed[outer].first))
-            ids << closed[outer].first;
-        for (int i : inside) {
-            bool nested = false;    // inside another island: not this pocket's
-            for (int j : inside)
-                if (j != i && closed[j].second.contains(closed[i].second))
-                    nested = true;
-            if (!nested && !ids.contains(closed[i].first))
-                ids << closed[i].first;
+    const QVector<QPolygonF> face = vec::fillFace(paths, p);
+    if (face.isEmpty() || !m_doc) {
+        selectElements(ids);
+        return;
+    }
+    auto pathOf = [](const QVector<QPolygonF> &rings) {
+        QPainterPath r;
+        r.setFillRule(Qt::OddEvenFill);
+        for (const QPolygonF &g : rings) {
+            r.addPolygon(g);
+            r.closeSubpath();
         }
+        return r;
+    };
+    auto area = [](const QVector<QPolygonF> &rings) {
+        double a = 0;
+        for (const QPolygonF &g : rings)
+            a += vec::ringArea(g);
+        return std::fabs(a);
+    };
+    // Same region: what is in one and not the other is a sliver at most.
+    auto same = [&](const QPainterPath &a, const QPainterPath &b) {
+        if (!a.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(b.boundingRect())
+            || !b.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(a.boundingRect()))
+            return false;
+        const double diff = area(vec::booleanRings({a}, {b}, vec::BoolOp::Subtract))
+                            + area(vec::booleanRings({b}, {a}, vec::BoolOp::Subtract));
+        const double whole = area(vec::booleanRings({a}, {}, vec::BoolOp::Union));
+        return diff <= 0.002 * whole + 0.01;
+    };
+    auto keep = [&ids](const QString &id) {
+        if (!ids.contains(id))
+            ids << id;
+    };
+    // One shape is the whole face (a text glyph with its counter, say).
+    for (const auto &c : closed)
+        if (same(pathOf(face), c.second)) {
+            keep(c.first);
+            selectElements(ids);
+            return;
+        }
+    QVector<QPolygonF> fresh;
+    for (const QPolygonF &ring : face) {
+        QString match;
+        for (const auto &c : closed)
+            if (same(pathOf({ring}), c.second)) {
+                match = c.first;
+                break;
+            }
+        if (match.isEmpty())
+            fresh << ring;
+        else
+            keep(match);
+    }
+    if (!fresh.isEmpty()) {
+        const QVector<Element> els = vec::elementsFromRings(fresh, m_doc->defaultLayer());
+        m_undo->beginMacro(tr("fill area"));
+        for (const Element &e : els) {
+            m_undo->push(new AddCmd(this, m_doc, e));
+            keep(e.id);
+        }
+        m_undo->endMacro();
+        emit statusHint(tr("Area — the overlap was added as a closed path, so a toolpath cuts only this area"));
     }
     selectElements(ids);
 }
@@ -951,7 +996,7 @@ void Canvas::setTool(Tool t)
                                           : tr("Polygon (inscribed) — press at the center, drag to a corner")); break;
     case DrawPath:    emit statusHint(tr("Path — click = corner, click-drag = curve; Enter finishes, click near start closes, Esc cancels")); break;
     case DrawText:    emit statusHint(tr("Text — click to place the baseline start")); break;
-    case SelectArea:  emit statusHint(tr("Area — click inside a closed shape: selects it and the shapes inside it (islands); Shift adds")); break;
+    case SelectArea:  emit statusHint(tr("Area — click inside an area, like a fill: selects just that area (not the shapes inside it); Shift adds")); break;
     case Pan:         emit statusHint(tr("Hand — drag to move the view; the wheel or - / + zoom")); break;
     case NodeEdit:    emit statusHint(tr("Nodes — drag anchors/handles (Alt breaks symmetry), double-click a segment to add, Del removes, right-click a node for its kind")); break;
     }
@@ -1773,8 +1818,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    // Select closed area: the innermost closed shape around the click, plus
-    // the closed shapes directly inside it - what a pocket needs.
+    // Select closed area: the face around the click, like a fill tool.
     if (m_tool == SelectArea && event->button() == Qt::LeftButton) {
         selectAreaAt(mapToScene(event->pos()), event->modifiers() & Qt::ShiftModifier);
         event->accept();

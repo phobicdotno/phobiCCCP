@@ -595,6 +595,31 @@ int main(int argc, char *argv[])
         check(got == want, "Shift adds the next area");
         click(&ac, {600, 600});                     // empty space
         check(ac.selectedElementIds().isEmpty(), "area click on nothing clears");
+        // Two overlapping squares: like a fill, a click in the overlap picks
+        // just the overlap (added as a closed path), not both squares.
+        const c2d::Element sa = c2d::Element::makeRectangle({200, 100}, 40, 40, adoc.defaultLayer());   // 180..220
+        const c2d::Element sb = c2d::Element::makeRectangle({230, 100}, 40, 40, adoc.defaultLayer());   // 210..250
+        adoc.addElement(sa);
+        adoc.addElement(sb);
+        ac.rebuild();
+        const int before = int(adoc.elements().size());
+        click(&ac, {215, 100});
+        got = ac.selectedElementIds();
+        check(got.size() == 1 && got.first() != sa.id && got.first() != sb.id
+                  && int(adoc.elements().size()) == before + 1,
+              "area click in an overlap selects just the overlap");
+        if (const c2d::Element *f = got.isEmpty() ? nullptr : adoc.elementById(got.first())) {
+            const QRectF b = f->painterPath.boundingRect();
+            check(std::fabs(b.left() - 210) < 0.05 && std::fabs(b.right() - 220) < 0.05
+                      && std::fabs(b.height() - 40) < 0.05,
+                  "the overlap is 10 x 40");
+        }
+        click(&ac, {190, 100});                     // only in the left square
+        got = ac.selectedElementIds();
+        check(got.size() == 1 && !got.contains(sa.id), "area click beside an overlap leaves the overlap out");
+        click(&ac, {300, 300});                     // a plain shape: no new path
+        check(ac.selectedElementIds() == QStringList{other.id} && int(adoc.elements().size()) == before + 2,
+              "area click on a lone shape selects that shape");
     }
 
     // --- a CC rectangle's corner style survives a resize --------------------------------

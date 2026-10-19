@@ -482,11 +482,62 @@ int main(int argc, char *argv[])
               "rest depth: inner pocket starts at the outer pocket's floor minus the overlap");
         check(g.notes.size() == 1 && g.notes.first().startsWith(QStringLiteral("B: starts at 4.00 mm")),
               "rest depth is reported");
-        // Only partly inside the first pocket: full depth kept, and said so.
+        // Only partly inside the first pocket: B keeps its own passes, but
+        // down to A's floor they only cut the part A did not clear.
+        const double fullB = c2d::computeStats(rig({45, 20}, {}).ops).cutLen;
         g = rig({45, 20}, {{"rest_auto", true}});
         zs = levels(g.gcode);
-        check(g.done.size() == 2 && has(zs, -7.5) && !has(zs, -6.5), "partly covered: full depth kept");
-        check(g.notes.size() == 1 && g.notes.first().contains(QStringLiteral("partly")), "partial coverage reported");
+        const double restB = c2d::computeStats(g.ops).cutLen;
+        std::fprintf(stderr, "partial rest: cut %.1f mm (without %.1f mm), notes: %s\n", restB, fullB,
+                     qPrintable(g.notes.join("|")));
+        check(g.done.size() == 2 && has(zs, -7.5) && has(zs, -10.0) && !has(zs, -6.5),
+              "partly covered: B keeps its own depth passes");
+        check(g.notes.size() == 1 && g.notes.first().contains(QStringLiteral("depth band")),
+              "partial coverage reported");
+        // A alone (B already cut to A's floor and left out) gives B's share.
+        const double onlyA = c2d::computeStats(
+            rig({30, 20}, {{"rest_auto", true}, {"rest_overlap", 0.0}, {"end_depth", QStringLiteral("5.000")}}).ops).cutLen;
+        std::fprintf(stderr, "  B alone: %.1f mm with rest, %.1f mm without\n", restB - onlyA, fullB - onlyA);
+        check(restB - onlyA < (fullB - onlyA) * 0.9, "partly covered: the area already cleared is not cut again");
+        // As deep as A and mostly inside it: only the new strip is cut.
+        const c2d::GcodeResult sd = rig({42, 20}, {{"rest_auto", true}, {"end_depth", QStringLiteral("5.000")}});
+        const double sameDepth = c2d::computeStats(sd.ops).cutLen - onlyA;
+        const double sameDepthFull = c2d::computeStats(rig({42, 20}, {{"end_depth", QStringLiteral("5.000")}}).ops).cutLen - onlyA;
+        std::fprintf(stderr, "  mostly inside, same depth: B %.1f mm with rest, %.1f mm without; %s\n", sameDepth,
+                     sameDepthFull, qPrintable(sd.notes.join("|")));
+        check(sameDepth < sameDepthFull * 0.4, "mostly inside at the same depth: only the new strip is cut");
+        bool uncovered = false;   // ...but B's own part beyond A is cut from the top
+        for (const CutPoint &p : cutPoints(g.gcode))
+            if (approx(p.z, -2.5, 1e-3) && p.x > 50.5)
+                uncovered = true;
+        check(uncovered, "partly covered: the new area is cut from the top");
+        // The same for an adaptive B.
+        auto adaptiveRig = [&](bool rest) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("5.000")},
+                                              {"stepdown", 2.5}, {"name", QStringLiteral("A")}});
+            r.addShape(c2d::Element::makeRectangle({42, 20}, 30, 16, layer));
+            r.addToolpath("adaptive_toolpath", {{"stepover", 1.0}, {"end_depth", QStringLiteral("10.000")},
+                                                {"stepdown", 5.0}, {"uuid", QStringLiteral("{tp-2}")},
+                                                {"name", QStringLiteral("B")}, {"rest_auto", rest},
+                                                {"rest_overlap", 1.0}});
+            return c2d::exportGcode(r.doc);
+        };
+        const c2d::GcodeResult aFull = adaptiveRig(false), aRest = adaptiveRig(true);
+        if (aFull.skipped.join("").contains(QStringLiteral("Clipper2"))) {
+            std::fprintf(stderr, "adaptive rest: skipped (no Clipper2)\n");
+        } else {
+            const double af = c2d::computeStats(aFull.ops).cutLen, ar = c2d::computeStats(aRest.ops).cutLen;
+            std::fprintf(stderr, "adaptive rest: cut %.1f mm (without %.1f mm), notes: %s\n", ar, af,
+                         qPrintable(aRest.notes.join("|")));
+            check(aRest.done.size() == 2 && aRest.notes.join("").contains(QStringLiteral("depth band")),
+                  "adaptive partly covered: cut in rest bands");
+            check(ar < af * 0.9, "adaptive partly covered: cuts less than without rest");
+            double minZ;
+            cutBounds(aRest.gcode, &minZ);
+            check(approx(minZ, -10.0, 1e-3), "adaptive partly covered: still reaches end depth");
+        }
         // Already as deep as the toolpaths above: with no overlap there is nothing left.
         g = rig({30, 20}, {{"rest_auto", true}, {"rest_overlap", 0.0}, {"end_depth", QStringLiteral("5.000")}});
         check(g.done.size() == 1 && g.skipped.size() == 1

@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.1.23 (build 74) — 2026-10-19
+
+> Toolpaths stop re-cutting what the ones above them already cleared; the Area tool picks just the area clicked, like a fill
+
+- **No re-cutting of cleared area.** A pocket or adaptive toolpath that is only partly inside
+  what the toolpaths above it cleared (say 90% of it) used to be cut in full, from the top,
+  again. Now each of its depth passes skips the part already cut to that depth: down to the
+  earlier floor only the new area is cut, below it the whole outline. Same depth and mostly
+  overlapping: only the new strip is cut. The switch for it is now called "Skip what the toolpaths
+  above cut" (`rest_auto`, on by default for new toolpaths). Contours and cutouts that
+  are only partly inside still keep their full depth.
+- **Area tool is a fill tool.** A click selects only the area it lands in, bounded by every
+  closed shape around it, not the shapes inside it as a whole. Where shapes overlap, the
+  clicked piece (for example just the overlap of two squares) is added as a closed path and
+  selected, so the pocket made from it cuts only that piece. A shape and its islands are still
+  picked as before when that is the area clicked.
+- Pad app: designs sent from the pad are cut by phobiCCCP, so they get the same rest cutting.
+
 ## v1.1.21 (build 72) — 2026-10-19
 
 > PhobiCCCP for pads: design on an Android tablet or iPad, synced both ways with every phobiCCCP on the network; several machines on one phobiCCCP

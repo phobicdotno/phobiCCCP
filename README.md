@@ -155,6 +155,12 @@ under [CLI](#cli).
 - **Tool library** with Carbide 3D's cutters and per-material speeds & feeds
   (Toolpaths → Tool library…; values that are guesses are flagged as such)
 - **Rest machining** for pockets (`enable_rest` / `rest_diameter`)
+- **No re-cutting**: a pocket or adaptive toolpath that overlaps what the
+  toolpaths above it already cleared cuts only what is left (`rest_auto`,
+  on by default), each pass skipping the area already cut to that depth
+- **Area tool works like a fill**: a click selects just the area it lands in,
+  bounded by every shape around it; where shapes overlap, that piece is added
+  as a closed path so a toolpath cuts only it
 - **Toolpath tiling** (File → Export G-code (tiled)… or `--export-tiled`):
   one complete program per tile, Y-shifted, cuts split cleanly at the
   boundary

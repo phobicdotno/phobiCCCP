@@ -31,6 +31,68 @@ static QList<QPolygonF> finePolygons(const QPainterPath &path, double tol)
     return out;
 }
 
+QVector<QPolygonF> fillFace(const QVector<QPainterPath> &closed, const QPointF &at, double tol)
+{
+    QVector<QPainterPath> in, out;
+    for (const QPainterPath &p : closed) {
+        QPainterPath eo = p;
+        eo.setFillRule(Qt::OddEvenFill);
+        (eo.contains(at) ? in : out) << eo;
+    }
+    if (in.isEmpty())
+        return {};
+    auto pathOf = [](const QVector<QPolygonF> &rings) {
+        QPainterPath r;
+        r.setFillRule(Qt::OddEvenFill);
+        for (const QPolygonF &g : rings) {
+            r.addPolygon(g);
+            r.closeSubpath();
+        }
+        return r;
+    };
+    QVector<QPolygonF> face = in.size() == 1 ? booleanRings(in, {}, BoolOp::Union, tol)
+                                             : booleanRings(in, {}, BoolOp::Intersect, tol);
+    if (!out.isEmpty() && !face.isEmpty())
+        face = booleanRings({pathOf(face)}, out, BoolOp::Subtract, tol);
+    // The piece holding `at`: the smallest ring around it is its outline;
+    // its holes are the rings inside that outline not inside another of them.
+    int outer = -1;
+    double best = 0;
+    for (int i = 0; i < face.size(); ++i)
+        if (face.at(i).containsPoint(at, Qt::OddEvenFill)) {
+            const double a = std::fabs(ringArea(face.at(i)));
+            if (outer < 0 || a < best) {
+                outer = i;
+                best = a;
+            }
+        }
+    if (outer < 0)
+        return {};
+    const QPolygonF &o = face.at(outer);
+    auto within = [](const QPolygonF &inner, const QPolygonF &around) {
+        for (const QPointF &q : inner)
+            if (!around.containsPoint(q, Qt::OddEvenFill))
+                return false;
+        return true;
+    };
+    QVector<int> holes;
+    for (int i = 0; i < face.size(); ++i)
+        if (i != outer && !face.at(i).containsPoint(at, Qt::OddEvenFill) && within(face.at(i), o)
+            && std::fabs(ringArea(face.at(i))) < best)
+            holes << i;
+    QVector<QPolygonF> res{o};
+    for (int i : holes) {
+        bool nested = false;
+        for (int k : holes)
+            if (k != i && std::fabs(ringArea(face.at(k))) > std::fabs(ringArea(face.at(i)))
+                && within(face.at(i), face.at(k)))
+                nested = true;
+        if (!nested)
+            res << face.at(i);
+    }
+    return res;
+}
+
 double ringArea(const QPolygonF &ring)
 {
     double a = 0;
