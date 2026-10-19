@@ -37,6 +37,13 @@ QVector<QPolygonF> offsetRings(const QVector<QPainterPath> &closed,
                                const QVector<QPainterPath> &open, double delta,
                                double tol = 0.005);
 
+// Fill (paint bucket): the face around `at` bounded by every closed path in
+// `closed` - inside each path that contains `at`, outside every other - as
+// the connected piece that holds `at`: its outer ring first, then its holes.
+// Empty when `at` is inside none of them.
+QVector<QPolygonF> fillFace(const QVector<QPainterPath> &closed, const QPointF &at,
+                            double tol = 0.005);
+
 // Signed-area helper (positive = CCW) for tests and ring classification.
 double ringArea(const QPolygonF &ring);
 

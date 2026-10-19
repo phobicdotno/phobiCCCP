@@ -530,6 +530,34 @@ int main(int argc, char **argv)
         check(vec::pathTransforms(QPainterPath(), 3, 0, true).isEmpty(), "no path: nothing");
     }
 
+    // --- fill face: the area around a click, bounded by every closed shape --
+    {
+        auto faceArea = [](const QVector<QPolygonF> &rings) {
+            double a = 0;
+            for (const QPolygonF &g : rings)
+                a += vec::ringArea(g);
+            return std::fabs(a);
+        };
+        const QVector<QPainterPath> two{sqA.painterPath, sqB.painterPath};   // 0..20, 10..30
+        QVector<QPolygonF> f = vec::fillFace(two, {15, 10});                  // in both
+        check(f.size() == 1 && approx(faceArea(f), 200, 0.05), "fill: the overlap of two squares");
+        f = vec::fillFace(two, {5, 10});                                      // only in A
+        check(f.size() == 1 && approx(faceArea(f), 200, 0.05)
+                  && f.first().boundingRect().right() < 10 + 1e-3,
+              "fill: A without the overlap");
+        check(vec::fillFace(two, {50, 50}).isEmpty(), "fill: outside every shape is nothing");
+        // A square with an island, and one more inside that: the ring between
+        // the outer two, the island's inner shape left out.
+        const Element big = Element::makeRectangle({50, 50}, 40, 40, layer);   // 30..70
+        const Element isl = Element::makeRectangle({50, 50}, 20, 20, layer);   // 40..60
+        const Element dot = Element::makeCircle({50, 50}, 3, layer);
+        const QVector<QPainterPath> nest{big.painterPath, isl.painterPath, dot.painterPath};
+        f = vec::fillFace(nest, {35, 50});
+        check(f.size() == 2 && approx(faceArea(f), 1600 - 400, 0.05), "fill: outer ring minus its island");
+        f = vec::fillFace(nest, {45, 50});
+        check(f.size() == 2 && approx(faceArea(f), 400 - M_PI * 9, 0.1), "fill: the island minus the dot");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }
