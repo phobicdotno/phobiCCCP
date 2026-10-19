@@ -39,6 +39,28 @@ Tests: `ctest --test-dir build` (set `QT_QPA_PLATFORM=offscreen` without a
 display). GitHub Actions runs the same build and suite on every push and pull
 request (`.github/workflows/ci.yml`).
 
+### On a pad (Android)
+
+The same program builds as an Android app with Qt for Android (6.8, arm64), the
+Android SDK (platform 34) and NDK 26.1; `qt-android/` holds its manifest and icon (not `Android/`, the Flutter app:
+the two names would clash on Windows and macOS).
+CI builds it on every push (the `android-qt` job; the APK is in the run's
+artifacts).
+
+```sh
+/path/to/Qt/6.8.3/android_arm64_v8a/bin/qt-cmake -S . -B build-android -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DQT_HOST_PATH=/path/to/Qt/6.8.3/gcc_64 \
+    -DANDROID_SDK_ROOT=$ANDROID_SDK_ROOT -DANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/26.1.10909125
+cmake --build build-android     # build-android/android-build/build/outputs/apk/release/
+```
+
+Touch: hold a finger still to right-click, pinch with two fingers to zoom and
+pan the canvas. File > Send to phobiCCCP… sends the design to the computer by
+the machine (which needs File > Receive from Syntexophobic and pads on), and
+can start the cut there. There is no serial port on a pad, so the Machine side
+there has nothing to connect to. Without Boost on Android, V-carve uses the ring
+approximation.
+
 ## Screenshots
 
 Four modes, in the order of the work: **Design → Toolpaths → Simulate → Machine**

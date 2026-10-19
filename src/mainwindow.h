@@ -84,6 +84,7 @@ private:
     void removeUntitledFile();    // the scratch file behind an untitled design
     // Crash recovery (recovery.h): a copy of the unsaved design every couple
     // of minutes, offered again at start-up if the session died.
+    void onSendTo();
     void autosave();
     void offerRecovery();
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).

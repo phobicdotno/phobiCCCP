@@ -37,7 +37,7 @@ class QUdpSocket;
 //     requests, one JSON object per line, each answered by one JSON line
 //     {"ok": true, ...} or {"ok": false, "error": "..."} before the next is
 //     read. The requests themselves ("op": info, tools, designs, get, put,
-//     machine, send) are answered by the main window; see
+//     machine, send, open) are answered by the main window; see
 //     MainWindow::onPadRequest and Android/README.md.
 namespace c2d {
 

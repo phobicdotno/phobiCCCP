@@ -1,8 +1,12 @@
 #include "grblstreamer.h"
 
 #include <QRegularExpression>
+#ifdef HAVE_SERIALPORT
 #include <QSerialPort>
 #include <QSerialPortInfo>
+#else
+#include "serialstub.h"
+#endif
 #include <QTimer>
 
 namespace c2d {
