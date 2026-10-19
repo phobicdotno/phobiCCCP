@@ -7,12 +7,34 @@ import 'package:flutter/material.dart';
 import '../app_state.dart';
 import '../model.dart';
 import 'theme.dart';
-import 'widgets.dart';
 
-Future<void> showSendDialog(BuildContext context, AppState app, Design d) async {
-  final msg = await showDialog<String>(context: context, builder: (_) => SendDialog(app, d));
-  if (msg != null && context.mounted) toast(context, msg);
+/// Asked once more before a send that starts the machine.
+Future<bool> confirmStart(BuildContext context, String design, String machine, String computer) async {
+  final sure = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Start cutting now?'),
+      content: SizedBox(
+        width: 460,
+        child: Text('“$design” will start on $machine at $computer as soon as it arrives, and the spindle '
+            'will spin up. Make sure the stock is clamped, the right bit is in, the zero is set and nobody is near the machine.'),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+        FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send and start')),
+      ],
+    ),
+  );
+  return sure == true;
 }
+
+/// What to tell the user after a send.
+String sendWords(SendResult r, bool start, String computer) =>
+    (start && r.started ? 'Cutting started on $computer.' : (r.message.isEmpty ? 'Sent to $computer.' : r.message)) +
+    (r.notes.isEmpty ? '' : ' ${r.notes.join('; ')}');
+
+Future<String?> showSendDialog(BuildContext context, AppState app, Design d) =>
+    showDialog<String>(context: context, builder: (_) => SendDialog(app, d));
 
 class SendDialog extends StatefulWidget {
   final AppState app;
@@ -47,19 +69,7 @@ class _SendDialogState extends State<SendDialog> {
     if (c == null) return;
     if (_start) {
       final machine = c.info?.machines.where((m) => m.id == _machine).firstOrNull?.name ?? 'the machine';
-      final sure = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Start cutting now?'),
-          content: Text('“${widget.design.name}” will start on $machine at ${c.name} as soon as it arrives, and the spindle '
-              'will spin up. Make sure the stock is clamped, the right bit is in, the zero is set and nobody is near the machine.'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Send and start')),
-          ],
-        ),
-      );
-      if (sure != true) return;
+      if (!await confirmStart(context, widget.design.name, machine, c.name)) return;
     }
     setState(() {
       _busy = true;
@@ -69,9 +79,7 @@ class _SendDialogState extends State<SendDialog> {
     try {
       final r = await app.send(widget.design, c, _machine ?? '', _start);
       if (!mounted) return;
-      final text = (_start && r.started ? 'Cutting started on ${c.name}.' : (r.message.isEmpty ? 'Sent to ${c.name}.' : r.message)) +
-          (r.notes.isEmpty ? '' : ' ${r.notes.join('; ')}');
-      Navigator.pop(context, text);
+      Navigator.pop(context, sendWords(r, _start, c.name));
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -107,10 +115,10 @@ class _SendDialogState extends State<SendDialog> {
         width: 480,
         child: reach.isEmpty
             ? const Text('No PhobiCCCP is answering right now. Open it on a computer on this network '
-                '(or add it under Machines) and try again.', style: TextStyle(color: Brand.textDim))
+                '(or add it under Machines) and try again.', style: TextStyle(color: C.sub))
             : SingleChildScrollView(
                 child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  const Text('To', style: TextStyle(color: Brand.textDim, fontSize: 12)),
+                  const Text('To', style: TextStyle(color: C.sub, fontSize: 12)),
                   RadioGroup<String>(
                     groupValue: _computer,
                     onChanged: (v) => setState(() {
@@ -127,7 +135,7 @@ class _SendDialogState extends State<SendDialog> {
                     ]),
                   ),
                   if ((info?.machines.length ?? 0) > 1) ...[
-                    const Text('Machine', style: TextStyle(color: Brand.textDim, fontSize: 12)),
+                    const Text('Machine', style: TextStyle(color: C.sub, fontSize: 12)),
                     RadioGroup<String>(
                       groupValue: _machine,
                       onChanged: (v) => setState(() => _machine = v),
@@ -145,14 +153,14 @@ class _SendDialogState extends State<SendDialog> {
                     controlAffinity: ListTileControlAffinity.leading,
                     title: const Text('Start cutting right away'),
                   ),
-                  if (warn != null) Text(warn, style: const TextStyle(color: Brand.amber, fontSize: 13)),
+                  if (warn != null) Text(warn, style: const TextStyle(color: C.amber, fontSize: 13)),
                   if (_busy)
                     const Padding(
                       padding: EdgeInsets.only(top: 12),
                       child: Row(children: [
                         SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
                         SizedBox(width: 10),
-                        Expanded(child: Text('Sending… (phobiCCCP may ask about unsaved work first)', style: TextStyle(color: Brand.textDim))),
+                        Expanded(child: Text('Sending… (phobiCCCP may ask about unsaved work first)', style: TextStyle(color: C.sub))),
                       ]),
                     ),
                   if (_error != null) Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),

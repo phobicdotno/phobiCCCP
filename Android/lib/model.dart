@@ -175,8 +175,17 @@ class ToolpathSpec {
   /// profile only: outside | inside | on
   final String side;
 
+  /// Off: kept in the design but not cut (the desktop's tick box).
+  final bool enabled;
+
   const ToolpathSpec(
-      {required this.name, required this.type, required this.shapes, required this.tool, required this.depth, this.side = 'outside'});
+      {required this.name,
+      required this.type,
+      required this.shapes,
+      required this.tool,
+      required this.depth,
+      this.side = 'outside',
+      this.enabled = true});
 
   factory ToolpathSpec.fromJson(Map<String, Object?> j) => ToolpathSpec(
         name: _s(j['name']),
@@ -185,11 +194,13 @@ class ToolpathSpec {
         tool: _i(j['tool'], 201),
         depth: _d(j['depth']),
         side: _s(j['side'], 'outside'),
+        enabled: _b(j['enabled'], true),
       );
   Map<String, Object?> toJson() =>
-      {'name': name, 'type': type, 'shapes': shapes, 'tool': tool, 'depth': depth, 'side': side};
+      {'name': name, 'type': type, 'shapes': shapes, 'tool': tool, 'depth': depth, 'side': side, 'enabled': enabled};
 
-  ToolpathSpec copyWith({String? name, String? type, List<String>? shapes, int? tool, double? depth, String? side}) =>
+  ToolpathSpec copyWith(
+          {String? name, String? type, List<String>? shapes, int? tool, double? depth, String? side, bool? enabled}) =>
       ToolpathSpec(
         name: name ?? this.name,
         type: type ?? this.type,
@@ -197,6 +208,7 @@ class ToolpathSpec {
         tool: tool ?? this.tool,
         depth: depth ?? this.depth,
         side: side ?? this.side,
+        enabled: enabled ?? this.enabled,
       );
 
   static String typeLabel(String t) =>

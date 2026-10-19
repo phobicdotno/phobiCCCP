@@ -1,9 +1,10 @@
 # PhobiCCCP for pads
 
 Design on an Android tablet or an iPad and cut on any phobiCCCP on the same network. The
-app is written in Flutter, so the same code builds for both; it is laid out for a pad
-(drawing on the left, shapes and toolpaths in a panel on the right) and still works on a
-phone.
+app is written in Flutter, so the same code builds for both. It looks like the desktop
+program: the same menu bar, 1 · Design / 2 · Toolpaths / 3 · Machine switch, tool bar,
+drawing with its grid, Properties / Document / Toolpaths panels, colours and Inter font,
+laid out for a pad in landscape.
 
 - **Syncs by itself, both ways.** While the app is open it looks for phobiCCCP every few
   seconds and keeps designs in step with every copy it finds. A design made or changed on
@@ -15,7 +16,7 @@ phone.
   the file holds only what the pad can: once something desktop-only is added (V-carves,
   curves, tabs, feeds set by hand, a 3D model), the pads still get the change, but a pad
   edit no longer overwrites the file, and the status bar says so.
-- **Several machines on one phobiCCCP.** The Machines tab lists each computer's machines
+- **Several machines on one phobiCCCP.** The Machine page lists each computer's machines
   (desktop: Machine › Add machine…) with their state; tap one to make it the one in use.
 - **Several phobiCCCPs.** Install phobiCCCP on as many computers as you like; Send offers
   every one that is open, and every machine on it.
@@ -25,7 +26,11 @@ phone.
   opened and the pad is told why it did not start.
 
 Designs are 2.5D, cut from the top: rectangles, circles, polygons, text, paths and drill
-points, with profile (outside / inside / on), pocket, drill and engrave toolpaths.
+points, with contour (outside / inside / on), pocket, drill and engrave toolpaths, each of
+which can be ticked off as on the desktop.
+
+The fonts in `fonts/` (Inter, Liberation Sans for text on the drawing, DejaVu Sans Mono)
+are the ones the desktop uses; their licences are in `fonts/LICENSE.txt`.
 
 ## Install
 
@@ -61,7 +66,7 @@ default). The pad and computer must be on the same network, and port 47652 (TCP 
 open in the computer's firewall. The app broadcasts and also asks every address on its
 own /24 network, so it finds phobiCCCP on iPad too, where broadcasts need a special Apple
 entitlement. Over Tailscale or across subnets, add the computer by name or address on the
-Machines tab.
+Machine page (or Machine › Add computer…).
 
 ## The link
 

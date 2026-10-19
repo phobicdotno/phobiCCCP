@@ -8,7 +8,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_state.dart';
 import 'store.dart';
-import 'ui/home.dart';
+import 'ui/main_window.dart';
 import 'ui/theme.dart';
 
 Future<void> main() async {
@@ -27,6 +27,6 @@ class PhobiApp extends StatelessWidget {
         title: 'PhobiCCCP',
         debugShowCheckedModeBanner: false,
         theme: phobiTheme(),
-        home: HomeScreen(app),
+        home: MainWindow(app),
       );
 }

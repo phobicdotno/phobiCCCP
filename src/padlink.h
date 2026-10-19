@@ -28,7 +28,8 @@
 //      {"id": "s6", "type": "point", "x": 0, "y": 0}],
 //    "toolpaths": [
 //      {"name": "Outline", "type": "profile", "side": "outside",   // profile | pocket | drill | engrave
-//       "shapes": ["s1"], "tool": 201, "depth": 6}]}               // tool: library number; depth below the top
+//       "shapes": ["s1"], "tool": 201, "depth": 6,                 // tool: library number; depth below the top
+//       "enabled": true}]}                                         // optional; false: kept, not cut
 namespace c2d::padlink {
 
 // Limits on what a sender can make us build.

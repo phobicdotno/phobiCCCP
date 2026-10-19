@@ -218,6 +218,22 @@ static void testBackToPad(const QString &dir)
     padlink::designFromDocument(again, back, &lost, &err);
     check(lost.isEmpty(), "and comes back again with nothing lost");
 
+    // A toolpath turned off on the pad stays off here and comes back off.
+    QJsonObject off = d;
+    QJsonArray offTps = off.value("toolpaths").toArray();
+    QJsonObject first = offTps.at(0).toObject();
+    first.insert("enabled", false);
+    offTps[0] = first;
+    off.insert("toolpaths", offTps);
+    const QString offPath = QDir(dir).filePath("off.c2d");
+    check(padlink::buildDocument(off, offPath, nullptr, &err), "a turned-off toolpath builds");
+    Document offDoc;
+    offDoc.load(offPath, &err);
+    check(!offDoc.toolpaths().first().json.value("enabled").toBool(true), "and is off in the document");
+    const QJsonObject offBack = padlink::designFromDocument(offPath, off, &lost, &err);
+    check(lost.isEmpty() && !offBack.value("toolpaths").toArray().at(0).toObject().value("enabled").toBool(true),
+          "and comes back off, with nothing lost");
+
     // Edits only phobiCCCP can hold.
     Document doc;
     doc.load(path, &err);

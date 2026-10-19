@@ -178,13 +178,14 @@ class AppState extends ChangeNotifier {
     _syncSoon();
   }
 
-  void duplicateDesign(String id) {
+  Design? duplicateDesign(String id) {
     final d = store.get(id);
-    if (d == null) return;
-    store.save(d.copyWith(id: newId(), name: '${d.name} copy'));
+    if (d == null) return null;
+    final copy = store.save(d.copyWith(id: newId(), name: '${d.name} copy'));
     designs = store.live();
     _changed();
     _syncSoon();
+    return copy;
   }
 
   void addHost(String host) {
@@ -200,6 +201,9 @@ class AppState extends ChangeNotifier {
     computers = computers.where((c) => c.desktop.typed != host).toList();
     _changed();
   }
+
+  String get lastDesign => settings.lastDesign;
+  set lastDesign(String v) => settings.lastDesign = v;
 
   String get lastTarget => settings.lastTarget;
   set lastTarget(String v) => settings.lastTarget = v;

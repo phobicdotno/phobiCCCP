@@ -6,8 +6,8 @@
 
 **Pad app** (new, Flutter, in `Android/`; builds for Android and, from a Mac, for iPad)
 
-- Laid out for a pad: the drawing on the left, shapes, their properties and the toolpaths in
-  a panel on the right (under the drawing on a phone).
+- Looks like the desktop program, laid out for a pad in landscape: the same menu bar, mode
+  switch, tool bar, drawing, Properties / Document / Toolpaths panels, colours and font.
 - Finds every phobiCCCP on the same network by itself (or by name/address, for Tailscale),
   and keeps designs in step with all of them while it is open: an edit on the pad, or on
   another pad, reaches every computer, and a design deleted on one is deleted everywhere. A
@@ -18,6 +18,7 @@
 - Send to any open phobiCCCP, on any of its machines. "Start cutting right away" is asked for
   each send, confirmed once more on the pad, and only works on a computer that allows it.
 - Shows each computer's machines and their state, and switches the machine in use.
+- Toolpaths can be ticked off, as on the desktop; a turned-off toolpath travels both ways.
 
 **Desktop**
 

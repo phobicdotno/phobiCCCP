@@ -100,6 +100,12 @@ class Settings {
     _save();
   }
 
+  String get lastDesign => _v['lastDesign'] is String ? _v['lastDesign'] as String : '';
+  set lastDesign(String v) {
+    _v['lastDesign'] = v;
+    _save();
+  }
+
   String get lastTarget => _v['lastTarget'] is String ? _v['lastTarget'] as String : '';
   set lastTarget(String v) {
     _v['lastTarget'] = v;

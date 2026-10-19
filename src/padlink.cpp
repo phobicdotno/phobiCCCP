@@ -147,6 +147,8 @@ QString check(const QJsonObject &d)
             return QStringLiteral("toolpath %1: bad depth").arg(name);
         if (!finite(t.value(QStringLiteral("tool")), 1, 1e9))
             return QStringLiteral("toolpath %1: no tool").arg(name);
+        if (t.contains(QStringLiteral("enabled")) && !t.value(QStringLiteral("enabled")).isBool())
+            return QStringLiteral("toolpath %1: bad enabled").arg(name);
         for (const QJsonValue &sid : t.value(QStringLiteral("shapes")).toArray())
             if (!ids.contains(sid.toString()))
                 return QStringLiteral("toolpath %1: unknown shape %2").arg(name, sid.toString().left(64));
@@ -284,6 +286,7 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         }
         if (!name.isEmpty())
             j.insert(QStringLiteral("name"), name);
+        j.insert(QStringLiteral("enabled"), t.value(QStringLiteral("enabled")).toBool(true));
         if (depth > thickness && notes)
             *notes << QStringLiteral("toolpath %1 goes %2 mm deeper than the stock")
                           .arg(name).arg(depth - thickness, 0, 'f', 2);
@@ -466,10 +469,6 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             lose(QStringLiteral("%1 toolpaths").arg(toolpathLabel(type)));
             continue;
         }
-        if (!t.json.value(QStringLiteral("enabled")).toBool(true)) {
-            lose(QStringLiteral("turned-off toolpaths"));
-            continue;
-        }
         if (toolpaths.size() >= kMaxToolpaths) {
             lose(QStringLiteral("toolpaths over %1").arg(kMaxToolpaths));
             continue;
@@ -496,7 +495,8 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
                                                                          : QStringLiteral("outside");
         toolpaths.append(QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("type"), kind},
                                      {QStringLiteral("shapes"), refs}, {QStringLiteral("tool"), number},
-                                     {QStringLiteral("depth"), depth}, {QStringLiteral("side"), side}});
+                                     {QStringLiteral("depth"), depth}, {QStringLiteral("side"), side},
+                                     {QStringLiteral("enabled"), t.json.value(QStringLiteral("enabled")).toBool(true)}});
 
         // What building this toolpath from the pad would give; anything else
         // was set here and would be lost.
@@ -506,6 +506,7 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
         if (type == QLatin1String("contour"))
             j.insert(QStringLiteral("ofset_dir"), dir);
+        j.insert(QStringLiteral("enabled"), t.json.value(QStringLiteral("enabled")).toBool(true));
         QJsonObject have = t.json;
         for (const QString &k : ignoredToolpathKeys()) {
             have.remove(k);

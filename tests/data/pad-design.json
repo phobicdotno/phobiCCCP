@@ -16,9 +16,9 @@
     {"id": "s6", "type": "point", "x": 150.0, "y": 130.0}
   ],
   "toolpaths": [
-    {"name": "Lettering", "type": "engrave", "shapes": ["s4", "s5"], "tool": 201, "depth": 1.0, "side": "outside"},
-    {"name": "Holes", "type": "pocket", "shapes": ["s2", "s3"], "tool": 201, "depth": 4.0, "side": "outside"},
-    {"name": "Hanger", "type": "drill", "shapes": ["s6"], "tool": 201, "depth": 6.0, "side": "outside"},
-    {"name": "Cut out", "type": "profile", "shapes": ["s1"], "tool": 201, "depth": 12.5, "side": "outside"}
+    {"name": "Lettering", "type": "engrave", "shapes": ["s4", "s5"], "tool": 201, "depth": 1.0, "side": "outside", "enabled": true},
+    {"name": "Holes", "type": "pocket", "shapes": ["s2", "s3"], "tool": 201, "depth": 4.0, "side": "outside", "enabled": true},
+    {"name": "Hanger", "type": "drill", "shapes": ["s6"], "tool": 201, "depth": 6.0, "side": "outside", "enabled": true},
+    {"name": "Cut out", "type": "profile", "shapes": ["s1"], "tool": 201, "depth": 12.5, "side": "outside", "enabled": true}
   ]
 }
