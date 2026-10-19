@@ -34,9 +34,10 @@ are the ones the desktop uses; their licences are in `fonts/LICENSE.txt`.
 
 ## Install
 
-**Android:** every CI run builds a debug APK. Open the run under the repository's
-**Actions** tab, download **PhobiCCCP-android**, and open `app-debug.apk` on the tablet
-(allow installing from that app when asked).
+**Android:** on the tablet, open the repository's **Releases** page, download the newest
+`PhobiCCCP-x.y.z.apk` and open it (allow installing from that app when asked). Pushing a
+version tag (`git tag v1.2.3 && git push origin v1.2.3`) builds and publishes that release.
+Every CI run also builds a debug APK (**PhobiCCCP-android** under the run in **Actions**).
 
 **iPad:** iOS builds need a Mac with Xcode and an Apple developer account:
 

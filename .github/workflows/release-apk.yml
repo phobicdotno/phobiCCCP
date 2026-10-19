@@ -1,0 +1,46 @@
+name: release-apk
+
+# Pushing a version tag (v1.2.3) builds the pad app's release APK and
+# publishes it as a GitHub release, so it can be downloaded on a tablet.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.9
+          cache: true
+
+      - name: Build APK
+        run: |
+          flutter pub get
+          flutter build apk --release
+          cp build/app/outputs/flutter-apk/app-release.apk "PhobiCCCP-${GITHUB_REF_NAME#v}.apk"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "PhobiCCCP-${GITHUB_REF_NAME#v}.apk" \
+            --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "phobiCCCP ${GITHUB_REF_NAME#v}" \
+            --notes "PhobiCCCP for pads: download the .apk on the tablet and open it to install. It is signed with a test key, so Android may ask you to allow the install."
