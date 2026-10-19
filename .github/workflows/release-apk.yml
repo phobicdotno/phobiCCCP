@@ -1,10 +1,12 @@
 name: release-apk
 
-# Pushing a version tag (v1.2.3) builds the pad app's release APK and
-# publishes it as a GitHub release, so it can be downloaded on a tablet.
+# Builds the pad app's release APK and publishes it as a GitHub release, so it
+# can be downloaded on a tablet. Runs on a pushed version tag (v1.2.3), or by
+# hand from the Actions tab, which releases the version in VERSION from main.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -30,17 +32,22 @@ jobs:
           flutter-version: 3.44.9
           cache: true
 
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="$(cat ../VERSION)"; fi
+          echo "V=$v" >> "$GITHUB_ENV"
+
       - name: Build APK
         run: |
           flutter pub get
           flutter build apk --release
-          cp build/app/outputs/flutter-apk/app-release.apk "PhobiCCCP-${GITHUB_REF_NAME#v}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "PhobiCCCP-$V.apk"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" "PhobiCCCP-${GITHUB_REF_NAME#v}.apk" \
+          gh release create "v$V" "PhobiCCCP-$V.apk" --target "$GITHUB_SHA" \
             --repo "$GITHUB_REPOSITORY" --prerelease \
-            --title "phobiCCCP ${GITHUB_REF_NAME#v}" \
+            --title "phobiCCCP $V" \
             --notes "PhobiCCCP for pads: download the .apk on the tablet and open it to install. It is signed with a test key, so Android may ask you to allow the install."
