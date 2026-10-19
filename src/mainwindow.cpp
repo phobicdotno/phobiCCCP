@@ -15,6 +15,12 @@
 #include "machinepanel.h"
 #include "modelpanel.h"
 #include "projectreceiver.h"
+#include "machineprofiles.h"
+#include "padlink.h"
+#include <QActionGroup>
+#include <QLineEdit>
+#include <QJsonDocument>
+#include <QUuid>
 #include "tiling.h"
 #include <QInputDialog>
 #include "propertiespanel.h"
@@ -71,6 +77,7 @@
 #include <QDebug>
 #include <QSqlDatabase>
 #include <QActionGroup>
+#include <QLineEdit>
 #include <QLabel>
 #include <QPainter>
 #include <QPen>
@@ -767,11 +774,11 @@ MainWindow::MainWindow(QWidget *parent)
         QDesktopServices::openUrl(QUrl::fromLocalFile(dest));
     });
     fileMenu->addSeparator();
-    m_receiveAct = fileMenu->addAction(QStringLiteral("&Receive from Syntexophobic"));
+    m_receiveAct = fileMenu->addAction(QStringLiteral("&Receive from Syntexophobic and phones"));
     m_receiveAct->setCheckable(true);
     m_receiveAct->setToolTip(QStringLiteral(
-        "Let Syntexophobic on this network or over Tailscale send projects here "
-        "(port %1). You are asked before anything is opened.").arg(ProjectReceiver::kPort));
+        "Let Syntexophobic and the PhobiCCCP phone app on this network or over Tailscale "
+        "find this computer and send designs here (port %1).").arg(ProjectReceiver::kPort));
     m_receiveAct->setChecked(QSettings().value(QStringLiteral("receive/enabled"), true).toBool());
     connect(m_receiveAct, &QAction::toggled, this, [this](bool on) {
         QSettings().setValue(QStringLiteral("receive/enabled"), on);
@@ -793,6 +800,7 @@ MainWindow::MainWindow(QWidget *parent)
     // other menus are still being added below and by the install* helpers,
     // so append it once construction has finished.
     QTimer::singleShot(0, this, [this] {
+        buildMachineMenu();
         m_menuBar->addAction(QStringLiteral("&About"), this, [this] {
             AboutDialog dlg(this);
             dlg.exec();
@@ -2252,6 +2260,8 @@ void MainWindow::setReceiving(bool on)
         return;
     }
     connect(m_receiver, &ProjectReceiver::received, this, &MainWindow::onProjectReceived);
+    connect(m_receiver, &ProjectReceiver::request, this, &MainWindow::onPadRequest);
+    refreshDiscovery();
 }
 
 void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
@@ -2327,6 +2337,295 @@ void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
                                  .arg(p.name, sender, dir), 10000);
     if (m_receiver)
         m_receiver->answer(id, true, done);
+}
+
+// ---- the PhobiCCCP phone app ----------------------------------------------
+//
+// Same port as Syntexophobic (projectreceiver.h), one JSON request per line.
+// Designs a phone syncs are kept in Documents/phobiCCCP/Pad so every phone,
+// and through the phones every other phobiCCCP, ends up with the same set.
+namespace {
+
+QString padDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+           + QStringLiteral("/phobiCCCP/Pad");
+}
+
+// This install, so a phone tells two computers with the same name apart.
+QString instanceId()
+{
+    QSettings st;
+    QString id = st.value(QStringLiteral("pad/instanceId")).toString();
+    if (id.isEmpty()) {
+        id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        st.setValue(QStringLiteral("pad/instanceId"), id);
+    }
+    return id;
+}
+
+bool phonesMayStart()
+{
+    return QSettings().value(QStringLiteral("pad/allowStart"), false).toBool();
+}
+
+QJsonObject padError(const QString &why)
+{
+    return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), why}};
+}
+
+} // namespace
+
+void MainWindow::refreshDiscovery()
+{
+    if (!m_receiver)
+        return;
+    QSettings st;
+    m_receiver->setDiscoveryExtra(QJsonObject{
+        {QStringLiteral("id"), instanceId()},
+        {QStringLiteral("api"), 1},
+        {QStringLiteral("machine"), machineprofiles::nameOf(st, machineprofiles::activeId(st))}});
+}
+
+QJsonObject MainWindow::padInfo()
+{
+    QSettings st;
+    const QString active = machineprofiles::activeId(st);
+    QJsonArray machines;
+    for (const machineprofiles::Profile &p : machineprofiles::list(st)) {
+        QJsonObject m{{QStringLiteral("id"), p.id}, {QStringLiteral("name"), p.name},
+                      {QStringLiteral("active"), p.id == active}};
+        if (p.id == active) {
+            const auto size = appsettings::machine(st);
+            m.insert(QStringLiteral("size"), size.label);
+            m.insert(QStringLiteral("width"), size.width);
+            m.insert(QStringLiteral("height"), size.height);
+        }
+        machines.append(m);
+    }
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("app"), QStringLiteral("phobiCCCP")},
+        {QStringLiteral("version"), QStringLiteral(PHOBICCCP_VERSION)},
+        {QStringLiteral("host"), QSysInfo::machineHostName()},
+        {QStringLiteral("id"), instanceId()},
+        {QStringLiteral("machines"), machines},
+        {QStringLiteral("activeMachine"), active},
+        {QStringLiteral("status"), m_machine->statusJson()},
+        {QStringLiteral("allowStart"), phonesMayStart()},
+        {QStringLiteral("document"), m_doc.filePath().isEmpty() || m_untitled
+                                         ? QString() : QFileInfo(m_doc.filePath()).fileName()},
+        {QStringLiteral("unsaved"), m_dirty}};
+}
+
+void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &peer)
+{
+    const QString op = req.value(QStringLiteral("op")).toString();
+    QJsonObject reply;
+    padlink::Store store(padDir());
+    if (op == QLatin1String("info")) {
+        reply = padInfo();
+    } else if (op == QLatin1String("tools")) {
+        reply = padlink::toolsJson();
+        reply.insert(QStringLiteral("ok"), !reply.isEmpty());
+    } else if (op == QLatin1String("designs")) {
+        reply = QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("designs"), store.list()}};
+    } else if (op == QLatin1String("get")) {
+        const QJsonObject d = store.get(req.value(QStringLiteral("id")).toString());
+        reply = d.isEmpty() ? padError(QStringLiteral("no such design"))
+                            : QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("design"), d}};
+    } else if (op == QLatin1String("put")) {
+        QString err;
+        const bool stored = store.put(req.value(QStringLiteral("design")).toObject(), &err);
+        reply = err.isEmpty() ? QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("stored"), stored}}
+                              : padError(err);
+    } else if (op == QLatin1String("machine")) {
+        QString why;
+        reply = switchMachine(req.value(QStringLiteral("id")).toString(), &why) ? padInfo()
+                                                                              : padError(why);
+    } else if (op == QLatin1String("send")) {
+        reply = padSend(req, peer);
+    } else {
+        reply = padError(QStringLiteral("unknown request %1").arg(op.left(20)));
+    }
+    if (m_receiver)    // the user may have turned receiving off meanwhile
+        m_receiver->respond(id, reply);
+}
+
+QJsonObject MainWindow::padSend(const QJsonObject &req, const QString &peer)
+{
+    const QString host = QSysInfo::machineHostName();
+    const QJsonObject design = req.value(QStringLiteral("design")).toObject();
+    if (const QString e = padlink::check(design); !e.isEmpty())
+        return padError(e);
+    if (design.value(QStringLiteral("deleted")).toBool())
+        return padError(QStringLiteral("that design was deleted"));
+    // Never swap the document under a running job.
+    if (m_machine->isBusy())
+        return padError(QStringLiteral("%1 is busy with the machine; try again when it is done").arg(host));
+    const QString machineId = req.value(QStringLiteral("machine")).toString();
+    QString why;
+    if (!machineId.isEmpty() && !switchMachine(machineId, &why))
+        return padError(why);
+    padlink::Store(padDir()).put(design);   // sent is also synced
+
+    const bool start = req.value(QStringLiteral("start")).toBool();
+    const QString from = req.value(QStringLiteral("from")).toString().left(60);
+    const QString name = design.value(QStringLiteral("name")).toString();
+    const QString sender = from.isEmpty() ? peer : QStringLiteral("%1 (%2)").arg(from, peer);
+    if (isMinimized())
+        showNormal();
+    raise();
+    activateWindow();
+    if (!confirmDiscard(QStringLiteral("%1 sends “%2”. Save before opening it?")
+                            .arg(sender, name)))
+        return padError(QStringLiteral("declined on %1").arg(host));
+
+    ReceivedProject folder;   // no files: only the folder, named like a received project
+    folder.name = name;
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                         + QStringLiteral("/phobiCCCP/Received");
+    QString err;
+    const QString dir = saveReceived(folder, base, nullptr, &err);
+    if (dir.isEmpty())
+        return padError(err);
+    const QString c2dPath = QDir(dir).filePath(safeFileName(name) + QStringLiteral(".c2d"));
+    QStringList notes;
+    if (!padlink::buildDocument(design, c2dPath, &notes, &err))
+        return padError(QStringLiteral("could not make the design on %1: %2").arg(host, err));
+    m_dirty = false;   // the question was already asked
+    openPath(c2dPath, false);
+    if (QFileInfo(m_doc.filePath()) != QFileInfo(c2dPath))
+        return padError(QStringLiteral("%1 did not open on %2").arg(QFileInfo(c2dPath).fileName(), host));
+    statusBar()->showMessage(QStringLiteral("“%1” from %2").arg(name, sender), 10000);
+
+    QJsonObject reply{{QStringLiteral("ok"), true}, {QStringLiteral("started"), false},
+                      {QStringLiteral("notes"), QJsonArray::fromStringList(notes)}};
+    QString message = QStringLiteral("opened %1 on %2").arg(QFileInfo(c2dPath).fileName(), host);
+    if (start) {
+        setMode(Mode::Machine, false);
+        QString notStarted;
+        if (!phonesMayStart())
+            notStarted = QStringLiteral("starting from a phone is off on %1 (Machine > Phones may start cutting)")
+                             .arg(host);
+        else if (!m_machine->startFromRemote(&notStarted) && notStarted.isEmpty())
+            notStarted = QStringLiteral("the machine did not start");
+        if (notStarted.isEmpty()) {
+            reply.insert(QStringLiteral("started"), true);
+            message += QStringLiteral(", cutting started");
+        } else {
+            message += QStringLiteral(", not started: ") + notStarted;
+        }
+    } else {
+        setMode(Mode::Design, false);
+    }
+    reply.insert(QStringLiteral("message"), message);
+    return reply;
+}
+
+bool MainWindow::switchMachine(const QString &id, QString *why)
+{
+    QSettings st;
+    if (id == machineprofiles::activeId(st))
+        return true;
+    bool known = false;
+    for (const auto &p : machineprofiles::list(st))
+        known = known || p.id == id;
+    if (!known) {
+        if (why) *why = QStringLiteral("no such machine on %1").arg(QSysInfo::machineHostName());
+        return false;
+    }
+    if (m_machine->isBusy()) {
+        if (why) *why = QStringLiteral("the machine on %1 is busy").arg(QSysInfo::machineHostName());
+        return false;
+    }
+    machineprofiles::activate(st, id);
+    m_machine->reloadMachine(why);
+    rebuildMachineMenu();
+    refreshDiscovery();
+    statusBar()->showMessage(QStringLiteral("Machine: %1").arg(machineprofiles::nameOf(st, id)), 6000);
+    return true;
+}
+
+void MainWindow::buildMachineMenu()
+{
+    m_machineMenu = m_menuBar->addMenu(QStringLiteral("Mac&hine"));
+    m_machineMenu->setToolTipsVisible(true);
+    rebuildMachineMenu();
+}
+
+void MainWindow::rebuildMachineMenu()
+{
+    if (!m_machineMenu)
+        return;
+    m_machineMenu->clear();
+    QSettings st;
+    const QString active = machineprofiles::activeId(st);
+    auto *group = new QActionGroup(m_machineMenu);
+    for (const machineprofiles::Profile &p : machineprofiles::list(st)) {
+        QAction *a = m_machineMenu->addAction(p.name);
+        a->setCheckable(true);
+        a->setChecked(p.id == active);
+        group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, id = p.id] {
+            QString why;
+            if (!switchMachine(id, &why))
+                QMessageBox::information(this, QStringLiteral("Machine"), why);
+            rebuildMachineMenu();
+        });
+    }
+    m_machineMenu->addSeparator();
+    m_machineMenu->addAction(QStringLiteral("&Add machine…"), this, [this] {
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, QStringLiteral("Add machine"),
+            QStringLiteral("Name of the machine (its size, port and BitSetter positions are "
+                           "kept separately for each machine):"), QLineEdit::Normal, QString(), &ok);
+        if (!ok)
+            return;
+        QSettings s;
+        const QString id = machineprofiles::add(s, name);
+        QString why;
+        if (!switchMachine(id, &why))
+            QMessageBox::information(this, QStringLiteral("Machine"), why);
+        rebuildMachineMenu();
+    });
+    m_machineMenu->addAction(QStringLiteral("&Rename machine…"), this, [this] {
+        QSettings s;
+        const QString id = machineprofiles::activeId(s);
+        bool ok = false;
+        const QString name = QInputDialog::getText(this, QStringLiteral("Rename machine"),
+            QStringLiteral("Name:"), QLineEdit::Normal, machineprofiles::nameOf(s, id), &ok);
+        if (ok && machineprofiles::rename(s, id, name)) {
+            rebuildMachineMenu();
+            refreshDiscovery();
+        }
+    });
+    QAction *rm = m_machineMenu->addAction(QStringLiteral("Re&move other machine…"), this, [this] {
+        QSettings s;
+        const QString active = machineprofiles::activeId(s);
+        QStringList names;
+        QStringList ids;
+        for (const auto &p : machineprofiles::list(s))
+            if (p.id != active) { names << p.name; ids << p.id; }
+        bool ok = false;
+        const QString pick = QInputDialog::getItem(this, QStringLiteral("Remove machine"),
+            QStringLiteral("Forget this machine and its settings:"), names, 0, false, &ok);
+        if (ok && names.contains(pick)) {
+            machineprofiles::remove(s, ids.at(names.indexOf(pick)));
+            rebuildMachineMenu();
+        }
+    });
+    rm->setEnabled(machineprofiles::list(st).size() > 1);
+    m_machineMenu->addSeparator();
+    QAction *allow = m_machineMenu->addAction(QStringLiteral("&Phones may start cutting"));
+    allow->setCheckable(true);
+    allow->setChecked(phonesMayStart());
+    allow->setToolTip(QStringLiteral("Let the PhobiCCCP phone app send a design and start it "
+                                     "right away. The machine still has to be connected, homed "
+                                     "and idle, and the phone asks before it sends."));
+    connect(allow, &QAction::toggled, this, [](bool on) {
+        QSettings().setValue(QStringLiteral("pad/allowStart"), on);
+    });
 }
 
 void MainWindow::removeUntitledFile()

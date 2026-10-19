@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.PhobiCCCP" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:statusBarColor">@color/background</item>
+        <item name="android:navigationBarColor">@color/background</item>
+    </style>
+    <color name="background">#FF16181D</color>
+    <color name="brand_red">#FFCC0000</color>
+</resources>

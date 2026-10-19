@@ -81,3 +81,30 @@ jobs:
           name: ctest-log
           path: build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
+
+  # The phone app (Android/): unit tests, then a debug APK to install from the run's artifacts.
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+          cache-dependency-path: Android/**/*.gradle.kts
+
+      - name: Test and build
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhobiCCCP-android
+          path: Android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

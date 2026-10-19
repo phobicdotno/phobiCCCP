@@ -2697,32 +2697,50 @@ void MachinePanel::finishRehearsal(bool ok, bool measured)
 
 // ---- program -------------------------------------------------------------------
 
-void MachinePanel::runProgram()
+bool MachinePanel::runProgram(QString *remoteWhy)
 {
-    if (!requireHomed(QStringLiteral("Running a program")))
-        return;
+    const bool remote = remoteWhy != nullptr;
+    // Here a refusal is a message on screen; from a phone it goes back there.
+    auto refuse = [&](const QString &headline, const QString &body = QString()) {
+        if (remote) {
+            *remoteWhy = body.isEmpty() ? headline : headline + QLatin1Char(' ') + body;
+            log(QStringLiteral("!! start from phone refused: %1").arg(*remoteWhy));
+        } else {
+            shopTell(this, QStringLiteral("Machine"), headline, body);
+        }
+        return false;
+    };
+    if (remote) {
+        if (!m_grbl->isConnected())
+            return refuse(QStringLiteral("The machine is not connected."));
+        if (!m_homed)
+            return refuse(QStringLiteral("The machine needs Initialize (homing) first: %1.").arg(m_unhomedWhy));
+        if (isBusy() || m_grbl->isParkedForTool())
+            return refuse(QStringLiteral("The machine is busy."));
+        if (m_machineState != QLatin1String("Idle"))
+            return refuse(QStringLiteral("The machine is not idle (%1).")
+                              .arg(m_machineState.isEmpty() ? QStringLiteral("no status yet") : m_machineState));
+    } else if (!requireHomed(QStringLiteral("Running a program"))) {
+        return false;
+    }
     if (m_rightStack)
         m_rightStack->setCurrentWidget(m_jobPage);
-    if (!m_grbl->isConnected()) {
-        shopTell(this, QStringLiteral("Machine"), QStringLiteral("Connect to the controller first."));
-        return;
-    }
-    if (!m_doc) {
-        shopTell(this, QStringLiteral("Machine"), QStringLiteral("Open a .c2d file first."));
-        return;
-    }
+    if (!m_grbl->isConnected())
+        return refuse(QStringLiteral("Connect to the controller first."));
+    if (!m_doc)
+        return refuse(QStringLiteral("Open a .c2d file first."));
     // Re-exported at the moment Run is pressed, so it is the current document
     // that gets streamed - and a 3D finish is minutes of work, which used to
     // freeze the window with the machine sitting idle.
     const GcodeResult r = exportWithProgress(this, *m_doc, QStringLiteral("Preparing program"));
     if (r.cancelled) {
         log(QStringLiteral("program preparation cancelled"));
-        return;
+        if (remote)
+            *remoteWhy = QStringLiteral("Preparing the program was cancelled.");
+        return false;
     }
-    if (r.done.isEmpty()) {
-        shopTell(this, QStringLiteral("Machine"), QStringLiteral("No exportable toolpaths."));
-        return;
-    }
+    if (r.done.isEmpty())
+        return refuse(QStringLiteral("No exportable toolpaths."));
     // Surface map: every Z follows the measured surface. Applied to the
     // operations and posted again, so feeds are cut up along the way.
     QVector<Op> ops = r.ops;
@@ -2752,13 +2770,11 @@ void MachinePanel::runProgram()
         else if (bs.enabled && !insideTravel(bs.x, bs.y))
             bad = QStringLiteral("BitSetter position (X %1  Y %2)").arg(bs.x, 0, 'f', 1)
                       .arg(bs.y, 0, 'f', 1);
-        if (!bad.isEmpty()) {
-            shopTell(this, QStringLiteral("Run program"), QStringLiteral("Position off the machine"),
-                     QStringLiteral("This program changes tools, and the %1 is outside the "
-                                    "machine's travel. Set it again on the BitSetter page "
-                                    "(Use here) with the machine homed.").arg(bad));
-            return;
-        }
+        if (!bad.isEmpty())
+            return refuse(QStringLiteral("Position off the machine."),
+                          QStringLiteral("This program changes tools, and the %1 is outside the "
+                                         "machine's travel. Set it again on the BitSetter page "
+                                         "(Use here) with the machine homed.").arg(bad));
     }
     ShopAsk ask;
     ask.title = QStringLiteral("Run program");
@@ -2800,8 +2816,12 @@ void MachinePanel::runProgram()
     }
     ask.okText = QStringLiteral("▶ Start");
     ask.defaultOk = false;
-    if (!shopAsk(this, ask))
-        return;
+    if (remote) {
+        // Asked on the phone instead; what it would have said goes in the log.
+        log(QStringLiteral("started from phone: %1 — %2").arg(ask.headline, ask.note));
+    } else if (!shopAsk(this, ask)) {
+        return false;
+    }
 
     if (useMap)
         log(QStringLiteral("surface map applied: %1").arg(m_map.summary()));
@@ -2824,6 +2844,60 @@ void MachinePanel::runProgram()
     }
     m_endOfJobPending = true;
     m_grbl->startStream(lines);
+    return true;
+}
+
+bool MachinePanel::startFromRemote(QString *why)
+{
+    QString dummy;
+    return runProgram(why ? why : &dummy);
+}
+
+bool MachinePanel::reloadMachine(QString *why)
+{
+    if (isBusy()) {
+        if (why) *why = QStringLiteral("the machine is busy");
+        return false;
+    }
+    const bool wasConnected = m_grbl->isConnected();
+    if (wasConnected)
+        m_grbl->disconnectPort();
+    resetFlow();
+    m_savedHomedAt.clear();
+    // A machine with no port yet must not inherit the last one's.
+    const QString port = QSettings().value(QStringLiteral("machine/port")).toString();
+    if (port.isEmpty())
+        m_ports->setEditText(QString());
+    loadSettings();
+    {
+        const SurfaceMap saved = SurfaceMap::fromJson(
+            QSettings().value(QStringLiteral("machine/heightmap/map")).toString());
+        m_loading = true;
+        m_map = saved;
+        m_useMap->setChecked(saved.isValid()
+                             && QSettings().value(QStringLiteral("machine/heightmap/use"), false).toBool());
+        m_loading = false;
+        refreshMapUi();
+    }
+    updateOffsetLabels();
+    refreshJobInfo();
+    if (wasConnected && !port.isEmpty())
+        m_grbl->connectPort(currentPortName());
+    return true;
+}
+
+QJsonObject MachinePanel::statusJson() const
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("connected"), m_grbl->isConnected());
+    o.insert(QStringLiteral("port"), currentPortName());
+    o.insert(QStringLiteral("state"), m_grbl->isConnected() ? m_machineState : QString());
+    o.insert(QStringLiteral("homed"), m_grbl->isConnected() && m_homed);
+    o.insert(QStringLiteral("busy"), isBusy());
+    o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
+    o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
+                                        ? QFileInfo(m_doc->filePath()).fileName() : QString());
+    return o;
 }
 
 } // namespace c2d

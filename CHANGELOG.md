@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.1.21 (build 72) — 2026-10-19
+
+> PhobiCCCP for Android: design on the phone, synced with every phobiCCCP on the network; several machines on one phobiCCCP
+
+**Android app** (new, in `Android/`)
+
+- Finds every phobiCCCP on the same network by itself (or by name/address, for Tailscale),
+  and keeps designs in step with all of them while it is open: an edit on the phone, or on
+  another phone, reaches every computer, and a design deleted on one is deleted everywhere.
+- Draws designs on the stock (rectangles, circles, polygons, text, paths, drill points; drag
+  to move) with profile, pocket, drill and engrave toolpaths, tools and materials from
+  phobiCCCP's own tool library.
+- Send to any open phobiCCCP, on any of its machines. "Start cutting right away" is asked for
+  each send, confirmed once more on the phone, and only works on a computer that allows it.
+- Shows each computer's machines and their state, and switches the machine in use.
+
+**Desktop**
+
+- **Machine menu**: several machines on one phobiCCCP. Each keeps its own size, serial port,
+  BitSetter and tool-change positions, reference and surface map; switching disconnects,
+  loads the other machine's settings and reconnects on its port.
+- **Machine › Phones may start cutting** (off by default). A start from a phone runs the
+  same program and checks as Run (connected, homed, idle, not busy) without the question on
+  screen, and the phone is told why when it did not start.
+- File › Receive from Syntexophobic and phones: the same port (47652) now also answers the
+  app. Designs from phones are kept in `Documents/phobiCCCP/Pad`, sent ones open as new
+  designs under `Documents/phobiCCCP/Received`; unsaved work is asked about first, and nothing
+  replaces the document while the machine is busy.
+
 ## v1.1.20 (build 71) — 2026-10-18
 
 > Bug fixes from a full review: tabs survive ramping, 3D climb/conventional the right way round, no lost elements on save, crash recovery

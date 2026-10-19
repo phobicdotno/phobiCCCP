@@ -20,6 +20,7 @@
 namespace c2d {
 
 static const QByteArray kHello = QByteArrayLiteral("PHOBICCCP-SEND 1\n");
+static const QByteArray kApiHello = QByteArrayLiteral("PHOBICCCP-API 1\n");
 static const QByteArray kDiscover = QByteArrayLiteral("PHOBICCCP-DISCOVER 1");
 
 int ReceivedProject::count(const QString &role) const
@@ -216,6 +217,11 @@ struct ProjectReceiver::Conn {
     QTimer idle;
     QTimer deadline;      // absolute: does not restart as bytes arrive
     bool active = false;  // past its manifest: the one transfer being taken
+    // Until the hello is in, it is not known which protocol this is.
+    QByteArray head;
+    bool api = false;     // a phone's request connection
+    bool pending = false; // an API request is waiting for respond()
+    QByteArray buf;       // API bytes not yet read as a request
 };
 
 ProjectReceiver::ProjectReceiver(QObject *parent) : QObject(parent) {}
@@ -254,6 +260,7 @@ void ProjectReceiver::stop()
     }
     m_conns.clear();
     m_waiting.clear();
+    m_apiWaiting.clear();
     delete m_tcp;
     m_tcp = nullptr;
     delete m_udp;
@@ -281,6 +288,9 @@ void ProjectReceiver::onDatagrams()
         o.insert(QStringLiteral("version"), QStringLiteral(PHOBICCCP_VERSION));
         o.insert(QStringLiteral("host"), QSysInfo::machineHostName());
         o.insert(QStringLiteral("port"), int(port()));
+        for (auto it = m_discoveryExtra.constBegin(); it != m_discoveryExtra.constEnd(); ++it)
+            if (!o.contains(it.key()))
+                o.insert(it.key(), it.value());
         m_udp->writeDatagram(QJsonDocument(o).toJson(QJsonDocument::Compact),
                              d.senderAddress(), quint16(d.senderPort()));
     }
@@ -322,7 +332,28 @@ void ProjectReceiver::onData(QTcpSocket *s)
     if (!c)
         return;
     c->idle.start();
-    const QByteArray bytes = s->readAll();
+    QByteArray bytes = s->readAll();
+    if (c->api) {
+        c->buf += bytes;
+        onApiData(s);
+        return;
+    }
+    if (c->reader.state() == PackageReader::Hello) {
+        c->head += bytes;
+        const int n = int(qMin<qsizetype>(c->head.size(), kApiHello.size()));
+        if (c->head.left(n) == kApiHello.left(n)) {
+            if (n < kApiHello.size())
+                return;    // could still be either
+            c->api = true;
+            c->buf = c->head.mid(kApiHello.size());
+            c->head.clear();
+            c->deadline.stop();   // a phone may stay a while; idle still applies
+            onApiData(s);
+            return;
+        }
+        bytes = c->head;
+        c->head.clear();
+    }
     if (c->reader.state() == PackageReader::Done)
         return;    // waiting for the user; ignore anything more
     if (!c->reader.feed(bytes)) {
@@ -357,6 +388,55 @@ void ProjectReceiver::onData(QTcpSocket *s)
     emit received(id, p);
 }
 
+void ProjectReceiver::onApiData(QTcpSocket *s)
+{
+    Conn *c = m_conns.value(s);
+    if (!c || c->pending)
+        return;
+    const qsizetype nl = c->buf.indexOf('\n');
+    if (nl < 0) {
+        if (c->buf.size() > kMaxRequest)
+            drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"request too long\"}\n"));
+        return;
+    }
+    if (nl > kMaxRequest) {
+        drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"request too long\"}\n"));
+        return;
+    }
+    const QByteArray line = c->buf.left(nl);
+    c->buf.remove(0, nl + 1);
+    const QJsonDocument doc = QJsonDocument::fromJson(line);
+    if (!doc.isObject()) {
+        s->write(QByteArrayLiteral("{\"ok\":false,\"error\":\"not a JSON object\"}\n"));
+        onApiData(s);
+        return;
+    }
+    c->pending = true;
+    c->idle.stop();
+    const int id = m_nextId++;
+    m_apiWaiting.insert(id, s);
+    QString peer = s->peerAddress().toString();
+    if (peer.startsWith(QStringLiteral("::ffff:")))
+        peer = peer.mid(7);
+    emit request(id, doc.object(), peer);
+}
+
+void ProjectReceiver::respond(int id, const QJsonObject &reply)
+{
+    QTcpSocket *s = m_apiWaiting.take(id);
+    Conn *c = s ? m_conns.value(s) : nullptr;
+    if (!c)
+        return;    // the phone went away meanwhile
+    c->pending = false;
+    c->idle.start();
+    s->write(QJsonDocument(reply).toJson(QJsonDocument::Compact) + '\n');
+    // A request that arrived while this one was answered.
+    QTimer::singleShot(0, this, [this, s] {
+        if (m_conns.contains(s))
+            onApiData(s);
+    });
+}
+
 void ProjectReceiver::answer(int id, bool ok, const QString &message)
 {
     QTcpSocket *s = m_waiting.take(id);
@@ -374,6 +454,8 @@ void ProjectReceiver::drop(QTcpSocket *s, const QByteArray &reply)
         return;
     for (auto it = m_waiting.begin(); it != m_waiting.end();)
         it = it.value() == s ? m_waiting.erase(it) : std::next(it);
+    for (auto it = m_apiWaiting.begin(); it != m_apiWaiting.end();)
+        it = it.value() == s ? m_apiWaiting.erase(it) : std::next(it);
     s->disconnect(this);
     delete c;
     if (!reply.isEmpty() && s->state() == QAbstractSocket::ConnectedState) {

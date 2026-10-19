@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The star from desktop/phobicccp.svg, inside the adaptive icon's safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="192"
+    android:viewportHeight="192">
+    <group android:scaleX="1.4" android:scaleY="1.4" android:translateX="6.4" android:translateY="9.2">
+        <path
+            android:fillColor="#2EFFD700"
+            android:strokeColor="#FFFFD700"
+            android:strokeWidth="5"
+            android:strokeLineJoin="round"
+            android:pathData="M64,24 L74,52.2 L103.9,53 L80.2,71.3 L88.7,100 L64,83 L39.3,100 L47.8,71.3 L24.1,53 L54,52.2 Z" />
+        <path
+            android:fillColor="#FFCC0000"
+            android:strokeColor="#FFFFD700"
+            android:strokeWidth="2.5"
+            android:pathData="M59.5,24a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0 M99.4,53a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0 M84.2,100a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0 M34.8,100a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0 M19.6,53a4.5,4.5 0,1 0,9 0a4.5,4.5 0,1 0,-9 0" />
+    </group>
+</vector>

@@ -87,6 +87,18 @@ private:
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
     void setReceiving(bool on);
     void onProjectReceived(int id, const ReceivedProject &project);
+    // The PhobiCCCP Android app on the same port (projectreceiver.h): status,
+    // tool library, design sync, machine switch, and designs sent to be
+    // opened (and cut, when the phone asks and this computer allows it).
+    void onPadRequest(int id, const QJsonObject &request, const QString &peer);
+    QJsonObject padSend(const QJsonObject &request, const QString &peer);
+    QJsonObject padInfo();
+    void refreshDiscovery();
+    // Machine menu: several machines on this computer (machineprofiles.h).
+    void buildMachineMenu();
+    void rebuildMachineMenu();
+    bool switchMachine(const QString &id, QString *why);
+    QMenu *m_machineMenu = nullptr;
     // Ask before throwing edits away. False = the user cancelled.
     bool confirmDiscard(const QString &what);
 
