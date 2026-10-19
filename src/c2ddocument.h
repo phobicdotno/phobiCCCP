@@ -1,5 +1,6 @@
 #pragma once
 #include "element.h"
+#include "parametric.h"
 #include <QHash>
 #include <QSet>
 #include <QString>
@@ -62,6 +63,16 @@ public:
     const QVector<Element> &elements() const { return m_elements; }
     QVector<Element> &elementsRef() { return m_elements; }   // for editing
     const QVector<Toolpath> &toolpaths() const { return m_toolpaths; }
+    QVector<Toolpath> &toolpathsRef() { return m_toolpaths; }    // for editing
+    // Whole-state swaps for the parametric undo steps (canvas SnapshotCmd).
+    void setElements(const QVector<Element> &els) { m_elements = els; }
+    void setToolpaths(const QVector<Toolpath> &tps) { m_toolpaths = tps; }
+
+    // User parameters, constraints and driving dimensions (parametric.h).
+    // Loaded from and saved to params.phobic_parametric.
+    const Parametric &parametric() const { return m_parametric; }
+    Parametric &parametricRef() { return m_parametric; }
+    void setParametric(const Parametric &p) { m_parametric = p; }
 
     void addElement(const Element &e) { m_elements.append(e); }
     bool removeElementById(const QString &id)
@@ -177,6 +188,7 @@ private:
     QVector<Element> m_elements;
     QVector<Toolpath> m_toolpaths;
     QVector<ToolpathGroup> m_groups;
+    Parametric m_parametric;
 };
 
 } // namespace c2d

@@ -4,14 +4,18 @@
 // Plain asserts, no framework; exits 0 on success.
 
 #include "../src/toolpathform.h"
+#include "../src/c2ddocument.h"
 
 #include <QAbstractButton>
 #include <QApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QTemporaryDir>
+#include <QTest>
 #include <QToolButton>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -135,6 +139,59 @@ int main(int argc, char *argv[])
         check(edits == before + 1 && last.value("strategy").toString() == QLatin1String("waterline")
                   && last.value("stepdown").toDouble() == 1.0,
               "3D finish: choosing waterline writes strategy = waterline");
+    }
+
+    // Expressions: a field takes "depth" (a parameter) and binds to it; a
+    // plain number afterwards unbinds it.
+    {
+        QTemporaryDir tmp;
+        QString err;
+        const QString blank = tmp.filePath("blank.c2d");
+        check(c2d::Document::createBlank(blank, 300, 200, 12, &err), "createBlank");
+        c2d::Document doc;
+        check(doc.load(blank, &err), "load");
+        doc.parametricRef().params.append({QStringLiteral("depth"), QStringLiteral("stock_t / 2"), QString()});
+        form.setDocument(&doc);
+        form.setToolpath("{tp}", "pocket_toolpath", j);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);   // drop the old editors
+        auto *end = editorFor<QDoubleSpinBox>(&form, "end_depth");
+        check(end != nullptr, "end depth field");
+        end->setFocus();
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("depth"));
+        QTest::keyClick(end, Qt::Key_Return);
+        const QJsonObject bind = last.value("phobic_expr").toObject().value("end_depth").toObject();
+        check(last.value("end_depth").toString() == QLatin1String("-6.000"), "expression gives -6.000");
+        check(bind.value("expr").toString() == QLatin1String("depth") && bind.value("neg").toBool()
+                  && bind.value("str").toBool(), "the field is bound to depth, negative, as a string");
+        form.setToolpath("{tp}", "pocket_toolpath", last);
+        app.processEvents();
+        check(end->styleSheet().contains(QStringLiteral("c3a6ff")) && end->toolTip().contains(QStringLiteral("depth")),
+              "a bound field shows it");
+        // The arrows give a plain number, so they unbind it too.
+        end->setFocus();
+        QTest::keyClick(end, Qt::Key_Up);
+        check(!last.contains(QStringLiteral("phobic_expr")) && last.value("end_depth").toString() != QLatin1String("-6.000"),
+              "an arrow step unbinds the field");
+        // Bind it again for the plain-number check below.
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("depth"));
+        QTest::keyClick(end, Qt::Key_Return);
+        check(last.value("phobic_expr").toObject().contains(QStringLiteral("end_depth")), "bound again");
+        // "1/4 in" is just a number: no binding.
+        end->setFocus();
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("4"));
+        QTest::keyClick(end, Qt::Key_Return);
+        check(last.value("end_depth").toString() == QLatin1String("-4.000")
+                  && !last.contains(QStringLiteral("phobic_expr")), "a plain number unbinds");
+        auto *stepD = editorFor<QDoubleSpinBox>(&form, "stepdown");
+        stepD->setFocus();
+        stepD->selectAll();
+        QTest::keyClicks(stepD, QStringLiteral("1/8 in"));
+        QTest::keyClick(stepD, Qt::Key_Return);
+        check(std::fabs(last.value("stepdown").toDouble() - 3.175) < 1e-3
+                  && !last.contains(QStringLiteral("phobic_expr")), "1/8 in is 3.175 mm, unbound");
     }
 
     std::printf("test_toolpathform: %d checks OK\n", g_checks);

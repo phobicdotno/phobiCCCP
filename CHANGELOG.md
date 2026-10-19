@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.22 (build 73) — 2026-10-19
+## v1.2.1 (build 74) — 2026-10-19
 
 > Bug check: cutting safety, the pad link and the pad app
 
@@ -71,6 +71,48 @@
   dialog was open.
 - A failed new design no longer imports into the one you were leaving; .cccp files can be
   dropped on the window; Inkscape metadata is not reported as skipped.
+## v1.2.0 (build 73) — 2026-10-19
+
+> Parametric sketching: constraints, driving dimensions and user parameters, Fusion style
+
+- **Constrain** tool (G, hold for the list): Coincident, Horizontal, Vertical, Parallel,
+  Perpendicular, Tangent, Equal, Collinear, Concentric, Midpoint, Fix and Symmetric. Pick
+  the geometry and the drawing obeys at once; each one is a single undo step. Duplicates
+  and constraints that would conflict are refused with a status message.
+- **Dimension** tool (D): a line gives its length, a circle its diameter (Shift: radius),
+  two lines their angle (or their distance when parallel), two points a horizontal,
+  vertical or aligned distance, depending on where the label is placed. Type a number or
+  an expression in the inline editor; Esc keeps the measured value.
+- **Parameters** tab beside Document and Model (Ctrl+Shift+P): user parameters with
+  name, expression, value and comment, the stock size as built-ins (`stock_w`, `stock_h`,
+  `stock_t`), the dimensions d1, d2 … with their expressions, and the constraint list.
+  A chip says whether the sketch is fully constrained, how many degrees of freedom are
+  left, or which constraints can't hold. Renaming a parameter renames it everywhere.
+- Expressions take `+ - * / ^`, brackets, units (mm, cm, m, in, ft, `"`, deg, rad),
+  `pi` and sin/cos/tan/asin/acos/atan/atan2, sqrt, abs, min, max, round, floor, ceil.
+- Toolpath number fields take expressions too: `1/8 in` is just 3.175 mm, while text
+  naming a parameter (`stock_t / 2`) binds the field, shown in violet with ƒx, so it
+  follows the parameter. Typing a plain number unbinds it.
+- Moving, scaling or node-editing constrained geometry re-solves in the same undo step.
+  Fully constrained shapes turn teal; dimensions driven by a parameter carry an ƒx tag.
+  View > Constraints and Dimensions (Ctrl+Shift+K) hides the overlay.
+- Constraints stay on the geometry they were put on: deleting or inserting a node, a
+  fillet, a trim or a convert-to-path moves them to the same points and lines, and those
+  whose geometry is gone go with it in the same undo step. A dimension that expressions or
+  toolpath fields still use becomes a user parameter of the same name, also on save.
+- Expressions: `-2^2` is -4. `plate_w / 2 in` is refused as ambiguous and asks for
+  brackets (`plate_w / (2 in)`); a unit straight after a name is refused too.
+- A loop through a dimension (`p = d1 + 1`, then d1 = `p`) is refused, on the canvas and in
+  the Parameters tab, and a parameter value that would make a constraint fail is refused
+  there instead of half-moving the drawing (constraints already red don't block it). The
+  arrow keys on a bound toolpath field unbind it.
+- Rectangles with Carbide Create's rounded or dog-bone corners can be moved by constraints
+  but not resized (that would square the corners); a path segment curved by a node edit
+  no longer counts as a line.
+- Constraints, dimensions and parameters are saved inside the `.c2d` (`phobic_parametric`
+  in the params table); Carbide Create ignores them and still opens the file. The pads
+  don't have them, so a pad-linked design that uses them is sent to the pads but not
+  rebuilt from a pad edit.
 
 ## v1.1.21 (build 72) — 2026-10-19
 
