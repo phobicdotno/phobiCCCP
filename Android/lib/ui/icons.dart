@@ -107,6 +107,20 @@ class _ToolIconPainter extends CustomPainter {
             close: true);
         c.drawPath(arrow, _fill(C.text));
         c.drawPath(arrow, pen);
+      case 'area':
+        // A closed shape, filled, with the arrow tapping inside it (as phobiCCCP draws it).
+        final s = Path()
+          ..moveTo(2.5, 6)
+          ..cubicTo(2.5, 2.5, 9, 1.5, 13.5, 3.5)
+          ..cubicTo(18, 5.5, 17.5, 11, 14.5, 13.5)
+          ..cubicTo(11, 16.5, 2.5, 15.5, 2.5, 6)
+          ..close();
+        c.drawPath(s, _fill(const Color(0x5af2a536)));
+        c.drawPath(s, pen);
+        final arrow = _poly(const [Offset(8, 6), Offset(8, 16), Offset(10.6, 13.4), Offset(12.6, 17.4), Offset(14, 16.7), Offset(12, 12.7), Offset(15, 12.5)],
+            close: true);
+        c.drawPath(arrow, _fill(C.text));
+        c.drawPath(arrow, _stroke(const Color(0xff1e2127), 1.0));
       case 'hand':
         final h = Path()
           ..moveTo(6.2, 17.5)
