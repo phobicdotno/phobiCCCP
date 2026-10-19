@@ -550,6 +550,43 @@ int main(int argc, char *argv[])
               "fully cut above with overlap: one pass at the floor");
     }
 
+    // --- rest depth: a straight pass between two cleared corners still sees
+    // the island standing between them -------------------------------------
+    {
+        Rig r;
+        const c2d::Element box = c2d::Element::makeRectangle({50, 20}, 80, 40, layer);
+        const c2d::Element island = c2d::Element::makeCircle({50, 20}, 2, layer);
+        r.addShape(box);
+        r.addShape(island);
+        r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("10.000")},
+                                          {"stepdown", 5.0}, {"name", QStringLiteral("A")},
+                                          {"elements", QJsonArray{QJsonObject{{"uuid", box.id}},
+                                                                  QJsonObject{{"uuid", island.id}}}}});
+        r.addShape(c2d::Element::makeRectangle({50, 20}, 60, 8, layer));
+        r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("12.000")},
+                                          {"stepdown", 2.0}, {"uuid", QStringLiteral("{tp-2}")},
+                                          {"name", QStringLiteral("B")}, {"rest_auto", true}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(!g.notes.join("|").contains(QStringLiteral("B: starts at")),
+              "rest depth: a pass across a standing island is not started deep");
+    }
+
+    // --- rest depth: a V-bit groove is no flat floor --------------------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        QJsonObject vbit{{"diameter", 12.7}, {"number", 301}, {"angle", 90.0}, {"type", 2}};
+        r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("5.000")},
+                                          {"stepdown", 5.0}, {"name", QStringLiteral("A")}, {"tool", vbit}});
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 20, 10, layer));
+        r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("8.000")},
+                                          {"stepdown", 2.0}, {"uuid", QStringLiteral("{tp-2}")},
+                                          {"name", QStringLiteral("B")}, {"rest_auto", true}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.notes.join("|").indexOf(QStringLiteral("B: ")) < 0,
+              "rest depth: what a V-bit cut is not taken as cleared");
+    }
+
     // --- drilling: pecks at the circle center ------------------------------
     {
         Rig r;

@@ -620,6 +620,19 @@ int main(int argc, char *argv[])
         click(&ac, {300, 300});                     // a plain shape: no new path
         check(ac.selectedElementIds() == QStringList{other.id} && int(adoc.elements().size()) == before + 2,
               "area click on a lone shape selects that shape");
+        // A small boss in a big pocket: the boss is an island, never dropped
+        // as a "sliver" of the outline around it.
+        const c2d::Element pk = c2d::Element::makeRectangle({100, 300}, 100, 100, adoc.defaultLayer());
+        const c2d::Element boss = c2d::Element::makeCircle({100, 300}, 2.5, adoc.defaultLayer());
+        adoc.addElement(pk);
+        adoc.addElement(boss);
+        ac.rebuild();
+        click(&ac, {70, 300});
+        got = ac.selectedElementIds();
+        got.sort();
+        want = {pk.id, boss.id};
+        want.sort();
+        check(got == want, "area click keeps a small boss as an island");
     }
 
     // --- a CC rectangle's corner style survives a resize --------------------------------

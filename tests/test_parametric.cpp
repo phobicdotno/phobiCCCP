@@ -405,6 +405,46 @@ int main(int argc, char **argv)
         check(param::newError(d, d.parametric(), d.parametric()).isEmpty(), "no edit, no new error");
     }
 
+    // ---- a parameter may not drive a radius to 0 or below ----------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element c = Element::makeCircle({50, 50}, 10, layer);
+        d.addElement(c);
+        addCon(d, Constraint::Radius, {ref(GeoRef::Circle, c.id, -1)}, "r");
+        d.parametricRef().params = {{"r", "10", ""}};
+        Parametric after = d.parametric();
+        after.params[0].expr = "-5";
+        check(param::newError(d, d.parametric(), after).contains("more than 0"), "negative radius refused");
+        after.params[0].expr = "4";
+        check(param::newError(d, d.parametric(), after).isEmpty(), "positive radius fine");
+    }
+
+    // ---- parser limits ----------------------------------------------------------
+    {
+        bool ok = true;
+        eval(QString(20000, QLatin1Char('(')) + "1" + QString(20000, QLatin1Char(')')), &ok);
+        check(!ok, "deep nesting fails instead of overflowing the stack");
+        eval("1 cm / 4 in", &ok);
+        check(!ok, "two units in one product refused");
+        eval("max(2,5; 3)", &ok);
+        check(!ok, "mixed , and ; between values refused");
+        check(approx(eval("max(2; 3)", &ok), 3) && ok, "; alone still separates values");
+        check(approx(eval("3 cm + 2 mm", &ok), 32) && ok, "a unit per term still works");
+    }
+
+    // ---- duplicate uids and names in a file are made unique ---------------------
+    {
+        QJsonObject o{{"params", QJsonArray{QJsonObject{{"name", "d1"}, {"expr", "5"}}}},
+                      {"constraints", QJsonArray{QJsonObject{{"type", int(Constraint::Radius)}, {"name", "d1"}, {"expr", "3"},
+                                                             {"refs", QJsonArray{QJsonArray{2, "a", 0, -1}}}},
+                                                 QJsonObject{{"type", int(Constraint::Radius)}, {"uid", "c1"}, {"name", "d2"},
+                                                             {"expr", "4"}, {"refs", QJsonArray{QJsonArray{2, "b", 0, -1}}}}}}};
+        const Parametric p = Parametric::fromJson(o);
+        check(p.constraints.size() == 2 && p.constraints[0].uid != p.constraints[1].uid, "uids unique after load");
+        check(p.constraints[0].name != QLatin1String("d1"), "a dimension does not hide behind a parameter's name");
+    }
+
     // ---- constraints follow their nodes, not node numbers -----------------------
     {
         Document d;

@@ -495,6 +495,16 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
     };
     // Same region: what is in one and not the other is a sliver at most.
     auto same = [&](const QPainterPath &a, const QPainterPath &b) {
+        // A pocket shape with an island inside is two rings; a lone outline
+        // around it is one - not the same, however small the island.
+        auto rings = [](const QPainterPath &p) {
+            int n = 0;
+            for (const QPolygonF &g : p.toSubpathPolygons())
+                n += g.size() >= 3 ? 1 : 0;
+            return n;
+        };
+        if (rings(a) != rings(b))
+            return false;
         if (!a.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(b.boundingRect())
             || !b.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(a.boundingRect()))
             return false;

@@ -372,6 +372,8 @@ static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
 // pocket or adaptive only partly inside cuts just what is left, in depth
 // bands (restBands); a contour or cutout only partly inside keeps its full
 // depth. One whose floor is already reached is left out.
+static ToolGeom toolGeomOf(const QJsonObject &tool);
+
 struct Cleared {
     QPainterPath foot;   // material removed, as a region
     double zBot = 0;     // the floor it reached (Z, negative down)
@@ -436,6 +438,23 @@ static QPainterPath unionRegions(const QList<QPainterPath> &regions)
 #endif
 
 enum class RestVerdict { Untouched, Raised, Done, Partial };
+
+// Points along a tool-centre line no more than `step` apart: the rest test
+// needs the whole line, not just its corners - a long straight pass between
+// two corners in cut air can still run through an island left standing.
+static void addAlong(QVector<QPointF> &pts, const QPolygonF &line, double step, bool closed)
+{
+    const int n = line.size();
+    for (int i = 0; i < n; ++i) {
+        pts << line.at(i);
+        if (i + 1 == n && !closed)
+            break;
+        const QPointF a = line.at(i), b = line.at((i + 1) % n);
+        const int k = int(std::ceil(QLineF(a, b).length() / step));
+        for (int m = 1; m < k; ++m)
+            pts << a + (b - a) * (double(m) / k);
+    }
+}
 
 // Deepest floor among `cleared` under which every point of `pts` (tool
 // centres of radius toolR) is in cut air; `*zTop` is lowered to that floor
@@ -1159,6 +1178,31 @@ static int parallelRing(const QList<QPolygonF> &level, const QPointF &p, double 
         }
     }
     return best;
+}
+
+static Job::Helix helixIn(const QList<QPolygonF> &rings, double want, double angle);
+
+// Give `job` a helical entry inside the tool-centre region bounded by
+// `rings`, and start its rings there. Leave the helix for the ring nearest
+// it, at its nearest point: no ring lies across that short move, so it
+// never runs over an island.
+static void addHelix(Job &job, const QList<QPolygonF> &rings, double want, double angle)
+{
+    job.helix = helixIn(rings, want, angle);
+    if (!job.helix.on || job.rings.isEmpty())
+        return;
+    const QPointF from = job.helix.c + QPointF(job.helix.r, 0);
+    int near = 0;
+    double nd = std::numeric_limits<double>::max();
+    for (int i = 0; i < job.rings.size(); ++i) {
+        const double d = distToPoly(from, job.rings.at(i));
+        if (d < nd) {
+            nd = d;
+            near = i;
+        }
+    }
+    const QPolygonF first = startNearest(job.rings.takeAt(near), from);
+    job.rings.prepend(first);
 }
 
 // A helix that fits in the tool-centre region bounded by `rings` (even-odd,
@@ -2519,8 +2563,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             {
                 QList<QPolygonF> centres = planCentres(plan);
                 QVector<QPointF> pts;
+                const double along = qBound(0.1, toolR / 4, 0.5);
                 for (const QPolygonF &c : centres)
-                    pts += c;
+                    addAlong(pts, c, along, false);
                 bool skipIt = false;
                 if (j.value("rest_auto").toBool(false)) {
                     const double overlap = qBound(0.0, numOr(j.value("rest_overlap"), 1.0), 50.0);
@@ -2573,7 +2618,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         break;
                     }
                 }
-                if (!centres.isEmpty())
+                // Only a flat end mill leaves a flat floor at zBot everywhere it went.
+                if (!centres.isEmpty() && toolGeomOf(tool).kind == ToolGeom::Flat)
                     cleared.append({sweptRegion(centres, toolR), cp.zBot});
                 if (skipIt)
                     continue;
@@ -3101,27 +3147,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     const int before = jobs.size();
                     capped |= !ringFillJob(comp, toolR + leave, stepover, jobs);
                     pocketMine << regionFromRings(insetRings(comp, toolR + leave));
-                    if (helix && jobs.size() > before) {
-                        Job &job = jobs.last();
-                        job.helix = helixIn(insetRings(comp, toolR + leave), helixWant, helixAngle);
-                        if (job.helix.on) {
-                            // Leave the helix for the ring nearest it, at its
-                            // nearest point: no ring lies across that short
-                            // move, so it never runs over an island.
-                            const QPointF from = job.helix.c + QPointF(job.helix.r, 0);
-                            int near = 0;
-                            double nd = std::numeric_limits<double>::max();
-                            for (int i = 0; i < job.rings.size(); ++i) {
-                                const double d = distToPoly(from, job.rings.at(i));
-                                if (d < nd) {
-                                    nd = d;
-                                    near = i;
-                                }
-                            }
-                            const QPolygonF first = startNearest(job.rings.takeAt(near), from);
-                            job.rings.prepend(first);
-                        }
-                    }
+                    if (helix && jobs.size() > before)
+                        addHelix(jobs.last(), insetRings(comp, toolR + leave), helixWant, helixAngle);
                 }
             }
             if (capped)
@@ -3133,9 +3160,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // Rest depth: start where the toolpaths above left off.
             QList<QPolygonF> centres;
             QVector<QPointF> pts;
+            const double along = qBound(0.1, toolR / 4, 0.5);
             for (const Job &job : jobs) {
-                for (const QPolygonF &r : job.rings) { centres << r; pts += r; }
-                for (const QPolygonF &r : job.finish) { centres << r; pts += r; }
+                for (const QPolygonF &r : job.rings) { centres << r; addAlong(pts, r, along, pocket); }
+                for (const QPolygonF &r : job.finish) { centres << r; addAlong(pts, r, along, pocket); }
                 if (job.helix.on)
                     for (int k = 0; k < 8; ++k) {
                         const double a = k * M_PI / 4;
@@ -3161,10 +3189,18 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         QList<Job> banded;
                         const QList<RestBand> bands =
                             restBands(cleared, unionRegions(pocketMine), toolR, cp.zTop, cp.zBot, cp.stepdown);
+                        // Each band's entry keeps the pocket's helix, if it has one.
+                        const bool helix = j.value("helix_entry").toBool(false)
+                                           && !(j.value("enable_rest").toBool(false)
+                                                && numOr(j.value("rest_diameter"), 0) / 2.0 > toolR + 1e-6);
+                        const double helixWant = qMax(0.0, numOr(j.value("helix_diameter"), 2 * toolR)) / 2;
+                        const double helixAngle = numOr(j.value("helix_angle"), 2);
                         for (int b = 0; b < bands.size(); ++b)
                             for (const QPainterPath &rc : components(bands.at(b).centres)) {
                                 const int before = banded.size();
                                 ringFillJob(rc, 0.0, pocketStep, banded);
+                                if (helix && banded.size() > before)
+                                    addHelix(banded.last(), insetRings(rc, 0.0), helixWant, helixAngle);
                                 for (int k = before; k < banded.size(); ++k) {
                                     banded[k].band = b;
                                     banded[k].bandTop = bands.at(b).zTop;
@@ -3186,8 +3222,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     break;
                 }
             }
-            if (!centres.isEmpty())
-                cleared.append({sweptRegion(centres, toolR), cp.zBot});
+            // Only a flat end mill leaves a flat floor at zBot everywhere it
+            // went: a V-bit or ball leaves a groove, and tabs stand up to
+            // tabTop, so those floors are recorded no deeper than is sure.
+            if (!centres.isEmpty() && toolGeomOf(tool).kind == ToolGeom::Flat)
+                cleared.append({sweptRegion(centres, toolR), qMax(cp.zBot, cp.tabTop)});
             if (jobs.isEmpty()) {
                 res.skipped << QStringLiteral("%1 (already cut by the toolpaths above)").arg(name);
                 continue;

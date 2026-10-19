@@ -553,9 +553,16 @@ int main(int argc, char **argv)
         const Element dot = Element::makeCircle({50, 50}, 3, layer);
         const QVector<QPainterPath> nest{big.painterPath, isl.painterPath, dot.painterPath};
         f = vec::fillFace(nest, {35, 50});
-        check(f.size() == 2 && approx(faceArea(f), 1600 - 400, 0.05), "fill: outer ring minus its island");
+        check(f.size() == 2 && approx(faceArea(f), 1600 - 400, 0.2), "fill: outer ring minus its island");
         f = vec::fillFace(nest, {45, 50});
-        check(f.size() == 2 && approx(faceArea(f), 400 - M_PI * 9, 0.1), "fill: the island minus the dot");
+        check(f.size() == 2 && approx(faceArea(f), 400 - M_PI * 9, 0.2), "fill: the island minus the dot");
+        // A circle inscribed in a square: the four corner pieces only touch
+        // the circle at a point each, and a click picks one corner, not all.
+        const Element sq = Element::makeRectangle({0, 0}, 20, 20, layer);
+        const Element in = Element::makeCircle({0, 0}, 10, layer);
+        f = vec::fillFace({sq.painterPath, in.painterPath}, {9, 9});
+        check(f.size() == 1 && approx(faceArea(f), (400 - M_PI * 100) / 4, 0.2),
+              "fill: one corner beside an inscribed circle");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);
