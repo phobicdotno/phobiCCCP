@@ -50,7 +50,7 @@ public:
     void showPage(const QString &name);   // "job" / "bitzero" / "bitsetter" (used by --shot)
     GrblStreamer *streamer() const { return m_grbl; }
 
-    // A phone asked to cut the open document (PhobiCCCP for Android, "Start
+    // A pad asked to cut the open document (the PhobiCCCP pad app, "Start
     // cutting"). The same program and checks as Run, minus the question on
     // this screen: connected, homed, idle, not busy, no alarm. False with
     // `why` set when it did not start.
@@ -59,7 +59,7 @@ public:
     // (machineprofiles.h): disconnect, load it, and connect to the new
     // machine's port if the old one was connected. Refused while busy.
     bool reloadMachine(QString *why = nullptr);
-    // For the phone: connected, port, state, homed, busy, job.
+    // For the pad: connected, port, state, homed, busy, job.
     QJsonObject statusJson() const;
 
 signals:
@@ -114,7 +114,7 @@ private:
     void loadSettings();
     void saveSettings();
     void updateOffsetLabels();
-    // `remoteWhy` set: started from a phone, nothing is asked here and a
+    // `remoteWhy` set: started from a pad, nothing is asked here and a
     // refusal is written there instead of shown.
     bool runProgram(QString *remoteWhy = nullptr);
     void log(const QString &line);

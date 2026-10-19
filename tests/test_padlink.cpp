@@ -1,9 +1,11 @@
-// The PhobiCCCP phone app's side of phobiCCCP: a pad design checked and
-// turned into an ordinary document that exports, the design store that keeps
-// every phone in step, and machine profiles swapping the machine/ settings.
+// The PhobiCCCP pad app's side of phobiCCCP: a pad design checked and
+// turned into an ordinary document that exports (and back again after an
+// edit here), the design store and links that keep every pad in step, and
+// machine profiles swapping the machine/ settings.
 #include "../src/c2ddocument.h"
 #include "../src/gcodeexport.h"
 #include "../src/machineprofiles.h"
+#include "../src/element.h"
 #include "../src/padlink.h"
 
 #include <QDir>
@@ -153,22 +155,105 @@ static void testBuild(const QString &dir, const QJsonObject &d)
           "an unknown tool is refused, not swapped");
 }
 
-// The same design file the Android app's tests check its own JSON against
-// (Android/app/src/test/.../DesignJsonTest.kt): what the phone writes builds here.
-static void testPhoneFixture(const QString &dir)
+// The same design file the pad app's tests check its own JSON against
+// (Android/test/model_test.dart): what the pad writes builds here.
+static void testPadFixture(const QString &dir)
 {
     QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
-    check(f.open(QIODevice::ReadOnly), "phone fixture readable");
+    check(f.open(QIODevice::ReadOnly), "pad fixture readable");
     const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
-    check(padlink::check(d).isEmpty(), "phone fixture is a good design");
+    check(padlink::check(d).isEmpty(), "pad fixture is a good design");
     QStringList notes;
     QString err;
     const QString path = QDir(dir).filePath("fixture.c2d");
-    check(padlink::buildDocument(d, path, &notes, &err), "phone fixture builds");
+    check(padlink::buildDocument(d, path, &notes, &err), "pad fixture builds");
     Document doc;
     doc.load(path, &err);
     const GcodeResult g = exportGcode(doc);
     check(doc.toolpaths().size() == 4 && g.done.size() == 4, "and all four toolpaths export");
+}
+
+// A design from a pad, saved here, goes back to the pads unchanged; once
+// something only phobiCCCP has is added, the pad copy says what it lacks.
+static void testBackToPad(const QString &dir)
+{
+    QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
+    f.open(QIODevice::ReadOnly);
+    const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
+    const QString path = QDir(dir).filePath("back.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "fixture builds for the way back");
+    QStringList lost;
+    const QJsonObject back = padlink::designFromDocument(path, d, &lost, &err);
+    check(padlink::check(back).isEmpty(), "the way back is a good pad design");
+    check(lost.isEmpty(), qPrintable(QStringLiteral("nothing lost on the way back (%1)").arg(lost.join(", "))));
+    check(back.value("id") == d.value("id") && back.value("name") == d.value("name")
+              && back.value("material").toString() == QLatin1String("softwood"),
+          "id, name and material kept");
+    const QJsonArray shapes = back.value("shapes").toArray();
+    check(shapes.size() == 6, "all six shapes come back");
+    QStringList types;
+    for (const QJsonValue &v : shapes)
+        types << v.toObject().value("type").toString();
+    check(types == QStringList({"rect", "circle", "polygon", "text", "path", "point"}), "as the same kinds");
+    const QJsonObject rect = shapes.at(0).toObject();
+    check(std::abs(rect.value("x").toDouble() - 5) < 1e-6 && std::abs(rect.value("w").toDouble() - 290) < 1e-6,
+          "a rectangle comes back at its corner");
+    const QJsonObject text = shapes.at(3).toObject();
+    check(text.value("text").toString() == QLatin1String("PHOBIC") && std::abs(text.value("x").toDouble() - 60) < 1e-6,
+          "text comes back with its words and place");
+    check(shapes.at(4).toObject().value("points").toArray().size() == 3, "an open path keeps its three points");
+    const QJsonArray tps = back.value("toolpaths").toArray();
+    check(tps.size() == 4, "all four toolpaths come back");
+    const QJsonObject cut = tps.at(3).toObject();
+    check(cut.value("type").toString() == QLatin1String("profile") && cut.value("side").toString() == QLatin1String("outside")
+              && std::abs(cut.value("depth").toDouble() - 12.5) < 1e-6
+              && cut.value("shapes").toArray().size() == 1
+              && cut.value("shapes").toArray().at(0) == shapes.at(0).toObject().value("id"),
+          "a profile keeps its side, depth and shape");
+
+    // Built again from what came back: still nothing lost.
+    const QString again = QDir(dir).filePath("again.c2d");
+    check(padlink::buildDocument(back, again, nullptr, &err), "what came back builds");
+    padlink::designFromDocument(again, back, &lost, &err);
+    check(lost.isEmpty(), "and comes back again with nothing lost");
+
+    // Edits only phobiCCCP can hold.
+    Document doc;
+    doc.load(path, &err);
+    Toolpath t = doc.toolpaths().first();
+    QJsonObject speeds = t.json.value("speeds").toObject();
+    speeds.insert("feedrate", speeds.value("feedrate").toDouble() + 111);
+    t.json.insert("speeds", speeds);
+    doc.replaceToolpath(t);
+    QVector<Element> &els = doc.elementsRef();
+    els[1] = Element::withConstruction(els[1], true);
+    doc.save(path, &err);
+    const QJsonObject edited = padlink::designFromDocument(path, d, &lost, &err);
+    check(lost.size() == 2, qPrintable(QStringLiteral("own feeds and construction lines are named (%1)").arg(lost.join(", "))));
+    check(edited.value("shapes").toArray().size() == 5 && padlink::check(edited).isEmpty(),
+          "and the rest still goes to the pad");
+}
+
+static void testLinks(const QString &dir)
+{
+    const QString pad = QDir(dir).filePath("LinksPad");
+    const QString file = QDir(dir).filePath("linked.c2d");
+    QFile(file).open(QIODevice::WriteOnly);
+    {
+        padlink::Links l(pad);
+        check(l.idFor(file).isEmpty(), "nothing linked to start with");
+        l.set(file, "sign-1", true);
+    }
+    padlink::Links l(pad);
+    check(l.idFor(file) == QLatin1String("sign-1") && l.padOnly(file), "a link is kept on disk");
+    check(l.pathsFor("sign-1").size() == 1, "and found from the design");
+    padlink::Store store(pad);
+    check(store.list().isEmpty(), "the links file is not a design");
+    l.set(file, "sign-1", false);
+    check(!l.padOnly(file), "marked as holding more than the pad can");
+    l.remove(file);
+    check(padlink::Links(pad).idFor(file).isEmpty(), "and unlinked");
 }
 
 static void testStore(const QString &dir, QJsonObject d)
@@ -240,7 +325,9 @@ int main(int argc, char **argv)
     const QJsonObject d = design(tool, material);
     testCheck(d);
     testBuild(tmp.path(), d);
-    testPhoneFixture(tmp.path());
+    testPadFixture(tmp.path());
+    testBackToPad(tmp.path());
+    testLinks(tmp.path());
     testStore(tmp.path(), d);
     testProfiles(tmp.path());
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");

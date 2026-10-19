@@ -295,6 +295,294 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
     return true;
 }
 
+// ---- .c2d back to a pad design ---------------------------------------------
+
+namespace {
+
+QString padShapeId(const QString &elementId)
+{
+    QString id = elementId;
+    id.remove(QLatin1Char('{')).remove(QLatin1Char('}'));
+    return id.isEmpty() ? QUuid::createUuid().toString(QUuid::WithoutBraces) : id.left(60);
+}
+
+QJsonArray xyRow(QPointF p)
+{
+    return QJsonArray{p.x(), p.y()};
+}
+
+// The toolpath keys a pad design cannot carry: compared against a toolpath
+// freshly built from the pad design, so whatever was set here (feeds, tabs,
+// ramps, passes, ...) shows as a difference.
+const QStringList &ignoredToolpathKeys()
+{
+    static const QStringList k = {QStringLiteral("uuid"), QStringLiteral("elements"),
+                                  QStringLiteral("toolpath_group"), QStringLiteral("name"),
+                                  QStringLiteral("tool")};
+    return k;
+}
+
+} // namespace
+
+QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
+                               QStringList *lostOut, QString *error)
+{
+    QStringList lost;
+    auto lose = [&](const QString &what) {
+        if (!lost.contains(what))
+            lost << what;
+    };
+    Document doc;
+    QString err;
+    if (!doc.load(c2dPath, &err)) {
+        if (error) *error = err;
+        return {};
+    }
+    ToolLibrary lib;
+    lib.loadDefault();
+
+    QJsonObject d = base;
+    d.insert(QStringLiteral("format"), kFormat);
+    d.insert(QStringLiteral("version"), 1);
+    d.insert(QStringLiteral("deleted"), false);
+    const double thickness = doc.params().value(QStringLiteral("thickness"), QStringLiteral("0")).toDouble();
+    d.insert(QStringLiteral("stock"), QJsonObject{{QStringLiteral("width"), doc.boardWidth()},
+                                                   {QStringLiteral("height"), doc.boardHeight()},
+                                                   {QStringLiteral("thickness"), thickness}});
+    QString material = base.value(QStringLiteral("material")).toString();
+    const QString ccMaterial = doc.params().value(QStringLiteral("material"));
+    for (const LibraryMaterial &m : lib.materials())
+        for (const QString &n : m.ccNames)
+            if (n.compare(ccMaterial, Qt::CaseInsensitive) == 0)
+                material = m.id;
+    d.insert(QStringLiteral("material"), material);
+
+    QJsonArray shapes;
+    QHash<QString, QStringList> padIds;   // element id -> pad shape ids
+    int points = 0;
+    auto add = [&](const Element &e, QJsonObject s) {
+        int n = 0;
+        if (!checkShape(s, &n).isEmpty() || shapes.size() >= kMaxShapes || points + n > kMaxPoints) {
+            lose(QStringLiteral("a shape the pad cannot hold"));
+            return;
+        }
+        points += n;
+        padIds[e.id].append(s.value(QStringLiteral("id")).toString());
+        shapes.append(s);
+    };
+    for (const Element &e : doc.elements()) {
+        if (Element::isConstruction(e)) {
+            lose(QStringLiteral("construction lines"));
+            continue;
+        }
+        if (!e.raw.value(QStringLiteral("tabs")).toArray().isEmpty())
+            lose(QStringLiteral("tabs"));
+        const QString sid = padShapeId(e.id);
+        const QJsonObject &r = e.raw;
+        const QJsonArray c = r.value(QStringLiteral("center")).toArray();
+        const double cx = c.at(0).toDouble(), cy = c.at(1).toDouble();
+        const QString gt = e.geometryType;
+        if (Element::isPoint(e)) {
+            add(e, {{QStringLiteral("id"), sid}, {QStringLiteral("type"), QStringLiteral("point")},
+                    {QStringLiteral("x"), cx}, {QStringLiteral("y"), cy}});
+            continue;
+        }
+        if (gt == QLatin1String("circle")) {
+            add(e, {{QStringLiteral("id"), sid}, {QStringLiteral("type"), QStringLiteral("circle")},
+                    {QStringLiteral("x"), cx}, {QStringLiteral("y"), cy},
+                    {QStringLiteral("r"), r.value(QStringLiteral("radius")).toDouble()}});
+            continue;
+        }
+        const bool turned = !qFuzzyIsNull(r.value(QStringLiteral("rotation")).toDouble());
+        if (gt == QLatin1String("rectangle") && !turned
+            && r.value(QStringLiteral("corner_type")).toInt() == 0) {
+            const double w = r.value(QStringLiteral("width")).toDouble();
+            const double h = r.value(QStringLiteral("height")).toDouble();
+            add(e, {{QStringLiteral("id"), sid}, {QStringLiteral("type"), QStringLiteral("rect")},
+                    {QStringLiteral("x"), cx - w / 2}, {QStringLiteral("y"), cy - h / 2},
+                    {QStringLiteral("w"), w}, {QStringLiteral("h"), h}});
+            continue;
+        }
+        if (gt == QLatin1String("regular_polygon") && !turned) {
+            add(e, {{QStringLiteral("id"), sid}, {QStringLiteral("type"), QStringLiteral("polygon")},
+                    {QStringLiteral("x"), cx}, {QStringLiteral("y"), cy},
+                    {QStringLiteral("r"), r.value(QStringLiteral("radius")).toDouble()},
+                    {QStringLiteral("sides"), r.value(QStringLiteral("num_sides")).toInt()}});
+            continue;
+        }
+        if (gt == QLatin1String("text")) {
+            const QJsonArray t = r.value(QStringLiteral("transform")).toArray();
+            const bool plain = t.size() == 9 && t.at(0).toDouble() == 1 && t.at(1).toDouble() == 0
+                               && t.at(3).toDouble() == 0 && t.at(4).toDouble() == 1;
+            if (!plain || r.value(QStringLiteral("arc_enabled")).toBool())
+                lose(QStringLiteral("turned or curved text"));
+            if (r.value(QStringLiteral("font")).toString() != QLatin1String("Helvetica-Regular")
+                || r.value(QStringLiteral("spacing")).toDouble(1) != 1)
+                lose(QStringLiteral("fonts and letter spacing"));
+            add(e, {{QStringLiteral("id"), sid}, {QStringLiteral("type"), QStringLiteral("text")},
+                    {QStringLiteral("x"), t.size() == 9 ? t.at(6).toDouble() : 0},
+                    {QStringLiteral("y"), t.size() == 9 ? t.at(7).toDouble() : 0},
+                    {QStringLiteral("text"), r.value(QStringLiteral("text")).toString()},
+                    {QStringLiteral("size"), r.value(QStringLiteral("font_height")).toDouble()}});
+            continue;
+        }
+        if (gt != QLatin1String("path"))
+            lose(QStringLiteral("turned or rounded shapes (sent as paths)"));
+        const PathModel m = Element::pathModel(e);
+        for (int si = 0; si < m.subs.size(); ++si) {
+            const SubPath &sub = m.subs.at(si);
+            QJsonArray pts;
+            if (!sub.nodes.isEmpty())
+                pts.append(xyRow(sub.nodes.first().p));
+            for (int i = 0; i < sub.segmentCount(); ++i) {
+                const PathNode *a = nullptr, *b = nullptr;
+                sub.segment(i, &a, &b);
+                const bool closing = sub.closed && i == sub.segmentCount() - 1;
+                if (a->hasOut() || b->hasIn()) {
+                    lose(QStringLiteral("curves (sent as short straight lines)"));
+                    for (int k = 1; k < 16; ++k)
+                        pts.append(xyRow(sub.pointAt(i, k / 16.0)));
+                }
+                if (!closing)
+                    pts.append(xyRow(b->p));
+            }
+            add(e, {{QStringLiteral("id"), m.subs.size() == 1 ? sid : QStringLiteral("%1-%2").arg(sid).arg(si)},
+                    {QStringLiteral("type"), QStringLiteral("path")},
+                    {QStringLiteral("x"), 0}, {QStringLiteral("y"), 0},
+                    {QStringLiteral("points"), pts}, {QStringLiteral("closed"), sub.closed}});
+        }
+    }
+    d.insert(QStringLiteral("shapes"), shapes);
+
+    QJsonArray toolpaths;
+    for (const Toolpath &t : doc.toolpaths()) {
+        const QString type = t.json.value(QStringLiteral("type")).toString();
+        const QString kind = type == QLatin1String("contour")           ? QStringLiteral("profile")
+                           : type == QLatin1String("pocket_toolpath")   ? QStringLiteral("pocket")
+                           : type == QLatin1String("drilling_toolpath") ? QStringLiteral("drill")
+                           : type == QLatin1String("engrave_toolpath")  ? QStringLiteral("engrave")
+                                                                        : QString();
+        if (kind.isEmpty()) {
+            lose(QStringLiteral("%1 toolpaths").arg(toolpathLabel(type)));
+            continue;
+        }
+        if (!t.json.value(QStringLiteral("enabled")).toBool(true)) {
+            lose(QStringLiteral("turned-off toolpaths"));
+            continue;
+        }
+        if (toolpaths.size() >= kMaxToolpaths) {
+            lose(QStringLiteral("toolpaths over %1").arg(kMaxToolpaths));
+            continue;
+        }
+        const QString name = t.json.value(QStringLiteral("name")).toString().left(60);
+        const int number = t.json.value(QStringLiteral("tool")).toObject().value(QStringLiteral("number")).toInt();
+        const LibraryTool *tool = lib.byNumber(number);
+        const ToolFeeds *feeds = tool ? tool->feedsFor(material) : nullptr;
+        if (!tool || !feeds || !feeds->valid()) {
+            lose(QStringLiteral("toolpaths with a bit the pad does not know"));
+            continue;
+        }
+        QJsonArray refs;
+        QStringList elementIds;
+        for (const QJsonValue &v : t.json.value(QStringLiteral("elements")).toArray()) {
+            const QString id = v.toObject().value(QStringLiteral("uuid")).toString();
+            elementIds << id;
+            for (const QString &p : padIds.value(id))
+                refs.append(p);
+        }
+        const double depth = std::abs(t.json.value(QStringLiteral("end_depth")).toString().toDouble());
+        const int dir = t.json.value(QStringLiteral("ofset_dir")).toInt(1);
+        const QString side = dir < 0 ? QStringLiteral("inside") : dir == 0 ? QStringLiteral("on")
+                                                                         : QStringLiteral("outside");
+        toolpaths.append(QJsonObject{{QStringLiteral("name"), name}, {QStringLiteral("type"), kind},
+                                     {QStringLiteral("shapes"), refs}, {QStringLiteral("tool"), number},
+                                     {QStringLiteral("depth"), depth}, {QStringLiteral("side"), side}});
+
+        // What building this toolpath from the pad would give; anything else
+        // was set here and would be lost.
+        Toolpath fresh = makeToolpath(doc, type, elementIds);
+        QJsonObject j = fresh.json;
+        ToolLibrary::applyToToolpath(j, *tool, *feeds);
+        j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
+        if (type == QLatin1String("contour"))
+            j.insert(QStringLiteral("ofset_dir"), dir);
+        QJsonObject have = t.json;
+        for (const QString &k : ignoredToolpathKeys()) {
+            have.remove(k);
+            j.remove(k);
+        }
+        if (have != j)
+            lose(QStringLiteral("toolpath settings made here (feeds, passes, ramps, ...)"));
+    }
+    d.insert(QStringLiteral("toolpaths"), toolpaths);
+    if (lostOut)
+        *lostOut = lost;
+    return d;
+}
+
+// ---- Links ------------------------------------------------------------------
+
+namespace {
+
+QString canonical(const QString &path)
+{
+    const QFileInfo fi(path);
+    const QString c = fi.canonicalFilePath();
+    return c.isEmpty() ? fi.absoluteFilePath() : c;
+}
+
+} // namespace
+
+Links::Links(const QString &dir) : m_file(QDir(dir).filePath(QStringLiteral(".links.json")))
+{
+    QFile f(m_file);
+    if (f.size() < 4 * 1024 * 1024 && f.open(QIODevice::ReadOnly))
+        m_links = QJsonDocument::fromJson(f.readAll()).object();
+}
+
+QString Links::idFor(const QString &c2dPath) const
+{
+    return m_links.value(canonical(c2dPath)).toObject().value(QStringLiteral("id")).toString();
+}
+
+QStringList Links::pathsFor(const QString &id) const
+{
+    QStringList out;
+    for (auto it = m_links.constBegin(); it != m_links.constEnd(); ++it)
+        if (it.value().toObject().value(QStringLiteral("id")).toString() == id)
+            out << it.key();
+    return out;
+}
+
+bool Links::padOnly(const QString &c2dPath) const
+{
+    return m_links.value(canonical(c2dPath)).toObject().value(QStringLiteral("padOnly")).toBool();
+}
+
+void Links::set(const QString &c2dPath, const QString &id, bool padOnly)
+{
+    m_links.insert(canonical(c2dPath), QJsonObject{{QStringLiteral("id"), id},
+                                                   {QStringLiteral("padOnly"), padOnly}});
+    write();
+}
+
+void Links::remove(const QString &c2dPath)
+{
+    m_links.remove(canonical(c2dPath));
+    m_links.remove(c2dPath);
+    write();
+}
+
+void Links::write() const
+{
+    QDir().mkpath(QFileInfo(m_file).absolutePath());
+    QSaveFile f(m_file);
+    if (f.open(QIODevice::WriteOnly)) {
+        f.write(QJsonDocument(m_links).toJson(QJsonDocument::Compact));
+        f.commit();
+    }
+}
+
 QJsonObject toolsJson()
 {
     ToolLibrary lib;

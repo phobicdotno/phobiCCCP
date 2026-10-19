@@ -2700,11 +2700,11 @@ void MachinePanel::finishRehearsal(bool ok, bool measured)
 bool MachinePanel::runProgram(QString *remoteWhy)
 {
     const bool remote = remoteWhy != nullptr;
-    // Here a refusal is a message on screen; from a phone it goes back there.
+    // Here a refusal is a message on screen; from a pad it goes back there.
     auto refuse = [&](const QString &headline, const QString &body = QString()) {
         if (remote) {
             *remoteWhy = body.isEmpty() ? headline : headline + QLatin1Char(' ') + body;
-            log(QStringLiteral("!! start from phone refused: %1").arg(*remoteWhy));
+            log(QStringLiteral("!! start from pad refused: %1").arg(*remoteWhy));
         } else {
             shopTell(this, QStringLiteral("Machine"), headline, body);
         }
@@ -2817,8 +2817,8 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     ask.okText = QStringLiteral("▶ Start");
     ask.defaultOk = false;
     if (remote) {
-        // Asked on the phone instead; what it would have said goes in the log.
-        log(QStringLiteral("started from phone: %1 — %2").arg(ask.headline, ask.note));
+        // Asked on the pad instead; what it would have said goes in the log.
+        log(QStringLiteral("started from pad: %1 — %2").arg(ask.headline, ask.note));
     } else if (!shopAsk(this, ask)) {
         return false;
     }

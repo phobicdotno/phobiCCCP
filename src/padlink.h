@@ -4,8 +4,9 @@
 #include <QString>
 #include <QStringList>
 
-// Designs made on the PhobiCCCP Android app (Android/ in this repository).
-// The phone does not know .c2d: it edits a small JSON design and phobiCCCP
+// Designs made on the PhobiCCCP pad app (Android/ in this repository, Flutter
+// for Android tablets and iPad).
+// The pad does not know .c2d: it edits a small JSON design and phobiCCCP
 // turns it into a document here, with the same factories the canvas and the
 // toolpath panel use, so what arrives is an ordinary design.
 //
@@ -45,12 +46,41 @@ QString check(const QJsonObject &design);
 bool buildDocument(const QJsonObject &design, const QString &c2dPath,
                    QStringList *notes, QString *error);
 
-// The embedded tool library as the phone needs it: {"materials": [{id, name}],
+// The other way: a .c2d made from a pad design and edited here, as a pad
+// design again, so the edit reaches the pads. `base` is the pad design it was
+// made from; its id and name are kept, `modified` is left for the caller.
+// What the pad cannot hold goes in `lost` (curves become straight segments,
+// V-carves are left out, feeds or tabs set here, ...): with nothing lost, the
+// design builds back into the same document, so a pad edit can replace it.
+// Empty with `error` set when the file cannot be read.
+QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
+                               QStringList *lost, QString *error = nullptr);
+
+// Which .c2d files were made from which pad design, and whether the file
+// still holds only what the pad can (so a pad edit may rebuild it). Kept in
+// `dir`/.links.json, beside the Store's designs.
+class Links
+{
+public:
+    explicit Links(const QString &dir);
+    QString idFor(const QString &c2dPath) const;
+    QStringList pathsFor(const QString &id) const;
+    bool padOnly(const QString &c2dPath) const;
+    void set(const QString &c2dPath, const QString &id, bool padOnly);
+    void remove(const QString &c2dPath);
+
+private:
+    void write() const;
+    QString m_file;
+    QJsonObject m_links;   // canonical path -> {id, padOnly}
+};
+
+// The embedded tool library as the pad needs it: {"materials": [{id, name}],
 // "tools": [{number, name, kind, diameter, angle, flutes, materials: [ids
 // with feeds]}]}.
 QJsonObject toolsJson();
 
-// Designs kept on this computer so every phone (and every phobiCCCP a phone
+// Designs kept on this computer so every pad (and every phobiCCCP a pad
 // talks to) ends up with the same set: one <id>.json per design in `dir`.
 // The newer `modified` wins; a deletion is a design with "deleted": true.
 class Store

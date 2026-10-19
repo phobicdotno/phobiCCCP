@@ -219,7 +219,7 @@ struct ProjectReceiver::Conn {
     bool active = false;  // past its manifest: the one transfer being taken
     // Until the hello is in, it is not known which protocol this is.
     QByteArray head;
-    bool api = false;     // a phone's request connection
+    bool api = false;     // a pad's request connection
     bool pending = false; // an API request is waiting for respond()
     QByteArray buf;       // API bytes not yet read as a request
 };
@@ -347,7 +347,7 @@ void ProjectReceiver::onData(QTcpSocket *s)
             c->api = true;
             c->buf = c->head.mid(kApiHello.size());
             c->head.clear();
-            c->deadline.stop();   // a phone may stay a while; idle still applies
+            c->deadline.stop();   // a pad may stay a while; idle still applies
             onApiData(s);
             return;
         }
@@ -426,7 +426,7 @@ void ProjectReceiver::respond(int id, const QJsonObject &reply)
     QTcpSocket *s = m_apiWaiting.take(id);
     Conn *c = s ? m_conns.value(s) : nullptr;
     if (!c)
-        return;    // the phone went away meanwhile
+        return;    // the pad went away meanwhile
     c->pending = false;
     c->idle.start();
     s->write(QJsonDocument(reply).toJson(QJsonDocument::Compact) + '\n');

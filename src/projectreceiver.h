@@ -31,7 +31,7 @@ class QUdpSocket;
 // The PhobiCCCP Android app (Android/ in this repository) uses the same port:
 //
 //   * Discovery: as above. The answer also carries "id" (this install, so a
-//     phone tells two computers with the same name apart), "api" (1) and
+//     pad tells two computers with the same name apart), "api" (1) and
 //     "machine" (the active machine's name).
 //   * Requests: TCP to kPort, "PHOBICCCP-API 1\n", then any number of
 //     requests, one JSON object per line, each answered by one JSON line
@@ -115,7 +115,7 @@ public:
     // Only one transfer past its manifest is held at a time (a second one is
     // told busy), so at most kMaxTotal is buffered; the cap only bounds the
     // connections still sending their hello and manifest.
-    // Phones keep a connection open while they sync, so leave room for a few.
+    // Pads keep a connection open while they sync, so leave room for a few.
     static constexpr int kMaxConns = 8;
     // One API request line; a design with many path points is the big one.
     static constexpr qint64 kMaxRequest = 16LL * 1024 * 1024;
@@ -146,7 +146,7 @@ signals:
     // A complete project arrived; call answer(id, …) once the user decided.
     // While one is waiting for an answer, further transfers are turned away.
     void received(int id, const c2d::ReceivedProject &project);
-    // A phone's request (one JSON object); call respond(id, …). `peer` is
+    // A pad's request (one JSON object); call respond(id, …). `peer` is
     // the address it came from.
     void request(int id, const QJsonObject &request, const QString &peer);
 

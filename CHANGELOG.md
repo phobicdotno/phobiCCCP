@@ -2,18 +2,21 @@
 
 ## v1.1.21 (build 72) — 2026-10-19
 
-> PhobiCCCP for Android: design on the phone, synced with every phobiCCCP on the network; several machines on one phobiCCCP
+> PhobiCCCP for pads: design on an Android tablet or iPad, synced both ways with every phobiCCCP on the network; several machines on one phobiCCCP
 
-**Android app** (new, in `Android/`)
+**Pad app** (new, Flutter, in `Android/`; builds for Android and, from a Mac, for iPad)
 
+- Laid out for a pad: the drawing on the left, shapes, their properties and the toolpaths in
+  a panel on the right (under the drawing on a phone).
 - Finds every phobiCCCP on the same network by itself (or by name/address, for Tailscale),
-  and keeps designs in step with all of them while it is open: an edit on the phone, or on
-  another phone, reaches every computer, and a design deleted on one is deleted everywhere.
+  and keeps designs in step with all of them while it is open: an edit on the pad, or on
+  another pad, reaches every computer, and a design deleted on one is deleted everywhere. A
+  design open in the editor shows a newer copy as soon as it arrives.
 - Draws designs on the stock (rectangles, circles, polygons, text, paths, drill points; drag
-  to move) with profile, pocket, drill and engrave toolpaths, tools and materials from
-  phobiCCCP's own tool library.
+  to move, pinch to zoom) with profile, pocket, drill and engrave toolpaths, tools and
+  materials from phobiCCCP's own tool library.
 - Send to any open phobiCCCP, on any of its machines. "Start cutting right away" is asked for
-  each send, confirmed once more on the phone, and only works on a computer that allows it.
+  each send, confirmed once more on the pad, and only works on a computer that allows it.
 - Shows each computer's machines and their state, and switches the machine in use.
 
 **Desktop**
@@ -21,13 +24,18 @@
 - **Machine menu**: several machines on one phobiCCCP. Each keeps its own size, serial port,
   BitSetter and tool-change positions, reference and surface map; switching disconnects,
   loads the other machine's settings and reconnects on its port.
-- **Machine › Phones may start cutting** (off by default). A start from a phone runs the
+- **Machine › Pads may start cutting** (off by default). A start from a pad runs the
   same program and checks as Run (connected, homed, idle, not busy) without the question on
-  screen, and the phone is told why when it did not start.
-- File › Receive from Syntexophobic and phones: the same port (47652) now also answers the
-  app. Designs from phones are kept in `Documents/phobiCCCP/Pad`, sent ones open as new
+  screen, and the pad is told why when it did not start.
+- File › Receive from Syntexophobic and pads: the same port (47652) now also answers the
+  app. Designs from pads are kept in `Documents/phobiCCCP/Pad`, sent ones open as new
   designs under `Documents/phobiCCCP/Received`; unsaved work is asked about first, and nothing
   replaces the document while the machine is busy.
+- A design sent from a pad stays linked to its `.c2d` both ways. Saving it here sends the
+  change to the pads (curves as short straight lines; V-carves and other toolpaths the pad
+  has no kind for are left out). A newer pad edit rebuilds the file, and reloads it when it is
+  open with nothing unsaved, as long as it holds only what the pad can; otherwise it is left
+  alone and the status bar says why.
 
 ## v1.1.20 (build 71) — 2026-10-18
 

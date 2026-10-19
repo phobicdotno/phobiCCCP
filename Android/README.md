@@ -1,45 +1,67 @@
-# PhobiCCCP for Android
+# PhobiCCCP for pads
 
-Design on a phone or tablet and cut on any phobiCCCP on the same network.
+Design on an Android tablet or an iPad and cut on any phobiCCCP on the same network. The
+app is written in Flutter, so the same code builds for both; it is laid out for a pad
+(drawing on the left, shapes and toolpaths in a panel on the right) and still works on a
+phone.
 
-- **Syncs by itself.** While the app is open it looks for phobiCCCP every few seconds and
-  keeps designs in step with every copy it finds. A design made or changed on one phone
-  reaches every computer, and through them every other phone; the newest copy wins, and a
-  deletion travels the same way. The tool library and materials come from phobiCCCP.
+- **Syncs by itself, both ways.** While the app is open it looks for phobiCCCP every few
+  seconds and keeps designs in step with every copy it finds. A design made or changed on
+  one pad reaches every computer, and through them every other pad; the newest copy wins,
+  and a deletion travels the same way. The tool library and materials come from phobiCCCP.
+- **Edits on the desktop come back.** A design sent from a pad opens on the computer as an
+  ordinary `.c2d`. Saving it there sends the change back to the pads. A later pad edit
+  rebuilds that `.c2d` (and reloads it, when it is open with nothing unsaved), as long as
+  the file holds only what the pad can: once something desktop-only is added (V-carves,
+  curves, tabs, feeds set by hand, a 3D model), the pads still get the change, but a pad
+  edit no longer overwrites the file, and the status bar says so.
 - **Several machines on one phobiCCCP.** The Machines tab lists each computer's machines
   (desktop: Machine › Add machine…) with their state; tap one to make it the one in use.
 - **Several phobiCCCPs.** Install phobiCCCP on as many computers as you like; Send offers
   every one that is open, and every machine on it.
-- **Send and start.** Tick *Start cutting right away* when sending. The phone asks once more,
-  and the computer only starts when **Machine › Phones may start cutting** is on there (off by
+- **Send and start.** Tick *Start cutting right away* when sending. The pad asks once more,
+  and the computer only starts when **Machine › Pads may start cutting** is on there (off by
   default) and the machine is connected, homed, idle and not busy; otherwise the design is
-  opened and the phone is told why it did not start.
+  opened and the pad is told why it did not start.
 
 Designs are 2.5D, cut from the top: rectangles, circles, polygons, text, paths and drill
-points, with profile (outside / inside / on), pocket, drill and engrave toolpaths. phobiCCCP
-turns them into an ordinary `.c2d`, so anything else is done there.
+points, with profile (outside / inside / on), pocket, drill and engrave toolpaths.
 
 ## Install
 
-Every CI run builds a debug APK: open the run under the repository's **Actions** tab and
-download **PhobiCCCP-android**, then open `app-debug.apk` on the phone (allow installing from
-that app when asked). Or build it yourself:
+**Android:** every CI run builds a debug APK. Open the run under the repository's
+**Actions** tab, download **PhobiCCCP-android**, and open `app-debug.apk` on the tablet
+(allow installing from that app when asked).
+
+**iPad:** iOS builds need a Mac with Xcode and an Apple developer account:
 
 ```sh
 cd Android
-./gradlew assembleDebug          # needs JDK 17 and the Android SDK (ANDROID_HOME or local.properties)
-adb install app/build/outputs/apk/debug/app-debug.apk
-./gradlew testDebugUnitTest      # the unit tests
+flutter build ipa              # or open ios/Runner.xcworkspace in Xcode and Run on the iPad
 ```
 
-Android Studio opens the `Android` folder as a project as well.
+The first time the app looks for phobiCCCP, iPadOS asks to allow devices on the local
+network; say yes (Settings › Privacy › Local Network if it was refused).
+
+**Building it yourself** needs Flutter 3.44 (and the Android SDK for Android):
+
+```sh
+cd Android
+flutter pub get
+flutter analyze
+flutter test                   # the unit tests
+flutter build apk --debug      # build/app/outputs/flutter-apk/app-debug.apk
+flutter run                    # on a connected tablet or emulator
+```
 
 ## Finding phobiCCCP
 
-On the desktop, **File › Receive from Syntexophobic and phones** must be on (it is by
-default). The phone and computer must be on the same network, and port 47652 (TCP and UDP)
-open in the computer's firewall. Over Tailscale or across subnets, add the computer by name
-or address on the Machines tab.
+On the desktop, **File › Receive from Syntexophobic and pads** must be on (it is by
+default). The pad and computer must be on the same network, and port 47652 (TCP and UDP)
+open in the computer's firewall. The app broadcasts and also asks every address on its
+own /24 network, so it finds phobiCCCP on iPad too, where broadcasts need a special Apple
+entitlement. Over Tailscale or across subnets, add the computer by name or address on the
+Machines tab.
 
 ## The link
 
@@ -62,3 +84,10 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 
 The design format is described in `src/padlink.h`; `tests/data/pad-design.json` is an
 example both the app's tests and the desktop's `test_padlink` check against.
+
+## Keeping the two apps in step
+
+The pad and the desktop share one design format, so a change to what a design can hold
+goes into both in the same pull request: the Dart model (`lib/model.dart`) and editor, and
+on the desktop `padlink::check`, `buildDocument` and `designFromDocument` (`src/padlink.*`),
+with the shared fixture and both apps' tests updated.

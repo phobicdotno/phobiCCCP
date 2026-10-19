@@ -216,7 +216,7 @@ int main(int argc, char **argv)
         check(a.state() == QAbstractSocket::ConnectedState, "the first one carries on");
     }
 
-    // The phone app: "PHOBICCCP-API 1", then one JSON request per line, each
+    // The pad app: "PHOBICCCP-API 1", then one JSON request per line, each
     // answered before the next is read, on the same port as transfers.
     {
         rx.setDiscoveryExtra(QJsonObject{{QStringLiteral("id"), QStringLiteral("abc")},
