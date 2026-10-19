@@ -1,0 +1,24 @@
+{
+  "format": "phobicccp-pad",
+  "version": 1,
+  "id": "6f1c2a9e-3b7d-4c55-9a0e-1d2f3a4b5c6d",
+  "name": "Door sign",
+  "modified": 1760850000000,
+  "deleted": false,
+  "stock": {"width": 300.0, "height": 150.0, "thickness": 12.0},
+  "material": "softwood",
+  "shapes": [
+    {"id": "s1", "type": "rect", "x": 5.0, "y": 5.0, "w": 290.0, "h": 140.0},
+    {"id": "s2", "type": "circle", "x": 30.0, "y": 75.0, "r": 12.5},
+    {"id": "s3", "type": "polygon", "x": 270.0, "y": 75.0, "r": 12.0, "sides": 6},
+    {"id": "s4", "type": "text", "x": 60.0, "y": 60.0, "text": "PHOBIC", "size": 30.0},
+    {"id": "s5", "type": "path", "x": 0.0, "y": 0.0, "points": [[60.0, 40.0], [240.0, 40.0], [240.0, 45.0]], "closed": false},
+    {"id": "s6", "type": "point", "x": 150.0, "y": 130.0}
+  ],
+  "toolpaths": [
+    {"name": "Lettering", "type": "engrave", "shapes": ["s4", "s5"], "tool": 201, "depth": 1.0, "side": "outside", "enabled": true},
+    {"name": "Holes", "type": "pocket", "shapes": ["s2", "s3"], "tool": 201, "depth": 4.0, "side": "outside", "enabled": true},
+    {"name": "Hanger", "type": "drill", "shapes": ["s6"], "tool": 201, "depth": 6.0, "side": "outside", "enabled": true},
+    {"name": "Cut out", "type": "profile", "shapes": ["s1"], "tool": 201, "depth": 12.5, "side": "outside", "enabled": true}
+  ]
+}

@@ -216,6 +216,54 @@ int main(int argc, char **argv)
         check(a.state() == QAbstractSocket::ConnectedState, "the first one carries on");
     }
 
+    // The pad app: "PHOBICCCP-API 1", then one JSON request per line, each
+    // answered before the next is read, on the same port as transfers.
+    {
+        rx.setDiscoveryExtra(QJsonObject{{QStringLiteral("id"), QStringLiteral("abc")},
+                                         {QStringLiteral("port"), 1}});
+        QUdpSocket u;
+        u.bind(QHostAddress::LocalHost, 0);
+        u.writeDatagram(QByteArray("PHOBICCCP-DISCOVER 1"), QHostAddress::LocalHost, rx.port());
+        waitFor([&] { return u.hasPendingDatagrams(); });
+        const QJsonObject o = QJsonDocument::fromJson(u.receiveDatagram().data()).object();
+        check(o.value(QStringLiteral("id")).toString() == QLatin1String("abc")
+                  && o.value(QStringLiteral("port")).toInt() == rx.port(),
+              "discovery carries the extra keys, never over its own");
+
+        QList<QPair<int, QJsonObject>> asked;
+        QObject::connect(&rx, &ProjectReceiver::request,
+                         [&](int id, const QJsonObject &r, const QString &) { asked.append({id, r}); });
+        QTcpSocket s;
+        s.connectToHost(QHostAddress::LocalHost, rx.port());
+        s.waitForConnected(3000);
+        // Split hello, two requests in one write, then garbage.
+        s.write("PHOBICCCP-");
+        s.flush();
+        waitFor([] { return false; }, 100);
+        s.write("API 1\n{\"op\":\"info\"}\n{\"op\":\"tools\"}\n");
+        check(waitFor([&] { return asked.size() == 1; }) &&
+                  asked.first().second.value(QStringLiteral("op")).toString() == QLatin1String("info"),
+              "API request arrives");
+        waitFor([] { return false; }, 200);
+        check(asked.size() == 1, "the next request waits for the answer");
+        rx.respond(asked.first().first, QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("n"), 1}});
+        check(waitFor([&] { return s.canReadLine(); })
+                  && QJsonDocument::fromJson(s.readLine()).object().value(QStringLiteral("n")).toInt() == 1,
+              "answer is one JSON line");
+        check(waitFor([&] { return asked.size() == 2; })
+                  && asked.at(1).second.value(QStringLiteral("op")).toString() == QLatin1String("tools"),
+              "then the queued request is read");
+        rx.respond(asked.at(1).first, QJsonObject{{QStringLiteral("ok"), true}});
+        waitFor([&] { return s.canReadLine(); });
+        s.readLine();
+        s.write("not json\n");
+        check(waitFor([&] { return s.canReadLine(); })
+                  && !QJsonDocument::fromJson(s.readLine()).object().value(QStringLiteral("ok")).toBool(true)
+                  && s.state() == QAbstractSocket::ConnectedState,
+              "a bad line is answered with an error and the connection stays");
+        rx.respond(9999, QJsonObject{});   // unknown id: nothing happens
+    }
+
     // An absolute deadline: a sender that keeps the idle timer happy with a
     // byte now and then is still cut off.
     {

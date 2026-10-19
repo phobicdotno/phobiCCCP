@@ -89,6 +89,23 @@ private:
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
     void setReceiving(bool on);
     void onProjectReceived(int id, const ReceivedProject &project);
+    // The PhobiCCCP pad app on the same port (projectreceiver.h): status,
+    // tool library, design sync, machine switch, and designs sent to be
+    // opened (and cut, when the pad asks and this computer allows it).
+    void onPadRequest(int id, const QJsonObject &request, const QString &peer);
+    QJsonObject padSend(const QJsonObject &request, const QString &peer);
+    QJsonObject padInfo();
+    void refreshDiscovery();
+    // A design sent from a pad stays linked to its .c2d both ways: saving the
+    // .c2d here updates the pad design (padShareSaved), and a newer pad design
+    // rebuilds the .c2d when it holds nothing the pad cannot (padDesignChanged).
+    void padShareSaved(const QString &c2dPath);
+    void padDesignChanged(const QString &id);
+    // Machine menu: several machines on this computer (machineprofiles.h).
+    void buildMachineMenu();
+    void rebuildMachineMenu();
+    bool switchMachine(const QString &id, QString *why);
+    QMenu *m_machineMenu = nullptr;
     // Ask before throwing edits away. False = the user cancelled.
     bool confirmDiscard(const QString &what);
 

@@ -289,6 +289,18 @@ its history (`.cccp`) are kept in `Documents/phobiCCCP/Received/<name>`. The lin
 port 47652 (TCP for the transfer, UDP for being found); `src/projectreceiver.h`
 describes the protocol.
 
+**Several machines** (Machine menu): add a machine for every router this computer drives.
+Each keeps its own size, serial port, BitSetter and tool-change spots, reference and surface
+map; picking one in the menu (or from the pad app) switches to its settings and reconnects.
+
+**PhobiCCCP for pads** (`Android/`, Flutter, see [Android/README.md](Android/README.md)):
+design on an Android tablet or iPad, synced automatically both ways with every phobiCCCP
+on the same network, and sent to any of them, on any of its machines. A design from a pad
+stays linked to its `.c2d`: saving it here updates the pads, and a later pad edit rebuilds
+the file while it holds only what the pad can. A pad can also start the cut straight away
+when **Machine › Pads may start cutting** is on (off by default); the machine still has to
+be connected, homed and idle.
+
 **Isometric preview** (Preview tab): the generated route drawn in 3D over the
 stock — rapids dashed, cuts coloured by depth — with orbit / zoom, and an
 animated tool marker with play / pause / speed and a position slider. The

@@ -1,6 +1,7 @@
 #pragma once
 #include <QByteArray>
 #include <QHash>
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QVector>
@@ -26,6 +27,18 @@ class QUdpSocket;
 // with x / y = the mesh's lower-left corner), "vectors" (DXF, same
 // coordinates), "project" (the Syntexophobic project with its history, a
 // .cccp zip; kept beside the design, not opened here).
+//
+// The PhobiCCCP Android app (Android/ in this repository) uses the same port:
+//
+//   * Discovery: as above. The answer also carries "id" (this install, so a
+//     pad tells two computers with the same name apart), "api" (1) and
+//     "machine" (the active machine's name).
+//   * Requests: TCP to kPort, "PHOBICCCP-API 1\n", then any number of
+//     requests, one JSON object per line, each answered by one JSON line
+//     {"ok": true, ...} or {"ok": false, "error": "..."} before the next is
+//     read. The requests themselves ("op": info, tools, designs, get, put,
+//     machine, send) are answered by the main window; see
+//     MainWindow::onPadRequest and Android/README.md.
 namespace c2d {
 
 struct ReceivedFile {
@@ -102,7 +115,10 @@ public:
     // Only one transfer past its manifest is held at a time (a second one is
     // told busy), so at most kMaxTotal is buffered; the cap only bounds the
     // connections still sending their hello and manifest.
-    static constexpr int kMaxConns = 3;
+    // Pads keep a connection open while they sync, so leave room for a few.
+    static constexpr int kMaxConns = 8;
+    // One API request line; a design with many path points is the big one.
+    static constexpr qint64 kMaxRequest = 16LL * 1024 * 1024;
 
     explicit ProjectReceiver(QObject *parent = nullptr);
     ~ProjectReceiver() override;
@@ -117,6 +133,12 @@ public:
     // "OK <message>" or "ERR <message>" and the connection is closed.
     void answer(int id, bool ok, const QString &message);
 
+    // Answer API request `id` (from request()); the next request on that
+    // connection is read once this is sent.
+    void respond(int id, const QJsonObject &reply);
+    // Merged into every discovery answer.
+    void setDiscoveryExtra(const QJsonObject &extra) { m_discoveryExtra = extra; }
+
     // For tests: shorter timeouts than kIdleMs and kDeadlineMs (base part).
     void setTimeouts(int idleMs, int deadlineMs) { m_idleMs = idleMs; m_deadlineMs = deadlineMs; }
 
@@ -124,18 +146,24 @@ signals:
     // A complete project arrived; call answer(id, …) once the user decided.
     // While one is waiting for an answer, further transfers are turned away.
     void received(int id, const c2d::ReceivedProject &project);
+    // A pad's request (one JSON object); call respond(id, …). `peer` is
+    // the address it came from.
+    void request(int id, const QJsonObject &request, const QString &peer);
 
 private:
     struct Conn;
     void onConnection();
     void onData(QTcpSocket *s);
     void onDatagrams();
+    void onApiData(QTcpSocket *s);
     void drop(QTcpSocket *s, const QByteArray &reply);
 
     QTcpServer *m_tcp = nullptr;
     QUdpSocket *m_udp = nullptr;
     QHash<QTcpSocket *, Conn *> m_conns;
     QHash<int, QTcpSocket *> m_waiting;   // complete, waiting for answer()
+    QHash<int, QTcpSocket *> m_apiWaiting;   // API request waiting for respond()
+    QJsonObject m_discoveryExtra;
     int m_nextId = 1;
     int m_idleMs = kIdleMs;
     int m_deadlineMs = kDeadlineMs;

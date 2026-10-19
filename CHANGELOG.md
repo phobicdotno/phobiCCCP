@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.0 (build 72) — 2026-10-18
+## v1.2.0 (build 73) — 2026-10-19
 
 > Parametric sketching: constraints, driving dimensions and user parameters, Fusion style
 
@@ -39,7 +39,47 @@
   but not resized (that would square the corners); a path segment curved by a node edit
   no longer counts as a line.
 - Constraints, dimensions and parameters are saved inside the `.c2d` (`phobic_parametric`
-  in the params table); Carbide Create ignores them and still opens the file.
+  in the params table); Carbide Create ignores them and still opens the file. The pads
+  don't have them, so a pad-linked design that uses them is sent to the pads but not
+  rebuilt from a pad edit.
+
+## v1.1.21 (build 72) — 2026-10-19
+
+> PhobiCCCP for pads: design on an Android tablet or iPad, synced both ways with every phobiCCCP on the network; several machines on one phobiCCCP
+
+**Pad app** (new, Flutter, in `Android/`; builds for Android and, from a Mac, for iPad)
+
+- Looks like the desktop program, laid out for a pad in landscape: the same menu bar, mode
+  switch, tool bar, drawing, Properties / Document / Toolpaths panels, colours and font.
+- Finds every phobiCCCP on the same network by itself (or by name/address, for Tailscale),
+  and keeps designs in step with all of them while it is open: an edit on the pad, or on
+  another pad, reaches every computer, and a design deleted on one is deleted everywhere. A
+  design open in the editor shows a newer copy as soon as it arrives.
+- Draws designs on the stock (rectangles, circles, polygons, text, paths, drill points; drag
+  to move, pinch to zoom) with profile, pocket, drill and engrave toolpaths, tools and
+  materials from phobiCCCP's own tool library.
+- Send to any open phobiCCCP, on any of its machines. "Start cutting right away" is asked for
+  each send, confirmed once more on the pad, and only works on a computer that allows it.
+- Shows each computer's machines and their state, and switches the machine in use.
+- Toolpaths can be ticked off, as on the desktop; a turned-off toolpath travels both ways.
+
+**Desktop**
+
+- **Machine menu**: several machines on one phobiCCCP. Each keeps its own size, serial port,
+  BitSetter and tool-change positions, reference and surface map; switching disconnects,
+  loads the other machine's settings and reconnects on its port.
+- **Machine › Pads may start cutting** (off by default). A start from a pad runs the
+  same program and checks as Run (connected, homed, idle, not busy) without the question on
+  screen, and the pad is told why when it did not start.
+- File › Receive from Syntexophobic and pads: the same port (47652) now also answers the
+  app. Designs from pads are kept in `Documents/phobiCCCP/Pad`, sent ones open as new
+  designs under `Documents/phobiCCCP/Received`; unsaved work is asked about first, and nothing
+  replaces the document while the machine is busy.
+- A design sent from a pad stays linked to its `.c2d` both ways. Saving it here sends the
+  change to the pads (curves as short straight lines; V-carves and other toolpaths the pad
+  has no kind for are left out). A newer pad edit rebuilds the file, and reloads it when it is
+  open with nothing unsaved, as long as it holds only what the pad can; otherwise it is left
+  alone and the status bar says why.
 
 ## v1.1.20 (build 71) — 2026-10-18
 

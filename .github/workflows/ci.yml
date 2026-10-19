@@ -81,3 +81,41 @@ jobs:
           name: ctest-log
           path: build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
+
+  # The phone app (Android/): unit tests, then a debug APK to install from the run's artifacts.
+  android:
+    # The pad app (Flutter): analyze, unit tests, and a debug APK to install.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.44.9
+          cache: true
+
+      - name: Analyze and test
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Build APK
+        run: flutter build apk --debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhobiCCCP-android
+          path: Android/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error

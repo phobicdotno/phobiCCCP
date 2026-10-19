@@ -1,0 +1,351 @@
+// The PhobiCCCP pad app's side of phobiCCCP: a pad design checked and
+// turned into an ordinary document that exports (and back again after an
+// edit here), the design store and links that keep every pad in step, and
+// machine profiles swapping the machine/ settings.
+#include "../src/c2ddocument.h"
+#include "../src/gcodeexport.h"
+#include "../src/machineprofiles.h"
+#include "../src/element.h"
+#include "../src/padlink.h"
+
+#include <QDir>
+#include <QFile>
+#include <QGuiApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QSettings>
+#include <QTemporaryDir>
+#include <cmath>
+#include <cstdio>
+#include <functional>
+#include <limits>
+
+using namespace c2d;
+
+static int g_fail = 0;
+static void check(bool ok, const char *what)
+{
+    std::printf("%s %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok) ++g_fail;
+}
+
+// A flat end mill and the material it has feeds for, from the library itself.
+static int pickTool(const char *kind, QString *material)
+{
+    const QJsonObject lib = padlink::toolsJson();
+    for (const QJsonValue &v : lib.value(QStringLiteral("tools")).toArray()) {
+        const QJsonObject t = v.toObject();
+        const QJsonArray mats = t.value(QStringLiteral("materials")).toArray();
+        if (t.value(QStringLiteral("kind")).toString() == QLatin1String(kind)
+            && mats.contains(QStringLiteral("softwood"))) {
+            *material = QStringLiteral("softwood");
+            return t.value(QStringLiteral("number")).toInt();
+        }
+    }
+    return 0;
+}
+
+static QJsonObject design(int tool, const QString &material)
+{
+    auto tp = [&](const char *name, const char *type, const QStringList &shapes, double depth,
+                  const char *side = "outside") {
+        return QJsonObject{{QStringLiteral("name"), QLatin1String(name)},
+                           {QStringLiteral("type"), QLatin1String(type)},
+                           {QStringLiteral("side"), QLatin1String(side)},
+                           {QStringLiteral("shapes"), QJsonArray::fromStringList(shapes)},
+                           {QStringLiteral("tool"), tool},
+                           {QStringLiteral("depth"), depth}};
+    };
+    return QJsonObject{
+        {QStringLiteral("format"), QStringLiteral("phobicccp-pad")},
+        {QStringLiteral("version"), 1},
+        {QStringLiteral("id"), QStringLiteral("sign-1")},
+        {QStringLiteral("name"), QStringLiteral("Sign")},
+        {QStringLiteral("modified"), 1000.0},
+        {QStringLiteral("material"), material},
+        {QStringLiteral("stock"), QJsonObject{{QStringLiteral("width"), 300},
+                                              {QStringLiteral("height"), 200},
+                                              {QStringLiteral("thickness"), 12}}},
+        {QStringLiteral("shapes"), QJsonArray{
+            QJsonObject{{"id", "r"}, {"type", "rect"}, {"x", 10}, {"y", 10}, {"w", 280}, {"h", 180}},
+            QJsonObject{{"id", "c"}, {"type", "circle"}, {"x", 60}, {"y", 100}, {"r", 25}},
+            QJsonObject{{"id", "g"}, {"type", "polygon"}, {"x", 240}, {"y", 100}, {"r", 25}, {"sides", 6}},
+            QJsonObject{{"id", "t"}, {"type", "text"}, {"x", 100}, {"y", 40}, {"text", "Hi"}, {"size", 20}},
+            QJsonObject{{"id", "p"}, {"type", "path"}, {"closed", false},
+                        {"points", QJsonArray{QJsonArray{120, 150}, QJsonArray{180, 150}, QJsonArray{180, 170}}}},
+            QJsonObject{{"id", "h"}, {"type", "point"}, {"x", 150}, {"y", 100}}}},
+        {QStringLiteral("toolpaths"), QJsonArray{
+            tp("Pocket", "pocket", {"c", "g"}, 3),
+            tp("Lines", "engrave", {"p", "t"}, 1),
+            tp("Hole", "drill", {"h"}, 5),
+            tp("Outline", "profile", {"r"}, 12.5)}}};
+}
+
+static void testCheck(const QJsonObject &good)
+{
+    check(padlink::check(good).isEmpty(), "a good design passes");
+    auto broken = [&](const std::function<void(QJsonObject &)> &f) {
+        QJsonObject d = good;
+        f(d);
+        return !padlink::check(d).isEmpty();
+    };
+    check(broken([](QJsonObject &d) { d.insert("version", 2); }), "newer version refused");
+    check(broken([](QJsonObject &d) { d.insert("id", "../x"); }), "path in id refused");
+    check(broken([](QJsonObject &d) {
+        QJsonArray s = d.value("shapes").toArray();
+        QJsonObject r = s.at(0).toObject();
+        r.insert("w", std::numeric_limits<double>::quiet_NaN());
+        s.replace(0, r);
+        d.insert("shapes", s);
+    }), "NaN size refused");
+    check(broken([](QJsonObject &d) {
+        QJsonArray t = d.value("toolpaths").toArray();
+        QJsonObject p = t.at(0).toObject();
+        p.insert("shapes", QJsonArray{"nope"});
+        t.replace(0, p);
+        d.insert("toolpaths", t);
+    }), "toolpath on an unknown shape refused");
+    check(broken([](QJsonObject &d) {
+        QJsonArray s;
+        for (int i = 0; i <= padlink::kMaxShapes; ++i)
+            s.append(QJsonObject{{"id", QString::number(i)}, {"type", "point"}, {"x", 1}, {"y", 1}});
+        d.insert("shapes", s);
+        d.insert("toolpaths", QJsonArray());
+    }), "too many shapes refused");
+    QJsonObject gone{{"format", "phobicccp-pad"}, {"version", 1}, {"id", "x"},
+                     {"modified", 5.0}, {"deleted", true}};
+    check(padlink::check(gone).isEmpty(), "a deletion needs no content");
+}
+
+static void testBuild(const QString &dir, const QJsonObject &d)
+{
+    const QString path = QDir(dir).filePath("sign.c2d");
+    QStringList notes;
+    QString err;
+    const bool ok = padlink::buildDocument(d, path, &notes, &err);
+    check(ok, "design builds a document");
+    if (!ok) {
+        std::printf("     %s\n", qPrintable(err));
+        return;
+    }
+    Document doc;
+    check(doc.load(path, &err), "it loads back");
+    check(doc.elements().size() >= 6 && doc.toolpaths().size() == 4, "every shape and toolpath is there");
+    check(std::abs(doc.boardWidth() - 300) < 1e-6 && std::abs(doc.boardHeight() - 200) < 1e-6,
+          "stock size kept");
+    const Toolpath &outline = doc.toolpaths().last();
+    check(outline.type == QLatin1String("contour")
+              && outline.json.value("ofset_dir").toInt() == 1
+              && outline.json.value("name").toString() == QLatin1String("Outline")
+              && std::abs(std::abs(outline.json.value("end_depth").toString().toDouble()) - 12.5) < 1e-6,
+          "profile outside, named, at its depth");
+    check(notes.join(' ').contains(QStringLiteral("deeper than the stock")), "too deep is noted");
+    const GcodeResult g = exportGcode(doc);
+    check(g.done.size() == 4 && g.gcode.count(QLatin1String("G1")) > 20, "the document exports");
+
+    QJsonObject bad = d;
+    QJsonArray t = bad.value("toolpaths").toArray();
+    QJsonObject p = t.at(0).toObject();
+    p.insert("tool", 987654);
+    t.replace(0, p);
+    bad.insert("toolpaths", t);
+    check(!padlink::buildDocument(bad, QDir(dir).filePath("bad.c2d"), nullptr, &err)
+              && err.contains(QStringLiteral("987654")),
+          "an unknown tool is refused, not swapped");
+}
+
+// The same design file the pad app's tests check its own JSON against
+// (Android/test/model_test.dart): what the pad writes builds here.
+static void testPadFixture(const QString &dir)
+{
+    QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
+    check(f.open(QIODevice::ReadOnly), "pad fixture readable");
+    const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
+    check(padlink::check(d).isEmpty(), "pad fixture is a good design");
+    QStringList notes;
+    QString err;
+    const QString path = QDir(dir).filePath("fixture.c2d");
+    check(padlink::buildDocument(d, path, &notes, &err), "pad fixture builds");
+    Document doc;
+    doc.load(path, &err);
+    const GcodeResult g = exportGcode(doc);
+    check(doc.toolpaths().size() == 4 && g.done.size() == 4, "and all four toolpaths export");
+}
+
+// A design from a pad, saved here, goes back to the pads unchanged; once
+// something only phobiCCCP has is added, the pad copy says what it lacks.
+static void testBackToPad(const QString &dir)
+{
+    QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
+    f.open(QIODevice::ReadOnly);
+    const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
+    const QString path = QDir(dir).filePath("back.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "fixture builds for the way back");
+    QStringList lost;
+    const QJsonObject back = padlink::designFromDocument(path, d, &lost, &err);
+    check(padlink::check(back).isEmpty(), "the way back is a good pad design");
+    check(lost.isEmpty(), qPrintable(QStringLiteral("nothing lost on the way back (%1)").arg(lost.join(", "))));
+    check(back.value("id") == d.value("id") && back.value("name") == d.value("name")
+              && back.value("material").toString() == QLatin1String("softwood"),
+          "id, name and material kept");
+    const QJsonArray shapes = back.value("shapes").toArray();
+    check(shapes.size() == 6, "all six shapes come back");
+    QStringList types;
+    for (const QJsonValue &v : shapes)
+        types << v.toObject().value("type").toString();
+    check(types == QStringList({"rect", "circle", "polygon", "text", "path", "point"}), "as the same kinds");
+    const QJsonObject rect = shapes.at(0).toObject();
+    check(std::abs(rect.value("x").toDouble() - 5) < 1e-6 && std::abs(rect.value("w").toDouble() - 290) < 1e-6,
+          "a rectangle comes back at its corner");
+    const QJsonObject text = shapes.at(3).toObject();
+    check(text.value("text").toString() == QLatin1String("PHOBIC") && std::abs(text.value("x").toDouble() - 60) < 1e-6,
+          "text comes back with its words and place");
+    check(shapes.at(4).toObject().value("points").toArray().size() == 3, "an open path keeps its three points");
+    const QJsonArray tps = back.value("toolpaths").toArray();
+    check(tps.size() == 4, "all four toolpaths come back");
+    const QJsonObject cut = tps.at(3).toObject();
+    check(cut.value("type").toString() == QLatin1String("profile") && cut.value("side").toString() == QLatin1String("outside")
+              && std::abs(cut.value("depth").toDouble() - 12.5) < 1e-6
+              && cut.value("shapes").toArray().size() == 1
+              && cut.value("shapes").toArray().at(0) == shapes.at(0).toObject().value("id"),
+          "a profile keeps its side, depth and shape");
+
+    // Built again from what came back: still nothing lost.
+    const QString again = QDir(dir).filePath("again.c2d");
+    check(padlink::buildDocument(back, again, nullptr, &err), "what came back builds");
+    padlink::designFromDocument(again, back, &lost, &err);
+    check(lost.isEmpty(), "and comes back again with nothing lost");
+
+    // A toolpath turned off on the pad stays off here and comes back off.
+    QJsonObject off = d;
+    QJsonArray offTps = off.value("toolpaths").toArray();
+    QJsonObject first = offTps.at(0).toObject();
+    first.insert("enabled", false);
+    offTps[0] = first;
+    off.insert("toolpaths", offTps);
+    const QString offPath = QDir(dir).filePath("off.c2d");
+    check(padlink::buildDocument(off, offPath, nullptr, &err), "a turned-off toolpath builds");
+    Document offDoc;
+    offDoc.load(offPath, &err);
+    check(!offDoc.toolpaths().first().json.value("enabled").toBool(true), "and is off in the document");
+    const QJsonObject offBack = padlink::designFromDocument(offPath, off, &lost, &err);
+    check(lost.isEmpty() && !offBack.value("toolpaths").toArray().at(0).toObject().value("enabled").toBool(true),
+          "and comes back off, with nothing lost");
+
+    // Edits only phobiCCCP can hold.
+    Document doc;
+    doc.load(path, &err);
+    Toolpath t = doc.toolpaths().first();
+    QJsonObject speeds = t.json.value("speeds").toObject();
+    speeds.insert("feedrate", speeds.value("feedrate").toDouble() + 111);
+    t.json.insert("speeds", speeds);
+    doc.replaceToolpath(t);
+    QVector<Element> &els = doc.elementsRef();
+    els[1] = Element::withConstruction(els[1], true);
+    doc.save(path, &err);
+    const QJsonObject edited = padlink::designFromDocument(path, d, &lost, &err);
+    check(lost.size() == 2, qPrintable(QStringLiteral("own feeds and construction lines are named (%1)").arg(lost.join(", "))));
+    check(edited.value("shapes").toArray().size() == 5 && padlink::check(edited).isEmpty(),
+          "and the rest still goes to the pad");
+}
+
+static void testLinks(const QString &dir)
+{
+    const QString pad = QDir(dir).filePath("LinksPad");
+    const QString file = QDir(dir).filePath("linked.c2d");
+    QFile(file).open(QIODevice::WriteOnly);
+    {
+        padlink::Links l(pad);
+        check(l.idFor(file).isEmpty(), "nothing linked to start with");
+        l.set(file, "sign-1", true);
+    }
+    padlink::Links l(pad);
+    check(l.idFor(file) == QLatin1String("sign-1") && l.padOnly(file), "a link is kept on disk");
+    check(l.pathsFor("sign-1").size() == 1, "and found from the design");
+    padlink::Store store(pad);
+    check(store.list().isEmpty(), "the links file is not a design");
+    l.set(file, "sign-1", false);
+    check(!l.padOnly(file), "marked as holding more than the pad can");
+    l.remove(file);
+    check(padlink::Links(pad).idFor(file).isEmpty(), "and unlinked");
+}
+
+static void testStore(const QString &dir, QJsonObject d)
+{
+    padlink::Store store(QDir(dir).filePath("Pad"));
+    check(store.list().isEmpty(), "empty store");
+    check(store.put(d), "design stored");
+    check(store.get("sign-1").value("name").toString() == QLatin1String("Sign"), "and read back");
+    d.insert("name", "Older");
+    d.insert("modified", 500.0);
+    check(!store.put(d) && store.get("sign-1").value("name").toString() == QLatin1String("Sign"),
+          "an older copy does not overwrite");
+    d.insert("name", "Newer");
+    d.insert("modified", 2000.0);
+    check(store.put(d) && store.get("sign-1").value("name").toString() == QLatin1String("Newer"),
+          "a newer copy does");
+    QJsonObject gone{{"format", "phobicccp-pad"}, {"version", 1}, {"id", "sign-1"},
+                     {"modified", 3000.0}, {"deleted", true}};
+    check(store.put(gone), "a deletion is kept");
+    const QJsonArray l = store.list();
+    check(l.size() == 1 && l.at(0).toObject().value("deleted").toBool(), "and listed as deleted");
+    QString err;
+    check(!store.put(QJsonObject{{"format", "x"}}, &err) && !err.isEmpty(), "junk refused with a reason");
+    check(store.get("../../etc/passwd").isEmpty(), "no paths through get");
+}
+
+static void testProfiles(const QString &dir)
+{
+    QSettings s(QDir(dir).filePath("settings.ini"), QSettings::IniFormat);
+    s.setValue("machine/size", "s4-xl");
+    s.setValue("machine/port", "/dev/ttyACM0");
+    s.setValue("machine/bitsetter/x", -30.0);
+    s.setValue("machine/logOpen", true);
+    using namespace machineprofiles;
+    check(list(s).size() == 1 && list(s).first().name == QLatin1String("Machine 1"),
+          "one machine to start with");
+    const QString first = activeId(s);
+    const QString shop = add(s, "Shop");
+    check(list(s).size() == 2 && activeId(s) == first, "a machine is added, not switched to");
+    check(activate(s, shop), "switch to it");
+    check(s.value("machine/size").toString() == QLatin1String("s4-xl")
+              && s.value("machine/bitsetter/x").toDouble() == -30.0,
+          "a new machine starts with the size and positions");
+    check(s.value("machine/port").toString().isEmpty(), "but not the port");
+    check(s.value("machine/logOpen").toBool(), "UI choices stay");
+    s.setValue("machine/port", "/dev/ttyUSB1");
+    s.setValue("machine/size", "s5pro-4x4");
+    check(activate(s, first) && s.value("machine/port").toString() == QLatin1String("/dev/ttyACM0")
+              && s.value("machine/size").toString() == QLatin1String("s4-xl"),
+          "switching back brings the first machine's settings");
+    check(activate(s, shop) && s.value("machine/port").toString() == QLatin1String("/dev/ttyUSB1")
+              && s.value("machine/size").toString() == QLatin1String("s5pro-4x4"),
+          "and the second's are kept");
+    check(!remove(s, shop), "the active machine cannot be removed");
+    check(rename(s, first, "Garage") && nameOf(s, first) == QLatin1String("Garage"), "rename");
+    check(remove(s, first) && list(s).size() == 1, "another can");
+    check(!activate(s, first), "a removed machine is gone");
+}
+
+int main(int argc, char **argv)
+{
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    QGuiApplication app(argc, argv);
+    QTemporaryDir tmp;
+    QString material;
+    const int tool = pickTool("endmill", &material);
+    check(tool > 0, "the tool library has a flat end mill for softwood");
+    const QJsonObject d = design(tool, material);
+    testCheck(d);
+    testBuild(tmp.path(), d);
+    testPadFixture(tmp.path());
+    testBackToPad(tmp.path());
+    testLinks(tmp.path());
+    testStore(tmp.path(), d);
+    testProfiles(tmp.path());
+    std::printf("%s\n", g_fail ? "FAILED" : "all passed");
+    return g_fail ? 1 : 0;
+}

@@ -4,6 +4,7 @@
 #include "surfacemap.h"
 #include <QVector>
 #include <QHash>
+#include <QJsonObject>
 #include <QElapsedTimer>
 #include <QWidget>
 #include <functional>
@@ -48,6 +49,18 @@ public:
     void setDocument(Document *doc);
     void showPage(const QString &name);   // "job" / "bitzero" / "bitsetter" (used by --shot)
     GrblStreamer *streamer() const { return m_grbl; }
+
+    // A pad asked to cut the open document (the PhobiCCCP pad app, "Start
+    // cutting"). The same program and checks as Run, minus the question on
+    // this screen: connected, homed, idle, not busy, no alarm. False with
+    // `why` set when it did not start.
+    bool startFromRemote(QString *why);
+    // The machine/ settings group was swapped for another machine's
+    // (machineprofiles.h): disconnect, load it, and connect to the new
+    // machine's port if the old one was connected. Refused while busy.
+    bool reloadMachine(QString *why = nullptr);
+    // For the pad: connected, port, state, homed, busy, job.
+    QJsonObject statusJson() const;
 
 signals:
     void livePosition(double wx, double wy, double wz, bool valid);
@@ -101,7 +114,9 @@ private:
     void loadSettings();
     void saveSettings();
     void updateOffsetLabels();
-    void runProgram();
+    // `remoteWhy` set: started from a pad, nothing is asked here and a
+    // refusal is written there instead of shown.
+    bool runProgram(QString *remoteWhy = nullptr);
     void log(const QString &line);
 
     Document *m_doc = nullptr;

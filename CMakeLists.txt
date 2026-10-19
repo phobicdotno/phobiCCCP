@@ -58,6 +58,8 @@ add_library(phobicccp_core STATIC
     src/imagetrace.cpp
     src/model3d.cpp
     src/recovery.cpp
+    src/machineprofiles.cpp
+    src/padlink.cpp
 )
 target_include_directories(phobicccp_core PUBLIC src)
 # The binary should be able to say which build it is (--version, --help);
@@ -148,6 +150,10 @@ add_test(NAME vectorops COMMAND test_vectorops)
 add_executable(test_receiver tests/test_receiver.cpp src/projectreceiver.cpp)
 target_link_libraries(test_receiver PRIVATE phobicccp_core Qt6::Network)
 add_test(NAME receiver COMMAND test_receiver)
+# The phone app's side: pad designs into documents, the design store, machines.
+add_executable(test_padlink tests/test_padlink.cpp)
+target_link_libraries(test_padlink PRIVATE phobicccp_core)
+add_test(NAME padlink COMMAND test_padlink)
 add_executable(test_newdoc tests/test_newdoc.cpp)
 target_link_libraries(test_newdoc PRIVATE phobicccp_core)
 add_test(NAME newdoc COMMAND test_newdoc)
