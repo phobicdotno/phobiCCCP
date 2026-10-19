@@ -2,6 +2,7 @@
 // Document tab in Design, the Toolpaths list and form in Toolpaths
 // (propertiespanel.cpp, toolpathpanel.cpp, toolpathform.cpp).
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../model.dart';
@@ -381,20 +382,41 @@ class ToolpathsPanel extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(6, 0, 6, 10),
-            children: [
-              for (var k = 0; k < tps.length; k++) _card(k, tps[k], k == i),
-              if (tps.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.all(10),
-                  child: Text(
-                    'Select shapes, then pick a toolpath above the drawing (or New).',
-                    style: TextStyle(color: C.sub, fontSize: 13),
+          // Dragging anywhere scrolls, with a mouse too; a card comes loose to
+          // be moved only after a still hold of kHoldToMove (see _Hold).
+          child: ScrollConfiguration(
+            behavior: ScrollConfiguration.of(context).copyWith(dragDevices: PointerDeviceKind.values.toSet()),
+            child: CustomScrollView(
+              slivers: [
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  sliver: SliverReorderableList(
+                    itemCount: tps.length,
+                    itemBuilder: (context, k) => _Hold(key: ValueKey(k), index: k, child: _card(k, tps[k], k == i)),
+                    proxyDecorator: (child, _, _) => Material(type: MaterialType.transparency, child: child),
+                    onReorderItem: (from, to) {
+                      if (to != from) onMove(from, to);
+                    },
                   ),
                 ),
-              if (i != null) _form(context, i, tps[i]),
-            ],
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(6, 0, 6, 10),
+                  sliver: SliverList.list(
+                    children: [
+                      if (tps.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(10),
+                          child: Text(
+                            'Select shapes, then pick a toolpath above the drawing (or New).',
+                            style: TextStyle(color: C.sub, fontSize: 13),
+                          ),
+                        ),
+                      if (i != null) _form(context, i, tps[i]),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -557,6 +579,18 @@ class ToolpathsPanel extends StatelessWidget {
       ],
     ),
   );
+}
+
+/// How long a toolpath card must be held still before it can be dragged to a
+/// new place. The hold is dropped as soon as the finger moves, so time spent
+/// scrolling never counts towards it.
+const kHoldToMove = Duration(milliseconds: 500);
+
+class _Hold extends ReorderableDragStartListener {
+  const _Hold({super.key, required super.child, required super.index});
+
+  @override
+  MultiDragGestureRecognizer createRecognizer() => DelayedMultiDragGestureRecognizer(delay: kHoldToMove, debugOwner: this);
 }
 
 class _NameBox extends StatefulWidget {

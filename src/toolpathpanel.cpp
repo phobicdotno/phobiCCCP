@@ -1,6 +1,7 @@
 #include "toolpathpanel.h"
 #include "toolpathform.h"
 #include <functional>
+#include <memory>
 #include <cmath>
 #include <QPainter>
 #include <QDropEvent>
@@ -13,6 +14,7 @@
 #include "toollibrary.h"
 #include "toollibrarydialog.h"
 #include "toolpathcommands.h"
+#include "dragscroll.h"
 #include "toolpathfactory.h"
 
 #include <QHBoxLayout>
@@ -31,6 +33,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTableWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QUndoStack>
@@ -167,14 +170,64 @@ public:
 };
 
 // The list with drag-and-drop reordering: a dropped card reports where it
-// landed, and the panel turns that into one undoable move.
+// landed, and the panel turns that into one undoable move. Dragging a card
+// scrolls the list (or the panel around it); a card only comes loose to be
+// moved after it has been held still for kHoldToMoveMs. A click is passed on
+// at release, so a scroll never selects or ticks the card it started on.
 class CardList : public QTreeWidget
 {
 public:
     std::function<void(const QString &uuid, int to)> moved;
-    using QTreeWidget::QTreeWidget;
+
+    explicit CardList(QWidget *parent) : QTreeWidget(parent)
+    {
+        m_hold.setSingleShot(true);
+        QObject::connect(&m_hold, &QTimer::timeout, this, [this] { pickUp(); });
+    }
 
 protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() != Qt::LeftButton) {
+            QTreeWidget::mousePressEvent(e);
+            return;
+        }
+        m_press.reset(static_cast<QMouseEvent *>(e->clone()));
+        m_origin = m_last = e->position().toPoint();
+        m_scrolling = false;
+        m_hold.start(kHoldToMoveMs);
+        e->accept();
+    }
+
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (!m_press) {
+            QTreeWidget::mouseMoveEvent(e);
+            return;
+        }
+        const QPoint p = e->position().toPoint();
+        if (!m_scrolling && (p - m_origin).manhattanLength() < QApplication::startDragDistance())
+            return;
+        m_scrolling = true;
+        dragScrollBy(this, m_last.y() - p.y());
+        m_last = p;
+        m_hold.start(kHoldToMoveMs);   // moving restarts the wait
+    }
+
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        m_hold.stop();
+        std::unique_ptr<QMouseEvent> press = std::move(m_press);
+        if (!press) {
+            QTreeWidget::mouseReleaseEvent(e);
+            return;
+        }
+        if (m_scrolling)
+            return;
+        QTreeWidget::mousePressEvent(press.get());
+        QTreeWidget::mouseReleaseEvent(e);
+    }
+
     void dropEvent(QDropEvent *e) override
     {
         QTreeWidgetItem *dragged = currentItem();
@@ -188,6 +241,23 @@ protected:
                 return;
             }
     }
+
+private:
+    // Held long enough over a card: pick it up and drag it.
+    void pickUp()
+    {
+        QTreeWidgetItem *it = m_press ? itemAt(m_last) : nullptr;
+        if (!it)
+            return;
+        m_press.reset();
+        setCurrentItem(it);
+        startDrag(Qt::MoveAction);
+    }
+
+    QTimer m_hold;
+    std::unique_ptr<QMouseEvent> m_press;
+    QPoint m_origin, m_last;
+    bool m_scrolling = false;
 };
 
 } // namespace
@@ -303,7 +373,7 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_list->setDefaultDropAction(Qt::MoveAction);
     m_list->setMinimumHeight(60);
     m_list->setToolTip(QStringLiteral(
-        "Cutting order, top to bottom: drag a card to move it. "
+        "Cutting order, top to bottom: hold a card for half a second, then drag it to move it. "
         "The box switches a toolpath on or off."));
     cards->moved = [this](const QString &uuid, int to) {
         // Queued: the move ends in refresh(), which rebuilds this list while

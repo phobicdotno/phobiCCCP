@@ -41,6 +41,7 @@
 #include <QCloseEvent>
 #include <QFileInfo>
 #include <QScrollArea>
+#include "dragscroll.h"
 #include <QTabWidget>
 #include <QResizeEvent>
 #include <QStackedWidget>
@@ -635,7 +636,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_designPage->setStretchFactor(0, 1);
     m_designPage->setStretchFactor(1, 1);
     // Toolpaths: the toolpath list and editor.
-    m_tpPage = titled(QStringLiteral("Toolpaths"), QStringLiteral("toolpaths"), scrolled(m_tp));
+    // The Toolpaths side scrolls by dragging its open areas too (touch screens).
+    auto *tpScroll = scrolled(m_tp);
+    DragScroll::install(tpScroll);
+    m_tpPage = titled(QStringLiteral("Toolpaths"), QStringLiteral("toolpaths"), tpScroll);
     m_rightStack = new QStackedWidget(this);
     m_rightStack->addWidget(m_designPage);
     m_rightStack->addWidget(m_tpPage);

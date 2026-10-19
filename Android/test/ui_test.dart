@@ -81,4 +81,37 @@ void main() {
     expect(tps.last.shapes, ['s2']);
     await close(t);
   });
+
+  testWidgets('a toolpath card moves only after a half-second hold', (t) async {
+    await open(t);
+    await t.tap(find.text('2 · Toolpaths'));
+    await t.pumpAndSettle();
+    List<String> order() => [for (final p in app.design(d.id)!.toolpaths) p.name];
+    final before = order();
+    expect(before.first, 'Lettering');
+
+    // Dragging straight away scrolls; nothing moves.
+    var g = await t.startGesture(t.getCenter(find.text('Lettering')));
+    for (var k = 0; k < 6; k++) {
+      await g.moveBy(const Offset(0, 25));
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    await t.pump(const Duration(milliseconds: 600));
+    await g.up();
+    await t.pumpAndSettle();
+    expect(order(), before);
+
+    // Held still for half a second, the card comes loose and moves down.
+    g = await t.startGesture(t.getCenter(find.text('Lettering')));
+    await t.pump(const Duration(milliseconds: 550));
+    for (var k = 0; k < 6; k++) {
+      await g.moveBy(const Offset(0, 25));
+      await t.pump(const Duration(milliseconds: 16));
+    }
+    await g.up();
+    await t.pumpAndSettle();
+    expect(order().first, isNot('Lettering'));
+    expect(order().toSet(), before.toSet());
+    await close(t);
+  });
 }

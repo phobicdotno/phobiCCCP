@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.1.22 (build 73) — 2026-10-19
+
+> The Toolpaths side scrolls by dragging, and a toolpath moves only after a half-second hold
+
+- **Desktop and pad:** dragging anywhere open on the Toolpaths side (labels, gaps, the
+  toolpath cards themselves) scrolls it, as on a touch screen; buttons and fields work as
+  before. A drag that starts on a card scrolls instead of moving the card, and does not
+  pick or tick it.
+- To change the cutting order, hold a card still for half a second, then drag it. Moving
+  restarts the wait, so time spent scrolling never counts towards it. ▲ ▼ still work.
+
 ## v1.1.21 (build 72) — 2026-10-19
 
 > PhobiCCCP for pads: design on an Android tablet or iPad, synced both ways with every phobiCCCP on the network; several machines on one phobiCCCP
