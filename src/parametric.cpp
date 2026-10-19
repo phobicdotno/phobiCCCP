@@ -149,9 +149,13 @@ private:
         if (!unary(v))
             return false;
         bool named = m_names != names, lastNamed = named;
-        bool divided = false;
+        bool divided = false, hasUnit = false;
         for (;;) {
             if (const double f = unit()) {
+                // "1 cm / 4 in" or "2 in * 3 in" would scale the first number twice.
+                if (hasUnit)
+                    return err(QStringLiteral("one unit per product; put each number with its unit in brackets"));
+                hasUnit = true;
                 if (lastNamed)
                     return err(QStringLiteral("a unit can't follow a name; it is in mm already"));
                 if (named && divided)
@@ -175,8 +179,19 @@ private:
             }
         }
     }
-    // Unary minus binds looser than ^: -2^2 is -4, 2^-1 is 0.5.
+    // Every nesting ("(", "-", "^", a call) goes through here: a crafted
+    // expression of thousands of "(" must fail, not overflow the stack.
     bool unary(double *v)
+    {
+        if (m_depth >= 200)
+            return err(QStringLiteral("nested too deeply"));
+        ++m_depth;
+        const bool ok = unaryInner(v);
+        --m_depth;
+        return ok;
+    }
+    // Unary minus binds looser than ^: -2^2 is -4, 2^-1 is 0.5.
+    bool unaryInner(double *v)
     {
         if (eat(QLatin1Char('-'))) {
             if (!unary(v)) return false;
@@ -245,12 +260,22 @@ private:
             QVector<double> args;
             if (!eat(QLatin1Char(')'))) {
                 ++m_calls;
-                do {
+                bool commas = false, semis = false;
+                for (;;) {
                     double a;
                     if (!expr(&a)) return false;
                     args << a;
-                } while (eat(QLatin1Char(',')) || eat(QLatin1Char(';')));
+                    if (eat(QLatin1Char(',')))
+                        commas = true;
+                    else if (eat(QLatin1Char(';')))
+                        semis = true;
+                    else
+                        break;
+                }
                 --m_calls;
+                // "max(2,5; 3)": 2,5 meant as a decimal comma reads as two values.
+                if (commas && semis)
+                    return err(QStringLiteral("separate the values with , or with ; - not both"));
                 if (!eat(QLatin1Char(')'))) return err(QStringLiteral("missing ')'"));
             }
             return call(id, args, v);
@@ -309,6 +334,7 @@ private:
     const Lookup &m_lookup;
     int m_pos = 0;
     int m_calls = 0;        // function calls open around the current position
+    int m_depth = 0;        // unary() calls open, for the nesting limit
     int m_names = 0;        // names read so far
     QString m_error;
 };
@@ -480,7 +506,8 @@ Parametric Parametric::fromJson(const QJsonObject &o)
         up.name = po.value("name").toString();
         up.expr = po.value("expr").toString();
         up.comment = po.value("comment").toString();
-        if (!up.name.isEmpty())
+        // A name twice (a hand-edited or old file) would hide one of them.
+        if (!up.name.isEmpty() && !p.nameInUse(up.name))
             p.params.append(up);
     }
     for (const QJsonValue &v : o.value("constraints").toArray()) {
@@ -508,9 +535,33 @@ Parametric Parametric::fromJson(const QJsonObject &o)
         c.expr = co.value("expr").toString();
         c.value = co.value("value").toDouble();
         c.label = arrXy(co.value("label"));
-        if (c.uid.isEmpty())
-            c.uid = p.nextUid();
         p.constraints.append(c);
+    }
+    // Uids made unique once all are read: one without a uid read before a
+    // "c1" further on would otherwise get "c1" too, and the panel and Del
+    // could only ever reach the first.
+    QSet<QString> uids;
+    for (Constraint &c : p.constraints) {
+        if (c.uid.isEmpty() || uids.contains(c.uid))
+            c.uid.clear();
+        else
+            uids.insert(c.uid);
+    }
+    for (Constraint &c : p.constraints)
+        if (c.uid.isEmpty()) {
+            c.uid = p.nextUid();
+            uids.insert(c.uid);
+        }
+    // Likewise a dimension sharing a parameter's or another dimension's name.
+    QSet<QString> names;
+    for (const UserParameter &up : p.params)
+        names.insert(up.name);
+    for (Constraint &c : p.constraints) {
+        if (!c.isDimension() || c.name.isEmpty())
+            continue;
+        if (names.contains(c.name))
+            c.name = p.nextDimensionName();
+        names.insert(c.name);
     }
     return p;
 }
@@ -621,6 +672,13 @@ QHash<QString, double> values(const Document &doc, const Parametric &p, QStringL
                 }
             return false;
         }
+        if (stack.size() > 200) {
+            // A crafted chain thousands of names long would overflow the stack.
+            if (errors && !failed.contains(name))
+                *errors << QStringLiteral("%1: more than 200 names deep").arg(name);
+            failed.insert(name);
+            return false;
+        }
         stack << name;
         QString why;
         double r = 0;
@@ -643,17 +701,48 @@ QHash<QString, double> values(const Document &doc, const Parametric &p, QStringL
     return out;
 }
 
+QString badValue(const Constraint &c, double v)
+{
+    if ((c.type == Constraint::Radius || c.type == Constraint::Diameter
+         || (c.type == Constraint::Distance && c.refs.size() == 1)) && !(v > 0))
+        return QStringLiteral("%1 must be more than 0").arg(Constraint::typeName(c.type));
+    return QString();
+}
+
+// Dimensions whose value can't be drawn ("name: why"), by name.
+static QHash<QString, QString> badDimensions(const Parametric &p, const QHash<QString, double> &vals)
+{
+    QHash<QString, QString> bad;
+    for (const Constraint &c : p.constraints) {
+        if (!c.isDimension())
+            continue;
+        auto it = vals.constFind(c.name);
+        if (it == vals.constEnd())
+            continue;
+        if (const QString why = badValue(c, it.value()); !why.isEmpty())
+            bad.insert(c.name, QStringLiteral("%1: %2").arg(c.name, why));
+    }
+    return bad;
+}
+
 QString newError(const Document &doc, const Parametric &before, const Parametric &after)
 {
     QStringList was, now;
-    values(doc, before, &was);
-    values(doc, after, &now);
+    const QHash<QString, double> valsBefore = values(doc, before, &was);
+    const QHash<QString, double> valsAfter = values(doc, after, &now);
     QSet<QString> broken;
     for (const QString &e : was)
         broken.insert(e.section(QLatin1Char(':'), 0, 0));
     for (const QString &e : now)
         if (!broken.contains(e.section(QLatin1Char(':'), 0, 0)))
             return e;
+    // A parameter driving a radius or a length to 0 or below (r = -5) would
+    // solve to a circle the dimension then reads as broken for good.
+    const QHash<QString, QString> badBefore = badDimensions(before, valsBefore);
+    const QHash<QString, QString> badAfter = badDimensions(after, valsAfter);
+    for (auto it = badAfter.constBegin(); it != badAfter.constEnd(); ++it)
+        if (!badBefore.contains(it.key()))
+            return it.value();
     return QString();
 }
 
@@ -681,7 +770,7 @@ struct Body {
     int n = 0;                      // variables
     bool locked = false;            // Fix on the whole element
     int sides = 0;                  // polygon
-    double rot = 0;                 // polygon, radians
+    double rot = 0;                 // polygon and rectangle, radians
     PathModel model;                // path
     QHash<quint64, int> nodeVar;    // (sub,node) -> variable offset within the body
     int pathNodes = 0;              // all nodes of the path
@@ -704,6 +793,7 @@ bool bodyFor(const Element &e, Body *b)
         // Rebuilding a rectangle squares CC's rounded / dog-bone corners, so
         // the solver may only move one of those, never resize it.
         b->rounded = e.raw.value("corner_type").toInt() != 0;
+        b->rot = qDegreesToRadians(e.raw.value("rotation").toDouble());
     } else if (g == QLatin1String("regular_polygon")) {
         b->t = Body::Polygon;
         b->n = 3;
@@ -824,15 +914,20 @@ QPointF polyVertex(const Body &b, const double *v, int k)
     return QPointF(v[0] + v[2] * std::cos(a), v[1] + v[2] * std::sin(a));
 }
 
-QPointF rectCorner(const double *v, int k)
+// A corner of a rectangle turned by its `rotation` about its centre, as
+// Carbide Create draws it (corner 0 is the unturned lower left).
+QPointF rectCorner(const Body &b, const double *v, int k)
 {
     const double w = v[2] / 2, h = v[3] / 2;
+    QPointF d;
     switch (((k % 4) + 4) % 4) {
-    case 0:  return QPointF(v[0] - w, v[1] - h);
-    case 1:  return QPointF(v[0] + w, v[1] - h);
-    case 2:  return QPointF(v[0] + w, v[1] + h);
-    default: return QPointF(v[0] - w, v[1] + h);
+    case 0:  d = QPointF(-w, -h); break;
+    case 1:  d = QPointF(w, -h); break;
+    case 2:  d = QPointF(w, h); break;
+    default: d = QPointF(-w, h); break;
     }
+    const double c = std::cos(b.rot), s = std::sin(b.rot);
+    return QPointF(v[0] + d.x() * c - d.y() * s, v[1] + d.x() * s + d.y() * c);
 }
 
 bool bodyPoint(const Body &b, const double *x, const GeoRef &r, QPointF *p)
@@ -844,7 +939,7 @@ bool bodyPoint(const Body &b, const double *x, const GeoRef &r, QPointF *p)
         *p = QPointF(v[0], v[1]);
         return true;
     case Body::Rect:
-        *p = r.index < 0 ? QPointF(v[0], v[1]) : rectCorner(v, r.index);
+        *p = r.index < 0 ? QPointF(v[0], v[1]) : rectCorner(b, v, r.index);
         return true;
     case Body::Polygon:
         *p = r.index < 0 ? QPointF(v[0], v[1]) : polyVertex(b, v, r.index);
@@ -861,8 +956,8 @@ bool bodyLine(const Body &b, const double *x, const GeoRef &r, QPointF *a, QPoin
     const double *v = x + b.off;
     switch (b.t) {
     case Body::Rect:
-        *a = rectCorner(v, r.index);
-        *e = rectCorner(v, r.index + 1);
+        *a = rectCorner(b, v, r.index);
+        *e = rectCorner(b, v, r.index + 1);
         return true;
     case Body::Polygon:
         *a = polyVertex(b, v, r.index);
@@ -1928,6 +2023,9 @@ QString layoutOf(const Element &e)
     if (e.geometryType == QLatin1String("path"))
         for (const SubPath &s : Element::pathModel(e).subs)
             out += QStringLiteral("|%1%2").arg(s.nodes.size()).arg(s.closed ? 'c' : 'o');
+    // A polygon given another side count renumbers its edges and vertices.
+    if (e.geometryType == QLatin1String("regular_polygon"))
+        out += QStringLiteral("|%1").arg(e.raw.value("num_sides").toInt());
     return out;
 }
 

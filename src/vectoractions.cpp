@@ -753,7 +753,7 @@ void VectorActions::mirror(vec::Axis axis)
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
     const QString dir = axis == vec::Axis::Horizontal ? tr("horizontally") : tr("vertically");
-    pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir));
+    pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir), true);
     emit m_canvas->statusHint(tr("Mirrored %1 vector(s) %2").arg(before.size()).arg(dir));
 }
 
@@ -966,14 +966,14 @@ void VectorActions::patternOnPathDialog()
 // ---- modify: rotate, scale, move / copy, fillet, chamfer --------------------
 
 void VectorActions::pushReshape(const QVector<Element> &before, const QVector<Element> &after,
-                                const QString &text)
+                                const QString &text, bool mirrored)
 {
     if (before.isEmpty())
         return;
     QStringList ids;
     for (const Element &e : after)
         ids << e.id;
-    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids);
+    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids, mirrored);
 }
 
 void VectorActions::rotate(double deg)

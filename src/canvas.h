@@ -113,7 +113,9 @@ public:
     Constraint::Type constraintType() const { return m_conType; }
     // Push a geometry edit. With constraints in the document the solver runs
     // right after it, in the same undo step, moving `touched` least.
-    void pushEdit(QUndoCommand *cmd, const QStringList &touched);
+    // `mirrored`: the touched elements were mirrored, so which side each
+    // constraint among them holds on is taken afresh from the new geometry.
+    void pushEdit(QUndoCommand *cmd, const QStringList &touched, bool mirrored = false);
     // Swap in new parameters / constraints as one undo step: re-solve, then
     // re-evaluate the toolpath fields bound to expressions. When the result
     // cannot hold, nothing changes and false comes back - unless

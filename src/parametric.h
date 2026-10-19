@@ -127,8 +127,12 @@ QHash<QString, double> values(const Document &doc, const Parametric &p,
                               QStringList *errors = nullptr);
 // The first error ("name: why") that `after` has and `before` hadn't, or
 // empty. Catches loops through other names ("p = d1 + 1", then d1 = p),
-// which checking the edited expression against the old values misses.
+// which checking the edited expression against the old values misses, and
+// dimensions driven to a value they can't have (see badValue).
 QString newError(const Document &doc, const Parametric &before, const Parametric &after);
+// Why `v` can't be the value of dimension `c` (a radius, diameter or line
+// length of 0 or below), or empty. newError() checks every dimension too.
+QString badValue(const Constraint &c, double v);
 // Evaluate `expr` against the document's current parameters.
 bool evaluateIn(const Document &doc, const QString &expr, double *value,
                 QString *error = nullptr);

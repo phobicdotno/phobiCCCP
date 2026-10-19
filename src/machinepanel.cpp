@@ -2760,6 +2760,7 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     if (!m_doc)
         return refuse(QStringLiteral("Open a .c2d file first."));
     const QString docAtStart = m_doc->filePath();
+    const quint64 loadAtStart = m_doc->loadCount();
     // Re-exported at the moment Run is pressed, so it is the current document
     // that gets streamed - and a 3D finish is minutes of work, which used to
     // freeze the window with the machine sitting idle.
@@ -2877,7 +2878,7 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     // or opened another design meanwhile.
     if (isBusy() || m_grbl->isParkedForTool() || !m_grbl->isConnected())
         return refuse(QStringLiteral("The machine is busy."));
-    if (m_doc->filePath() != docAtStart)
+    if (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart)
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
     m_grbl->startStream(lines);

@@ -219,6 +219,24 @@ void ToolLibrary::applyToToolpath(QJsonObject &tp, const LibraryTool &t, const T
         tp.insert(QStringLiteral("stepover"), stepover);
     if (tp.contains(QStringLiteral("automatic_parameters")))
         tp.insert(QStringLiteral("automatic_parameters"), false);
+
+    // The new bit's numbers replace any expression those fields were bound
+    // to; left bound, the next parameter edit would put the old numbers back.
+    QJsonObject binds = tp.value(QStringLiteral("phobic_expr")).toObject();
+    if (!binds.isEmpty()) {
+        for (const char *k : {"speeds.feedrate", "speeds.plungerate", "speeds.rpm"})
+            binds.remove(QLatin1String(k));
+        if (f.stepdown > 0) {
+            binds.remove(QStringLiteral("stepdown"));
+            binds.remove(QStringLiteral("depth_per_pass"));
+        }
+        if (stepover > 0 && tp.value("type").toString() != QLatin1String("advanced_vcarve_toolpath"))
+            binds.remove(QStringLiteral("stepover"));
+        if (binds.isEmpty())
+            tp.remove(QStringLiteral("phobic_expr"));
+        else
+            tp.insert(QStringLiteral("phobic_expr"), binds);
+    }
 }
 
 } // namespace c2d

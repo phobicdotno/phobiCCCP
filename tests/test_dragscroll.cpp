@@ -12,6 +12,7 @@
 #include "../src/padlink.h"
 #include "../src/toolpathpanel.h"
 
+#include <QMouseEvent>
 #include <QApplication>
 #include <QFile>
 #include <QJsonDocument>
@@ -117,6 +118,21 @@ static void testCards()
     const QRect r2 = tree->visualItemRect(tree->topLevelItem(1));
     QTest::mouseClick(vp, Qt::LeftButton, {}, r2.center());
     check(panel.currentUuid() == doc.toolpaths().at(1).uuid, "a tap picks the card");
+
+    // A press whose release went elsewhere (a dialog popped up): moves with
+    // no button held neither scroll nor pick up a card later.
+    tree->verticalScrollBar()->setValue(0);
+    QTest::qWait(10);
+    const QRect r3 = tree->visualItemRect(tree->topLevelItem(1));
+    QTest::mousePress(vp, Qt::LeftButton, {}, r3.center());
+    for (int i = 1; i <= 5; ++i) {
+        QMouseEvent mv(QEvent::MouseMove, QPointF(r3.center() - QPoint(0, 12 * i)),
+                       QPointF(vp->mapToGlobal(r3.center() - QPoint(0, 12 * i))), Qt::NoButton, Qt::NoButton, {});
+        QApplication::sendEvent(vp, &mv);
+    }
+    check(tree->verticalScrollBar()->value() == 0, "hovering after a lost release does not scroll");
+    QTest::qWait(600);
+    check(doc.toolpaths().at(0).uuid == first, "nor is a card picked up by the hold");
 }
 
 int main(int argc, char *argv[])

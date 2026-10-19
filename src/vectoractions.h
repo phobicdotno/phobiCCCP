@@ -73,7 +73,7 @@ private:
     void moveCopyDialog();
     void cornersDialog(vec::CornerStyle style);
     void pushReshape(const QVector<Element> &before, const QVector<Element> &after,
-                     const QString &text);
+                     const QString &text, bool mirrored = false);
     void pushCopies(const QVector<Element> &originals, const QVector<QTransform> &placements,
                     bool joinToolpaths, const QString &text);
     void pushMoves(const QStringList &ids, const QVector<QPointF> &deltas, const QString &text);

@@ -48,6 +48,10 @@ bool DragScroll::eventFilter(QObject *, QEvent *e)
         if (!m_down)
             return false;
         auto *me = static_cast<QMouseEvent *>(e);
+        if (!(me->buttons() & Qt::LeftButton)) {
+            m_down = false;   // the release went to a dialog that popped up
+            return false;
+        }
         const QPoint p = me->globalPosition().toPoint();
         if (!m_scrolling && (p - m_origin).manhattanLength() < QApplication::startDragDistance())
             return true;

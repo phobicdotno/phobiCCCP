@@ -396,6 +396,15 @@ void ParametersPanel::removeParameter()
         if (param::namesIn(p.expr).contains(name)) users << p.name;
     for (const Constraint &c : after.constraints)
         if (c.isDimension() && param::namesIn(c.expr).contains(name)) users << c.name;
+    // Toolpath fields bound to it keep their last value until bound again.
+    for (const Toolpath &t : m_doc->toolpaths()) {
+        const QJsonObject binds = t.json.value(QStringLiteral("phobic_expr")).toObject();
+        for (auto it = binds.begin(); it != binds.end(); ++it)
+            if (param::namesIn(it.value().toObject().value(QStringLiteral("expr")).toString()).contains(name)) {
+                users << tr("toolpath “%1”").arg(t.json.value(QStringLiteral("name")).toString());
+                break;
+            }
+    }
     if (!users.isEmpty())
         emit message(tr("%1 removed — still used by %2").arg(name, users.join(QStringLiteral(", "))));
 }

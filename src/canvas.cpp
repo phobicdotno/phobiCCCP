@@ -938,6 +938,13 @@ void Canvas::setDocument(Document *doc)
     m_fitted = false;
     m_undo->clear();
     cancelDrawing();
+    // Nothing half done on the old design may land in the new one.
+    closeDimEditor();
+    m_picks.clear();
+    m_dimPlacing = false;
+    m_dragDim.clear();
+    m_hoverConstraint.clear();
+    selectConstraint(QString());
     rebuild();
 
     // Headless screenshot hooks (`--shot`): PHOBICCCP_SHOT_SELECT=<geometryType>
@@ -980,6 +987,11 @@ QPointF Canvas::snap(QPointF p) const
 
 void Canvas::setTool(Tool t)
 {
+    // An open value editor belongs to the tool it was opened with.
+    if (m_dimEdit && m_dimEdit->isVisible()) {
+        commitDimEditor(false);
+        closeDimEditor();
+    }
     if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool)
         || !m_splinePts.isEmpty() || !m_tanLines.isEmpty() || m_preview)
         cancelDrawing();
