@@ -2,6 +2,7 @@
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'model.dart';
 
@@ -50,10 +51,16 @@ class DesignStore {
     tmp.renameSync(f.path);
   }
 
+  static final _rand = Random();
+
+  /// After [base], for an edit made now. With a clock behind the copy's, two
+  /// devices editing the same copy must not both pick base+1: equal times
+  /// mean "the same copy", and the two would never sync again.
+  static int stamp(int base, int now) => now > base ? now : base + 1 + _rand.nextInt(1000);
+
   /// An edit made here: stamped with the time, so it wins the next sync.
   Design save(Design d, {int? now}) {
-    final t = now ?? DateTime.now().millisecondsSinceEpoch;
-    final s = d.copyWith(modified: t > d.modified ? t : d.modified + 1);
+    final s = d.copyWith(modified: stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch));
     put(s);
     return s;
   }
@@ -61,8 +68,7 @@ class DesignStore {
   void delete(String id, {int? now}) {
     final d = get(id);
     if (d == null) return;
-    final t = now ?? DateTime.now().millisecondsSinceEpoch;
-    put(Design(id: d.id, name: d.name, deleted: true, modified: t > d.modified ? t : d.modified + 1));
+    put(Design(id: d.id, name: d.name, deleted: true, modified: stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch)));
   }
 
   File? _file(String id) => validId.hasMatch(id) ? File('${dir.path}/$id.json') : null;
@@ -80,7 +86,9 @@ class Settings {
 
   void _save() {
     try {
-      file.writeAsStringSync(jsonEncode(_v));
+      final tmp = File('${file.path}.tmp');
+      tmp.writeAsStringSync(jsonEncode(_v), flush: true);
+      tmp.renameSync(file.path);
     } catch (_) {}
   }
 

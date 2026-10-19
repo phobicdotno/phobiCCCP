@@ -260,15 +260,17 @@ void GrblStreamer::pauseStream()
         m_port->write("!", 1);
 }
 
-void GrblStreamer::resumeStream()
+bool GrblStreamer::resumeStream()
 {
     if (m_errorResetTimer->isActive()) {     // see sendRealtime
         emit errorOccurred(QStringLiteral("resume refused: the controller is being reset "
                                           "after an error"));
-        return;
+        return false;
     }
-    if (isConnected())
-        m_port->write("~", 1);
+    if (!isConnected())
+        return false;
+    m_port->write("~", 1);
+    return true;
 }
 
 void GrblStreamer::abortStream(const QString &why, bool holdMachine)

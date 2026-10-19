@@ -390,6 +390,151 @@ int main(int argc, char *argv[])
         check(worst > ringR - 0.15,
               "gcode: a ramped outside contour never cuts inside its own ring");
     }
+    {
+        // Finishing rings lift at the roughing ring's tabs. Tabs were laid
+        // out per ring from its own length and start: the 40 x 20 part's
+        // roughing ring (6 mm out) is long enough for four tabs, the last
+        // finishing rings only for three, which then cut full depth through
+        // two of the four tabs the roughing had left.
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1},
+                                  {"end_depth", QStringLiteral("3.000")},
+                                  {"stepdown", 1.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 1.0},
+                                  {"tab_width", 6.0},
+                                  {"finish_passes", 4},
+                                  {"finish_stepover", 1.5}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        // Distance from the 10..50 x 10..30 rectangle tells the rings apart:
+        // roughing 3.175 + 6 out, the finishing ones closer.
+        auto out = [](double x, double y) {
+            return std::hypot(qMax(0.0, qMax(10 - x, x - 50)), qMax(0.0, qMax(10 - y, y - 30)));
+        };
+        QVector<QPointF> rough, fin;
+        bool deep = false;
+        double pz = 0;
+        for (const c2d::Op &o : g.ops) {
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc || o.kind == c2d::Op::Rapid) {
+                deep = deep || o.z < -2.5;
+                if (deep && o.kind == c2d::Op::Feed && std::fabs(o.z + 2) < 1e-6
+                    && std::fabs(pz + 2) < 1e-6)
+                    (out(o.x, o.y) > 8.5 ? rough : fin) << QPointF(o.x, o.y);
+                pz = o.z;
+            }
+        }
+        double worst = 0;
+        for (const QPointF &p : fin) {
+            double nearest = 1e9;
+            for (const QPointF &q : rough)
+                nearest = qMin(nearest, QLineF(p, q).length());
+            // beyond the step between the two rings
+            worst = qMax(worst, nearest - (3.175 + 6 - out(p.x(), p.y())));
+        }
+        check(!rough.isEmpty() && !fin.isEmpty(), "gcode: tabbed contour with finishing passes");
+        check(worst < 1.0, "gcode: finishing passes lift at the roughing ring's tabs");
+    }
+    {
+        // Contour direction follows the Climb switch (clockwise spindle:
+        // climb keeps the material on the right of travel). The rings ran
+        // whichever way the offset left them: outside conventional and
+        // inside climb, whatever `climb` said.
+        for (const int side : {1, -1})
+            for (const bool climb : {false, true}) {
+                Rig r;
+                r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+                r.addToolpath("contour", {{"ofset_dir", side},
+                                          {"end_depth", QStringLiteral("1.000")},
+                                          {"stepdown", 1.0},
+                                          {"climb", climb}});
+                const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+                double area2 = 0, px = 0, py = 0;
+                bool have = false;
+                for (const c2d::Op &o : g.ops) {
+                    if (o.kind != c2d::Op::Feed && o.kind != c2d::Op::Arc)
+                        continue;
+                    if (have && o.z < -0.5)
+                        area2 += px * o.y - o.x * py;
+                    px = o.x;
+                    py = o.y;
+                    have = o.z < -0.5;
+                }
+                // Part inside the ring (outside contour): clockwise to climb.
+                const bool ccw = area2 > 0;
+                check(ccw == (side > 0 ? !climb : climb),
+                      "gcode: a contour runs climb or conventional as asked");
+            }
+    }
+    {
+        // A bore leaves the wall without feeding to the centre at full depth
+        // through the core it never cut (a Ø24 hole, Ø6.35 tool).
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({30, 20}, 12, layer));
+        r.addToolpath("bore_toolpath", {{"end_depth", QStringLiteral("5.000")}, {"stepdown", 2.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double nearest = 1e9;
+        for (const c2d::Op &o : g.ops)
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -1e-6)
+                nearest = qMin(nearest, std::hypot(o.x - 30, o.y - 20));
+        check(!g.done.isEmpty() && nearest > 12 - 2 * 3.175,
+              "gcode: a bore never cuts into the core it left standing");
+    }
+    {
+        // A circular pocket with a stepover over the tool radius started on
+        // a helix of that stepover's radius, leaving a pin in the middle.
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({30, 20}, 12, layer));
+        r.addToolpath("circular_toolpath", {{"stepover", 6.0}, {"side", QStringLiteral("inside")}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double inner = 1e9;
+        for (const c2d::Op &o : g.ops)
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -1e-6)
+                inner = qMin(inner, std::hypot(o.x - 30, o.y - 20));
+        check(!g.done.isEmpty() && inner < 3.175, "gcode: a circular pocket leaves no pin");
+    }
+    {
+        // A 1 mm slot 2 mm deep: the "ramp" is a plunge, and it went down at
+        // the cutting feed.
+        Rig r;
+        r.addShape(c2d::Element::makePath({{40, 30}, {41, 30}}, false, layer));
+        r.addToolpath("slot_toolpath", {{"end_depth", QStringLiteral("2.000")}, {"stepdown", 2.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double px = 0, py = 0, pz = 0, worst = 0;
+        for (const c2d::Op &o : g.ops) {
+            if (o.kind == c2d::Op::Feed && o.z < pz - 1e-9) {
+                const double len = std::hypot(std::hypot(o.x - px, o.y - py), o.z - pz);
+                worst = qMax(worst, o.feed * (pz - o.z) / len);
+            }
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Arc) {
+                px = o.x;
+                py = o.y;
+                pz = o.z;
+            }
+        }
+        check(!g.done.isEmpty() && worst <= 300 + 1e-6,
+              "gcode: a steep slot ramp sinks no faster than the plunge rate");
+    }
+    {
+        // The saved program lifts to the safe height on a line of its own
+        // after the tool change, before the spindle starts and anything
+        // moves across: resumed by hand, the bit sits wherever it was left.
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1}});
+        const QStringList l = c2d::exportGcode(r.doc).gcode.split(QChar('\n'));
+        const int marker = int(l.indexOf(QStringLiteral("M0 ;T201")));
+        const int up = int(l.indexOf(QStringLiteral("G0Z2.540")));
+        int start = -1, across = -1;
+        for (int i = 0; i < l.size(); ++i) {
+            if (start < 0 && l.at(i).startsWith(QLatin1String("M03")))
+                start = i;
+            if (across < 0 && (l.at(i).contains(QChar('X')) || l.at(i).contains(QChar('Y'))))
+                across = i;
+        }
+        check(marker >= 0 && up == marker + 2 && start > up && across > up,
+              "post: Z up to safe height right after the tool change");
+    }
 
     // -----------------------------------------------------------------------
     // Hostile DXF: none of these may hang or allocate on the file's word.

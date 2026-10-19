@@ -21,6 +21,7 @@ bool Document::load(const QString &path, QString *error)
     m_toolpaths.clear();
     m_groups.clear();
     m_unreadableToolpaths.clear();
+    m_parametric = Parametric();
     m_keptToolpaths.clear();
     m_unreadableElements.clear();
     m_path = path;
@@ -131,6 +132,11 @@ bool Document::load(const QString &path, QString *error)
     QSqlDatabase::removeDatabase(conn);
     if (notAContainer)
         return false;
+    // Parameters and constraints ride in one params row of their own; they
+    // live in m_parametric while the file is open and are written back by save().
+    if (m_params.contains(Parametric::paramKey()))
+        m_parametric = Parametric::fromJson(
+            QJsonDocument::fromJson(m_params.take(Parametric::paramKey()).toUtf8()).object());
     if (!readFailed.isEmpty()) {
         if (error)
             *error = QStringLiteral("%1 could not be read to the end: %2")
@@ -172,7 +178,17 @@ bool Document::save(const QString &destPath, QString *error)
     }
     const QString tmpPath = realDest + QStringLiteral(".phobisave");
     QFile::remove(tmpPath);
-    if (!QFile::copy(m_path, tmpPath)) {
+    if (!QFileInfo::exists(m_path)) {
+        // The file it was opened from is gone (a pulled stick, moved, or the
+        // untitled scratch file cleaned away): start from a blank container
+        // with what is in memory, rather than refuse every save and Save As.
+        if (!createBlank(tmpPath, boardWidth(), boardHeight(),
+                         m_params.value(QStringLiteral("thickness"), QStringLiteral("0")).toDouble(), error)
+            || !restoreInto(tmpPath, error)) {
+            QFile::remove(tmpPath);
+            return false;
+        }
+    } else if (!QFile::copy(m_path, tmpPath)) {
         if (error) *error = QStringLiteral("Could not stage a copy at %1").arg(tmpPath);
         return false;
     }
@@ -316,6 +332,31 @@ bool Document::save(const QString &destPath, QString *error)
             }
         }
 
+        // 3d) Parameters and constraints: one params row, gone when there are
+        //     none. Delete-then-insert: a CC file's params.key need not be unique.
+        if (ok) {
+            QSqlQuery pq(db);
+            pq.prepare(QStringLiteral("DELETE FROM params WHERE key=?"));
+            pq.addBindValue(Parametric::paramKey());
+            ok = pq.exec();
+            // Constraints on geometry that has since been deleted stay in
+            // memory (an undo can bring the geometry back) but not in the
+            // file; a dimension expressions still use is kept as a parameter.
+            Document pruned = *this;
+            param::prune(pruned);
+            const Parametric kept = pruned.parametric();
+            if (ok && !kept.isEmpty()) {
+                pq.prepare(QStringLiteral("INSERT INTO params(key,value) VALUES(?,?)"));
+                pq.addBindValue(Parametric::paramKey());
+                pq.addBindValue(QString::fromUtf8(
+                    QJsonDocument(kept.toJson()).toJson(QJsonDocument::Compact)));
+                ok = pq.exec();
+            }
+            if (!ok && error)
+                *error = QStringLiteral("Could not save the parameters: %1")
+                             .arg(pq.lastError().text());
+        }
+
         // 4) Blank stale renders / g-code so CC regenerates them on next open.
         if (ok) {
             QSqlQuery blank(db);
@@ -374,6 +415,49 @@ bool Document::save(const QString &destPath, QString *error)
     return true;
 }
 
+
+bool Document::restoreInto(const QString &path, QString *error) const
+{
+    // The params and toolpath groups as loaded; save() writes the rest.
+    const QString conn = QStringLiteral("c2dr_%1").arg(QUuid::createUuid().toString());
+    bool ok = true;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+        db.setDatabaseName(path);
+        ok = db.open();
+        if (!ok) {
+            if (error) *error = db.lastError().text();
+        } else {
+            db.transaction();
+            QSqlQuery q(db);
+            for (auto it = m_params.cbegin(); ok && it != m_params.cend(); ++it) {
+                q.prepare(QStringLiteral("INSERT OR REPLACE INTO params(key,value) VALUES(?,?)"));
+                q.addBindValue(it.key());
+                q.addBindValue(it.value());
+                ok = q.exec();
+            }
+            if (ok && !m_groups.isEmpty())
+                ok = q.exec(QStringLiteral("DELETE FROM items WHERE type='toolpath_group'"));
+            for (int i = 0; ok && i < m_groups.size(); ++i) {
+                const QByteArray g = QJsonDocument(m_groups.at(i).json).toJson(QJsonDocument::Compact);
+                q.prepare(QStringLiteral("INSERT INTO items(uuid,name,type,version,sz,data) "
+                                         "VALUES(?,'','toolpath_group','J1',?,?)"));
+                q.addBindValue(m_groups.at(i).uuid);
+                q.addBindValue(g.size());
+                q.addBindValue(zlibDeflate(g));
+                ok = q.exec();
+            }
+            if (!ok && error)
+                *error = q.lastError().text();
+            ok = ok && db.commit();
+            if (!ok)
+                db.rollback();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(conn);
+    return ok;
+}
 
 bool Document::createBlank(const QString &path, double width, double height,
                            double thickness, QString *error)

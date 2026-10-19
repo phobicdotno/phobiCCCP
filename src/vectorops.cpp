@@ -206,13 +206,50 @@ QVector<QPolygonF> booleanRings(const QVector<QPainterPath> &subjects,
     return rings(result, tol);
 }
 
+// The region a set of elements encloses, for an offset: an element wholly
+// inside an odd number of others is a hole (a ring drawn as two circles),
+// while elements that only overlap weld together. One even-odd pass over
+// everything would turn an overlap into a hole.
+static C2::Paths64 nestedRegion(const QVector<QPainterPath> &paths, double tol)
+{
+    QVector<C2::Paths64> regions;
+    for (const QPainterPath &pp : paths) {
+        C2::Paths64 r = regionOf({pp}, tol);
+        if (!r.empty())
+            regions.append(std::move(r));
+    }
+    if (regions.size() > 200)    // containment is pairwise; keep it bounded
+        return regionOf(paths, tol);
+    QVector<int> depth(regions.size(), 0);
+    int deepest = 0;
+    for (int i = 0; i < regions.size(); ++i) {
+        for (int j = 0; j < regions.size(); ++j)
+            if (i != j && C2::Difference(regions.at(i), regions.at(j), C2::FillRule::NonZero).empty()
+                && !(C2::Difference(regions.at(j), regions.at(i), C2::FillRule::NonZero).empty() && j > i))
+                ++depth[i];
+        deepest = qMax(deepest, depth.at(i));
+    }
+    C2::Paths64 out;
+    for (int d = 0; d <= deepest; ++d) {
+        C2::Paths64 level;
+        for (int i = 0; i < regions.size(); ++i)
+            if (depth.at(i) == d)
+                level.insert(level.end(), regions.at(i).begin(), regions.at(i).end());
+        if (level.empty())
+            continue;
+        out = d % 2 == 0 ? C2::Union(out, level, C2::FillRule::NonZero)
+                         : C2::Difference(out, level, C2::FillRule::NonZero);
+    }
+    return out;
+}
+
 QVector<QPolygonF> offsetRings(const QVector<QPainterPath> &closed,
                                const QVector<QPainterPath> &open, double delta, double tol)
 {
     const double arcTol = tol * kScale;
     C2::Paths64 out;
     if (!closed.isEmpty()) {
-        const C2::Paths64 region = regionOf(closed, tol);
+        const C2::Paths64 region = nestedRegion(closed, tol);
         if (!region.empty())
             out = C2::InflatePaths(region, delta * kScale, C2::JoinType::Round,
                                    C2::EndType::Polygon, 2.0, arcTol);

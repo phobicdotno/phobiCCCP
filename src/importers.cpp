@@ -143,7 +143,12 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             continue;
         used[i] = true;
         if (subs[i].closed) {
-            write(std::deque<Seg>(subs[i].segs.begin(), subs[i].segs.end()), false);
+            // Its ends only within tol: snapped together as for a chain, or
+            // it stays an open path that cannot be pocketed.
+            std::deque<Seg> segs(subs[i].segs.begin(), subs[i].segs.end());
+            if (segs.size() > 1)
+                segs.back().b = segs.front().a;
+            write(segs, segs.size() > 1);
             continue;
         }
         std::deque<Seg> chain(subs[i].segs.begin(), subs[i].segs.end());
@@ -775,8 +780,12 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
             // Definition containers are walked (so gradients/text inside them
             // are still counted) but nothing in them is drawn.
             const Ctx &parent = stack.last();
+            // Editor metadata in its own namespace (Inkscape's
+            // sodipodi:namedview, ...) draws nothing and is not "skipped".
+            const QStringView ns = xml.namespaceUri();
+            const bool foreign = !ns.isEmpty() && ns != QLatin1String("http://www.w3.org/2000/svg");
             Ctx ctx{parseSvgTransform(at.value(QLatin1String("transform")).toString()) * parent.xf,
-                    parent.hidden || svgHidden(at) || skipContainers.contains(name)};
+                    parent.hidden || foreign || svgHidden(at) || skipContainers.contains(name)};
             stack.append(ctx);
             if (ctx.hidden)
                 continue;

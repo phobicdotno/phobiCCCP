@@ -942,9 +942,16 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_grbl->continueAfterToolChange();
     });
     connect(m_pauseBtn, &QPushButton::clicked, this, [this] {
-        m_held = !m_held;
-        if (m_held) { m_grbl->pauseStream(); m_pauseBtn->setText(QStringLiteral("⏵ Resume")); }
-        else        { m_grbl->resumeStream(); m_pauseBtn->setText(QStringLiteral("⏸ Hold")); }
+        // A refused resume (reset after an error, port gone) leaves the
+        // machine held, and the button must keep saying so.
+        if (!m_held) {
+            m_grbl->pauseStream();
+            m_held = true;
+            m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
+        } else if (m_grbl->resumeStream()) {
+            m_held = false;
+            m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+        }
     });
     connect(m_stopBtn, &QPushButton::clicked, this, [this] {
         resetFlow();
@@ -1755,6 +1762,8 @@ void MachinePanel::bitZeroApply()
             // Then straight up, out of the way of the plate and the magnet.
             for (const QString &c : cmds + riseToTop())
                 m_grbl->sendCommand(c);
+            if (m_bzWantZ)
+                forgetReference();   // see zero()
             log(QStringLiteral("BitZero: %1set. Remove the plate and the magnet before cutting")
                     .arg(what));
         }
@@ -1884,6 +1893,7 @@ void MachinePanel::cancelJob()
                         || m_machineState == QLatin1String("Jog");
     if (moving)
         m_grbl->pauseStream();
+    const bool wasHeld = m_held;
     m_held = true;
     m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
     ShopAsk a;
@@ -1896,10 +1906,13 @@ void MachinePanel::cancelJob()
     a.cancelText = QStringLiteral("Keep running");
     a.defaultOk = false;
     if (!shopAsk(this, a)) {
+        // Back as it was: running again only if this held it (and the
+        // resume went out); a hold from before stays, Resume still lifts it.
         if (moving)
-            m_grbl->resumeStream();
-        m_held = false;
-        m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+            m_held = !m_grbl->resumeStream();
+        else
+            m_held = wasHeld || m_machineState.startsWith(QLatin1String("Hold"));
+        m_pauseBtn->setText(m_held ? QStringLiteral("⏵ Resume") : QStringLiteral("⏸ Hold"));
         return;
     }
     // Wait for the hold to finish decelerating (Hold:0), at most 5 s.
@@ -2136,6 +2149,18 @@ void MachinePanel::saveSettings()
     s.setValue(QStringLiteral("ref/z"), m_refZ);
     if (m_grbl->isConnected())
         s.setValue(QStringLiteral("port"), currentPortName());
+}
+
+// Z was re-zeroed without measuring the tool: the stored reference (and its
+// saved copy) no longer describes the tool the zero belongs to.
+void MachinePanel::forgetReference()
+{
+    if (!m_haveRef)
+        return;
+    m_haveRef = false;
+    saveSettings();
+    updateOffsetLabels();
+    log(QStringLiteral("BitSetter reference cleared: Z was zeroed without measuring the tool"));
 }
 
 void MachinePanel::updateOffsetLabels()
@@ -2443,6 +2468,10 @@ void MachinePanel::zero(const QString &axes)
     } else {
         for (const QString &c : cmds)
             m_grbl->sendCommand(c);
+        // A Z zero with no measurement: the reference belonged to whatever
+        // tool was zeroed before, and offsets from it would be wrong.
+        if (zeroZ)
+            forgetReference();
     }
     updateOffsetLabels();
 }
@@ -2577,6 +2606,7 @@ void MachinePanel::onMacroFinished(bool ok)
             m_grbl->applyToolLengthOffset(0);
             log(QStringLiteral("reference tool: trips at machine Z %1").arg(m_refZ, 0, 'f', 3));
         } else {
+            m_haveRef = false;   // the old one is for the tool zeroed before
             log(QStringLiteral("!! reference measurement failed — Z zero is set, but tool "
                                "changes cannot be compensated until a measurement succeeds"));
         }
@@ -2729,6 +2759,7 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("Connect to the controller first."));
     if (!m_doc)
         return refuse(QStringLiteral("Open a .c2d file first."));
+    const QString docAtStart = m_doc->filePath();
     // Re-exported at the moment Run is pressed, so it is the current document
     // that gets streamed - and a 3D finish is minutes of work, which used to
     // freeze the window with the machine sitting idle.
@@ -2842,6 +2873,12 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         else
             break;
     }
+    // Preparing and asking ran the event loop: a pad may have started a job
+    // or opened another design meanwhile.
+    if (isBusy() || m_grbl->isParkedForTool() || !m_grbl->isConnected())
+        return refuse(QStringLiteral("The machine is busy."));
+    if (m_doc->filePath() != docAtStart)
+        return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
     m_grbl->startStream(lines);
     return true;

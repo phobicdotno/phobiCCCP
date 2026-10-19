@@ -67,13 +67,16 @@ public:
     QString idFor(const QString &c2dPath) const;
     QStringList pathsFor(const QString &id) const;
     bool padOnly(const QString &c2dPath) const;
-    void set(const QString &c2dPath, const QString &id, bool padOnly);
+    // The design's `modified` the file holds (built from it, or saved as it);
+    // 0 when not known (links from before 1.1.22).
+    double modified(const QString &c2dPath) const;
+    void set(const QString &c2dPath, const QString &id, bool padOnly, double modified = 0);
     void remove(const QString &c2dPath);
 
 private:
     void write() const;
     QString m_file;
-    QJsonObject m_links;   // canonical path -> {id, padOnly}
+    QJsonObject m_links;   // canonical path -> {id, padOnly, modified}
 };
 
 // The embedded tool library as the pad needs it: {"materials": [{id, name}],

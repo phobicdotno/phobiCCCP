@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.1.23 (build 74) — 2026-10-19
+## v1.2.2 (build 75) — 2026-10-19
 
 > Toolpaths stop re-cutting what the ones above them already cleared; the Area tool picks just the area clicked, like a fill
 
@@ -17,6 +17,120 @@
   selected, so the pocket made from it cuts only that piece. A shape and its islands are still
   picked as before when that is the area clicked.
 - Pad app: designs sent from the pad are cut by phobiCCCP, so they get the same rest cutting.
+
+## v1.2.1 (build 74) — 2026-10-19
+
+> Bug check: cutting safety, the pad link and the pad app
+
+**Cutting**
+
+- Contour finishing passes no longer cut through the tabs: every ring, roughing and
+  finishing, lifts at the same tab places.
+- A bore no longer feeds through the uncut core to the centre at full depth when it is done;
+  it steps in half a millimetre and lifts.
+- After a tool change without the BitSetter the first rapid goes up before it goes across,
+  and a saved .nc file lifts Z on its own line before the spindle starts.
+- Contours and cutouts follow their Climb milling switch (climb = material on the right of
+  travel, M3). It used to be ignored: outside contours always cut conventional and inside ones
+  always climbed. Inside contours with the switch off now cut conventional.
+- A circular pocket with a stepover over the bit's radius no longer leaves a pin in the middle.
+- A very short slot no longer ramps down faster than the plunge rate.
+- Tiled programs: the spindle stops and the bit changes at safe Z, not down in the last cut,
+  and drill dwells are kept.
+- A Z zero without measuring the tool forgets the old BitSetter reference, so later tool
+  changes are not offset by another tool's length.
+- Hold/Resume stays in step with the machine after Cancel › Keep running, and when a resume
+  is refused.
+- New flat-bit toolpaths no longer pick up a 3D finish's ball nose as their default.
+- 3D raster finish keeps the pass on the boundary's lower or left edge.
+
+**Pad link (desktop)**
+
+- A send that waited on a question here no longer opens or starts anything once the pad has
+  given up, and a second send or put while one is being answered is told to wait. Run checks
+  again that the machine is idle and the design unchanged just before it streams.
+- The machine is switched only after the "Save before opening it?" question.
+- A desktop save no longer silently undoes a pad edit made since the file was built: the
+  change goes to the pads as a design of its own.
+- Saving a pad design here keeps its toolpaths still waiting for shapes and a material this
+  library does not know.
+- Replacing a linked .c2d moves the old file aside until the new one is in.
+- The receiver answers requests in a loop, cuts off floods and endless data behind a waiting
+  request, and handles each request after the socket's own event (no crash when a sender
+  disconnects during a question). Sender text in the Syntexophobic question is plain text.
+
+**Pad app**
+
+- Computers added by hand keep their state between discovery rounds.
+- One design a computer turns down no longer stops the rest of the sync, nor sending to it;
+  the Machine page says which design and why.
+- An edit made on top of an older copy than the one just synced is not saved over it; undo
+  history is cleared when a newer copy arrives, and the status no longer says "updated from
+  phobiCCCP" after every own edit.
+- Two pads editing the same copy with clocks behind the computer's no longer end up with
+  equal times that never sync again (same on the desktop).
+- Number fields commit when you tap elsewhere, so a typed value is neither lost in a dialog
+  nor applied to the next shape you tap.
+- Zoom buttons no longer shift the drawing at the zoom limits; a drag moves the shape just
+  tapped, not the old selection.
+- A send with no answer says it may still open (and start) there, instead of a plain
+  failure; a busy computer says so. Text is capped at 500 characters and depth above 0, as
+  the desktop requires. Settings are written safely.
+
+**Files and editing**
+
+- Save and Save As work after the file the design was opened from is gone (a pulled stick).
+- Offset of overlapping shapes welds them instead of turning the overlap into a hole.
+- A path whose ends meet within the join tolerance imports closed.
+- Toolpath choice boxes (side, mode, direction) follow undo and redo; scrolling past a
+  Passes field no longer changes it.
+- Undoing Convert to path or Break puts the shape back in its place in the order.
+- Change tool, Rename and Inlay male no longer read a toolpath a pad replaced while their
+  dialog was open.
+- A failed new design no longer imports into the one you were leaving; .cccp files can be
+  dropped on the window; Inkscape metadata is not reported as skipped.
+## v1.2.0 (build 73) — 2026-10-19
+
+> Parametric sketching: constraints, driving dimensions and user parameters, Fusion style
+
+- **Constrain** tool (G, hold for the list): Coincident, Horizontal, Vertical, Parallel,
+  Perpendicular, Tangent, Equal, Collinear, Concentric, Midpoint, Fix and Symmetric. Pick
+  the geometry and the drawing obeys at once; each one is a single undo step. Duplicates
+  and constraints that would conflict are refused with a status message.
+- **Dimension** tool (D): a line gives its length, a circle its diameter (Shift: radius),
+  two lines their angle (or their distance when parallel), two points a horizontal,
+  vertical or aligned distance, depending on where the label is placed. Type a number or
+  an expression in the inline editor; Esc keeps the measured value.
+- **Parameters** tab beside Document and Model (Ctrl+Shift+P): user parameters with
+  name, expression, value and comment, the stock size as built-ins (`stock_w`, `stock_h`,
+  `stock_t`), the dimensions d1, d2 … with their expressions, and the constraint list.
+  A chip says whether the sketch is fully constrained, how many degrees of freedom are
+  left, or which constraints can't hold. Renaming a parameter renames it everywhere.
+- Expressions take `+ - * / ^`, brackets, units (mm, cm, m, in, ft, `"`, deg, rad),
+  `pi` and sin/cos/tan/asin/acos/atan/atan2, sqrt, abs, min, max, round, floor, ceil.
+- Toolpath number fields take expressions too: `1/8 in` is just 3.175 mm, while text
+  naming a parameter (`stock_t / 2`) binds the field, shown in violet with ƒx, so it
+  follows the parameter. Typing a plain number unbinds it.
+- Moving, scaling or node-editing constrained geometry re-solves in the same undo step.
+  Fully constrained shapes turn teal; dimensions driven by a parameter carry an ƒx tag.
+  View > Constraints and Dimensions (Ctrl+Shift+K) hides the overlay.
+- Constraints stay on the geometry they were put on: deleting or inserting a node, a
+  fillet, a trim or a convert-to-path moves them to the same points and lines, and those
+  whose geometry is gone go with it in the same undo step. A dimension that expressions or
+  toolpath fields still use becomes a user parameter of the same name, also on save.
+- Expressions: `-2^2` is -4. `plate_w / 2 in` is refused as ambiguous and asks for
+  brackets (`plate_w / (2 in)`); a unit straight after a name is refused too.
+- A loop through a dimension (`p = d1 + 1`, then d1 = `p`) is refused, on the canvas and in
+  the Parameters tab, and a parameter value that would make a constraint fail is refused
+  there instead of half-moving the drawing (constraints already red don't block it). The
+  arrow keys on a bound toolpath field unbind it.
+- Rectangles with Carbide Create's rounded or dog-bone corners can be moved by constraints
+  but not resized (that would square the corners); a path segment curved by a node edit
+  no longer counts as a line.
+- Constraints, dimensions and parameters are saved inside the `.c2d` (`phobic_parametric`
+  in the params table); Carbide Create ignores them and still opens the file. The pads
+  don't have them, so a pad-linked design that uses them is sent to the pads but not
+  rebuilt from a pad edit.
 
 ## v1.1.21 (build 72) — 2026-10-19
 

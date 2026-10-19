@@ -481,18 +481,21 @@ void ToolpathPanel::renameCurrent()
 {
     if (!m_doc || m_uuid.isEmpty())
         return;
-    const Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+    const QString uuid = m_uuid;
+    const Toolpath *t = m_doc->toolpathByUuid(uuid);
     if (!t)
         return;
     bool ok = false;
     const QString name = QInputDialog::getText(
         this, QStringLiteral("Rename toolpath"), QStringLiteral("Name:"),
         QLineEdit::Normal, t->json.value("name").toString(), &ok);
-    if (!ok || name.trimmed().isEmpty())
+    // The dialog runs the event loop: a pad may have replaced the design.
+    t = m_doc->toolpathByUuid(uuid);
+    if (!ok || name.trimmed().isEmpty() || !t)
         return;
     QJsonObject j = t->json;
     j.insert(QStringLiteral("name"), name.trimmed());
-    m_canvas->editToolpath(m_uuid, j);
+    m_canvas->editToolpath(uuid, j);
 }
 
 void ToolpathPanel::moveCurrent(int delta)
@@ -522,7 +525,8 @@ void ToolpathPanel::pickTool()
 {
     if (!m_doc || m_uuid.isEmpty())
         return;
-    Toolpath *t = m_doc->toolpathByUuid(m_uuid);
+    const QString uuid = m_uuid;
+    const Toolpath *t = m_doc->toolpathByUuid(uuid);
     if (!t)
         return;
     ToolLibrary lib;
@@ -538,6 +542,10 @@ void ToolpathPanel::pickTool()
     ToolLibraryDialog dlg(lib, mat, cur, this);
     if (dlg.exec() != QDialog::Accepted || !dlg.selectedTool())
         return;
+    // The dialog runs the event loop: a pad may have replaced the design.
+    t = m_doc->toolpathByUuid(uuid);
+    if (!t)
+        return;
     const ToolFeeds f = dlg.selectedFeeds();
     if (!f.valid()) {
         QMessageBox::information(this, QStringLiteral("Tool library"),
@@ -547,7 +555,7 @@ void ToolpathPanel::pickTool()
     }
     QJsonObject j = t->json;
     ToolLibrary::applyToToolpath(j, *dlg.selectedTool(), f);
-    m_canvas->editToolpath(m_uuid, j);
+    m_canvas->editToolpath(uuid, j);
 }
 
 void ToolpathPanel::createInlayMale()
@@ -561,10 +569,13 @@ void ToolpathPanel::createInlayMale()
                            "is generated from the female's design."));
         return;
     }
-    QVector<const Element *> els;
+    // Copies: the questions below run the event loop, and a pad may replace
+    // the design meanwhile.
+    const Toolpath female = *t;
+    QVector<QPainterPath> els;
     for (const QJsonValue &v : t->json.value("elements").toArray())
         if (const Element *e = m_doc->elementById(v.toObject().value("uuid").toString()))
-            els.append(e);
+            els.append(e->painterPath);
     if (els.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Inlay male"),
                                  QStringLiteral("The toolpath references no vectors."));
@@ -583,12 +594,12 @@ void ToolpathPanel::createInlayMale()
         this, QStringLiteral("Inlay male"),
         QStringLiteral("Border margin around the mirrored design (mm)"),
         10.0, 2.0, 100.0, 1, &ok);
-    if (!ok)
+    if (!ok || !m_doc->toolpathByUuid(female.uuid))
         return;
 
     QRectF bb;
-    for (const Element *e : els)
-        bb = bb.united(e->painterPath.boundingRect());
+    for (const QPainterPath &e : els)
+        bb = bb.united(e.boundingRect());
     const double cx = bb.center().x();
     const double dx = bb.width() + 2 * margin + 20.0;   // male sits to the right
     const QJsonObject layer = m_doc->defaultLayer();
@@ -603,8 +614,8 @@ void ToolpathPanel::createInlayMale()
     // Mirror every subpath about the design's vertical centerline, then shift
     // beside the original. Border + mirrored design under even-odd fill = the
     // inverse region: the male carves the field, leaving the design standing.
-    for (const Element *e : els) {
-        const QList<QPolygonF> polys = e->painterPath.toSubpathPolygons();
+    for (const QPainterPath &e : els) {
+        const QList<QPolygonF> polys = e.toSubpathPolygons();
         for (const QPolygonF &p : polys) {
             const bool closed = p.size() > 3 && p.first() == p.last();
             const int n = closed ? int(p.size()) - 1 : int(p.size());
@@ -620,7 +631,7 @@ void ToolpathPanel::createInlayMale()
         }
     }
 
-    Toolpath male = *t;
+    Toolpath male = female;
     QJsonObject j = male.json;
     j.insert(QStringLiteral("uuid"), QUuid::createUuid().toString());
     j.insert(QStringLiteral("name"),
@@ -658,6 +669,7 @@ void ToolpathPanel::createInlayMale()
 void ToolpathPanel::setDocument(Document *doc)
 {
     m_doc = doc;
+    m_form->setDocument(doc);
     m_uuid.clear();
     m_hint->hide();
     refresh();

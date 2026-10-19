@@ -1400,6 +1400,14 @@ int main(int argc, char *argv[])
               "setup sheet: toolpath names, escaped");
         check(html.contains("T201") && html.contains("6.350 mm"), "setup sheet: the tool");
         check(html.contains("Estimated time"), "setup sheet: job totals");
+
+        // A "%3" in a name is text: the chained .arg() filled it with the
+        // next column's value.
+        Rig p;
+        p.addShape(c2d::Element::makeRectangle({40, 30}, 40, 20, layer));
+        p.addToolpath("contour", {{"name", "Cut 50%3 deep"}, {"ofset_dir", 1}});
+        check(c2d::setupSheetHtml(p.doc, QStringLiteral("Job")).contains("Cut 50%3 deep"),
+              "setup sheet: a % placeholder in a name is kept as written");
     }
 
     // --- the factory makes all four with working defaults --------------------

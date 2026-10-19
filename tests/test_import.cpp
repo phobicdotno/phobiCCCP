@@ -184,7 +184,10 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             continue;
         used[i] = true;
         if (subs[i].closed) {
-            write(subs[i].segs, false);
+            QVector<Seg> segs = subs[i].segs;
+            if (segs.size() > 1)
+                segs.last().b = segs.first().a;
+            write(segs, segs.size() > 1);
             continue;
         }
         QVector<Seg> chain = subs[i].segs;
@@ -450,6 +453,19 @@ int main(int argc, char **argv)
         check(!r.ok, "non-dxf rejected");
         r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg'/>", opts(0, 0));
         check(r.ok && r.elements.isEmpty(), "empty svg imports nothing, no error");
+        // One path whose ends meet only within the join tolerance: closed.
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><path d='M10 10 L50 10 L50 50 L10.005 10'/></svg>",
+                               opts(100, 100));
+        check(r.ok && r.elements.size() == 1
+                  && c2d::Element::pathModel(r.elements.first()).subs.value(0).closed,
+              "svg: a path ending within tolerance of its start is closed");
+        // Inkscape's own metadata is not reported as skipped.
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' "
+                               "xmlns:sodipodi='http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd' "
+                               "viewBox='0 0 100 100'><sodipodi:namedview id='n'/>"
+                               "<rect x='1' y='1' width='5' height='5'/></svg>", opts(100, 100));
+        check(r.ok && r.elements.size() == 1 && r.skipped == 0, "svg: editor metadata is not 'skipped'");
     }
 
     // ---- optional: write a .c2d with everything for a --shot -------------

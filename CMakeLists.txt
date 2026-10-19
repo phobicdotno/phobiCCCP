@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.1.23 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.2.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,6 +44,7 @@ add_library(phobicccp_core STATIC
     src/simulation.cpp
     src/vectorops.cpp
     src/sketch.cpp
+    src/parametric.cpp
     src/adaptive.cpp
     src/sketchgeom.cpp
     src/setupsheet.cpp
@@ -69,10 +70,11 @@ target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZL
 
 add_executable(phobicccp
     src/main.cpp
-    src/canvas.cpp
+    src/canvas.cpp src/canvasparametric.cpp
     src/mainwindow.cpp
     src/aboutdialog.cpp
     src/propertiespanel.cpp
+    src/parameterspanel.cpp
     src/toolpathpanel.cpp
     src/toolpathform.cpp
     src/toollibrarydialog.cpp
@@ -138,6 +140,9 @@ add_test(NAME adaptive COMMAND test_adaptive)
 add_executable(test_sketch tests/test_sketch.cpp)
 target_link_libraries(test_sketch PRIVATE phobicccp_core)
 add_test(NAME sketch COMMAND test_sketch)
+add_executable(test_parametric tests/test_parametric.cpp)
+target_link_libraries(test_parametric PRIVATE phobicccp_core)
+add_test(NAME parametric COMMAND test_parametric)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
@@ -205,9 +210,14 @@ add_test(NAME hardening COMMAND test_hardening
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
-    add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp src/propertiespanel.cpp)
+    add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/propertiespanel.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
+    add_executable(test_canvasparametric tests/test_canvasparametric.cpp src/canvas.cpp
+                   src/canvasparametric.cpp src/parameterspanel.cpp)
+    target_link_libraries(test_canvasparametric PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME canvasparametric COMMAND test_canvasparametric)
     add_executable(test_about tests/test_about.cpp src/aboutdialog.cpp data/tools.qrc)
     target_link_libraries(test_about PRIVATE phobicccp_core Qt6::Widgets)
     add_test(NAME about COMMAND test_about)
@@ -218,17 +228,17 @@ if(Qt6Test_FOUND)
     add_test(NAME toollibrarydialog COMMAND test_toollibrarydialog)
     add_executable(test_toolpathform tests/test_toolpathform.cpp src/toolpathform.cpp
                    src/tooldiagram.cpp)
-    target_link_libraries(test_toolpathform PRIVATE phobicccp_core Qt6::Widgets)
+    target_link_libraries(test_toolpathform PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME toolpathform COMMAND test_toolpathform)
     # Panel <-> canvas selection handover (needs the real widgets).
-    add_executable(test_panels tests/test_panels.cpp src/canvas.cpp
+    add_executable(test_panels tests/test_panels.cpp src/canvas.cpp src/canvasparametric.cpp
                    src/toolpathpanel.cpp src/toolpathform.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp
                    src/settingsdialog.cpp)
     target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
     # Mirror / arrays through the real Edit → Vectors actions and undo stack.
-    add_executable(test_vectoractions tests/test_vectoractions.cpp src/canvas.cpp
+    add_executable(test_vectoractions tests/test_vectoractions.cpp src/canvas.cpp src/canvasparametric.cpp
                    src/vectoractions.cpp)
     target_link_libraries(test_vectoractions PRIVATE phobicccp_core Qt6::Widgets)
     add_test(NAME vectoractions COMMAND test_vectoractions)
