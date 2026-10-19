@@ -172,7 +172,17 @@ bool Document::save(const QString &destPath, QString *error)
     }
     const QString tmpPath = realDest + QStringLiteral(".phobisave");
     QFile::remove(tmpPath);
-    if (!QFile::copy(m_path, tmpPath)) {
+    if (!QFileInfo::exists(m_path)) {
+        // The file it was opened from is gone (a pulled stick, moved, or the
+        // untitled scratch file cleaned away): start from a blank container
+        // with what is in memory, rather than refuse every save and Save As.
+        if (!createBlank(tmpPath, boardWidth(), boardHeight(),
+                         m_params.value(QStringLiteral("thickness"), QStringLiteral("0")).toDouble(), error)
+            || !restoreInto(tmpPath, error)) {
+            QFile::remove(tmpPath);
+            return false;
+        }
+    } else if (!QFile::copy(m_path, tmpPath)) {
         if (error) *error = QStringLiteral("Could not stage a copy at %1").arg(tmpPath);
         return false;
     }
@@ -374,6 +384,49 @@ bool Document::save(const QString &destPath, QString *error)
     return true;
 }
 
+
+bool Document::restoreInto(const QString &path, QString *error) const
+{
+    // The params and toolpath groups as loaded; save() writes the rest.
+    const QString conn = QStringLiteral("c2dr_%1").arg(QUuid::createUuid().toString());
+    bool ok = true;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+        db.setDatabaseName(path);
+        ok = db.open();
+        if (!ok) {
+            if (error) *error = db.lastError().text();
+        } else {
+            db.transaction();
+            QSqlQuery q(db);
+            for (auto it = m_params.cbegin(); ok && it != m_params.cend(); ++it) {
+                q.prepare(QStringLiteral("INSERT OR REPLACE INTO params(key,value) VALUES(?,?)"));
+                q.addBindValue(it.key());
+                q.addBindValue(it.value());
+                ok = q.exec();
+            }
+            if (ok && !m_groups.isEmpty())
+                ok = q.exec(QStringLiteral("DELETE FROM items WHERE type='toolpath_group'"));
+            for (int i = 0; ok && i < m_groups.size(); ++i) {
+                const QByteArray g = QJsonDocument(m_groups.at(i).json).toJson(QJsonDocument::Compact);
+                q.prepare(QStringLiteral("INSERT INTO items(uuid,name,type,version,sz,data) "
+                                         "VALUES(?,'','toolpath_group','J1',?,?)"));
+                q.addBindValue(m_groups.at(i).uuid);
+                q.addBindValue(g.size());
+                q.addBindValue(zlibDeflate(g));
+                ok = q.exec();
+            }
+            if (!ok && error)
+                *error = q.lastError().text();
+            ok = ok && db.commit();
+            if (!ok)
+                db.rollback();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(conn);
+    return ok;
+}
 
 bool Document::createBlank(const QString &path, double width, double height,
                            double thickness, QString *error)

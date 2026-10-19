@@ -23,12 +23,17 @@ class SyncResult {
   final DesktopInfo info;
   final ToolLibrary? tools;
   final int pulled, pushed;
-  const SyncResult(this.info, this.tools, this.pulled, this.pushed);
+
+  /// Designs this phobiCCCP turned down, by name, with its reason.
+  final List<String> refused;
+  const SyncResult(this.info, this.tools, this.pulled, this.pushed, [this.refused = const []]);
 }
 
 /// One round with one phobiCCCP: its status, its tool library when [withTools]
 /// (it seldom changes, and it is the big answer), and the designs both ways.
-Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = true}) =>
+/// [onPulled] runs after each design taken in, so an open copy is replaced
+/// before more edits are made on top of the old one.
+Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = true, void Function()? onPulled}) =>
     CccpConnection.use(desk.address, desk.port, (c) async {
       final info = await c.info();
       final tools = withTools ? await c.tools() : null;
@@ -40,11 +45,20 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
         if (d.modified > (store.get(id)?.modified ?? -1)) {
           store.put(d);
           pulled++;
+          onPulled?.call();
         }
       }
+      final refused = <String>[];
       for (final id in plan.push) {
         final d = store.get(id);
-        if (d != null && await c.put(d)) pushed++;
+        if (d == null) continue;
+        // One design it will not take must not hold back the rest.
+        try {
+          if (await c.put(d)) pushed++;
+        } on CccpException catch (e) {
+          if (!e.refused) rethrow;
+          refused.add('“${d.name}”: ${e.message}');
+        }
       }
-      return SyncResult(info, tools, pulled, pushed);
+      return SyncResult(info, tools, pulled, pushed, refused);
     });

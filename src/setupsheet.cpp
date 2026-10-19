@@ -142,10 +142,12 @@ QString setupSheetHtml(const Document &doc, const QString &title)
         h += QStringLiteral("<tr><td class=\"n\">%1</td><td>%2</td><td>%3</td><td>T%4</td>"
                             "<td class=\"n\">%5</td><td class=\"n\">%6</td><td class=\"n\">%7</td>"
                             "<td class=\"n\">%8 / %9</td><td class=\"n\">%10</td><td class=\"n\">%11</td></tr>")
-                 .arg(row)
-                 .arg(esc(j.value("name").toString()), esc(toolpathLabel(t.type)))
-                 .arg(int(numOr(tool.value("number"), 0)))
-                 .arg(depth, sd.isUndefined() ? QStringLiteral("–") : mm(numOr(sd, 0)),
+                 // One .arg for all: chained, a "%3" in a toolpath name (or a
+                 // skip note) was filled in by the next call.
+                 .arg(QString::number(row),
+                      esc(j.value("name").toString()), esc(toolpathLabel(t.type)),
+                      QString::number(int(numOr(tool.value("number"), 0))),
+                      depth, sd.isUndefined() ? QStringLiteral("–") : mm(numOr(sd, 0)),
                       so.isUndefined() ? QStringLiteral("–") : mm(numOr(so, 0)),
                       mm(numOr(speeds.value("feedrate"), 0), 0), mm(numOr(speeds.value("plungerate"), 0), 0),
                       mm(numOr(speeds.value("rpm"), 0), 0), time);

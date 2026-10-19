@@ -231,7 +231,9 @@ int main(int argc, char **argv)
               "discovery carries the extra keys, never over its own");
 
         QList<QPair<int, QJsonObject>> asked;
-        QObject::connect(&rx, &ProjectReceiver::request,
+        // Disconnected at the end of this block: later requests must not reach
+        // a list that is gone.
+        const auto asking = QObject::connect(&rx, &ProjectReceiver::request,
                          [&](int id, const QJsonObject &r, const QString &) { asked.append({id, r}); });
         QTcpSocket s;
         s.connectToHost(QHostAddress::LocalHost, rx.port());
@@ -262,6 +264,41 @@ int main(int argc, char **argv)
                   && s.state() == QAbstractSocket::ConnectedState,
               "a bad line is answered with an error and the connection stays");
         rx.respond(9999, QJsonObject{});   // unknown id: nothing happens
+        check(!rx.isWaiting(asked.at(1).first), "an answered request is no longer waiting");
+        QObject::disconnect(asking);
+    }
+
+    // A flood of empty lines: answered in a loop (no deep recursion), and cut
+    // off after a few, without taking the receiver down.
+    {
+        QTcpSocket s;
+        s.connectToHost(QHostAddress::LocalHost, rx.port());
+        s.waitForConnected(3000);
+        s.write("PHOBICCCP-API 1\n" + QByteArray(200000, '\n'));
+        check(waitFor([&] { return s.state() != QAbstractSocket::ConnectedState; }),
+              "a flood of empty lines gets the connection cut");
+    }
+    // A request waiting on the user, with more streamed in behind it: the
+    // connection is cut instead of buffering without end.
+    {
+        QList<int> asked;
+        auto c = QObject::connect(&rx, &ProjectReceiver::request,
+                                  [&](int id, const QJsonObject &, const QString &) { asked.append(id); });
+        QTcpSocket s;
+        s.connectToHost(QHostAddress::LocalHost, rx.port());
+        s.waitForConnected(3000);
+        s.write("PHOBICCCP-API 1\n{\"op\":\"send\"}\n");
+        waitFor([&] { return !asked.isEmpty(); });
+        check(rx.isWaiting(asked.first()), "the send waits for an answer");
+        const QByteArray chunk(1024 * 1024, 'x');
+        for (int i = 0; i < 40 && s.state() == QAbstractSocket::ConnectedState; ++i) {
+            s.write(chunk);
+            waitFor([&] { return s.bytesToWrite() == 0; }, 2000);
+        }
+        check(waitFor([&] { return s.state() != QAbstractSocket::ConnectedState; }),
+              "streaming behind a waiting request gets the connection cut");
+        check(!rx.isWaiting(asked.first()), "and its request no longer waits");
+        QObject::disconnect(c);
     }
 
     // An absolute deadline: a sender that keeps the idle timer happy with a

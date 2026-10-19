@@ -222,6 +222,7 @@ struct ProjectReceiver::Conn {
     bool api = false;     // a pad's request connection
     bool pending = false; // an API request is waiting for respond()
     QByteArray buf;       // API bytes not yet read as a request
+    int badLines = 0;     // lines that were not a JSON object
 };
 
 ProjectReceiver::ProjectReceiver(QObject *parent) : QObject(parent) {}
@@ -335,6 +336,12 @@ void ProjectReceiver::onData(QTcpSocket *s)
     QByteArray bytes = s->readAll();
     if (c->api) {
         c->buf += bytes;
+        // While a request waits for the user, nothing else is read from the
+        // buffer: a pad may queue its next request, but not without limit.
+        if (c->buf.size() > 2 * kMaxRequest) {
+            drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"request too long\"}\n"));
+            return;
+        }
         onApiData(s);
         return;
     }
@@ -393,23 +400,29 @@ void ProjectReceiver::onApiData(QTcpSocket *s)
     Conn *c = m_conns.value(s);
     if (!c || c->pending)
         return;
-    const qsizetype nl = c->buf.indexOf('\n');
-    if (nl < 0) {
-        if (c->buf.size() > kMaxRequest)
+    // A loop, not recursion: a burst of empty lines must not run the stack out.
+    QJsonDocument doc;
+    for (;;) {
+        const qsizetype nl = c->buf.indexOf('\n');
+        if (nl < 0) {
+            if (c->buf.size() > kMaxRequest)
+                drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"request too long\"}\n"));
+            return;
+        }
+        if (nl > kMaxRequest) {
             drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"request too long\"}\n"));
-        return;
-    }
-    if (nl > kMaxRequest) {
-        drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"request too long\"}\n"));
-        return;
-    }
-    const QByteArray line = c->buf.left(nl);
-    c->buf.remove(0, nl + 1);
-    const QJsonDocument doc = QJsonDocument::fromJson(line);
-    if (!doc.isObject()) {
+            return;
+        }
+        const QByteArray line = c->buf.left(nl);
+        c->buf.remove(0, nl + 1);
+        doc = QJsonDocument::fromJson(line);
+        if (doc.isObject())
+            break;
+        if (++c->badLines > kMaxBadLines) {
+            drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"not a JSON object\"}\n"));
+            return;
+        }
         s->write(QByteArrayLiteral("{\"ok\":false,\"error\":\"not a JSON object\"}\n"));
-        onApiData(s);
-        return;
     }
     c->pending = true;
     c->idle.stop();

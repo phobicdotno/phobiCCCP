@@ -136,6 +136,20 @@ int main(int argc, char **argv)
         again.discard();
         check(!QFile::exists(copy), "discard() deletes it");
     }
+    // The file it was opened from is gone (a pulled stick): Save As still works.
+    {
+        const QString gone = dir.filePath(QStringLiteral("gone.c2d"));
+        c2d::Document::createBlank(gone, 120, 80, 12, &err);
+        c2d::Document g;
+        g.load(gone, &err);
+        g.addElement(c2d::Element::makeRectangle({20, 20}, 10, 10, g.defaultLayer()));
+        QFile::remove(gone);
+        const QString rescued = dir.filePath(QStringLiteral("rescued.c2d"));
+        check(g.save(rescued, &err), "save as works after the source file is gone");
+        c2d::Document back;
+        check(back.load(rescued, &err) && back.elements().size() == 1 && back.boardWidth() == 120,
+              "and keeps the drawing and the stock");
+    }
     if (!err.isEmpty())
         std::printf("     last error: %s\n", qPrintable(err));
     return g_fail ? 1 : 0;

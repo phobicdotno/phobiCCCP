@@ -1,3 +1,4 @@
+#include <numeric>
 #include "canvas.h"
 #include "sketchgeom.h"
 #include "backgroundimage.h"
@@ -240,6 +241,15 @@ public:
         : m_c(c), m_d(d), m_before(before), m_after(after)
     {
         setText(text);
+        // Where the originals were: undo puts them back there (z-order and
+        // machining order), not at the end.
+        const QVector<Element> &all = d->elements();
+        for (const Element &e : before) {
+            int at = int(all.size());
+            for (int i = 0; i < all.size(); ++i)
+                if (all.at(i).id == e.id) { at = i; break; }
+            m_beforeAt.append(at);
+        }
         QSet<QString> afterIds;
         for (const Element &e : after)
             afterIds.insert(e.id);
@@ -276,7 +286,15 @@ public:
     void undo() override
     {
         for (const auto &p : m_tps) m_d->replaceToolpath(p.first);
-        swap(m_after, m_before);
+        for (const Element &e : m_after) m_d->removeElementById(e.id);
+        QVector<int> order(m_before.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [this](int a, int b) { return m_beforeAt.at(a) < m_beforeAt.at(b); });
+        QVector<Element> &els = m_d->elementsRef();
+        for (int k : order)                             // low index first
+            els.insert(qMin(m_beforeAt.at(k), int(els.size())), m_before.at(k));
+        refresh(m_c);
     }
 private:
     void swap(const QVector<Element> &out, const QVector<Element> &in)
@@ -286,6 +304,7 @@ private:
         refresh(m_c);
     }
     Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+    QVector<int> m_beforeAt;
     QVector<QPair<Toolpath, Toolpath>> m_tps;
 };
 

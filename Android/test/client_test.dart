@@ -81,6 +81,40 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('one design the computer turns down does not hold back the rest', () async {
+    final (server, seen) = await fakeDesktop((req) => switch (req['op']) {
+          'info' => '{"ok":true,"host":"shop"}',
+          'designs' => '{"ok":true,"designs":[]}',
+          'put' => (req['design'] as Map)['id'] == 'a1'
+              ? '{"ok":false,"error":"shape s1: text too long"}'
+              : '{"ok":true,"stored":true}',
+          _ => '{"ok":false,"error":"?"}',
+        });
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final store = DesignStore(dir)
+      ..put(Design(id: 'a1', name: 'Long', modified: 9))
+      ..put(Design(id: 'b1', name: 'Fine', modified: 9));
+    final r = await syncWith(Desktop(id: 'x', host: 'shop', address: '127.0.0.1', port: server.port), store,
+        withTools: false);
+    expect(r.pushed, 1);
+    expect(r.refused.single, contains('text too long'));
+    expect(seen.where((s) => s['op'] == 'put').length, 2);
+    await server.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('a busy computer says so', () async {
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((s) {
+      s.write('ERR busy\n');
+      s.close();
+    });
+    final c = await CccpConnection.open('127.0.0.1', port: server.port);
+    await expectLater(c.info(), throwsA(isA<CccpException>().having((e) => e.message, 'message', contains('busy'))));
+    c.close();
+    await server.close();
+  });
+
   test('a computer that is not there fails cleanly', () async {
     final s = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final port = s.port;

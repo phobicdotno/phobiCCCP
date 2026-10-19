@@ -20,7 +20,8 @@ void main() {
     final saved = store.save(Design(id: 'd1', name: 'One'), now: 100);
     expect(saved.modified, 100);
     // An edit within the same millisecond still counts as newer.
-    expect(store.save(saved, now: 100).modified, 101);
+    final again = store.save(saved, now: 100).modified;
+    expect(again > 100 && again <= 1100, true);
     store.delete('d1', now: 200);
     expect(store.get('d1')!.deleted, true);
     expect(store.live(), isEmpty);

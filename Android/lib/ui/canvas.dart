@@ -54,7 +54,10 @@ class CanvasZoom extends ChangeNotifier {
     notifyListeners();
   }
 
-  void zoomBy(double k) => set((zoom * k).clamp(0.2, 60.0), pan * k);
+  void zoomBy(double k) {
+    final z = (zoom * k).clamp(0.2, 60.0).toDouble();
+    set(z, pan * (z / zoom));
+  }
 }
 
 enum DrawTool { select, hand, circle, rect, polygon, text, path, point }
@@ -121,6 +124,8 @@ class _DesignCanvasState extends State<DesignCanvas> {
   Size _size = const Size(1, 1);
   int _pointers = 0;
   bool _moving = false, _moved = false;
+  // What a drag moves: the parent's selection may not have caught up with the tap yet.
+  Set<String> _dragIds = const {};
   Offset? _bandStart, _bandEnd;
   (double, double)? _drawStart;
   Draft? _draft;
@@ -165,7 +170,12 @@ class _DesignCanvasState extends State<DesignCanvas> {
       case DrawTool.select:
         final id = hitShape(widget.design, x, y, 9 / v.scale);
         if (id != null) {
-          if (!widget.selected.contains(id)) widget.onSelect({id});
+          if (widget.selected.contains(id)) {
+            _dragIds = widget.selected;
+          } else {
+            _dragIds = {id};
+            widget.onSelect({id});
+          }
           _moving = true;
         } else {
           _bandStart = _bandEnd = s.localFocalPoint;
@@ -185,7 +195,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
       final (x, y) = v.toMm(s.localFocalPoint);
       widget.zoom.at((x, y));
       if (_moving) {
-        final ids = widget.selected;
+        final ids = _dragIds;
         if (ids.isNotEmpty) widget.onMove(ids, s.focalPointDelta.dx / v.scale, -s.focalPointDelta.dy / v.scale);
         _moved = true;
         return;

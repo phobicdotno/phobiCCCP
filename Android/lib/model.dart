@@ -36,6 +36,9 @@ class Stock {
 class Shape {
   static const rect = 'rect', circle = 'circle', polygon = 'polygon', text = 'text', path = 'path', point = 'point';
 
+  /// The longest text phobiCCCP takes (src/padlink.cpp checkShape).
+  static const maxText = 500;
+
   final String id, type;
   final double x, y;
   final double? w, h, r, size;
@@ -318,6 +321,8 @@ class Desktop {
 
   Desktop seenAt(int t) =>
       Desktop(id: id, host: host, address: address, port: port, version: version, machine: machine, lastSeen: t, typed: typed);
+  Desktop withTyped(String h) =>
+      Desktop(id: id, host: host, address: address, port: port, version: version, machine: machine, lastSeen: lastSeen, typed: h);
 }
 
 class MachineInfo {

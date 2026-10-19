@@ -167,7 +167,10 @@ QStringList safeRapidsTransform(const QStringList &lines)
             continue;
         }
         if (l.startsWith(QLatin1String("M0")) && l.contains(QLatin1String(";T"))) {
-            z = std::numeric_limits<double>::infinity();  // tool change parks at the top
+            // Without a BitSetter the operator changes the bit and resumes
+            // wherever they jogged it to, often just above the stock: Z is
+            // unknown, so the next rapid goes up before it goes across.
+            z = -std::numeric_limits<double>::infinity();
             out << raw;
             continue;
         }
@@ -242,7 +245,23 @@ QString GrblPost::generate(const QVector<Op> &ops) const
 
     auto scale = [&](double mm) { return m_metric ? mm : mm / 25.4; };
 
-    for (const Op &op : ops) {
+    // The height the next rapid travels at, when the program moves there
+    // before it cuts: put on a line of its own right after a tool change
+    // (and at the start), so the bit is lifted clear before the spindle
+    // starts and before anything moves across.
+    auto clearZ = [&](int from) {
+        for (int k = from; k < ops.size(); ++k) {
+            const Op::Kind kind = ops.at(k).kind;
+            if (kind == Op::Rapid)
+                line(block({G.fmt(0), Z.fmt(scale(ops.at(k).z))}));
+            if (kind == Op::Rapid || kind == Op::Feed || kind == Op::Arc || kind == Op::Tool)
+                return;
+        }
+    };
+    clearZ(0);
+
+    for (int i = 0; i < ops.size(); ++i) {
+        const Op &op = ops.at(i);
         switch (op.kind) {
         case Op::Comment: {
             QString t = op.text;
@@ -292,6 +311,7 @@ QString GrblPost::generate(const QVector<Op> &ops) const
                 // The sender runs a probe macro here (G53 moves, its own F),
                 // so nothing modal survives: the next move must carry every word.
                 X.last.clear(); Y.last.clear(); Z.last.clear(); F.last.clear(); G.last.clear();
+                clearZ(i + 1);
             }
             break;
         }
