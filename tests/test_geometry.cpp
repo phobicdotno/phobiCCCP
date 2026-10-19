@@ -587,6 +587,49 @@ int main(int argc, char *argv[])
               "rest depth: what a V-bit cut is not taken as cleared");
     }
 
+    // --- same area, 10 mm then 3 mm: the 3 mm only cleans the corners -------
+    {
+        auto rig = [&](bool rest, const QString &depth2) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));   // 10..50 x 10..30
+            r.addToolpath("pocket_toolpath", {{"stepover", 4.0}, {"end_depth", QStringLiteral("3.000")},
+                                              {"stepdown", 3.0}, {"name", QStringLiteral("10 mm")},
+                                              {"tool", QJsonObject{{"diameter", 10.0}, {"number", 1}}}});
+            r.addToolpath("pocket_toolpath", {{"stepover", 1.2}, {"end_depth", depth2},
+                                              {"stepdown", 3.0}, {"uuid", QStringLiteral("{tp-2}")},
+                                              {"name", QStringLiteral("3 mm")}, {"rest_auto", rest},
+                                              {"tool", QJsonObject{{"diameter", 3.0}, {"number", 2}}}});
+            return c2d::exportGcode(r.doc);
+        };
+        // The 3 mm program is everything after its tool change.
+        auto smallCuts = [](const c2d::GcodeResult &g) {
+            const int at = g.gcode.indexOf(QStringLiteral("T2"));
+            return cutPoints(at < 0 ? QString() : g.gcode.mid(at));
+        };
+        const c2d::GcodeResult g = rig(true, QStringLiteral("3.000"));
+        bool middle = false, corner = false;
+        for (const CutPoint &p : smallCuts(g)) {
+            if (p.x > 17 && p.x < 43 && p.y > 15 && p.y < 25)
+                middle = true;
+            if (p.x < 14 && p.y < 14)
+                corner = true;
+        }
+        const double withRest = c2d::computeStats(g.ops).cutLen;
+        const double without = c2d::computeStats(rig(false, QStringLiteral("3.000")).ops).cutLen;
+        // The 10 mm alone: the 3 mm already cut to its floor with no overlap, left out.
+        const double big = c2d::computeStats(rig(true, QStringLiteral("0.000")).ops).cutLen;
+        std::fprintf(stderr, "10 then 3 mm: 10 mm %.1f mm; 3 mm %.1f mm with rest, %.1f mm without; %s\n", big,
+                     withRest - big, without - big, qPrintable(g.notes.join("|")));
+        check(corner && !middle, "10 then 3 mm: the 3 mm cuts the corners, not the cleared middle");
+        check(withRest - big < (without - big) * 0.4, "10 then 3 mm: far less cutting than a full second pocket");
+        // Deeper than the 10 mm: below its floor the 3 mm cuts the whole area.
+        bool deepMiddle = false;
+        for (const CutPoint &p : smallCuts(rig(true, QStringLiteral("6.000"))))
+            if (p.x > 17 && p.x < 43 && p.y > 15 && p.y < 25 && p.z < -3.5)
+                deepMiddle = true;
+        check(deepMiddle, "10 then 3 mm deeper: the whole area below the 10 mm floor");
+    }
+
     // --- drilling: pecks at the circle center ------------------------------
     {
         Rig r;

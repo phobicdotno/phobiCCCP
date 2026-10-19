@@ -1,5 +1,69 @@
 # Changelog
 
+## v1.2.5 (build 78) — 2026-10-19
+
+> Bug check 3: rest cuts no longer cut into islands left standing, the Area tool keeps small islands, and parametric sketches stay put
+
+- **Rest cuts (Skip what the toolpaths above cut):**
+  - The test of whether a toolpath is already inside cleared area looked only at the corners
+    of its passes. A long straight pass between two cleared corners could run through an
+    island still standing between them, so the toolpath started deep and milled the island
+    away (11 mm deep instead of 2 in the test case). Now the whole pass is checked.
+  - Grooves cut by a V-bit or ball-nose, and contours with tabs, were counted as a flat floor
+    at full depth, so a following pocket started too deep (into the tabs, or below a V groove).
+    They are no longer counted as cleared (tabs: only down to the tab top).
+  - A pocket cut in rest bands lost its helical entry and plunged straight; it keeps it now.
+- **Area tool:**
+  - A small island in a big pocket (under about 0.2% of its area, say a 13 mm boss in a
+    300 mm pocket) was dropped, and a pocket made from the selection cut it away. It is kept.
+  - Pieces that only touch at a point (a circle inscribed in a square) came out as one area,
+    so a click in one corner picked all four. Each piece is its own area now.
+- **Parametric sketching:**
+  - A comment, a new or removed parameter, a rename, a moved label or a deleted constraint no
+    longer moves the geometry to a compromise when some constraint is red.
+  - Mirroring a constrained shape kept each angle and side the old way round and folded the
+    shape. Constraints inside the mirrored shapes now follow the mirror.
+  - Constraints on a turned rectangle's corners and edges used the unturned corners; they use
+    the real ones now. Changing a polygon's side count re-attaches its constraints by place.
+  - A radius, diameter or length driven to 0 or below from the Parameters tab (typed there, or
+    through a parameter) is refused, as on the canvas.
+  - Expressions: deep nesting fails instead of crashing; "1 cm / 4 in" (two units in one
+    product) and "max(2,5; 3)" (both , and ; between values) are refused instead of giving a
+    wrong number. Duplicate uids and names in a file are made unique on load.
+  - The Constrain and Dimension tools no longer stay active (invisibly) in Toolpaths mode; a
+    half-placed dimension or open value editor no longer carries over to another design, a
+    tool switch, or an undo/redo that took its name. A constraint picked in the Parameters tab
+    is let go when the canvas is used another way, so Del deletes the shape, not it.
+  - Change tool now unbinds the feeds, speeds, stepdown and stepover it sets, so the next
+    parameter edit no longer puts the old numbers back. Removing a parameter lists the
+    toolpaths that use it.
+- **Toolpaths side:** dragging a card when the panel around the list scrolls no longer jitters
+  or scrolls half as far; a press whose release went to a dialog no longer leaves the list
+  scrolling on hover or picks up a card; a drop after the list was rebuilt mid-drag is ignored
+  instead of moving another toolpath.
+- **Run:** a pad rebuilding the open design while Run was preparing no longer streams the old
+  program.
+- **Pad app:** Document setup and Tool pick no longer save the old copy over one that synced
+  in while the dialog was open, and a move during a sync no longer puts the old copy on the
+  undo stack. The Send dialog can't be closed while sending (the answer always shows) and its
+  list of computers stays live. Keys the pad doesn't know (parametric data, bindings) survive
+  a pad edit. An open path is only hit near its line. Number fields keep the old value for
+  input they can't read ("1/4 in", "2in") instead of misreading it. Malformed designs from
+  the network (one-number points, a 1e9 mm stock) are made safe.
+
+## v1.2.4 (build 77) — 2026-10-19
+
+> The pad gets the Area fill tool, like the desktop
+
+- **Pad: Area tool.** Next to Pan on the pad's tool bar, with the desktop's icon. A tap selects
+  only the area it lands in, bounded by every closed shape around it; where shapes overlap, the
+  tapped piece is added as a closed path and selected, so a pocket made from it cuts only that
+  piece. Undo takes the added path away. Text is not a boundary on the pad (it has no glyph
+  outlines); everything else matches the desktop.
+- Desktop: the Area tool's tooltip now says what it does (a fill, not the shape and its islands).
+- New check: a 3 mm pocket on the same area as a 10 mm one above it cuts only the corners
+  (68 mm of cutting travel instead of 613 mm on a 40 × 20 mm pocket).
+
 ## v1.2.3 (build 76) — 2026-10-19
 
 > The Toolpaths side scrolls by dragging, and a toolpath moves only after a half-second hold

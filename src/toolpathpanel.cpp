@@ -172,8 +172,7 @@ public:
 // The list with drag-and-drop reordering: a dropped card reports where it
 // landed, and the panel turns that into one undoable move. Dragging a card
 // scrolls the list (or the panel around it); a card only comes loose to be
-// moved after it has been held still for kHoldToMoveMs from the press, before
-// any scrolling (Android/lib/ui/panels.dart does the same). A click is passed on
+// moved after it has been held still for kHoldToMoveMs. A click is passed on
 // at release, so a scroll never selects or ticks the card it started on.
 class CardList : public QTreeWidget
 {
@@ -216,9 +215,7 @@ protected:
         m_scrolling = true;
         dragScrollBy(this, m_last.y() - p.y());
         m_last = p;
-        // Once it scrolls, the press can no longer pick a card up, as on the
-        // pad: a pause mid-scroll must not tear loose the card under the finger.
-        m_hold.stop();
+        m_hold.start(kHoldToMoveMs);   // moving restarts the wait
     }
 
     void mouseReleaseEvent(QMouseEvent *e) override

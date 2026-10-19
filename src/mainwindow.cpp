@@ -913,7 +913,7 @@ MainWindow::MainWindow(QWidget *parent)
     QAction *handAct = addTool(QStringLiteral("Hand"), QStringLiteral("hand"), Canvas::Pan, Qt::Key_H,
             QStringLiteral("Hand: drag to move the view  (H)"));
     QAction *areaAct = addTool(QStringLiteral("Area"), QStringLiteral("area"), Canvas::SelectArea, Qt::Key_W,
-            QStringLiteral("Select closed area: click inside a shape to select it and its islands, for a pocket  (W)"));
+            QStringLiteral("Area: click inside an area to select just it, like a fill, for a pocket  (W)"));
     QAction *circleAct = addTool(QStringLiteral("Circle"), QStringLiteral("circle"),
             Canvas::DrawCircle, Qt::Key_C,
             QStringLiteral("Circle (C) — hold for Center / 2-Point / 3-Point / 2-Tangent / 3-Tangent"));

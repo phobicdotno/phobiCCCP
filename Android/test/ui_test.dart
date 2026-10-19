@@ -77,6 +77,49 @@ void main() {
     await close(t);
   });
 
+  testWidgets('Area picks just the overlap of two rectangles, like a fill', (t) async {
+    await open(t);
+    final canvas = find.byWidgetPredicate((w) => w.runtimeType.toString() == 'DesignCanvas');
+    final c = t.getRect(canvas).center + const Offset(0, 150);
+    Future<void> rect(Offset from, Offset to) async {
+      await t.tap(find.byTooltip('Rectangle'));
+      await t.pumpAndSettle();
+      final g = await t.startGesture(from);
+      for (var i = 1; i <= 10; i++) {
+        await g.moveBy((to - from) / 10);
+        await t.pump();
+      }
+      await g.up();
+      await t.pumpAndSettle();
+    }
+
+    await rect(c + const Offset(-90, -30), c + const Offset(20, 30));
+    await rect(c + const Offset(-20, -30), c + const Offset(90, 30));
+    expect(app.design(d.id)!.shapes.length, 8);
+    await t.tap(find.byTooltip('Area: tap inside an area to select just it, like a fill, for a pocket'));
+    await t.pumpAndSettle();
+    await t.tapAt(c);
+    await t.pumpAndSettle();
+    final shapes = app.design(d.id)!.shapes;
+    expect(shapes.length, 9);
+    expect(shapes.last.type, Shape.path);
+    expect(shapes.last.closed, true);
+    final b = shapes.last.bounds();
+    final ra = shapes[6].bounds(), rb = shapes[7].bounds();
+    expect(b[0], closeTo(rb[0], 0.01));
+    expect(b[2], closeTo(ra[2], 0.01));
+    // Left of the overlap: the rest of the left rectangle, a new path too.
+    await t.tapAt(c + const Offset(-70, 0));
+    await t.pumpAndSettle();
+    expect(app.design(d.id)!.shapes.length, 10);   // the part of the left one outside the overlap
+    await t.tap(find.text('Undo'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('Undo'));
+    await t.pumpAndSettle();
+    expect(app.design(d.id)!.shapes.length, 8);
+    await close(t);
+  });
+
   testWidgets('a toolpath is made from the selected vectors', (t) async {
     await open(t);
     await t.tap(find.text('Shapes'));

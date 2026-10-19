@@ -60,7 +60,7 @@ class CanvasZoom extends ChangeNotifier {
   }
 }
 
-enum DrawTool { select, hand, circle, rect, polygon, text, path, point }
+enum DrawTool { select, hand, area, circle, rect, polygon, text, path, point }
 
 /// The shape under (x, y) mm, within [slop] mm; closed shapes from anywhere
 /// inside, the smallest one winning.
@@ -162,6 +162,8 @@ class _DesignCanvasState extends State<DesignCanvas> {
       case DrawTool.select:
         final id = hitShape(widget.design, x, y, 7 / v.scale);
         widget.onSelect(id == null ? {} : {id});
+      case DrawTool.area:
+        widget.onTapAt(x, y);
       case DrawTool.text:
       case DrawTool.path:
       case DrawTool.point:
