@@ -34,7 +34,9 @@ String sendWords(SendResult r, bool start, String computer) =>
     (r.notes.isEmpty ? '' : ' ${r.notes.join('; ')}');
 
 Future<String?> showSendDialog(BuildContext context, AppState app, Design d) =>
-    showDialog<String>(context: context, builder: (_) => SendDialog(app, d));
+    // Not closable by tapping outside or Back while a send is on its way: the
+    // answer (started, or why not) must reach the user, or they send twice.
+    showDialog<String>(context: context, barrierDismissible: false, builder: (_) => SendDialog(app, d));
 
 class SendDialog extends StatefulWidget {
   final AppState app;
@@ -54,12 +56,24 @@ class _SendDialogState extends State<SendDialog> {
   @override
   void initState() {
     super.initState();
+    // Computers come and go while the dialog is open.
+    app.addListener(_changed);
     final last = app.lastTarget.split('/');
     final reach = _reachable();
     final c = reach.where((c) => c.desktop.id == last.first).firstOrNull ?? reach.firstOrNull;
     _computer = c?.desktop.id;
     final machines = c?.info?.machines ?? const [];
     _machine = machines.any((m) => last.length > 1 && m.id == last[1]) ? last[1] : c?.info?.activeMachine;
+  }
+
+  @override
+  void dispose() {
+    app.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
   }
 
   List<Computer> _reachable() => app.computers.where((c) => c.reachable(app.now)).toList();
@@ -109,7 +123,9 @@ class _SendDialogState extends State<SendDialog> {
         warn = 'This design has no toolpaths, so there is nothing to cut.';
       }
     }
-    return AlertDialog(
+    return PopScope(
+      canPop: !_busy,
+      child: AlertDialog(
       title: Text('Send “${widget.design.name}”'),
       content: SizedBox(
         width: 480,
@@ -171,6 +187,7 @@ class _SendDialogState extends State<SendDialog> {
         TextButton(onPressed: _busy ? null : () => Navigator.pop(context), child: const Text('Cancel')),
         FilledButton(onPressed: c == null || _busy ? null : _go, child: Text(_start ? 'Send and start…' : 'Send')),
       ],
+    ),
     );
   }
 }

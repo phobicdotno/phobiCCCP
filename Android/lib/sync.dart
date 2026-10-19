@@ -41,6 +41,9 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
       var pulled = 0, pushed = 0;
       for (final id in plan.pull) {
         final d = await c.get(id);
+        // Not the one asked for (or a name this pad cannot store): skipped,
+        // not counted as pulled and then asked for again every round.
+        if (d.id != id || !DesignStore.validId.hasMatch(id)) continue;
         // It may have changed here meanwhile; the newer one still wins.
         if (d.modified > (store.get(id)?.modified ?? -1)) {
           store.put(d);

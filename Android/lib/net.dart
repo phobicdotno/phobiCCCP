@@ -75,6 +75,7 @@ class CccpConnection {
     if (start < data.length) _buf.add(data.sublist(start));
     if (_buf.length > maxReply) {
       _buf.clear();
+      close();
       _onDone();
     }
   }
@@ -84,8 +85,13 @@ class CccpConnection {
     if (w != null && !w.isCompleted) {
       _waiting = null;
       w.complete(line);
-    } else {
+    } else if (_lines.isEmpty) {
+      // Only an answer sent before it was asked for ("ERR busy" right on
+      // connect) waits here; more than one unasked line is not phobiCCCP.
       _lines.add(line);
+    } else {
+      close();
+      _onDone();
     }
   }
 

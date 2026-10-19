@@ -9,10 +9,21 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:phobicccp/app_state.dart';
 import 'package:phobicccp/model.dart';
 import 'package:phobicccp/store.dart';
+import 'package:phobicccp/ui/canvas.dart';
 import 'package:phobicccp/ui/main_window.dart';
 import 'package:phobicccp/ui/theme.dart';
 
 void main() {
+  test('an open path is hit near its line only', () {
+    final d = Design(shapes: const [
+      Shape(id: 'p', type: Shape.path, points: [[0, 0], [100, 100]], closed: false),
+      Shape(id: 'r', type: Shape.rect, x: 200, y: 0, w: 10, h: 10),
+    ]);
+    expect(hitShape(d, 50, 51, 2), 'p');
+    expect(hitShape(d, 80, 10, 2), null);
+    expect(hitShape(d, 205, 5, 2), 'r');
+  });
+
   late AppState app;
   late Design d;
 

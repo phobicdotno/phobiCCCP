@@ -77,6 +77,7 @@ class _MainWindowState extends State<MainWindow> {
         _status = '“${cur.name}” was deleted on another pad or computer';
       } else {
         _d = d;
+        _beforeMove = null;
         _sel = _sel.where((id) => d.shape(id) != null).toSet();
         // Undoing past it would put the old copy back everywhere.
         _undo.clear();
@@ -88,6 +89,7 @@ class _MainWindowState extends State<MainWindow> {
 
   void _open(Design? d) {
     _d = d;
+    _beforeMove = null;
     _undo.clear();
     _redo.clear();
     _sel = {};
@@ -115,6 +117,16 @@ class _MainWindowState extends State<MainWindow> {
     if (cur == null || stored == null || stored.modified <= cur.modified) return false;
     _synced();
     _say('“${stored.name}” changed on another pad or computer; your last change was not kept');
+    return true;
+  }
+
+  /// [d] is no longer the design on screen (a newer copy came in, or it was
+  /// closed or deleted) while a dialog about it was open: the dialog's edit is
+  /// dropped, as saving it would put the old copy back everywhere.
+  bool _replacedSince(Design d) {
+    final cur = _d;
+    if (cur != null && cur.id == d.id && cur.modified == d.modified && !_stale()) return false;
+    _say('“${d.name}” changed while the dialog was open; that change was not kept');
     return true;
   }
 
@@ -281,7 +293,8 @@ class _MainWindowState extends State<MainWindow> {
           ]),
         ),
         actions: (ctx) => [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))]);
-    if (n != null) _setToolpath(i, t.copyWith(tool: n));
+    if (n == null || _replacedSince(d)) return;
+    _setToolpath(i, t.copyWith(tool: n));
   }
 
   // ---- dialogs -----------------------------------------------------------------
@@ -408,8 +421,10 @@ class _MainWindowState extends State<MainWindow> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('OK')),
             ]);
-    if (ok == true) {
-      _commit(d.copyWith(name: name.text.trim().isEmpty ? d.name : name.text.trim(), stock: stock, material: material));
+    final newName = name.text.trim();
+    name.dispose();
+    if (ok == true && !_replacedSince(d)) {
+      _commit(d.copyWith(name: newName.isEmpty ? d.name : newName, stock: stock, material: material));
     }
   }
 
@@ -732,6 +747,8 @@ class _MainWindowState extends State<MainWindow> {
                   onMoveDone: () {
                     final before = _beforeMove;
                     _beforeMove = null;
+                    // A newer copy came in mid-drag: it replaced the moved one.
+                    if (before == null || _d == null || before.id != _d!.id) return;
                     _commit(_d!, before: before);
                   },
                   onDraw: (dr) {

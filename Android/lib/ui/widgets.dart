@@ -232,8 +232,11 @@ class _NumBoxState extends State<NumBox> {
   }
 
   void _commit() {
-    final v = double.tryParse(_c.text.replaceAll(',', '.').replaceAll(RegExp(r'[^-0-9.]'), ''));
-    if (v != null) {
+    // A plain number, maybe with its unit; anything else ("1/4 in", "2in")
+    // is left alone rather than read as some other number.
+    final t = _c.text.trim().toLowerCase().replaceAll(',', '.').replaceFirst(RegExp(r'\s*(mm|°)$'), '');
+    final v = double.tryParse(t);
+    if (v != null && v.isFinite) {
       final k = v.clamp(widget.min, widget.max).toDouble();
       if (k != widget.value) widget.onChanged(k);
     }
