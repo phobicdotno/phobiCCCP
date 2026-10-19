@@ -2,10 +2,13 @@
 #include "c2ddocument.h"
 #include "post_grbl.h"
 #include <QGraphicsView>
+#include <functional>
 
 class QGraphicsPathItem;
+class QUndoCommand;
 class QUndoStack;
 class QLabel;
+class QLineEdit;
 
 // Renders a Document's board and elements, and hosts the vector tools. CC uses
 // Y-up with the origin at the board's bottom-left; Qt scene coordinates are
@@ -16,13 +19,18 @@ namespace c2d {
 
 struct BackgroundImage;
 
+// A constraint's symbol (the canvas badge glyph) as a picture, `size` logical
+// px square, for toolbar buttons and lists. Dimensions get a dimension icon.
+QPixmap constraintPixmap(Constraint::Type t, const QColor &ink, int size, qreal dpr);
+
 class Canvas : public QGraphicsView
 {
     Q_OBJECT
 public:
     enum Tool { Select, DrawCircle, DrawRect, DrawPolygon, DrawPath, DrawText, NodeEdit,
                 DrawEllipse, DrawSlot, DrawArc, Trim, Extend, Break, Measure,
-                DrawPoint, DrawSpline, DrawConic, Pan, SelectArea };
+                DrawPoint, DrawSpline, DrawConic, Pan, SelectArea,
+                Constrain, Dimension };
     // The three-click tools (slot, 3-point arc): the first
     // two clicks fix two points, the third finishes the shape.
     static bool isClickTool(Tool t) { return t == DrawSlot || t == DrawArc || t == DrawConic; }
@@ -99,6 +107,38 @@ public:
     void clearToolpathPreview();
     bool hasToolpathPreview() const { return !m_previewOps.isEmpty(); }
 
+    // ---- parametric sketching (canvasparametric.cpp) -----------------------
+    // The Constrain tool's constraint (Coincident ... Symmetric).
+    void setConstraintType(Constraint::Type t);
+    Constraint::Type constraintType() const { return m_conType; }
+    // Push a geometry edit. With constraints in the document the solver runs
+    // right after it, in the same undo step, moving `touched` least.
+    void pushEdit(QUndoCommand *cmd, const QStringList &touched);
+    // Swap in new parameters / constraints as one undo step: re-solve, then
+    // re-evaluate the toolpath fields bound to expressions. When the result
+    // cannot hold, nothing changes and false comes back - unless
+    // allowFailing (a parameter edit), which keeps it and marks the
+    // constraints that fail in red.
+    // `mutate` runs on the document after the swap, before the solve (a
+    // parameter rename also rewrites the toolpath bindings that use it).
+    bool applyParametric(const Parametric &after, const QString &text,
+                         bool allowFailing = false, const QSet<QString> &keep = {},
+                         const std::function<void(Document &)> &mutate = {});
+    void editDimension(const QString &uid);       // the inline value editor
+    void deleteConstraint(const QString &uid);
+    // Constraint glyphs and dimensions on the canvas: the user's toggle,
+    // and whether the page shows them at all (Design does, Toolpaths not).
+    void setShowConstraints(bool on);
+    bool showConstraints() const { return m_showConstraints; }
+    void setParametricVisible(bool on);
+    QString selectedConstraint() const { return m_selConstraint; }
+    void selectConstraint(const QString &uid);
+    // Elements nothing can move any more (drawn in the constrained colour)
+    // and the degrees of freedom left, as of the last rebuild.
+    const QSet<QString> &fullyConstrained() const { return m_full; }
+    int freedomLeft() const { return m_dof; }
+    const QStringList &failingConstraints() const { return m_failing; }
+
 signals:
     void toolChanged(Canvas::Tool t);  // active tool switched (setTool)
     void documentChanged();            // element added / moved / deleted
@@ -106,6 +146,7 @@ signals:
     void cursorMoved(QPointF ccPos);   // live mm position under the mouse
     void zoomChanged(double percent);
     void selectionChangedIds(const QStringList &ids);
+    void constraintSelected(const QString &uid);   // "" = none
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -226,6 +267,51 @@ private:
 
     QVector<Op> m_previewOps;               // g-code overlay (empty = off)
     const BackgroundImage *m_bg = nullptr;  // background picture (backgroundimage.h)
+
+    // Parametric overlay and tools (canvasparametric.cpp).
+    struct DimDraw;
+    void drawParametric(QPainter *p);
+    bool dimGeometry(const Constraint &c, DimDraw *out) const;
+    bool refShape(const GeoRef &r, param::RefShape *out) const;
+    bool pickGeo(const QPointF &pos, unsigned mask, param::RefShape *out) const;
+    unsigned pickMask() const;
+    void constrainClick();
+    void dimensionClick(const QPointF &pos, Qt::KeyboardModifiers mods);
+    void updateDimDraft(const QPointF &pos);
+    void resetPicks();
+    QString hitConstraint(const QPoint &viewPos) const;
+    void openDimEditor(const Constraint &c, bool isNew);
+    void commitDimEditor(bool keepMeasured);
+    void closeDimEditor();
+    bool parametricPress(QMouseEvent *event);     // true = handled
+    bool parametricMove(QMouseEvent *event);
+    bool parametricRelease(QMouseEvent *event);
+    bool parametricKey(QKeyEvent *event);
+    bool parametricMenu(QContextMenuEvent *event);
+    void refreshParametricState();                // m_full, m_dof, m_failing
+    bool overlayOn() const { return m_showConstraints && m_parametricVisible; }
+
+    Constraint::Type m_conType = Constraint::Coincident;
+    QVector<param::RefShape> m_picks;             // geometry picked so far
+    param::RefShape m_hover;                      // geometry under the cursor
+    bool m_hasHover = false;
+    QString m_hoverConstraint;                    // glyph / label under the cursor
+    QString m_selConstraint;
+    bool m_dimPlacing = false;                    // a new dimension follows the mouse
+    Constraint m_dimDraft;
+    QLineEdit *m_dimEdit = nullptr;
+    Constraint m_dimEditing;                      // what the editor edits
+    bool m_dimEditingNew = false;
+    QString m_dragDim;                            // dimension label being dragged
+    QPointF m_dragDimFrom;
+    QPointF m_dragDimLabel0;
+    bool m_showConstraints = true, m_parametricVisible = true;
+    QSet<QString> m_full;
+    int m_dof = 0;
+    QStringList m_failing;
+    mutable QHash<QString, QVector<param::RefShape>> m_shapeCache;
+    struct Hit { QRectF rect; QString uid; };
+    QVector<Hit> m_hits;                          // glyph / label rects, view px
 
     // Resize-handle drag state (single selected circle/rect/polygon).
     bool resizeHandle(QString *id, QPointF *pos, QString *type) const;

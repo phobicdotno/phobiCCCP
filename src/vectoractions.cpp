@@ -557,8 +557,11 @@ QVector<Element> VectorActions::orderedSelection() const
 void VectorActions::pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
                                 bool keepInputs, const QString &text)
 {
-    m_canvas->undoStack()->push(
-        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text));
+    QStringList ids;
+    for (const Element &e : inputs)
+        ids << e.id;
+    m_canvas->pushEdit(
+        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text), ids);
 }
 
 void VectorActions::pushMoves(const QStringList &ids, const QVector<QPointF> &deltas,
@@ -569,7 +572,7 @@ void VectorActions::pushMoves(const QStringList &ids, const QVector<QPointF> &de
         if (!qFuzzyIsNull(d.x()) || !qFuzzyIsNull(d.y())) { any = true; break; }
     if (!any)
         return;
-    m_canvas->undoStack()->push(new MoveManyCmd(m_canvas, m_canvas->document(), ids, deltas, text));
+    m_canvas->pushEdit(new MoveManyCmd(m_canvas, m_canvas->document(), ids, deltas, text), ids);
 }
 
 // Sketch points and construction geometry are references, never material:
@@ -967,8 +970,10 @@ void VectorActions::pushReshape(const QVector<Element> &before, const QVector<El
 {
     if (before.isEmpty())
         return;
-    m_canvas->undoStack()->push(
-        new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text));
+    QStringList ids;
+    for (const Element &e : after)
+        ids << e.id;
+    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids);
 }
 
 void VectorActions::rotate(double deg)

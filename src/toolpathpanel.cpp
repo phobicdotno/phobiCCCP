@@ -658,6 +658,7 @@ void ToolpathPanel::createInlayMale()
 void ToolpathPanel::setDocument(Document *doc)
 {
     m_doc = doc;
+    m_form->setDocument(doc);
     m_uuid.clear();
     m_hint->hide();
     refresh();
