@@ -133,15 +133,15 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - uses: jurplel/install-qt-action@v4
-        with:
-          version: 6.8.3
-          host: linux
-          target: android
-          arch: android_arm64_v8a
-          modules: qtserialport
-          autodesktop: true
-          cache: true
+      # aqtinstall directly: install-qt-action cannot resolve Qt 6.8 for Android.
+      - name: Qt for Android
+        run: |
+          python3 -m venv "$RUNNER_TEMP/aqt"
+          "$RUNNER_TEMP/aqt/bin/pip" install -q aqtinstall
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux desktop 6.8.3 linux_gcc_64 -O "$RUNNER_TEMP/qt"
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux android 6.8.3 android_arm64_v8a -O "$RUNNER_TEMP/qt" -m qtserialport
+          echo "QT_ROOT_DIR=$RUNNER_TEMP/qt/6.8.3/android_arm64_v8a" >> "$GITHUB_ENV"
+          echo "QT_HOST_PATH=$RUNNER_TEMP/qt/6.8.3/gcc_64" >> "$GITHUB_ENV"
 
       - name: Android SDK parts
         run: |
@@ -152,9 +152,8 @@ jobs:
 
       - name: Configure
         run: |
-          host="${QT_HOST_PATH:-$(dirname "$QT_ROOT_DIR")/gcc_64}"
           "$QT_ROOT_DIR/bin/qt-cmake" -S . -B build-android -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DQT_HOST_PATH="$host" -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DQT_HOST_PATH="$QT_HOST_PATH" -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
             -DANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/26.1.10909125"
 
       - name: Build APK
