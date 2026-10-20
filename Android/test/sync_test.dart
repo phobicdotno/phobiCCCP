@@ -62,6 +62,58 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('edits note themselves in the versions, made from the stored copy', () {
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final store = DesignStore(dir);
+    final me = store.replicaId;
+    expect(DesignStore(dir).replicaId, me, reason: 'a pad keeps its own id');
+    final made = store.save(Design(id: 'd1', name: 'One', bases: {'x': 5}, vv: {'other': 7}), now: 100);
+    expect(made.vv, {me: 100}, reason: 'a new design starts its own versions');
+    expect(made.bases, isEmpty, reason: 'and was never exchanged with a computer');
+    store.put(made.copyWith(vv: {'desk': 50, me: 100}, bases: {'desk': 100}));
+    final edited = store.save(store.get('d1')!.copyWith(name: 'Two'), now: 200);
+    expect(edited.vv, {'desk': 50, me: 200});
+    expect(edited.bases, {'desk': 100});
+    expect(orderOf(edited.vv, edited.modified, {'desk': 50, me: 100}, 100), Order.after);
+    store.delete('d1', now: 300);
+    expect(store.get('d1')!.vv, {'desk': 50, me: 300});
+    // Stamped again by an older pad that kept the vv: not believed, and not carried on.
+    expect(believedVv({'a': 10}, 20), isEmpty);
+    store.put(Design(id: 'd2', modified: 20, vv: {'a': 10}));
+    expect(store.save(store.get('d2')!, now: 400).vv, {me: 400});
+    dir.deleteSync(recursive: true);
+  });
+
+  test('how two copies stand to each other', () {
+    expect(orderOf({'a': 1}, 1, {'a': 1}, 1), Order.same);
+    expect(orderOf({'a': 1, 'b': 2}, 2, {'a': 1}, 1), Order.after);
+    expect(orderOf({'a': 1}, 1, {'a': 1, 'b': 2}, 2), Order.before);
+    expect(orderOf({'a': 3}, 3, {'a': 1, 'b': 2}, 2), Order.concurrent);
+    expect(orderOf(const {}, 3, {'a': 1}, 1), Order.unknown);
+    expect(orderOf(const {}, 3, const {}, 3), Order.same);
+    // Made from theirs: pushed; theirs made from ours: pulled; apart: pushed, for the computer to keep both.
+    final plan = SyncPlan.versions({
+      'a': (2, {'p': 2, 'd': 1}),
+      'b': (1, {'d': 1}),
+      'c': (3, {'p': 3}),
+    }, const [
+      DesignEntry('a', modified: 1, vv: {'d': 1}),
+      DesignEntry('b', modified: 2, vv: {'d': 2}),
+      DesignEntry('c', modified: 4, vv: {'d': 4}),
+    ]);
+    expect(plan.pull, ['b']);
+    expect(plan.push, ['a', 'c']);
+  });
+
+  test('a put carries the base of the computer it goes to', () {
+    final d = Design(id: 'd1', modified: 30, base: 9, bases: {'shop': 20, 'garage': 10});
+    expect(d.toWire('shop')['base'], 20);
+    expect(d.toWire('garage')['base'], 10);
+    expect(d.toWire('new')['base'], 10, reason: 'one it never exchanged it with: the oldest');
+    expect(d.toWire('shop').containsKey('bases'), false);
+    expect(Design(id: 'd1', modified: 30, base: 9).toWire('shop')['base'], 9, reason: 'from before bases');
+  });
+
   test('settings remember hosts and the tool library', () {
     final f = File('${Directory.systemTemp.createTempSync('pad').path}/s.json');
     Settings(f)

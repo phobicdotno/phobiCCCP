@@ -722,6 +722,63 @@ int main()
         check(flatRim <= e2 + 0.08, "compensatedZ: flat rim within half a cell of slope");
     }
 
+    // --- compensatedZ: a sharp peak on a node ----------------------------------
+    // The ball was let down on a sub-grid tied to the tool's position, which
+    // misses the model's nodes: over a cone's apex it read the flanks, sat
+    // up to 0.225 mm too low, and the raster finish took 0.12 mm off the tip.
+    {
+        c2d::HeightModel m;
+        m.cell = 0.5;
+        m.baseZ = -8;
+        m.resize(80, 80);
+        const double ax = 40.5 * m.cell, ay = 40.5 * m.cell;   // the apex on node (40, 40)
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c) {
+                const double d = std::hypot((c + 0.5) * m.cell - ax, (r + 0.5) * m.cell - ay);
+                m.ref(c, r) = float(std::fmax(m.baseZ, -2.0 * d));
+            }
+        c2d::ToolGeom ball;
+        ball.kind = c2d::ToolGeom::Ball;
+        ball.diameter = 6.35;
+        ball.cornerRadius = 3.175;
+        const double R = ball.radius();
+        double worst = 0;
+        for (double dx = -0.5; dx <= 0.5; dx += 0.01)
+            for (double dy = -0.5; dy <= 0.5; dy += 0.05) {
+                const double onApex = -(R - std::sqrt(R * R - dx * dx - dy * dy));
+                worst = std::fmax(worst, onApex - c2d::compensatedZ(m, ball, ax + dx, ay + dy));
+            }
+        std::fprintf(stderr, "cone apex: compensatedZ at most %.4f mm below the ball on the apex\n", worst);
+        check(worst < 1e-6, "compensatedZ: the ball rests on a peak node");
+
+        c2d::Document doc;
+        addToolpath(doc, toolpath("3d_finish_toolpath",
+                                  QJsonObject{{"number", 1}, {"diameter", 6.35}, {"type", 1}, {"corner_radius", 3.175}},
+                                  {{"stepover", 0.3}, {"stepdown", 1.0}, {"stock_to_leave", 0.0},
+                                   {"strategy", "raster"}, {"direction", "zigzag"}, {"raster_angle", 0.0},
+                                   {"start_depth", "0.000"}, {"max_depth", "0.000"}, {"boundary_offset", 0.0}}));
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
+        double cut = 0, cx = 0, cy = 0, cz = 10;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Feed) {
+                const int n = std::max(1, int(std::hypot(o.x - cx, o.y - cy) / 0.01));
+                for (int i = 0; i <= n; ++i) {
+                    const double t = double(i) / n;
+                    const double rho = std::hypot(cx + (o.x - cx) * t - ax, cy + (o.y - cy) * t - ay);
+                    if (rho < R)   // how far the ball's surface over the apex is below it
+                        cut = std::fmax(cut, -(cz + (o.z - cz) * t + R - std::sqrt(R * R - rho * rho)));
+                }
+            }
+            if (o.kind == Op::Rapid || o.kind == Op::Feed || o.kind == Op::Arc) {
+                cx = o.x;
+                cy = o.y;
+                cz = o.z;
+            }
+        }
+        std::fprintf(stderr, "cone apex: raster finish takes %.3f mm off the tip\n", cut);
+        check(g.done.size() == 1 && cut < 0.03, "3D finish leaves a sharp peak standing");
+    }
+
     std::printf("test_cam3d: %d checks OK\n", g_checks);
     return 0;
 }

@@ -978,7 +978,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         // *previous* tool's G43.1 still applied: a tool 10 mm longer then
         // cuts 10 mm deeper on its first plunge. The message after a failed
         // probe points at this very button, so say it plainly here.
-        if (!m_toolMeasured) {
+        if (!m_toolMeasured && !(m_manualZero && m_zeroedForTool)) {
             ShopAsk a;
             a.title = QStringLiteral("Tool not measured");
             a.headline = QStringLiteral("T%1 has not been measured").arg(m_pendingTool);
@@ -1090,6 +1090,12 @@ MachinePanel::MachinePanel(QWidget *parent)
         // it is out the gantry grinds in the corner until GRBL gives up.
         // A probe that found nothing (ALARM:4/5) keeps its position: GRBL
         // only wants $X, not a new homing cycle. Send it, say so.
+        // The controller (re)started: a reset, or a board that reboots when
+        // the port opens and was still booting when the first $$ went out.
+        // Ask again, or the jog limits, park spot and $21 fall back to
+        // defaults for the whole session.
+        if (l.startsWith(QLatin1String("Grbl ")))
+            QTimer::singleShot(400, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
         if (l.startsWith(QLatin1String("ALARM:4")) || l.startsWith(QLatin1String("ALARM:5"))) {
             log(QStringLiteral("!! the probe did not touch anything within its travel. "
                                "Position is kept — unlocking ($X); no need to Initialize. "
@@ -2651,6 +2657,13 @@ void MachinePanel::unlock()
         m_limitWarned = false;
         forgetJogPlan();
     }
+    // After an end stop or a soft limit GRBL listens to nothing until it is
+    // reset: $X now would only wait for ever for its answer.
+    if (m_grbl->needsReset()) {
+        log(QStringLiteral("resetting the controller (it stopped on a limit), then unlocking ($X)"));
+        m_grbl->resetThen(QStringLiteral("$X"));
+        return;
+    }
     m_grbl->sendCommand(QStringLiteral("$X"));
 }
 
@@ -2660,11 +2673,37 @@ void MachinePanel::initializeMachine()
         log(QStringLiteral("!! not connected"));
         return;
     }
+    // A homing cycle and the rapid to the park corner, with nobody asking:
+    // only out of an Alarm (what the on-screen banner is for) or from a
+    // machine standing idle. Never at a tool change, where the operator's
+    // hands are at the collet and a pad button is easily bumped.
+    const bool alarm = m_machineState.startsWith(QLatin1String("Alarm"));
+    if (!alarm && (isBusy() || m_grbl->isParkedForTool()
+                   || m_machineState != QLatin1String("Idle"))) {
+        log(m_grbl->isParkedForTool()
+                ? QStringLiteral("!! Initialize refused: a job is parked at a tool change. "
+                                 "Stop the job first")
+                : QStringLiteral("!! Initialize refused: the machine is busy (%1). Wait until it "
+                                 "stands idle, or stop it first")
+                      .arg(m_machineState.isEmpty() ? QStringLiteral("no status yet")
+                                                    : m_machineState));
+        return;
+    }
     stopHoldJog();
-    log(QStringLiteral("initializing: homing cycle ($H), then park"));
+    if (m_grbl->needsReset()) {
+        // An end stop or soft limit: GRBL ignores $H until a soft reset.
+        log(QStringLiteral("initializing: resetting the controller (it stopped on a limit), "
+                           "then homing cycle ($H), then park"));
+        m_grbl->resetThen(QStringLiteral("$H"));
+    } else {
+        log(QStringLiteral("initializing: homing cycle ($H), then park"));
+        if (!m_grbl->sendCommand(QStringLiteral("$H"))) {
+            log(QStringLiteral("!! busy — cannot home now"));
+            return;
+        }
+    }
     m_parkAfterHome = true;
     m_sawHoming = false;
-    m_grbl->sendCommand(QStringLiteral("$H"));
 }
 
 // Up to safe Z, then at rapid speed to the front-right corner, where the
@@ -2727,6 +2766,13 @@ QString MachinePanel::stillMovingWhy() const
 
 bool MachinePanel::zeroAllowed(bool xy)
 {
+    // The surface map files each height under a grid point in work
+    // coordinates: a new zero mid-map puts the rest of the points somewhere
+    // else, and the finished map corrects the job at the wrong places.
+    if (m_mapper && m_mapper->isRunning()) {
+        log(QStringLiteral("!! zeroing refused while the surface map runs — stop the map first"));
+        return false;
+    }
     if (!m_grbl->isStreaming())
         return true;
     // A job is running or parked at a tool change. Zeroing XY there moves
@@ -2890,6 +2936,11 @@ void MachinePanel::onMacroFinished(bool ok)
         return;
 
     case Phase::MeasureForRef:
+        // Zeroed by hand at a tool change with the BitSetter on: the macro
+        // starts with G49 and the G10, so Z belongs to the new bit once those
+        // two were answered, measured or not; Continue need not warn.
+        if (m_manualZero && m_grbl->isParkedForTool() && (ok || m_grbl->macroLinesDone() >= 2))
+            m_zeroedForTool = true;
         if (ok && m_grbl->lastProbeOk()) {
             m_haveRef = true;
             m_refZ = m_grbl->lastProbeZ();

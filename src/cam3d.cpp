@@ -647,6 +647,26 @@ double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double
                     best = v;
             }
         }
+        // The supersample grid starts at the tool's own position, so it
+        // misses the model's nodes: on a sharp apex or ridge (a node above
+        // all its neighbours) it read the flanks and the ball came down
+        // onto the tip. Every node under the footprint is tried as well.
+        const int c0 = int(std::floor((x - r - m.originX) / cell - 0.5));
+        const int c1 = int(std::ceil((x + r - m.originX) / cell - 0.5));
+        const int r0 = int(std::floor((y - r - m.originY) / cell - 0.5));
+        const int r1 = int(std::ceil((y + r - m.originY) / cell - 0.5));
+        for (int rr = r0; rr <= r1; ++rr) {
+            const double dy = m.originY + (rr + 0.5) * cell - y;
+            for (int cc = c0; cc <= c1; ++cc) {
+                const double dx = m.originX + (cc + 0.5) * cell - x;
+                const double d2 = dx * dx + dy * dy;
+                if (d2 > r * r)
+                    continue;
+                const double v = nodeValue(m, cc, rr) - profileAt(tool, std::sqrt(d2));
+                if (v > best)
+                    best = v;
+            }
+        }
     }
     return qMin(0.0, best);
 }

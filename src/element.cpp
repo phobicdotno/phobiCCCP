@@ -356,9 +356,14 @@ void Element::renderText(QJsonObject &o)
     struct Glyph { QPainterPath path; double advance; };
     QVector<Glyph> glyphs;
     double width = 0;
-    for (const QChar &ch : text) {
+    // One glyph per code point: a character outside the BMP is a surrogate
+    // pair in UTF-16, and laying out each half on its own draws two
+    // missing-glyph boxes.
+    const QList<uint> ucs = text.toUcs4();
+    for (uint cp : ucs) {
+        const QString ch = QString::fromUcs4(reinterpret_cast<const char32_t *>(&cp), 1);
         QPainterPath gp;
-        gp.addText(0, 0, font, QString(ch));
+        gp.addText(0, 0, font, ch);
         const double adv = fm.horizontalAdvance(ch) * scale * spacing;
         glyphs.append({toMm.map(gp), adv});
         width += adv;
@@ -467,27 +472,32 @@ QPointF SubPath::pointAt(int seg, double t) const
 
 double SubPath::closest(const QPointF &pt, int *seg, double *t) const
 {
+    // Each segment is refined around its own sampled minimum and the best
+    // refined result wins. Refining only the overall sampled minimum goes
+    // wrong at a shared node: the samples tie there, the earlier segment
+    // keeps t = 1, and the point just past the node on the next segment is
+    // never reached.
     double best = 1e300;
     *seg = -1; *t = 0;
+    const int N = 32;
     for (int s = 0; s < segmentCount(); ++s) {
-        const int N = 32;
+        double sBest = 1e300, sT = 0;
         for (int k = 0; k <= N; ++k) {
             const double tt = double(k) / N;
             const double d = QLineF(pt, pointAt(s, tt)).length();
-            if (d < best) { best = d; *seg = s; *t = tt; }
+            if (d < sBest) { sBest = d; sT = tt; }
         }
-    }
-    if (*seg >= 0) {   // refine around the sampled minimum
-        double lo = qMax(0.0, *t - 1.0 / 32), hi = qMin(1.0, *t + 1.0 / 32);
+        double lo = qMax(0.0, sT - 1.0 / N), hi = qMin(1.0, sT + 1.0 / N);
         for (int it = 0; it < 24; ++it) {
             const double m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
-            if (QLineF(pt, pointAt(*seg, m1)).length() < QLineF(pt, pointAt(*seg, m2)).length())
+            if (QLineF(pt, pointAt(s, m1)).length() < QLineF(pt, pointAt(s, m2)).length())
                 hi = m2;
             else
                 lo = m1;
         }
-        *t = (lo + hi) / 2;
-        best = QLineF(pt, pointAt(*seg, *t)).length();
+        const double rt = (lo + hi) / 2;
+        const double rd = QLineF(pt, pointAt(s, rt)).length();
+        if (rd < best) { best = rd; *seg = s; *t = rt; }
     }
     return best;
 }

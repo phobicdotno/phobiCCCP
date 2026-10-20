@@ -20,6 +20,7 @@
 #include <QMenuBar>
 #include <QUndoStack>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -298,6 +299,48 @@ int main(int argc, char *argv[])
         va.offsetBy(1, true);
         check(store.model.components.at(1).vectorIds == QStringList({c.id}),
               "offset that keeps the original leaves the component on it");
+        canvas->setDocument(&doc);
+    }
+
+    // --- 3D components follow a text converted to paths (one path per glyph) -----------
+    {
+        Document mdoc;
+        const Element txt = Element::makeText(QStringLiteral("HIM"), {30, 50}, 40,
+                                              QStringLiteral("DejaVu Sans"), layer);
+        const Element other = Element::makeCircle({200, 100}, 10, layer);
+        mdoc.addElement(txt);
+        mdoc.addElement(other);
+        ModelStore store;
+        store.attach(&mdoc);
+        ModelComponent relief;
+        relief.id = Model3D::newId();
+        relief.vectorIds = {txt.id};
+        ModelComponent untouched;
+        untouched.id = Model3D::newId();
+        untouched.vectorIds = {other.id};
+        store.model.components = {relief, untouched};
+        canvas->setDocument(&mdoc);
+        QUndoStack *mu = canvas->undoStack();
+        canvas->convertToPaths({txt.id});
+        QStringList paths;
+        for (const Element &e : mdoc.elements())
+            if (e.geometryType == QLatin1String("path"))
+                paths << e.id;
+        QStringList got = store.model.components.at(0).vectorIds;
+        std::sort(got.begin(), got.end());
+        std::sort(paths.begin(), paths.end());
+        check(paths.size() >= 3 && got == paths,
+              "convert to paths points the component at every glyph piece");
+        check(store.model.components.at(1).vectorIds == QStringList({other.id}),
+              "convert leaves a component on other vectors alone");
+        mu->undo();
+        check(store.model.components.at(0).vectorIds == QStringList({txt.id}),
+              "undo convert gives the component the text back");
+        mu->redo();
+        got = store.model.components.at(0).vectorIds;
+        std::sort(got.begin(), got.end());
+        check(got == paths, "redo convert points it at the pieces again");
+        mu->undo();
         canvas->setDocument(&doc);
     }
 

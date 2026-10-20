@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.2.8 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.2.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -244,6 +244,20 @@ if(Qt6Test_FOUND)
                    src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
     target_link_libraries(test_uifixes PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME uifixes COMMAND test_uifixes)
+    # The main window's Preview (export on a worker, stale results dropped)
+    # and its close guard: the whole window, so every app source but main.
+    add_executable(test_mainwindow tests/test_mainwindow.cpp
+                   src/canvas.cpp src/canvasparametric.cpp src/mainwindow.cpp src/aboutdialog.cpp
+                   src/propertiespanel.cpp src/parameterspanel.cpp src/toolpathpanel.cpp
+                   src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/tooldiagram.cpp src/toolstrip.cpp src/machinepanel.cpp src/shopdialog.cpp
+                   src/isopreview.cpp src/simpanel.cpp src/vectoractions.cpp src/importui.cpp
+                   src/tracedialog.cpp src/backgrounddialog.cpp src/modelpanel.cpp
+                   src/exportprogress.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
+                   src/bitzeropanel.cpp src/settingsdialog.cpp src/toolbarorder.cpp
+                   src/projectreceiver.cpp)
+    target_link_libraries(test_mainwindow PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME mainwindow COMMAND test_mainwindow)
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.
     add_executable(test_dragscroll tests/test_dragscroll.cpp src/canvas.cpp src/canvasparametric.cpp
                    src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp

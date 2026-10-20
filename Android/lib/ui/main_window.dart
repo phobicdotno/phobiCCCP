@@ -325,12 +325,12 @@ class _MainWindowState extends State<MainWindow> {
       'drill' => d.stock.thickness,
       _ => 1.0,
     };
-    _commit(d.copyWith(toolpaths: [
-      ...d.toolpaths,
-      ToolpathSpec(name: '${tpTypeLabel(type)} $n', type: type, shapes: shapes, tool: tool, depth: depth),
-    ]));
+    final tp = ToolpathSpec(name: '${tpTypeLabel(type)} $n', type: type, shapes: shapes, tool: tool, depth: depth);
+    _commit(d.copyWith(toolpaths: [...d.toolpaths, tp]));
     setState(() => _tp = _d!.toolpaths.length - 1);
-    _say('${tpTypeLabel(type)} $n: ${shapes.length} vector${shapes.length == 1 ? '' : 's'}');
+    final open = openPathsLeftOut(d, tp);
+    _say('${tpTypeLabel(type)} $n: ${shapes.length} vector${shapes.length == 1 ? '' : 's'}'
+        '${open > 0 ? ' (${openPathsWords(open)})' : ''}');
   }
 
   void _setToolpath(int i, ToolpathSpec t) {

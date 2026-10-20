@@ -512,6 +512,157 @@ static void testForkRetryAndUnreadable(const QString &dir, QJsonObject d)
     check(f.readAll() == bytes, "and that copy is left as it is");
 }
 
+// A save of one linked file reaches the design's other linked files, as a pad
+// edit does (round 2): left as they were, they held the old design, and a save
+// of one of them later forked it.
+static void testFollowDesign(const QString &dir, QJsonObject d)
+{
+    const QString pad = QDir(dir).filePath("FollowPad");
+    const QString saved = QDir(dir).filePath("follow-saved.c2d"), other = QDir(dir).filePath("follow-other.c2d"),
+                  lossy = QDir(dir).filePath("follow-lossy.c2d"), open = QDir(dir).filePath("follow-open.c2d");
+    d.insert("id", "follow-1");
+    padlink::Links links(pad);
+    for (const QString &f : {saved, other, lossy, open}) {
+        padlink::buildDocument(d, f, nullptr, nullptr);
+        links.set(f, "follow-1", f != lossy, 1000);
+    }
+    QJsonArray shapes = d.value("shapes").toArray();
+    shapes.append(QJsonObject{{"id", "new"}, {"type", "point"}, {"x", 33}, {"y", 44}});
+    d.insert("shapes", shapes);
+    d.insert("modified", 2000.0);
+    const QStringList rebuilt = padlink::followDesign(links, d, saved, [&](const QString &p) {
+        return QFileInfo(p) == QFileInfo(open);
+    });
+    check(rebuilt.size() == 1 && QFileInfo(rebuilt.value(0)) == QFileInfo(other),
+          "a save reaches the other file linked to the design, and only that one");
+    auto points = [](const QString &f) {
+        QStringList lost;
+        int n = 0;
+        for (const QJsonValue &v : padlink::designFromDocument(f, QJsonObject{}, &lost).value("shapes").toArray())
+            n += v.toObject().value("type").toString() == QLatin1String("point");
+        return n;
+    };
+    check(points(other) == 2 && padlink::Links(pad).modified(other) == 2000 && !padlink::Links(pad).changedOutside(other),
+          "it holds the change, linked as holding that copy");
+    check(points(lossy) == 1 && points(open) == 1 && padlink::Links(pad).modified(open) == 1000,
+          "one holding what a pad cannot, and an open one with changes, are left alone");
+}
+
+// Version vectors (round 2): pads and computers that never talk to each other
+// directly. A copy made from another replaces it; two edited apart are both
+// kept the same way on every computer, whichever arrives first.
+static void testVersions(const QString &dir, QJsonObject d)
+{
+    const double now = 1760850000000.0;
+    auto copy = [&](double modified, const QJsonObject &vv, const char *name, bool deleted = false) {
+        QJsonObject c = d;
+        c.insert("modified", modified);
+        c.insert("vv", vv);
+        c.insert("name", QLatin1String(name));
+        if (deleted)
+            c = QJsonObject{{"format", "phobicccp-pad"}, {"version", 1}, {"id", "sign-1"},
+                            {"modified", modified}, {"deleted", true}, {"vv", vv}};
+        return c;
+    };
+    const QJsonObject a = copy(1000, {{"pad1", 1000}}, "A");
+    const QJsonObject b = copy(2000, {{"pad1", 1000}, {"pad2", 2000}}, "B");    // made from A
+    const QJsonObject c = copy(3000, {{"pad1", 3000}}, "C");                   // also from A, apart from B
+    const QJsonObject e = copy(2500, {{"pad1", 1000}, {"desk", 2500}}, "E");   // from A, apart from both
+    using padlink::Order;
+    check(padlink::order(a, a) == Order::Same && padlink::order(b, a) == Order::After
+              && padlink::order(a, b) == Order::Before && padlink::order(b, c) == Order::Concurrent,
+          "versions: same, made from, what it was made from, edited apart");
+    QJsonObject stale = b;
+    stale.insert("modified", 2600.0);   // an older phobiCCCP stamped it again, vv as it was
+    check(padlink::versionVector(stale).isEmpty() && padlink::order(stale, b) == Order::Unknown,
+          "a vv whose newest time is not the copy's is not believed");
+    QJsonObject none = a;
+    none.remove("vv");
+    check(padlink::order(none, a) == Order::Same && padlink::order(none, b) == Order::Unknown,
+          "nor is a copy without one compared by it");
+
+    // Made from the copy kept: replaces it, whatever its base says.
+    padlink::Store s1(QDir(dir).filePath("VersionsPad1"));
+    padlink::Store::PutOutcome out;
+    check(s1.put(a, nullptr, &out, now), "first copy stored");
+    QJsonObject bb = b;
+    bb.insert("base", 1.0);
+    check(s1.put(bb, nullptr, &out, now) && out.forked.isEmpty() && !out.moved,
+          "a copy made from the one kept replaces it");
+    check(!s1.put(a, nullptr, &out, now) && out.forked.isEmpty() && !out.conflict,
+          "and the one it was made from does not come back");
+    check(s1.list().at(0).toObject().value("vv").toObject().value("pad2").toDouble() == 2000,
+          "the list says each copy's versions");
+
+    // Edited apart: the later edit (C) keeps the id, B becomes a design of its own.
+    out = {};
+    check(s1.put(c, nullptr, &out, now) && out.moved && !out.forked.isEmpty(),
+          "a later edit made apart takes the id, and the copy here moves to a fork");
+    check(s1.get("sign-1").value("name").toString() == QLatin1String("C")
+              && s1.get(out.forked).value("name").toString() == QLatin1String("B (conflict)")
+              && s1.get(out.forked).value("modified").toDouble() == 2000,
+          "the fork is B, as it was");
+    const QString forkB = out.forked;
+    out = {};
+    check(s1.put(e, nullptr, &out, now) && !out.moved && !out.forked.isEmpty()
+              && s1.get("sign-1").value("name").toString() == QLatin1String("C"),
+          "an earlier edit made apart is the one forked");
+    const QString forkE = out.forked;
+    out = {};
+    check(s1.put(e, nullptr, &out, now) && out.forked == forkE && s1.list().size() == 3,
+          "put again, it answers the same fork");
+
+    // Another computer gets the same copies the other way round: the same ids, the same copies.
+    padlink::Store s2(QDir(dir).filePath("VersionsPad2"));
+    for (const QJsonObject &x : {e, c, a, b})
+        s2.put(x, nullptr, nullptr, now);
+    bool same = s2.list().size() == 3;
+    for (const QString &id : {QStringLiteral("sign-1"), forkB, forkE})
+        same = same && s1.get(id) == s2.get(id) && !s1.get(id).isEmpty();
+    check(same, "every computer settles the same copies the same way");
+    // Its forks, brought by a pad, are copies it already has.
+    out = {};
+    check(!s2.put(s1.get(forkB), nullptr, &out, now) && out.forked.isEmpty(), "a fork brought back is the same copy");
+
+    // A deletion made apart: the later of the two wins; an edit that loses is kept as a fork.
+    padlink::Store s3(QDir(dir).filePath("VersionsPad3"));
+    s3.put(b, nullptr, nullptr, now);
+    out = {};
+    check(!s3.put(copy(1500, {{"pad1", 1500}}, "", true), nullptr, &out, now) && out.conflict
+              && !s3.get("sign-1").value("deleted").toBool(),
+          "an earlier deletion made apart is refused");
+    out = {};
+    check(s3.put(copy(4000, {{"pad1", 4000}}, "", true), nullptr, &out, now) && out.moved
+              && s3.get("sign-1").value("deleted").toBool()
+              && s3.get(out.forked).value("name").toString() == QLatin1String("B (conflict)"),
+          "a later one is kept, and the edit it would have dropped is a design of its own");
+
+    // An edit here: this computer's own entry, the same id every time.
+    padlink::Store s4(QDir(dir).filePath("VersionsPad4"));
+    const QString me = s4.replicaId();
+    check(padlink::validId(me) && padlink::Store(s4.dir()).replicaId() == me, "a computer keeps its own id");
+    const QJsonObject mine = s4.edited(b, 5000);
+    check(mine.value("vv").toObject() == QJsonObject({{"pad1", 1000}, {"pad2", 2000}, {me, 5000}})
+              && padlink::order(mine, b) == Order::After,
+          "an edit here is made from the copy it edits");
+    check(s4.edited(stale, 5000).value("vv").toObject() == QJsonObject({{me, 5000}}),
+          "and starts its versions over when the copy's cannot be believed");
+
+    // The files holding a copy that moved to a fork follow it.
+    const QString pad = QDir(dir).filePath("VersionsLinks");
+    const QString f1 = QDir(dir).filePath("holds-b.c2d"), f2 = QDir(dir).filePath("older.c2d");
+    QFile(f1).open(QIODevice::WriteOnly);
+    QFile(f2).open(QIODevice::WriteOnly);
+    padlink::Links l(pad);
+    l.set(f1, "sign-1", false, 2000);
+    l.set(f2, "sign-1", true, 1000);
+    check(l.moveTo("sign-1", 2000, forkB) == 1, "one file held the copy that moved");
+    padlink::Links back(pad);
+    check(back.idFor(f1) == forkB && !back.padOnly(f1) && back.modified(f1) == 2000
+              && back.idFor(f2) == QLatin1String("sign-1"),
+          "it is linked to the fork, as it was otherwise; the older file stays");
+}
+
 static void testProfiles(const QString &dir)
 {
     QSettings s(QDir(dir).filePath("settings.ini"), QSettings::IniFormat);
@@ -564,6 +715,8 @@ int main(int argc, char **argv)
     testConflicts(tmp.path(), d);
     testDeletedShapesToolpath(tmp.path(), d);
     testForkRetryAndUnreadable(tmp.path(), d);
+    testVersions(tmp.path(), d);
+    testFollowDesign(tmp.path(), d);
     testProfiles(tmp.path());
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;

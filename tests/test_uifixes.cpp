@@ -4,6 +4,9 @@
 // Plain asserts, no framework; exits 0 on success.
 
 #include "../src/c2ddocument.h"
+#include "../src/cam3d.h"
+#include "../src/heightmodel.h"
+#include "../src/model3d.h"
 #include "../src/canvas.h"
 #include "../src/element.h"
 #include "../src/gcodeexport.h"
@@ -108,6 +111,37 @@ int main(int argc, char *argv[])
         check(iso.progress() < 1e-9 && list->currentRow() == 0, "strip: back to the first bit");
         iso.setProgress(0.99);
         check(list->currentRow() == 1, "strip: a seek by progress moves the highlight too");
+    }
+
+    // The setup sheet describes what Export writes: a 3D finish over a model
+    // that is being edited (not in the file) is timed, not "no 3D model".
+    {
+        c2d::installModelProvider();
+        // A small board: the finish covers all of it.
+        const QString small = tmp.filePath("s.c2d");
+        check(c2d::Document::createBlank(small, 40, 30, 19, &err), "sheet 3D: createBlank");
+        c2d::Document d;
+        check(d.load(small, &err), "sheet 3D: load");
+        const c2d::Element r = c2d::Element::makeRectangle({20, 15}, 20, 12, d.defaultLayer());
+        d.addElement(r);
+        c2d::ModelStore store;
+        store.attach(&d);
+        c2d::ModelComponent c;
+        c.id = c2d::Model3D::newId();
+        c.vectorIds = {r.id};
+        c.shape = c2d::ModelComponent::Flat;
+        c.height = 3;
+        store.model.components << c;
+        store.invalidate();
+        c2d::Toolpath t;
+        t.json = c2d::defaultFinishToolpathJson();
+        t.json.insert("stepover", 3.0);   // coarse: the sheet exports it twice
+        t.uuid = t.json.value("uuid").toString();
+        t.type = t.json.value("type").toString();
+        d.insertToolpath(0, t);
+        const QString h = c2d::setupSheetHtml(d, QStringLiteral("t"));
+        check(!h.contains(QStringLiteral("no 3D model")), "sheet 3D: the live model is used");
+        check(h.contains(QStringLiteral("Extents")), "sheet 3D: the finish is in the totals");
     }
 
     // Inlay male from a v-carve whose end depth is bound to a parameter:

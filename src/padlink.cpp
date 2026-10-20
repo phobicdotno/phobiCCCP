@@ -347,6 +347,39 @@ const QStringList &ignoredToolpathKeys()
 
 } // namespace
 
+bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err)
+{
+    const QString tmp = path + QStringLiteral(".pad-new");
+    QStringList notes;
+    if (!buildDocument(d, tmp, &notes, err)) {
+        QFile::remove(tmp);
+        return false;
+    }
+    if (!QFileInfo::exists(path)) {
+        if (QFile::rename(tmp, path))
+            return true;
+        QFile::remove(tmp);
+        if (err) *err = QStringLiteral("could not write %1").arg(path);
+        return false;
+    }
+    // The old file is moved aside, not deleted, until the new one is in.
+    const QString old = path + QStringLiteral(".pad-old");
+    QFile::remove(old);
+    if (!QFile::rename(path, old)) {
+        QFile::remove(tmp);
+        if (err) *err = QStringLiteral("could not replace %1").arg(path);
+        return false;
+    }
+    if (!QFile::rename(tmp, path)) {
+        QFile::rename(old, path);
+        QFile::remove(tmp);
+        if (err) *err = QStringLiteral("could not replace %1").arg(path);
+        return false;
+    }
+    QFile::remove(old);
+    return true;
+}
+
 QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
                                QStringList *lostOut, QString *error)
 {
@@ -665,6 +698,42 @@ bool Links::remove(const QString &c2dPath)
     return write();
 }
 
+QStringList followDesign(Links &links, const QJsonObject &design, const QString &except,
+                         const std::function<bool(const QString &)> &leaveAlone)
+{
+    QStringList out;
+    const QString id = design.value(QStringLiteral("id")).toString();
+    if (!links.ok() || design.value(QStringLiteral("deleted")).toBool())
+        return out;
+    for (const QString &path : links.pathsFor(id)) {
+        if (QFileInfo(path) == QFileInfo(except) || !QFileInfo::exists(path) || !links.padOnly(path)
+            || links.changedOutside(path) || (leaveAlone && leaveAlone(path)))
+            continue;
+        QString err;
+        if (rebuildDocument(design, path, &err)
+            && links.set(path, id, true, design.value(QStringLiteral("modified")).toDouble()))
+            out << path;
+    }
+    return out;
+}
+
+int Links::moveTo(const QString &id, double modified, const QString &toId)
+{
+    if (!ok())
+        return -1;
+    int moved = 0;
+    for (auto it = m_links.begin(); it != m_links.end(); ++it) {
+        QJsonObject o = it.value().toObject();
+        if (o.value(QStringLiteral("id")).toString() != id
+            || o.value(QStringLiteral("modified")).toDouble() != modified)
+            continue;
+        o.insert(QStringLiteral("id"), toId);
+        it.value() = o;
+        ++moved;
+    }
+    return moved == 0 || write() ? moved : -1;
+}
+
 bool Links::write()
 {
     QDir().mkpath(QFileInfo(m_file).absolutePath());
@@ -726,7 +795,8 @@ QJsonArray Store::list() const
         out.append(QJsonObject{{QStringLiteral("id"), d.value(QStringLiteral("id"))},
                                {QStringLiteral("name"), d.value(QStringLiteral("name"))},
                                {QStringLiteral("modified"), d.value(QStringLiteral("modified"))},
-                               {QStringLiteral("deleted"), d.value(QStringLiteral("deleted")).toBool()}});
+                               {QStringLiteral("deleted"), d.value(QStringLiteral("deleted")).toBool()},
+                               {QStringLiteral("vv"), d.value(QStringLiteral("vv"))}});
     }
     return out;
 }
@@ -765,6 +835,106 @@ QString Store::forkIdFor(const QString &id, double modified, double base)
     static const QUuid ns(QStringLiteral("{6c1f4a2e-9b0d-4e57-8a3c-2f7d5e1b9c40}"));
     const QByteArray key = QStringLiteral("%1\n%2\n%3").arg(id).arg(modified, 0, 'f', 0).arg(base, 0, 'f', 0).toUtf8();
     return QUuid::createUuidV5(ns, key).toString(QUuid::WithoutBraces);
+}
+
+QJsonObject versionVector(const QJsonObject &design)
+{
+    const QJsonObject vv = design.value(QStringLiteral("vv")).toObject();
+    if (vv.isEmpty() || vv.size() > kMaxReplicas)
+        return {};
+    double newest = 0;
+    for (auto it = vv.constBegin(); it != vv.constEnd(); ++it) {
+        if (!validId(it.key()) || !finite(it.value(), 1, 1e15))
+            return {};
+        newest = std::max(newest, it.value().toDouble());
+    }
+    // Stamped again by an older pad or phobiCCCP that kept the vv it got.
+    if (newest != design.value(QStringLiteral("modified")).toDouble())
+        return {};
+    return vv;
+}
+
+Order order(const QJsonObject &a, const QJsonObject &b)
+{
+    const QJsonObject va = versionVector(a), vb = versionVector(b);
+    if (va.isEmpty() || vb.isEmpty()) {
+        const double ma = a.value(QStringLiteral("modified")).toDouble();
+        return ma == b.value(QStringLiteral("modified")).toDouble() ? Order::Same : Order::Unknown;
+    }
+    bool aAhead = false, bAhead = false;
+    auto entry = [](const QJsonObject &v, const QString &k) { return v.value(k).toDouble(); };
+    for (auto it = va.constBegin(); it != va.constEnd(); ++it) {
+        aAhead = aAhead || it.value().toDouble() > entry(vb, it.key());
+        bAhead = bAhead || it.value().toDouble() < entry(vb, it.key());
+    }
+    for (auto it = vb.constBegin(); it != vb.constEnd(); ++it)
+        bAhead = bAhead || (!va.contains(it.key()) && it.value().toDouble() > 0);
+    return aAhead ? (bAhead ? Order::Concurrent : Order::After) : (bAhead ? Order::Before : Order::Same);
+}
+
+namespace {
+
+// The same text for the same vv on every computer (a QJsonObject's keys are sorted).
+QString vvKey(const QJsonObject &vv)
+{
+    QString out;
+    for (auto it = vv.constBegin(); it != vv.constEnd(); ++it)
+        out += QStringLiteral("%1=%2;").arg(it.key()).arg(it.value().toDouble(), 0, 'f', 0);
+    return out;
+}
+
+// Of two copies edited apart, the one kept under the design's id: the later
+// edit, so every computer settles the same pair the same way. A copy made
+// from the winner is later still, so it beats the loser too.
+bool wins(const QJsonObject &a, const QJsonObject &b)
+{
+    const double ma = a.value(QStringLiteral("modified")).toDouble();
+    const double mb = b.value(QStringLiteral("modified")).toDouble();
+    if (ma != mb)
+        return ma > mb;
+    return vvKey(versionVector(a)) > vvKey(versionVector(b));
+}
+
+} // namespace
+
+QString Store::forkIdFor(const QJsonObject &copy)
+{
+    static const QUuid ns(QStringLiteral("{3e0b7c52-61a4-4f0e-9d27-8b5c1a6e4f93}"));
+    const QByteArray key = QStringLiteral("%1\n%2\n%3")
+                               .arg(copy.value(QStringLiteral("id")).toString())
+                               .arg(copy.value(QStringLiteral("modified")).toDouble(), 0, 'f', 0)
+                               .arg(vvKey(versionVector(copy)))
+                               .toUtf8();
+    return QUuid::createUuidV5(ns, key).toString(QUuid::WithoutBraces);
+}
+
+QString Store::replicaId() const
+{
+    const QString file = QDir(m_dir).filePath(QStringLiteral(".replica"));
+    QFile f(file);
+    if (f.open(QIODevice::ReadOnly)) {
+        const QString id = QString::fromUtf8(f.read(128)).trimmed();
+        if (validId(id))
+            return id;
+        f.close();
+    }
+    const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QDir().mkpath(m_dir);
+    QSaveFile out(file);
+    if (out.open(QIODevice::WriteOnly)) {
+        out.write(id.toUtf8());
+        out.commit();
+    }
+    return id;
+}
+
+QJsonObject Store::edited(QJsonObject design, double modified) const
+{
+    QJsonObject vv = versionVector(design);
+    vv.insert(replicaId(), modified);
+    design.insert(QStringLiteral("modified"), modified);
+    design.insert(QStringLiteral("vv"), vv);
+    return design;
 }
 
 bool Store::put(const QJsonObject &design, QString *error, PutOutcome *outcome, double now)
@@ -807,6 +977,51 @@ bool Store::put(const QJsonObject &design, QString *error, PutOutcome *outcome, 
     // it would win every sync until its far-off time.
     if (!plausibleStamp(haveModified, now))
         haveModified = 0;
+    // Both with vvs: the one made from the other is kept; two edited apart
+    // are both kept, the later under the id and the other as a fork.
+    if (plausibleStamp(have.value(QStringLiteral("modified")).toDouble(), now)) {
+        switch (order(d, have)) {
+        case Order::Same:
+        case Order::Before:
+            return false;
+        case Order::After:
+            return write(d, error);
+        case Order::Unknown:
+            break;
+        case Order::Concurrent: {
+            const bool moved = wins(d, have);
+            const QJsonObject &loser = moved ? have : d;
+            if (loser.value(QStringLiteral("deleted")).toBool()) {
+                // A deletion that lost is dropped, not kept as a design of its own.
+                if (moved)
+                    return write(d, error);
+                if (outcome) outcome->conflict = true;
+                return false;
+            }
+            const QString forkId = forkIdFor(loser);
+            if (QFile::exists(path(forkId))) {
+                // Made already (here, or elsewhere and brought by a pad): it
+                // holds that copy, or one made from it since.
+                if (get(forkId).isEmpty())
+                    return unreadable(QStringLiteral("%1 (conflict)").arg(loser.value(QStringLiteral("name")).toString().left(60)));
+            } else {
+                QJsonObject fork = loser;
+                fork.insert(QStringLiteral("id"), forkId);
+                fork.insert(QStringLiteral("name"),
+                            QStringLiteral("%1 (conflict)").arg(loser.value(QStringLiteral("name")).toString().left(60)));
+                if (!write(fork, error))
+                    return false;
+            }
+            if (moved && !write(d, error))
+                return false;
+            if (outcome) {
+                outcome->forked = forkId;
+                outcome->moved = moved;
+            }
+            return true;
+        }
+        }
+    }
     // Changed here (or by another pad through here) since the copy the
     // sender edited: newest-wins would throw one of the two edits away. A
     // base newer than this copy only means this computer is behind.

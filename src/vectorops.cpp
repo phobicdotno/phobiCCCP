@@ -480,6 +480,11 @@ static QPointF jsonPt(const QJsonValue &v)
     return a.size() == 2 ? QPointF(a.at(0).toDouble(), a.at(1).toDouble()) : QPointF();
 }
 
+static QJsonArray jsonXY(const QPointF &p)
+{
+    return QJsonArray{p.x(), p.y()};
+}
+
 // Every anchor and handle of a model, as one list.
 static QVector<QPointF> modelPoints(const PathModel &m)
 {
@@ -565,7 +570,34 @@ Element transformElement(const Element &e, const QTransform &t)
             xf = QTransform(a.at(0).toDouble(), a.at(1).toDouble(),
                             a.at(3).toDouble(), a.at(4).toDouble(),
                             a.at(6).toDouble(), a.at(7).toDouble());
-        const QTransform n = xf * t;
+        QTransform n = xf * t;
+        // A uniform scale goes into the text's own sizes (font height, arc
+        // radius and centre, and the outlines, which are scaled as they are
+        // rather than laid out again), so Height in Properties stays the
+        // drawn size. Only rotation / reflection is left in the transform.
+        // A stretch cannot be a font size and stays in the transform.
+        const double sx = std::hypot(t.m11(), t.m12()), sy = std::hypot(t.m21(), t.m22());
+        const bool similar = std::fabs(sx - sy) < 1e-9 * qMax(1.0, sx)
+                          && std::fabs(t.m11() * t.m21() + t.m12() * t.m22()) < 1e-9 * qMax(1.0, sx * sy);
+        if (similar && sx > 1e-12 && std::fabs(sx - 1.0) > 1e-12) {
+            const double k = sx;
+            QTransform shrink;
+            shrink.scale(1.0 / k, 1.0 / k);
+            n = shrink * n;
+            o.insert("font_height", o.value("font_height").toDouble(10.0) * k);
+            if (o.contains("arc_radius"))
+                o.insert("arc_radius", o.value("arc_radius").toDouble() * k);
+            if (o.value("arc_center").toArray().size() == 2)
+                o.insert("arc_center", jsonXY(jsonPt(o.value("arc_center")) * k));
+            QJsonArray rendered;
+            for (const QJsonValue &cv : o.value("rendered").toArray()) {
+                QJsonArray contour;
+                for (const QJsonValue &pv : cv.toArray())
+                    contour.append(jsonXY(jsonPt(pv) * k));
+                rendered.append(contour);
+            }
+            o.insert("rendered", rendered);
+        }
         o.insert("transform", QJsonArray{n.m11(), n.m12(), 0, n.m21(), n.m22(), 0,
                                          n.dx(), n.dy(), 1});
         return Element::fromJson(o);

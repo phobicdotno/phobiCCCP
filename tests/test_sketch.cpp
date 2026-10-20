@@ -184,6 +184,24 @@ int main(int argc, char **argv)
               "nothing crosses: nothing to break");
     }
     {
+        // Just past a corner: the samples tie on the shared node, and the
+        // closest point must still be found on the next segment.
+        const PathModel ell = Element::pathModel(
+            Element::makePath({{0, 100}, {0, 0}, {100, 0}}, false, layer));
+        int seg = -1;
+        double t = 0;
+        const double d = ell.subs.first().closest({1.4, 0}, &seg, &t);
+        check(seg == 1 && approx(t, 0.014, 1e-4) && approx(d, 0, 1e-3),
+              "closest just past a corner lands on the next segment");
+        bool hit = false;
+        const PathModel rest = sketch::trim(ell, {1.4, 0}, 2, {line({1, -10}, {1, 10})}, &hit);
+        check(hit && rest.subs.size() == 1 && rest.subs[0].nodes.size() == 3
+                  && nearPt(rest.subs[0].nodes.first().p, {0, 100})
+                  && nearPt(rest.subs[0].nodes.at(1).p, {0, 0})
+                  && nearPt(rest.subs[0].nodes.last().p, {1, 0}),
+              "trim just past a corner takes the piece clicked, not the leg before it");
+    }
+    {
         // A circle crossed by a line through its center: trim takes one half.
         const PathModel circ = Element::pathModel(Element::makeCircle({0, 0}, 10, layer));
         const QVector<PathModel> others = {line({-20, 0}, {20, 0})};

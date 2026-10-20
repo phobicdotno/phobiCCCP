@@ -221,7 +221,9 @@ protected:
 };
 
 // A text field marks itself "typed" while it holds text the user typed and
-// has not committed yet (Enter or leaving it commits). updateValues() keeps
+// has not committed yet (Enter or leaving it commits; so does stepping a
+// number field with the arrows, the wheel or the big buttons, which commits
+// through valueChanged and emits no editingFinished). updateValues() keeps
 // such a field as it is; any other field, focused or not, shows the value
 // it is given, so an undo with the cursor still in the field shows too.
 void trackTyping(QLineEdit *le)
@@ -234,6 +236,12 @@ void trackTyping(QAbstractSpinBox *sp)
 {
     QObject::connect(sp->findChild<QLineEdit *>(), &QLineEdit::textEdited, sp, [sp] { sp->setProperty("typed", true); });
     QObject::connect(sp, &QAbstractSpinBox::editingFinished, sp, [sp] { sp->setProperty("typed", false); });
+    // Typing emits no valueChanged (keyboardTracking is off), so this fires
+    // only for a committed step.
+    if (auto *d = qobject_cast<QDoubleSpinBox *>(sp))
+        QObject::connect(d, &QDoubleSpinBox::valueChanged, sp, [sp] { sp->setProperty("typed", false); });
+    else if (auto *i = qobject_cast<QSpinBox *>(sp))
+        QObject::connect(i, &QSpinBox::valueChanged, sp, [sp] { sp->setProperty("typed", false); });
 }
 
 bool typing(const QWidget *w)

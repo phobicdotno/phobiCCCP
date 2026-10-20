@@ -16,6 +16,8 @@
 #include <QSpinBox>
 #include <QWheelEvent>
 
+#include <cmath>
+
 namespace c2d {
 
 namespace {
@@ -203,6 +205,24 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     setSelection({});
 }
 
+// How much a text's own transform enlarges it: along its height (the local
+// y axis) and on average (for the arc radius). 1 for a transform that only
+// places, turns or mirrors the text.
+static void textScales(const QJsonObject &raw, double *height, double *radius)
+{
+    *height = *radius = 1.0;
+    const QJsonArray a = raw.value("transform").toArray();
+    if (a.size() != 9)
+        return;
+    const double m11 = a.at(0).toDouble(), m12 = a.at(1).toDouble(),
+                 m21 = a.at(3).toDouble(), m22 = a.at(4).toDouble();
+    const double h = std::hypot(m21, m22), r = std::sqrt(std::fabs(m11 * m22 - m12 * m21));
+    if (std::isfinite(h) && h > 1e-9)
+        *height = h;
+    if (std::isfinite(r) && r > 1e-9)
+        *radius = r;
+}
+
 void PropertiesPanel::setDocument(Document *doc)
 {
     m_doc = doc;
@@ -231,7 +251,10 @@ void PropertiesPanel::refresh()
     const bool arcOn = isText && e->raw.value("arc_enabled").toBool();
     for (QWidget *w : m_arcRows) w->setVisible(arcOn);
     for (QWidget *w : m_arcLabels) w->setVisible(arcOn);
-    m_convert->setVisible(have && e->geometryType != QLatin1String("path"));
+    // A sketch point is a circle underneath, but it has no size to edit and
+    // Convert to path leaves points alone, so neither is offered for one.
+    const bool isPoint = have && Element::isPoint(*e);
+    m_convert->setVisible(have && e->geometryType != QLatin1String("path") && !isPoint);
 
     if (!have) {
         m_typeLabel->setText(QStringLiteral("no selection"));
@@ -254,7 +277,8 @@ void PropertiesPanel::refresh()
     }
 
     if (e->geometryType == QLatin1String("circle")) {
-        m_radiusRow->setVisible(true);
+        // Still loaded for a point: apply() sends it with every X/Y edit.
+        m_radiusRow->setVisible(!isPoint);
         m_radius->setValue(e->raw.value("radius").toDouble());
     } else if (e->geometryType == QLatin1String("rectangle")) {
         m_sizeRow->setVisible(true);
@@ -272,12 +296,16 @@ void PropertiesPanel::refresh()
         m_text->setText(e->raw.value("text").toString());
         m_family->setCurrentFont(QFont(f.family()));
         m_familyShown = m_family->currentFont().family();   // substitute if not installed
-        m_fontHeight->setValue(e->raw.value("font_height").toDouble(10.0));
+        // Shown at the drawn size: a stretch (or a scale from an older file)
+        // stays in the text's transform, so font_height alone can be off.
+        double hScale, rScale;
+        textScales(e->raw, &hScale, &rScale);
+        m_fontHeight->setValue(e->raw.value("font_height").toDouble(10.0) * hScale);
         m_fontHeightShown = m_fontHeight->value();
         m_bold->setChecked(f.bold());
         m_italic->setChecked(f.italic());
         m_arcOn->setChecked(arcOn);
-        m_arcRadius->setValue(e->raw.value("arc_radius").toDouble(25.4));
+        m_arcRadius->setValue(e->raw.value("arc_radius").toDouble(25.4) * rScale);
         m_arcAngle->setValue(e->raw.value("arc_angle_offset").toDouble());
         m_arcRadiusShown = m_arcRadius->value();
         m_arcAngleShown = m_arcAngle->value();
@@ -328,8 +356,10 @@ void PropertiesPanel::applyText()
         ch.insert("family", m_family->currentFont().family());
     // Compared with what the box showed, not the stored value: 9.525 shows as
     // 9.53, so a Bold toggle must not write 9.53, and typing 9.52 must count.
+    double hScale, rScale;
+    textScales(e->raw, &hScale, &rScale);
     if (m_fontHeight->value() != m_fontHeightShown)
-        ch.insert("font_height", m_fontHeight->value());
+        ch.insert("font_height", m_fontHeight->value() / hScale);
     if (m_bold->isChecked() != f.bold())
         ch.insert("bold", m_bold->isChecked());
     if (m_italic->isChecked() != f.italic())
@@ -337,7 +367,7 @@ void PropertiesPanel::applyText()
     if (m_arcOn->isChecked() != e->raw.value("arc_enabled").toBool())
         ch.insert("arc_enabled", m_arcOn->isChecked());
     if (m_arcRadius->value() != m_arcRadiusShown)
-        ch.insert("arc_radius", m_arcRadius->value());
+        ch.insert("arc_radius", m_arcRadius->value() / rScale);
     if (m_arcAngle->value() != m_arcAngleShown)
         ch.insert("arc_angle_offset", m_arcAngle->value());
     if (m_arcBottom->isChecked() != e->raw.value("arc_text_on_bottom").toBool())

@@ -8,11 +8,13 @@ laid out for a pad in landscape.
 
 - **Syncs by itself, both ways.** While the app is open it looks for phobiCCCP every few
   seconds and keeps designs in step with every copy it finds. A design made or changed on
-  one pad reaches every computer, and through them every other pad; the newest copy wins,
-  and a deletion travels the same way. A design changed on a computer while the pad was
-  away and edited on the pad as well is not overwritten: the computer keeps the pad's
-  version as a new design, “<name> (pad)”, and the status line says so (a deletion of such
-  a design is refused, and it comes back). The tool library and materials come from
+  one pad reaches every computer, and through them every other pad; a copy made from
+  another replaces it, and a deletion travels the same way. A design changed in two places
+  apart (on a computer and a pad, or on two pads that went through different computers)
+  is not overwritten: both versions are kept, the later edit under its name and the other
+  as a new design, “<name> (conflict)”, the same on every pad and computer, and the status
+  line says so (a deletion made apart from an edit loses to a later edit; an earlier edit
+  it would drop is kept as the new design). The tool library and materials come from
   phobiCCCP, each computer's own; Send warns when a toolpath's tool is not in the library
   of the computer it goes to.
 - **Edits on the desktop come back.** A design sent from a pad opens on the computer as an
@@ -93,17 +95,49 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 |---|---|---|
 | `info` | | host, version, id, `machines` [{id, name, active, size}], `activeMachine`, `status` {connected, state, homed, busy, streaming, job}, `allowStart`, `document` |
 | `tools` | | `materials` [{id, name}], `tools` [{number, name, kind, diameter, angle, flutes, materials}] |
-| `designs` | | `designs` [{id, name, modified, deleted}] |
+| `designs` | | `designs` [{id, name, modified, deleted, vv}] |
 | `get` | `id` | `design` |
-| `put` | `design` (with `base`) | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id the design was kept under instead, or `conflict`: a deletion refused |
+| `put` | `design` (with `base` and `vv`) | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id of the design one of two copies edited apart was kept as, with `moved` when that was the computer's copy (the one put took its place); or `conflict`: a deletion refused |
 | `machine` | `id` | as `info`, after switching (refused while a machine is connected, unless pads may start cutting) |
-| `send` | `design`, `machine` (id or ""), `start`, `from` | `started`, `message`, `notes`; as for `put`, `modified` and `forked` (what opens is then the fork) |
+| `send` | `design`, `machine` (id or ""), `start`, `from` | `started`, `message`, `notes`; as for `put`, `modified`, `forked` and `moved` (what opens is the pad's version: the fork unless `moved`; the computer's later copy when it already had one made from the pad's) |
 
 The design format is described in `src/padlink.h`; `tests/data/pad-design.json` is an
 example both the app's tests and the desktop's `test_padlink` check against.
 
+### Versions: several pads, several computers
+
+Pads carry designs between computers that never talk to each other, so "the newer time
+wins" alone could let one edit replace another made meanwhile elsewhere. Every design
+therefore carries `vv`, a version vector: `{"<id>": <modified>, ...}`, the time of the
+latest edit each pad or phobiCCCP (by a random id of its own, kept in `.replica` beside
+its designs) made to it. An edit sets its own entry to its new `modified`, so the newest
+entry is always the copy's `modified`. A copy whose entries are all at least another's
+was made from it and replaces it; equal vvs are the same copy. Two copies neither of
+which was made from the other were edited apart: the computer keeps both, the later edit
+(by `modified`, then by the vv as text) under the design's id and the other as a new
+design, "<name> (conflict)", whose id comes only from that copy (its id, `modified` and
+vv). Every computer settles the same two copies the same way whichever comes first, so
+the forks of one conflict do not multiply as pads carry them around, and every copy ends
+up the same. A deletion that loses is dropped (an edit made apart from it stays); one that
+wins keeps the edit it would have dropped as the fork. When the computer's copy moves to
+the fork (`moved`), its linked files go with it. The pad pushes a copy made from the
+computer's or edited apart from it, pulls one made from its own, and after a conflict
+takes the computer's copy under the id and the fork.
+
+Compatibility: a vv is believed only when its newest entry is the copy's `modified`. A pad
+or phobiCCCP from before vvs keeps the vv it got (as an unknown key) but stamps a new time,
+so its edit is not believed to be made from anything, and the rules below (`base`, newer
+time wins) apply to that pair, as they do to designs without a vv. An older phobiCCCP
+ignores `vv` and uses the pad's `base`, which is now the one for that computer. An older
+pad sees `forked` with or without `moved` as before and takes the computer's copy, which
+is then its own version when `moved`. Pads from before this keep one base for all
+computers, so with several computers they can still lose edits as before.
+
 A design the pad sends carries `base`, the `modified` of the copy it last got from or gave
-to a phobiCCCP. When the computer's own copy changed after that (and is not the copy sent),
+to that phobiCCCP (the pad keeps one per computer, by its id, in `bases`, which is never
+sent; a computer it never exchanged the design with gets the oldest of them). When the
+computer's own copy changed after that (and is not the copy sent), and either copy has no
+vv to tell by,
 it keeps the pad's version as a new design and answers `forked`; the pad then takes the
 computer's copy in place of its own, and the fork comes with the next sync. The fork's id
 comes from the design's id, `modified` and `base`, so the same edit put again (its answer

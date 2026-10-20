@@ -24,6 +24,49 @@ Map<String, Object?> _extra(Map<String, Object?> j, Set<String> known) =>
 const maxAheadMs = 366 * 24 * 3600 * 1000;
 bool plausibleStamp(int modified, int now) => modified <= now + maxAheadMs;
 
+/// How one copy of a design stands to another (src/padlink.h, "Versions"):
+/// the same copy, made from it ([after]), what it was made from ([before]),
+/// edited apart from it ([concurrent]), or [unknown] when either has no
+/// version vector that can be believed (then the newer time wins, as before).
+enum Order { same, after, before, concurrent, unknown }
+
+final _replicaId = RegExp(r'^[A-Za-z0-9-]{1,64}$');
+const maxReplicas = 64;
+
+Map<String, int> _ints(Object? v) =>
+    {for (final e in _m(v).entries) if (e.value is num) e.key: (e.value as num).toInt()};
+
+/// [vv] when it can be believed: a few entries, each a pad's or phobiCCCP's
+/// id and time, the newest of them the copy's [modified] (a pad or phobiCCCP
+/// from before version vectors stamps a new time and keeps the vv it got).
+/// Else empty.
+Map<String, int> believedVv(Map<String, int> vv, int modified) {
+  if (vv.isEmpty || vv.length > maxReplicas) return const {};
+  var newest = 0;
+  for (final e in vv.entries) {
+    if (!_replicaId.hasMatch(e.key) || e.value < 1) return const {};
+    newest = math.max(newest, e.value);
+  }
+  return newest == modified ? vv : const {};
+}
+
+/// How the copy with [va] and [ma] stands to the one with [vb] and [mb]; as
+/// phobiCCCP's order() in src/padlink.cpp.
+Order orderOf(Map<String, int> va, int ma, Map<String, int> vb, int mb) {
+  final a = believedVv(va, ma), b = believedVv(vb, mb);
+  if (a.isEmpty || b.isEmpty) return ma == mb ? Order.same : Order.unknown;
+  var aAhead = false, bAhead = false;
+  for (final e in a.entries) {
+    final o = b[e.key] ?? 0;
+    aAhead = aAhead || e.value > o;
+    bAhead = bAhead || e.value < o;
+  }
+  for (final e in b.entries) {
+    bAhead = bAhead || (!a.containsKey(e.key) && e.value > 0);
+  }
+  return aAhead ? (bAhead ? Order.concurrent : Order.after) : (bAhead ? Order.before : Order.same);
+}
+
 /// [points] without a point equal to the one before it (and, closed, without
 /// a last point equal to the first): each would make a segment of no length.
 List<List<double>> dropRepeats(List<List<double>> points, {bool closed = false}) {
@@ -270,9 +313,23 @@ class Design {
   final int modified;
 
   /// The [modified] of the copy this pad last got from or gave to a
-  /// phobiCCCP: edits here keep it, so a computer can tell an edit of its
-  /// own copy from one of an older copy (and then keeps both). 0: not known.
+  /// phobiCCCP, from before [bases]: used only where [bases] says nothing.
+  /// 0: not known.
   final int base;
+
+  /// Per phobiCCCP (by its id), the [modified] of the copy this pad last got
+  /// from or gave to it. Edits here keep them, so a computer can tell an edit
+  /// of its own copy from one of an older copy (and then keeps both). Kept on
+  /// the pad only: a put carries just the one of the computer it goes to, as
+  /// "base" ([toWire]). One base for all computers would let a copy given to
+  /// one count as the base at another that never had it.
+  final Map<String, int> bases;
+
+  /// Version vector: the [modified] of the latest edit each pad or phobiCCCP
+  /// (by its own id) made to this design. It travels with the design, so any
+  /// computer can tell a copy made from another from one edited apart from it,
+  /// however the copies went round (src/padlink.h, "Versions").
+  final Map<String, int> vv;
 
   /// A removal, kept so it reaches every phobiCCCP too.
   final bool deleted;
@@ -281,13 +338,17 @@ class Design {
   final List<ToolpathSpec> toolpaths;
   final Map<String, Object?> extra;
 
-  static const _known = {'format', 'version', 'id', 'name', 'modified', 'base', 'deleted', 'stock', 'material', 'shapes', 'toolpaths'};
+  static const _known = {
+    'format', 'version', 'id', 'name', 'modified', 'base', 'bases', 'vv', 'deleted', 'stock', 'material', 'shapes', 'toolpaths'
+  };
 
   Design({
     String? id,
     this.name = '',
     this.modified = 0,
     this.base = 0,
+    this.bases = const {},
+    this.vv = const {},
     this.deleted = false,
     this.stock = const Stock(),
     this.material = 'softwood',
@@ -301,6 +362,8 @@ class Design {
         name: _s(j['name']),
         modified: _i(j['modified']),
         base: _i(j['base']),
+        bases: _ints(j['bases']),
+        vv: _ints(j['vv']),
         deleted: _b(j['deleted']),
         stock: Stock.fromJson(_m(j['stock'])),
         material: _s(j['material'], 'softwood'),
@@ -317,6 +380,8 @@ class Design {
         'name': name,
         'modified': modified,
         if (base > 0) 'base': base,
+        if (bases.isNotEmpty) 'bases': bases,
+        if (vv.isNotEmpty) 'vv': vv,
         'deleted': deleted,
         'stock': stock.toJson(),
         'material': material,
@@ -324,13 +389,25 @@ class Design {
         'toolpaths': toolpaths.map((t) => t.toJson()).toList(),
       };
 
-  Design copyWith({String? id, String? name, int? modified, int? base, bool? deleted, Stock? stock, String? material,
-          List<Shape>? shapes, List<ToolpathSpec>? toolpaths}) =>
+  Design copyWith(
+          {String? id,
+          String? name,
+          int? modified,
+          int? base,
+          Map<String, int>? bases,
+          Map<String, int>? vv,
+          bool? deleted,
+          Stock? stock,
+          String? material,
+          List<Shape>? shapes,
+          List<ToolpathSpec>? toolpaths}) =>
       Design(
         id: id ?? this.id,
         name: name ?? this.name,
         modified: modified ?? this.modified,
         base: base ?? this.base,
+        bases: bases ?? this.bases,
+        vv: vv ?? this.vv,
         deleted: deleted ?? this.deleted,
         stock: stock ?? this.stock,
         material: material ?? this.material,
@@ -338,6 +415,24 @@ class Design {
         toolpaths: toolpaths ?? this.toolpaths,
         extra: extra,
       );
+
+  /// The base for the phobiCCCP [desktop]: what this pad last exchanged with
+  /// it, else (never exchanged there) the oldest it exchanged anywhere, so a
+  /// computer that changed it since still keeps both.
+  int baseFor(String desktop) => bases[desktop] ?? (bases.isEmpty ? base : bases.values.reduce(math.min));
+
+  /// With [modified] noted as exchanged with [desktop].
+  Design withBase(String desktop, int modified) => copyWith(bases: {...bases, desktop: modified});
+
+  /// As sent to [desktop]: its own base, and none of the others.
+  Map<String, Object?> toWire(String desktop) {
+    final j = toJson()..remove('bases')..remove('base');
+    final b = baseFor(desktop);
+    if (b > 0) j['base'] = b;
+    return j;
+  }
+
+  Order orderTo(Map<String, int> otherVv, int otherModified) => orderOf(vv, modified, otherVv, otherModified);
 
   /// The computer that will not rebuild its linked file from a pad edit (it
   /// holds curves, tabs, parameters, ... the pad cannot), as that computer
@@ -543,9 +638,12 @@ class DesignEntry {
   final String id, name;
   final int modified;
   final bool deleted;
-  const DesignEntry(this.id, {this.name = '', this.modified = 0, this.deleted = false});
-  factory DesignEntry.fromJson(Map<String, Object?> j) =>
-      DesignEntry(_s(j['id']), name: _s(j['name']), modified: _i(j['modified']), deleted: _b(j['deleted']));
+
+  /// Its version vector ([Design.vv]); empty from an older phobiCCCP.
+  final Map<String, int> vv;
+  const DesignEntry(this.id, {this.name = '', this.modified = 0, this.deleted = false, this.vv = const {}});
+  factory DesignEntry.fromJson(Map<String, Object?> j) => DesignEntry(_s(j['id']),
+      name: _s(j['name']), modified: _i(j['modified']), deleted: _b(j['deleted']), vv: _ints(j['vv']));
 }
 
 /// The answer to "send".
@@ -558,13 +656,18 @@ class SendResult {
   /// there since this pad's copy, and the time of the copy kept there (null
   /// when it was not kept, or from an older phobiCCCP).
   final String forked;
+
+  /// With [forked]: the pad's was the later edit, so it is kept under its own
+  /// id there and the computer's copy went to [forked] (src/padlink.h).
+  final bool moved;
   final int? modified;
-  const SendResult({this.started = false, this.message = '', this.notes = const [], this.forked = '', this.modified});
+  const SendResult({this.started = false, this.message = '', this.notes = const [], this.forked = '', this.moved = false, this.modified});
   factory SendResult.fromJson(Map<String, Object?> j) => SendResult(
       started: _b(j['started']),
       message: _s(j['message']),
       notes: _l(j['notes']).whereType<String>().toList(),
       forked: _s(j['forked']),
+      moved: j['moved'] == true,
       modified: j['modified'] is num ? (j['modified'] as num).toInt() : null);
 }
 

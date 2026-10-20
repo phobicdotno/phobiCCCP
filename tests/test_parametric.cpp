@@ -676,6 +676,42 @@ int main(int argc, char **argv)
         check(m.parametric().constraints.first().refs.first().index == 1, "corner 0 follows to corner 1");
     }
 
+    // ---- Horizontal and Vertical on one line conflict ---------------------------------
+    // Both hold only with the line shrunk to nothing: refused, geometry kept.
+    {
+        Document d;
+        const Element ln = Element::makePath({{10, 10}, {50, 30}}, false, layer);
+        d.addElement(ln);
+        const GeoRef L0 = ref(GeoRef::Line, ln.id, 0);
+        addCon(d, Constraint::Horizontal, {L0});
+        check(param::solve(d).ok, "a line made horizontal");
+        const QString v = addCon(d, Constraint::Vertical, {L0});
+        const QJsonObject before = d.elements().first().raw;
+        const param::SolveResult r = param::solve(d);
+        QPointF a, b;
+        param::line(d, L0, &a, &b);
+        check(!r.ok && r.failing.contains(v) && d.elements().first().raw == before
+                  && QLineF(a, b).length() > 1,
+              "Horizontal + Vertical on one line is a conflict, not a zero-length line");
+    }
+
+    // ---- a crafted angle value can't hang the solver ----------------------------------
+    {
+        Document d;
+        const Element e1 = Element::makePath({{0, 0}, {50, 0}}, false, layer);
+        const Element e2 = Element::makePath({{0, 0}, {40, 20}}, false, layer);
+        d.addElement(e1);
+        d.addElement(e2);
+        auto L = [&](const Element &e) { return ref(GeoRef::Line, e.id, 0); };
+        addCon(d, Constraint::Fix, {L(e1)});
+        addCon(d, Constraint::Angle, {L(e1), L(e2)}, "1e300");
+        const param::SolveResult r = param::solve(d);   // used to spin in wrapPi for ever
+        check(r.iterations >= 0, "an angle of 1e300 degrees solves (or fails) in finite time");
+        d.parametricRef().constraints.last().expr = QStringLiteral("1e308 * 10");
+        param::solve(d);
+        check(true, "an angle expression that overflows does not hang either");
+    }
+
     std::printf("parametric: %d checks passed\n", g_checks);
     return 0;
 }

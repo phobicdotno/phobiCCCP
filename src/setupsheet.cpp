@@ -1,6 +1,7 @@
 #include "setupsheet.h"
 #include "c2ddocument.h"
 #include "gcodeexport.h"
+#include "heightmodel.h"
 #include "post_grbl.h"
 #include "toolpathfactory.h"
 
@@ -44,9 +45,18 @@ static QString toolKind(const QJsonObject &tool)
 
 QString setupSheetHtml(const Document &doc, const QString &title)
 {
+    // The 3D model of the document being edited, as Export uses it. The
+    // copies below must not ask for their own: the model store has none for
+    // a copy, so it made a lazy one per sheet (loaded from the file on disk,
+    // so a stale or missing model, and left in its registry for good). An
+    // empty model is passed rather than none, which would fall back to that.
+    const HeightModel *live = heightModelFor(doc);
+    const HeightModel noModel;
+    const HeightModel *relief = live ? live : &noModel;
+
     // The whole job once, for the totals and for each toolpath's time.
     Document all = doc;
-    const GcodeResult whole = exportGcode(all);
+    const GcodeResult whole = exportGcode(all, nullptr, relief);
     const JobStats total = computeStats(whole.ops);
 
     // Per-toolpath times come from that same program, not from exporting
@@ -236,7 +246,7 @@ QString setupSheetHtml(const Document &doc, const QString &title)
                 c.json.insert(QStringLiteral("enabled"), o.uuid == t.uuid);
                 one.replaceToolpath(c);
             }
-            const GcodeResult r = exportGcode(one);
+            const GcodeResult r = exportGcode(one, nullptr, relief);
             time = r.done.isEmpty() ? QStringLiteral("<span class=\"skip\">%1</span>")
                                           .arg(esc(r.skipped.join(QStringLiteral("; "))))
                                     : minutes(computeStats(r.ops).timeSec);

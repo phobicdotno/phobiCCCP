@@ -245,7 +245,7 @@ class AppState extends ChangeNotifier {
     final d = store.get(id);
     if (d == null) return null;
     // A new design: it was never exchanged with any computer.
-    final copy = store.save(d.copyWith(id: newId(), name: '${d.name} copy', base: 0));
+    final copy = store.save(d.copyWith(id: newId(), name: '${d.name} copy', base: 0, bases: const {}, vv: const {}));
     designs = store.live();
     _changed();
     _syncSoon();
@@ -286,11 +286,12 @@ class AppState extends ChangeNotifier {
   Future<SendResult> send(Design d, Computer c, String machineId, bool start) async {
     try {
       return await CccpConnection.use(c.desktop.address, c.desktop.port, (k) async {
-        final r = await k.send(d, machine: machineId, start: start, from: deviceName);
+        final desktop = desktopKey(c.info, c.desktop);
+        final r = await k.send(d, machine: machineId, start: start, from: deviceName, desktop: desktop);
         // It got there; what it did with the copy is for the sync to sort out
         // if this part fails.
         try {
-          final note = await settleSend(k, store, d, r, c.name);
+          final note = await settleSend(k, store, d, r, c.name, desktop: desktop);
           if (note != null) {
             notice = note;
             noticeCount++;

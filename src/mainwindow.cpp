@@ -72,6 +72,9 @@
 #include "toolbarorder.h"
 #include "toolpathfactory.h"
 #include <QTimer>
+#include "heightmodel.h"
+#include <atomic>
+#include <QThread>
 #include <QLocale>
 #include <QSysInfo>
 #include <QMessageBox>
@@ -584,6 +587,15 @@ MainWindow::MainWindow(QWidget *parent)
     // line a line clear of the edge.
     setContentsMargins(0, 0, 0, 16);
     resize(1100, 780);
+    // Edits come in bursts (typing, dragging, stepping a field): the
+    // preview export starts once they pause.
+    m_previewTimer = new QTimer(this);
+    m_previewTimer->setSingleShot(true);
+    m_previewTimer->setInterval(250);
+    connect(m_previewTimer, &QTimer::timeout, this, [this] {
+        if (!m_previewRun)        // else it restarts when the busy run ends
+            startPreviewRun();
+    });
     // The menus live in a header of our own (menus · brand · mode switch),
     // so this is the bar every menu goes on; see the end of the constructor.
     m_menuBar = new QMenuBar(this);
@@ -1506,6 +1518,7 @@ void MainWindow::installUpdate(const QString &version)
     // runs Close is disabled and Escape / close requests are swallowed.
     auto stepRunning = std::make_shared<bool>(false);
     dlg->installEventFilter(new StepGuard(stepRunning, dlg));
+    m_updateStep = stepRunning;   // and the window's own close
     auto takeDown = [dlg] { dlg->hide(); dlg->deleteLater(); };
     connect(closeBtn, &QPushButton::clicked, dlg, takeDown);
     connect(dlg, &QDialog::rejected, dlg, takeDown);
@@ -1831,28 +1844,109 @@ void MainWindow::onExportGcodeTiled()
                 .arg(r.stale.join(QStringLiteral("\n"))));
 }
 
+// One background preview export: what the worker reads and writes. The
+// document and the relief are copies taken on the interface thread, as
+// exportWithProgress takes them; the worker touches nothing else.
+struct MainWindow::PreviewRun {
+    quint64 gen = 0;
+    Document doc;
+    HeightModel relief;
+    std::atomic<bool> cancel{false};
+    GcodeResult result;
+    QThread *thread = nullptr;
+};
+
+MainWindow::~MainWindow()
+{
+    // A preview export still running reads its own snapshot only, but the
+    // process must not tear down under it.
+    if (m_previewRun) {
+        m_previewRun->cancel.store(true);
+        m_previewRun->thread->wait();
+        delete m_previewRun->thread;
+        m_previewRun.reset();
+    }
+}
+
 void MainWindow::refreshPreview(bool interactive)
 {
     if (m_doc.filePath().isEmpty()) {
         statusBar()->showMessage(QStringLiteral("Open a .c2d file first"));
         return;
     }
-    const GcodeResult r = interactive
-        ? exportWithProgress(this, m_doc, QStringLiteral("Updating preview"))
-        : exportGcode(m_doc);
-    if (r.cancelled) {
-        // Keep the preview that is already on screen rather than replacing it
-        // with half a program.
-        statusBar()->showMessage(QStringLiteral("Preview update cancelled"), 5000);
+    if (interactive) {
+        // Every edit with Preview on lands here. Exporting on this thread
+        // (or behind a modal dialog) froze the window for as long as the
+        // job takes to plan - tens of seconds with an adaptive pocket - on
+        // each keystroke. Schedule it instead; the run in flight, if any, is
+        // for an older document now, so it is asked to stop.
+        ++m_previewGen;
+        m_isoStale = true;            // Simulate rebuilds now if entered before it lands
+        if (m_previewRun)
+            m_previewRun->cancel.store(true);
+        m_previewTimer->start();
         return;
     }
-    m_canvas->setToolpathPreview(r.ops);
+    dropPreviewRequests();
+    const GcodeResult r = exportGcode(m_doc);
+    applyPreview(r, true);
+}
+
+void MainWindow::dropPreviewRequests()
+{
+    ++m_previewGen;
+    m_previewServed = m_previewGen;
+    m_previewTimer->stop();
+    if (m_previewRun)
+        m_previewRun->cancel.store(true);
+}
+
+void MainWindow::startPreviewRun()
+{
+    if (m_previewServed == m_previewGen || m_doc.filePath().isEmpty())
+        return;
+    auto run = std::make_shared<PreviewRun>();
+    run->gen = m_previewGen;
+    // heightModelFor() composites into the model store, which the model
+    // panel's own rebuild writes too: only this thread may call it.
+    if (const HeightModel *live = heightModelFor(m_doc))
+        run->relief = *live;
+    run->doc = m_doc;
+    run->thread = QThread::create([run] {
+        ExportWatch watch;
+        watch.step = [&run](int, int, const QString &) { return !run->cancel.load(); };
+        run->result = exportGcode(run->doc, &watch, &run->relief);
+    });
+    m_previewRun = run;
+    connect(run->thread, &QThread::finished, this, [this, run] {
+        run->thread->wait();
+        run->thread->deleteLater();
+        run->thread = nullptr;
+        if (m_previewRun == run)
+            m_previewRun.reset();
+        if (run->gen == m_previewGen && !run->cancel.load() && !run->result.cancelled) {
+            m_previewServed = run->gen;
+            applyPreview(run->result, m_previewAct->isChecked());
+        } else if (m_previewServed != m_previewGen && !m_previewTimer->isActive()) {
+            startPreviewRun();        // a newer edit came in while this one ran
+        }
+    });
+    statusBar()->showMessage(QStringLiteral("Updating preview…"));
+    run->thread->start();
+}
+
+void MainWindow::applyPreview(const GcodeResult &r, bool overlay)
+{
+    if (overlay)
+        m_canvas->setToolpathPreview(r.ops);
     m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble(), heightModelFor(m_doc));
     m_toolStrip->setJob(m_doc, r.ops);
     m_isoStale = false;
+    if (!overlay)
+        return;
     QString msg = QStringLiteral("Preview: %1 toolpath(s)").arg(r.done.size());
     if (!r.skipped.isEmpty())
         msg += QStringLiteral(" — skipped: %1").arg(r.skipped.join(QStringLiteral(", ")));
@@ -1878,18 +1972,23 @@ void MainWindow::refreshIso(bool interactive)
     m_isoStale = false;
     if (m_doc.filePath().isEmpty())
         return;
+    // This builds the current document, so a background preview export
+    // still pending or running is for it (or older): drop it, and put
+    // this result on the canvas too when Preview is on.
+    const quint64 gen = m_previewGen, served = m_previewServed;
+    dropPreviewRequests();
     const GcodeResult r = interactive
         ? exportWithProgress(this, m_doc, QStringLiteral("Updating 3D preview"))
         : exportGcode(m_doc);
     if (r.cancelled) {
+        if (served != gen)            // the edit still needs its preview
+            refreshPreview();
+        else
+            m_isoStale = true;
         statusBar()->showMessage(QStringLiteral("Preview update cancelled"), 5000);
         return;
     }
-    m_iso->setJob(r.ops, m_doc.boardWidth(), m_doc.boardHeight(),
-                  m_doc.params().value("thickness").toDouble());
-    m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
-                  m_doc.params().value("thickness").toDouble(), heightModelFor(m_doc));
-    m_toolStrip->setJob(m_doc, r.ops);
+    applyPreview(r, m_previewAct->isChecked());
 }
 
 void MainWindow::showSimulation()
@@ -1920,10 +2019,14 @@ void MainWindow::showModel()
 
 void MainWindow::markIsoStale()
 {
-    if (m_mode == Mode::Simulate)
+    if (m_mode == Mode::Simulate) {
         refreshIso();
-    else
+    } else {
+        // A preview export from before this change must not land as the
+        // current job (Preview was turned off, or another file opened).
+        dropPreviewRequests();
         m_isoStale = true;
+    }
 }
 
 void MainWindow::updateTitle()
@@ -2124,6 +2227,15 @@ void MainWindow::closeEvent(QCloseEvent *e)
         e->ignore();
         statusBar()->showMessage(QStringLiteral("Not closing: the machine is busy. Let the job "
                                                 "finish, or stop it, before closing phobiCCCP."), 10000);
+        return;
+    }
+    // The update dialog is a child of the window and its step's process a
+    // child of the dialog: closing now would kill `git reset --hard`, the
+    // build or the install half-way. The dialog's own Close waits too.
+    if (m_updateStep && *m_updateStep) {
+        e->ignore();
+        statusBar()->showMessage(QStringLiteral("Not closing: an update is being installed. Wait "
+                                                "for the step to finish."), 10000);
         return;
     }
     if (confirmDiscard(QStringLiteral("Save before closing?"))) {
@@ -2565,35 +2677,7 @@ QString padCopyPath(const QString &path)
 // failure leaves what is there alone.
 bool buildPadFile(const QJsonObject &d, const QString &path, QString *err)
 {
-    const QString tmp = path + QStringLiteral(".pad-new");
-    QStringList notes;
-    if (!padlink::buildDocument(d, tmp, &notes, err)) {
-        QFile::remove(tmp);
-        return false;
-    }
-    if (!QFileInfo::exists(path)) {
-        if (QFile::rename(tmp, path))
-            return true;
-        QFile::remove(tmp);
-        *err = QStringLiteral("could not write %1").arg(path);
-        return false;
-    }
-    // The old file is moved aside, not deleted, until the new one is in.
-    const QString old = path + QStringLiteral(".pad-old");
-    QFile::remove(old);
-    if (!QFile::rename(path, old)) {
-        QFile::remove(tmp);
-        *err = QStringLiteral("could not replace %1").arg(path);
-        return false;
-    }
-    if (!QFile::rename(tmp, path)) {
-        QFile::rename(old, path);
-        QFile::remove(tmp);
-        *err = QStringLiteral("could not replace %1").arg(path);
-        return false;
-    }
-    QFile::remove(old);
-    return true;
+    return padlink::rebuildDocument(d, path, err);
 }
 
 } // namespace
@@ -2683,7 +2767,18 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
             reply.insert(QStringLiteral("modified"), store.get(designId).value(QStringLiteral("modified")));
         }
         const QString name = store.get(designId).value(QStringLiteral("name")).toString();
-        if (!out.forked.isEmpty()) {
+        if (out.moved) {
+            // The pad's is the later edit: the copy kept here, and the files
+            // that hold it, go to the fork; the rest follow the pad's.
+            reply.insert(QStringLiteral("forked"), out.forked);
+            reply.insert(QStringLiteral("moved"), true);
+            padMoveLinks(designId, out.forked);
+            padDesignChanged(designId);
+            statusBar()->showMessage(QStringLiteral("“%1” changed both here and on a pad; the version "
+                                                    "from here is kept as “%2”")
+                                         .arg(name, store.get(out.forked).value(QStringLiteral("name")).toString()),
+                                     10000);
+        } else if (!out.forked.isEmpty()) {
             // Not rebuilt into the linked file: that holds the change made
             // here, which the pad's edit never saw.
             reply.insert(QStringLiteral("forked"), out.forked);
@@ -2742,12 +2837,27 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     QString putError;
     padlink::Store::PutOutcome put;
     const bool stored = store.put(design, &putError, &put);
-    if (!put.forked.isEmpty()) {
+    if (!put.forked.isEmpty() && !put.moved) {
         const QJsonObject fork = store.get(put.forked);
         if (!fork.isEmpty())
             design = fork;
     } else if (stored) {
+        // The pad's is the later edit: the copy here went to the fork.
+        if (put.moved)
+            padMoveLinks(design.value(QStringLiteral("id")).toString(), put.forked);
         padDesignChanged(design.value(QStringLiteral("id")).toString());
+    }
+    // Kept here already as a later copy (made from the pad's, or a deletion):
+    // that is what every pad gets, so that is what opens, and a deletion
+    // leaves what opens unlinked. Linked as the pad's older copy, the file
+    // would neither follow the design nor be shared without forking it.
+    bool deletedHere = false;
+    if (!stored && putError.isEmpty() && put.forked.isEmpty()) {
+        const QJsonObject kept = store.get(design.value(QStringLiteral("id")).toString());
+        if (kept.value(QStringLiteral("deleted")).toBool())
+            deletedHere = true;
+        else if (!kept.isEmpty())
+            design = kept;
     }
 
     const bool start = req.value(QStringLiteral("start")).toBool();
@@ -2798,6 +2908,8 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     padlink::Links links(padDir());
     if (!putError.isEmpty())
         notes << QStringLiteral("not kept for the pads, so edits do not sync: %1").arg(putError);
+    else if (deletedHere)
+        notes << QStringLiteral("deleted for the pads meanwhile, so edits here do not sync");
     else if (!links.set(c2dPath, design.value(QStringLiteral("id")).toString(), padOnly,
                         design.value(QStringLiteral("modified")).toDouble()))
         notes << QStringLiteral("not linked to the pad design, so edits do not sync: %1").arg(links.error());
@@ -2809,7 +2921,13 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     const QString sentId = req.value(QStringLiteral("design")).toObject().value(QStringLiteral("id")).toString();
     if (putError.isEmpty())
         reply.insert(QStringLiteral("modified"), store.get(sentId).value(QStringLiteral("modified")));
-    if (!put.forked.isEmpty()) {
+    if (put.moved) {
+        reply.insert(QStringLiteral("forked"), put.forked);
+        reply.insert(QStringLiteral("moved"), true);
+        notes << QStringLiteral("“%1” had changed on %2 too; that version is kept there as “%3”")
+                     .arg(name, host, store.get(put.forked).value(QStringLiteral("name")).toString());
+        reply.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));
+    } else if (!put.forked.isEmpty()) {
         reply.insert(QStringLiteral("forked"), put.forked);
         notes << QStringLiteral("“%1” had changed on %2 since, so yours opened as “%3”")
                      .arg(store.get(sentId).value(QStringLiteral("name")).toString(), host, name);
@@ -2872,6 +2990,7 @@ void MainWindow::padShareSaved(const QString &c2dPath)
         base.insert(QStringLiteral("name"), QStringLiteral("%1 (%2)").arg(forkedFrom.left(40),
                                                                          QSysInfo::machineHostName().left(19)));
         base.insert(QStringLiteral("modified"), 0);
+        base.remove(QStringLiteral("vv"));   // a design of its own: its versions start here
     }
     QStringList lost;
     QString err;
@@ -2890,13 +3009,29 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     // Newer than what the pads have, even with this computer's clock behind.
     const double modified = padlink::nextStamp(base.value(QStringLiteral("modified")).toDouble(),
                                                double(QDateTime::currentMSecsSinceEpoch()));
-    d.insert(QStringLiteral("modified"), modified);
+    // With this computer's edit in its versions, so it replaces the copy it
+    // was made from everywhere but is kept beside one edited meanwhile.
+    d = store.edited(d, modified);
     if (!store.put(d, &err))
         return notShared(err.isEmpty() ? QStringLiteral("a newer copy is kept here") : err);
     if (!links.set(c2dPath, d.value(QStringLiteral("id")).toString(), lost.isEmpty(), modified)) {
         statusBar()->showMessage(QStringLiteral("Saved %1 and sent to the pads, but its link could not be "
                                                 "kept: %2").arg(c2dPath, links.error()), 10000);
         return;
+    }
+    if (forkedFrom.isEmpty()) {
+        // The design's other linked files follow it, as after a pad edit
+        // (padDesignChanged): left as they were, they would hold the old
+        // design and fork it when saved. One open with changes is left alone.
+        auto isOpen = [&](const QString &path) {
+            return !m_untitled && QFileInfo(m_doc.filePath()) == QFileInfo(path);
+        };
+        for (const QString &path : padlink::followDesign(links, d, c2dPath, [&](const QString &p) {
+                 return isOpen(p) && (m_dirty || m_machine->isBusy());
+             })) {
+            if (isOpen(path))
+                openPath(path, false);
+        }
     }
     if (!forkedFrom.isEmpty()) {
         statusBar()->showMessage(QStringLiteral("Saved %1. “%2” had changed on a pad since, so the "
@@ -2911,6 +3046,19 @@ void MainWindow::padShareSaved(const QString &c2dPath)
                                         "edit no longer replaces this file")
                              .arg(c2dPath, lost.join(QStringLiteral(", "))),
         10000);
+}
+
+void MainWindow::padMoveLinks(const QString &id, const QString &forkId)
+{
+    // The copy kept here went to the fork (Store::put, `moved`): so do the
+    // files that hold it, so later saves of them share to the fork and pad
+    // edits of the design no longer rebuild them.
+    const QJsonObject fork = padlink::Store(padDir()).get(forkId);
+    padlink::Links links(padDir());
+    if (!fork.isEmpty() && links.moveTo(id, fork.value(QStringLiteral("modified")).toDouble(), forkId) < 0)
+        statusBar()->showMessage(QStringLiteral("Which files hold “%1” could not be noted: %2")
+                                     .arg(fork.value(QStringLiteral("name")).toString(), links.error()),
+                                 10000);
 }
 
 void MainWindow::padDesignChanged(const QString &id)

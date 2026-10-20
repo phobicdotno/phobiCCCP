@@ -9,6 +9,7 @@
 
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
+#include "../src/gamepad.h"
 #include "../src/gcodeexport.h"
 #include "../src/machinepanel.h"
 #include "../src/toollibrary.h"
@@ -58,7 +59,10 @@ static void check(bool cond, const char *what)
 // `hangDwell` and a jog when not `ackJogs`. Like GRBL 1.1 it answers G-code
 // sent while jogging with error:9, and lines starting with `reject` too.
 // `$$` reports a 425 mm machine. With `holdAcks`, every ok from the first G4
-// on is held back until release(). Everything it receives goes into
+// on is held back until release(). A line starting with `alarmOn` answers
+// ALARM:1 (an end stop) and locks the controller up like GRBL does: no line
+// is read until ctrl-X, after which it boots into Alarm until $H or $X.
+// G38.2 touches at machine Z `probeZ`. Everything it receives goes into
 // `events`, realtime bytes as "!", "~", "^X" and "JOGCANCEL".
 struct FakeGrbl {
     int fd = -1;
@@ -69,6 +73,10 @@ struct FakeGrbl {
     bool holdAcks = false;
     int heldOks = 0;
     QByteArray reject;
+    QByteArray alarmOn;
+    bool locked = false;      // after ALARM:1: deaf until ctrl-X
+    bool alarm = false;       // Alarm state: G-code answered error:9
+    double probeZ = -50;
     double mx = -100, my = -100, mz = -30;
     // A jog reports Jog for `jogMs` after its line (it does not move the
     // position: tests set that), or until a jog cancel.
@@ -97,7 +105,7 @@ struct FakeGrbl {
             const char c = buf[i];
             if (c == '?') {
                 const bool home = homeClock.isValid() && homeClock.elapsed() < 300;
-                send("<" + QByteArray(held ? "Hold:0" : home ? "Home" : jogging() ? "Jog" : "Idle")
+                send("<" + QByteArray(locked || alarm ? "Alarm" : held ? "Hold:0" : home ? "Home" : jogging() ? "Jog" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
                      + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n");
             } else if (c == '!') {
@@ -116,14 +124,34 @@ struct FakeGrbl {
                 heldOks = 0;
                 holdAcks = false;
                 events << "^X";
+                alarm = alarm || locked;
+                locked = false;
                 send("\r\nGrbl 1.1h ['$' for help]\r\n");
             } else if (c == '\n') {
                 events << line;
+                if (locked) {                        // read by nobody
+                    line.clear();
+                    continue;
+                }
                 QByteArray reply = "ok\r\n";
+                if (!alarmOn.isEmpty() && line.startsWith(alarmOn)) {
+                    alarmOn.clear();
+                    locked = true;
+                    send("ALARM:1\r\n[MSG:Reset to continue]\r\n");
+                    line.clear();
+                    continue;
+                }
                 if (line == "$$")
                     send(travel);
-                else if (line == "$H")
+                else if (line == "$H") {
                     homeClock.start();
+                    alarm = false;
+                } else if (line == "$X")
+                    alarm = false;
+                else if (alarm && !line.isEmpty() && line[0] != '$')
+                    reply = "error:9\r\n";
+                else if (line.contains("G38.2"))
+                    send("[PRB:" + num(mx) + "," + num(my) + "," + num(probeZ) + ":1]\r\n");
                 else if (line.startsWith("$J="))
                     jogClock.start();
                 else if (!line.isEmpty() && line[0] != '$'
@@ -239,6 +267,7 @@ int main(int argc, char **argv)
     QSettings().setValue(QStringLiteral("machine/homedAt"),
                          QVariantList{grbl.mx, grbl.my, grbl.mz});
     QSettings().setValue(QStringLiteral("machine/port"), QString::fromLatin1(name));
+    QSettings().setValue(QStringLiteral("gamepad/6"), QStringLiteral("home"));
 
     c2d::MachinePanel panel;
     g_panel = &panel;
@@ -295,6 +324,12 @@ int main(int argc, char **argv)
     auto key = [&](int k, bool press) {
         QKeyEvent e(press ? QEvent::KeyPress : QEvent::KeyRelease, k, Qt::NoModifier);
         QApplication::sendEvent(&panel, &e);
+    };
+    c2d::Gamepad *pad = panel.findChild<c2d::Gamepad *>();
+    check(pad != nullptr, "gamepad found");
+    auto padPress = [&](int n) {
+        emit pad->buttonChanged(n, true);
+        emit pad->buttonChanged(n, false);
     };
     auto lastJog = [&]() -> QByteArray {
         for (int i = grbl.events.size() - 1; i >= 0; --i)
@@ -642,10 +677,136 @@ int main(int argc, char **argv)
         check(panel.isBusy(), "map: waiting for the plate is busy");
         QString why;
         check(!panel.startFromRemote(&why) && !s->isStreaming(), "map: a pad's start is refused");
+        // A zero now would file the rest of the heights under the wrong
+        // grid points: refused from the pad and from the buttons alike.
+        const int g10 = grbl.count("G10");
+        padPress(0);                         // zeroxy
+        padPress(3);                         // zeroz
+        button(QStringLiteral("Zero all"))->click();
+        spin(400, [] { return false; });
+        check(grbl.count("G10") == g10, "map: zeroing is refused while the map runs");
         button(QStringLiteral("Stop the surface map"))->click();
         spin(800, [] { return false; });
         check(!panel.isBusy(), "map: stopped, not busy");
         panel.showPage(QStringLiteral("job"));
+    }
+
+    // BitSetter turned on after "Close: I'll zero Z": the Zero Z beside Z
+    // zeroes and measures the new bit as the reference. Continue must not
+    // then warn that the tool was not measured.
+    {
+        spin(800, [] { return false; });
+        QToolButton *bs = nullptr;
+        for (QToolButton *b : panel.findChildren<QToolButton *>())
+            if (b->text() == QLatin1String("BitSetter on"))
+                bs = b;
+        seen.clear();
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("TOOL CHANGE"))
+                return QStringLiteral("Close: I'll zero Z");
+            return QStringLiteral("Continue anyway");
+        };
+        bool finished = false, finishedOk = false;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        s->startStream({QStringLiteral("M0 ;T2"), QStringLiteral("G90G21"), QStringLiteral("G0X1")});
+        spin(5000, [&] { return !seen.isEmpty() && !QApplication::activeModalWidget(); });
+        spin(500, [] { return false; });
+        check(s->isParkedForTool(), "bs manual zero: parked after Close");
+        bs->setChecked(true);
+        button(QStringLiteral("Zero"), QStringLiteral("work Z0"))->click();
+        spin(4000, [&] { return grbl.count("G38.2") >= 2 && !s->isMacroRunning(); });
+        spin(600, [] { return false; });
+        check(grbl.count("G10 L20 P1 Z0") >= 1 && !s->isMacroRunning(),
+              "bs manual zero: zeroed and measured");
+        const int dialogs = seen.size();
+        runBtn->click();
+        spin(5000, [&] { return finished; });
+        check(seen.size() == dialogs, "bs manual zero: Continue does not say the tool was not measured");
+        check(finished && finishedOk, "bs manual zero: the job runs to the end");
+        QObject::disconnect(c);
+        bs->setChecked(false);
+        spin(1500, [&] { return !panel.isBusy(); });
+    }
+
+    // A pad button mapped to home: never at a tool change, where the
+    // operator's hands are at the collet; from Idle it homes and parks.
+    {
+        spin(800, [] { return false; });
+        seen.clear();
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("TOOL CHANGE"))
+                return QStringLiteral("Close: I'll zero Z");
+            return QStringLiteral("OK");
+        };
+        s->startStream({QStringLiteral("M0 ;T2"), QStringLiteral("G90G21"), QStringLiteral("G0X1")});
+        spin(5000, [&] { return !seen.isEmpty() && !QApplication::activeModalWidget(); });
+        spin(500, [] { return false; });
+        check(s->isParkedForTool(), "pad home: parked");
+        const int homes = grbl.count("$H");
+        padPress(6);
+        spin(500, [] { return false; });
+        check(grbl.count("$H") == homes, "pad home: refused during the tool-change pause");
+        s->stopStream();
+        spin(1500, [&] { return !panel.isBusy() && panel.statusJson().value("state").toString() == "Idle"; });
+        padPress(6);
+        spin(3000, [&] { return grbl.count("$H") > homes && !panel.isBusy(); });
+        check(grbl.count("$H") == homes + 1, "pad home: homes from Idle");
+        spin(3000, [&] { return grbl.count("G53 G0 X") > 0 && !panel.isBusy(); });
+        spin(800, [] { return false; });
+    }
+
+    // An end stop mid-job (ALARM:1): GRBL reads nothing until a soft reset.
+    // Initialize resets, homes after the banner and parks; nothing is left
+    // waiting for an answer, and the settings are asked for again.
+    {
+        bool finished = false, finishedOk = true;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        grbl.alarmOn = "G0X500";
+        s->startStream({QStringLiteral("G90"), QStringLiteral("G0X500"), QStringLiteral("G0X1")});
+        spin(3000, [&] { return finished; });
+        QObject::disconnect(c);
+        check(finished && !finishedOk, "limit alarm: the program stops");
+        spin(600, [] { return false; });
+        check(s->needsReset(), "limit alarm: the controller needs a reset");
+        check(!s->sendCommand(QStringLiteral("$X")) && s->pendingCommands() == 0,
+              "limit alarm: a line is not left waiting for an answer that never comes");
+        QPushButton *init = button(QStringLiteral("Initialize machine (home)"));
+        check(init->isEnabled(), "limit alarm: Initialize is offered");
+        grbl.events.clear();
+        init->click();
+        spin(3000, [&] { return grbl.count("$H") > 0 && s->pendingCommands() == 0
+                                && grbl.count("G53 G0 X") > 0 && !panel.isBusy(); });
+        const int reset = grbl.events.indexOf("^X"), home = grbl.indexOf("$H");
+        check(reset >= 0 && home > reset, "limit alarm: Initialize resets, then homes");
+        check(!s->needsReset() && s->pendingCommands() == 0, "limit alarm: nothing left pending");
+        check(grbl.count("G53 G0 X") > 0, "limit alarm: parks after homing");
+        spin(800, [] { return false; });
+        check(grbl.indexOf("$$", reset) > reset, "banner: the settings are asked for again");
+
+        // The same with Unlock: reset, then $X.
+        grbl.alarmOn = "G0X500";
+        s->startStream({QStringLiteral("G90"), QStringLiteral("G0X500")});
+        spin(3000, [&] { return s->needsReset() && !s->isStreaming(); });
+        check(s->needsReset(), "limit alarm again");
+        grbl.events.clear();
+        button(QStringLiteral("Unlock"))->click();
+        spin(2000, [&] { return grbl.count("$X") > 0 && s->pendingCommands() == 0; });
+        const int reset2 = grbl.events.indexOf("^X"), unlock = grbl.indexOf("$X");
+        check(reset2 >= 0 && unlock > reset2 && s->pendingCommands() == 0,
+              "limit alarm: Unlock resets, then unlocks");
+        // Unlocked without homing: home again for the tests after this.
+        spin(800, [] { return false; });
+        button(QStringLiteral("Initialize"), QStringLiteral("homing cycle"))->click();
+        spin(3000, [&] { return grbl.count("G53 G0 X") > 0 && !panel.isBusy()
+                                && panel.statusJson().value("homed").toBool(); });
+        check(panel.statusJson().value("homed").toBool(), "limit alarm: homed again");
+        spin(800, [] { return false; });
     }
 
     // Disconnect mid-job: asked, then hold, reset, and only then closed.

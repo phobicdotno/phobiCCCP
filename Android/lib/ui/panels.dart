@@ -298,6 +298,20 @@ class _DocumentTabsState extends State<DocumentTabs> {
 
 // ---- Toolpaths -------------------------------------------------------------------
 
+/// How many of [t]'s vectors are open paths it cannot cut: a pocket and an
+/// inside or outside contour need an area, so phobiCCCP leaves open paths
+/// out of them (only a contour on the line follows one).
+int openPathsLeftOut(Design d, ToolpathSpec t) {
+  if (!(t.type == 'pocket' || (t.type == 'profile' && t.side != 'on'))) return 0;
+  return t.shapes.where((id) {
+    final s = d.shape(id);
+    return s != null && s.type == Shape.path && s.closed != true;
+  }).length;
+}
+
+String openPathsWords(int n) =>
+    '$n open path${n == 1 ? '' : 's'} left out: only a contour on the line cuts open paths';
+
 String tpTypeLabel(String t) => const {'profile': 'Contour', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ?? t;
 
 class ToolpathsPanel extends StatelessWidget {
@@ -557,6 +571,11 @@ class ToolpathsPanel extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
                 child: Text('${t.shapes.length} assigned · ${inSel.length} selected', style: const TextStyle(color: C.label)),
               ),
+              if (openPathsLeftOut(design, t) > 0)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Text(openPathsWords(openPathsLeftOut(design, t)), style: const TextStyle(color: C.amber)),
+                ),
               PushBtn(
                 'Assign selected vectors',
                 height: 34,

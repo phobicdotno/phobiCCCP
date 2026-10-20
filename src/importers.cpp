@@ -750,18 +750,28 @@ bool svgConditionsPass(const QXmlStreamAttributes &at)
     return false;
 }
 
-double attrD(const QXmlStreamAttributes &at, const char *name, double def = 0)
+// A coordinate or length attribute in user units. A CSS unit converts as a
+// CSS px ("10mm" is 37.8 user units) and a percentage is of `ref`, the
+// viewport's size along that attribute's direction. A unit that cannot be
+// converted (em, ...) keeps the bare number, as before.
+double attrD(const QXmlStreamAttributes &at, const char *name, double def = 0, double ref = 0)
 {
     const QStringView v = at.value(QLatin1String(name));
     if (v.isEmpty()) return def;
     Scanner sc{v};
     double d;
-    return sc.number(&d) ? d : def;
+    if (!sc.number(&d)) return def;
+    if (v.mid(sc.i).trimmed().isEmpty()) return d;
+    double u;
+    return svgUserLength(v, ref, &u) ? u : d;
 }
 
+// vpW x vpH: the viewport in user units, for percentage lengths (0: unknown).
 QPainterPath svgShape(QStringView name, const QXmlStreamAttributes &at, bool *known,
-                      bool *malformed)
+                      bool *malformed, double vpW = 0, double vpH = 0)
 {
+    // A percentage radius is of the viewport's normalised diagonal.
+    const double vpD = std::sqrt((vpW * vpW + vpH * vpH) / 2);
     QPainterPath p;
     *known = true;
     *malformed = false;
@@ -770,9 +780,9 @@ QPainterPath svgShape(QStringView name, const QXmlStreamAttributes &at, bool *kn
         p = parseSvgPathData(at.value(QLatin1String("d")).toString(), &ok);
         *malformed = !ok;
     } else if (name == QLatin1String("rect")) {
-        const double x = attrD(at, "x"), y = attrD(at, "y");
-        const double w = attrD(at, "width"), h = attrD(at, "height");
-        double rx = attrD(at, "rx", -1), ry = attrD(at, "ry", -1);
+        const double x = attrD(at, "x", 0, vpW), y = attrD(at, "y", 0, vpH);
+        const double w = attrD(at, "width", 0, vpW), h = attrD(at, "height", 0, vpH);
+        double rx = attrD(at, "rx", -1, vpW), ry = attrD(at, "ry", -1, vpH);
         if (w <= 0 || h <= 0) return p;
         if (rx < 0 && ry < 0) { rx = ry = 0; }
         else if (rx < 0) rx = ry;
@@ -795,17 +805,17 @@ QPainterPath svgShape(QStringView name, const QXmlStreamAttributes &at, bool *kn
             p.closeSubpath();
         }
     } else if (name == QLatin1String("circle")) {
-        const double r = attrD(at, "r");
-        if (r > 0) appendCircle(p, QPointF(attrD(at, "cx"), attrD(at, "cy")), r);
+        const double r = attrD(at, "r", 0, vpD);
+        if (r > 0) appendCircle(p, QPointF(attrD(at, "cx", 0, vpW), attrD(at, "cy", 0, vpH)), r);
     } else if (name == QLatin1String("ellipse")) {
-        const double rx = attrD(at, "rx"), ry = attrD(at, "ry");
+        const double rx = attrD(at, "rx", 0, vpW), ry = attrD(at, "ry", 0, vpH);
         if (rx > 0 && ry > 0) {
-            appendArc(p, QPointF(attrD(at, "cx"), attrD(at, "cy")), rx, ry, 0, 0, 2 * M_PI, true);
+            appendArc(p, QPointF(attrD(at, "cx", 0, vpW), attrD(at, "cy", 0, vpH)), rx, ry, 0, 0, 2 * M_PI, true);
             p.closeSubpath();
         }
     } else if (name == QLatin1String("line")) {
-        p.moveTo(attrD(at, "x1"), attrD(at, "y1"));
-        p.lineTo(attrD(at, "x2"), attrD(at, "y2"));
+        p.moveTo(attrD(at, "x1", 0, vpW), attrD(at, "y1", 0, vpH));
+        p.lineTo(attrD(at, "x2", 0, vpW), attrD(at, "y2", 0, vpH));
     } else if (name == QLatin1String("polyline") || name == QLatin1String("polygon")) {
         Scanner sc{at.value(QLatin1String("points"))};
         double x, y;
@@ -838,7 +848,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     bool rootSeen = false;
     double vx = 0, vy = 0, vw = 0, vh = 0;   // viewBox
     double wMm = -1, hMm = -1;
-    bool aspectNone = false;
+    QString aspect;   // the root's preserveAspectRatio
     int malformed = 0;
     const QSet<QString> hiddenClasses = svgHiddenClasses(data);
 
@@ -873,8 +883,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 if (vb && a[2] > 0 && a[3] > 0) { vx = a[0]; vy = a[1]; vw = a[2]; vh = a[3]; }
                 svgLengthMm(at.value(QLatin1String("width")).toString(), &wMm);
                 svgLengthMm(at.value(QLatin1String("height")).toString(), &hMm);
-                aspectNone = at.value(QLatin1String("preserveAspectRatio")).trimmed()
-                                 .startsWith(QLatin1String("none"));
+                aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
                 Ctx root{QTransform(), false};
                 if (vw > 0 && vh > 0) { root.vpW = vw; root.vpH = vh; }
                 else if (wMm > 0 && hMm > 0) { root.vpW = wMm / (25.4 / 96); root.vpH = hMm / (25.4 / 96); }
@@ -935,7 +944,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 continue;
 
             bool known = false, bad = false;
-            const QPainterPath local = svgShape(xml.name(), at, &known, &bad);
+            const QPainterPath local = svgShape(xml.name(), at, &known, &bad, ctx.vpW, ctx.vpH);
             if (known) {
                 if (bad) ++malformed;
                 if (!local.isEmpty())
@@ -977,15 +986,9 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
         else if (hMm > 0) { wMm = hMm * vw / vh; }
         else              { wMm = vw * pxMm; hMm = vh * pxMm; }
     }
-    double sx = wMm / vw, sy = hMm / vh, tx = 0, ty = 0;
-    if (!aspectNone) {   // xMidYMid meet
-        const double s = qMin(sx, sy);
-        tx = (wMm - vw * s) / 2; ty = (hMm - vh * s) / 2;
-        sx = sy = s;
-    }
-    QTransform toMm;
-    toMm.translate(-vx, -vy);
-    toMm = toMm * QTransform::fromScale(sx, sy) * QTransform::fromTranslate(tx, ty);
+    // The root viewBox fitted into the page as its preserveAspectRatio says
+    // (alignment and meet / slice, xMidYMid meet by default).
+    QTransform toMm = svgViewBoxTransform(vx, vy, vw, vh, wMm, hMm, aspect);
     toMm = toMm * QTransform(1, 0, 0, -1, 0, hMm);   // Y-down page -> Y-up CC space
     const QPainterPath mm = toMm.map(user);
 

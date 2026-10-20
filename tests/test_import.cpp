@@ -480,6 +480,40 @@ int main(int argc, char **argv)
               "svg: nested <svg> viewBox scales into its viewport");
         check(r.ok && rectNear(r.elements.at(1).painterPath.boundingRect(), 10, 85, 15, 90),
               "svg: nested <svg> without a viewBox is moved to x,y");
+        // The root's preserveAspectRatio: alignment and slice, not only "none".
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 50' preserveAspectRatio='xMinYMin meet'>"
+                               "<rect width='100' height='50'/></svg>", opts(100, 100));
+        check(r.ok && rectNear(r.bounds, 0, 50, 100, 100),
+              "svg: root xMinYMin meet puts the drawing at the top (Y-up)");
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 50 100' preserveAspectRatio='xMaxYMax meet'>"
+                               "<rect width='50' height='100'/></svg>", opts(100, 100));
+        check(r.ok && rectNear(r.bounds, 50, 0, 100, 100), "svg: root xMaxYMax meet aligns right");
+        {
+            c2d::ImportOptions fixed = opts(100, 50);
+            fixed.autoPlace = false;
+            r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='50mm' "
+                                   "viewBox='0 0 100 100' preserveAspectRatio='xMidYMid slice'>"
+                                   "<rect width='100' height='100'/></svg>", fixed);
+            check(r.ok && rectNear(r.bounds, 0, -25, 100, 75), "svg: root slice fills the page");
+        }
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><rect width='100' height='50'/></svg>", opts(100, 100));
+        check(r.ok && rectNear(r.bounds, 0, 50, 100, 100), "svg: default root fit unchanged");
+        // Shape lengths with a unit convert as CSS px; a percentage is of the viewport.
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><rect width='10mm' height='1in'/></svg>",
+                               opts(100, 100));
+        check(r.ok && rectNear(r.bounds, 0, 100 - 96, 10 / (25.4 / 96), 100, 1e-6),
+              "svg: rect width='10mm' height='1in' are 37.8 and 96 user units");
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 200 100' preserveAspectRatio='none'>"
+                               "<rect x='10%' width='50%' height='20%'/><circle cx='50%' cy='50%' r='5'/>"
+                               "<line x1='0' y1='0' x2='12px' y2='0'/></svg>", opts(100, 100));
+        check(r.ok && r.elements.size() == 3
+                  && rectNear(r.elements.at(0).painterPath.boundingRect(), 10, 80, 60, 100, 1e-6),
+              "svg: percentage lengths are of the viewport");
         // Inkscape's own metadata is not reported as skipped.
         r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' "
                                "xmlns:sodipodi='http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd' "

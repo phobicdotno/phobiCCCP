@@ -7,10 +7,12 @@
 #include "../src/element.h"
 #include "../src/vectorops.h"
 
+#include <QFont>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLineF>
+#include <QPainterPath>
 #include <QSet>
 #include <QTransform>
 
@@ -349,6 +351,60 @@ int main(int argc, char **argv)
               "mirrored text keeps the flip in its transform");
         check(nearRect(txtM.painterPath.boundingRect(), txt.painterPath.boundingRect(), 1e-6),
               "text mirrored about its own center keeps its bounds");
+
+        // A uniform scale goes into the font height (and arc radius), so the
+        // Height field reads the drawn size; the outline is the same either way.
+        {
+            const QTransform twice = vec::scaleTransform({10, 10}, 2, 2);
+            const Element big = vec::transformElement(txt, twice);
+            const QJsonArray bx = big.raw["transform"].toArray();
+            check(big.geometryType == "text" && approx(big.raw["font_height"].toDouble(), 20)
+                      && approx(std::hypot(bx[0].toDouble(), bx[1].toDouble()), 1)
+                      && approx(std::hypot(bx[3].toDouble(), bx[4].toDouble()), 1),
+                  "text scaled 200%: font height doubles, the transform keeps no scale");
+            check(nearRect(big.painterPath.boundingRect(),
+                           twice.mapRect(txt.painterPath.boundingRect()), 1e-6),
+                  "text scaled 200% covers twice the size");
+            const Element again = Element::regenText(big, QJsonObject{{"font_height", 20.0}});
+            check(nearRect(again.painterPath.boundingRect(), big.painterPath.boundingRect(), 0.05),
+                  "re-rendering the scaled text at its font height draws the same size");
+
+            QJsonObject arcO = txt.raw;
+            arcO.insert("arc_enabled", true);
+            arcO.insert("arc_radius", 25.0);
+            arcO.remove("rendered");
+            const Element arcT = Element::fromJson(arcO);
+            const Element arcBig = vec::transformElement(arcT, twice);
+            check(approx(arcBig.raw["arc_radius"].toDouble(), 50)
+                      && nearRect(arcBig.painterPath.boundingRect(),
+                                  twice.mapRect(arcT.painterPath.boundingRect()), 1e-6),
+                  "arc text scaled 200%: the arc radius doubles too");
+            const Element arcAgain = Element::regenText(arcBig, QJsonObject{{"arc_radius", 50.0}});
+            check(nearRect(arcAgain.painterPath.boundingRect(), arcBig.painterPath.boundingRect(), 0.05),
+                  "re-rendering the scaled arc text keeps its size and place");
+
+            const Element wide = vec::transformElement(txt, vec::scaleTransform({10, 10}, 2, 1));
+            check(wide.geometryType == "text" && approx(wide.raw["font_height"].toDouble(), 10)
+                      && approx(wide.raw["transform"].toArray()[0].toDouble(), 2),
+                  "a stretch stays in the text's transform");
+        }
+
+        // A character outside the BMP (a surrogate pair in UTF-16) is one glyph.
+        {
+            const QString bold = QString::fromUcs4(U"\U0001D400");   // MATHEMATICAL BOLD CAPITAL A
+            const Element t1 = Element::makeText(bold, {0, 0}, 10, "DejaVu Sans", layer);
+            QFont f = Element::textFont(t1.raw);
+            f.setPixelSize(256);
+            f.setStyleStrategy(QFont::PreferOutline);
+            QPainterPath whole;
+            whole.addText(0, 0, f, bold);
+            int expect = 0;
+            for (const QPolygonF &poly : whole.toSubpathPolygons())
+                if (poly.size() >= 3)
+                    ++expect;
+            check(expect > 0 && t1.raw["rendered"].toArray().size() == expect,
+                  "a character outside the BMP renders as its glyph, not two boxes");
+        }
 
         // Pure translation goes through translate().
         const Element moved = vec::transformElement(rect, QTransform::fromTranslate(5, -1));

@@ -1001,6 +1001,9 @@ struct Job {
     // the rough ring has one.
     QList<QPolygonF> finish;
     QList<Lead> finishLeads;
+    // Contours and cutouts: the outline the rings are offset from. Tabs are
+    // measured on it, so each holds its width of the part's own edge.
+    QList<QPolygonF> edge;
     // Helical entry (pockets): each depth is entered on a helix of radius r
     // about c, sinking at `angle` degrees, instead of plunging.
     struct Helix {
@@ -1120,8 +1123,9 @@ static void orientForCut(QList<QPolygonF> &rings, bool materialInside, bool clim
     }
 }
 
-// Distance along the polyline to the point on it nearest p.
-static double arcPosOf(const QPolygonF &poly, const QPointF &p)
+// Distance along the polyline to the point on it nearest p (and, when
+// asked, how far p is from it).
+static double arcPosOf(const QPolygonF &poly, const QPointF &p, double *dist = nullptr)
 {
     double best = std::numeric_limits<double>::max(), s = 0, at = 0;
     for (int i = 0; i + 1 < poly.size(); ++i) {
@@ -1135,6 +1139,8 @@ static double arcPosOf(const QPolygonF &poly, const QPointF &p)
         }
         s += std::sqrt(l2);
     }
+    if (dist)
+        *dist = best;
     return at;
 }
 
@@ -1255,12 +1261,33 @@ static int parallelRing(const QList<QPolygonF> &level, const QPolygonF &p, doubl
     struct Corner { QPointF at; double reach, off; };
     QVector<Corner> corners;
     const int n = p.size() - (p.size() > 1 && p.first() == p.last() ? 1 : 0);
+    // A corner's edges are taken from the first vertices at least `span`
+    // away on either side, with spans from tol to twice dist, and the
+    // sharpest reading kept: Clipper often rounds a cusp over a couple of
+    // micro-segments and a bend of a millimetre or so, and measured vertex
+    // to vertex none of them made the whole turn, so the corner was missed
+    // and a good ring rejected.
+    auto away = [&](int i, int dir, double span) {
+        const QPointF v = p.at(i);
+        for (int k = 1; k < n; ++k) {
+            const QPointF q = p.at(((i + dir * k) % n + n) % n);
+            if (QLineF(v, q).length() >= span)
+                return q;
+        }
+        return p.at(((i + dir) % n + n) % n);
+    };
     for (int i = 0; n >= 3 && i < n; ++i) {
-        const QPointF v = p.at(i), u = p.at((i + n - 1) % n) - v, w = p.at((i + 1) % n) - v;
-        const double lu = std::hypot(u.x(), u.y()), lw = std::hypot(w.x(), w.y());
-        if (lu < 1e-9 || lw < 1e-9)
-            continue;
-        const double half = std::acos(qBound(-1.0, (u.x() * w.x() + u.y() * w.y()) / (lu * lw), 1.0)) / 2;
+        const QPointF v = p.at(i);
+        double half = M_PI / 2;
+        for (const double span : {0.0, tol, dist, 2 * dist}) {
+            const QPointF u = away(i, -1, span) - v, w = away(i, 1, span) - v;
+            const double lu = std::hypot(u.x(), u.y()), lw = std::hypot(w.x(), w.y());
+            if (lu < 1e-9 || lw < 1e-9)
+                continue;
+            const double h = std::acos(qBound(-1.0, (u.x() * w.x() + u.y() * w.y()) / (lu * lw), 1.0)) / 2;
+            if (h > 1e-3)
+                half = qMin(half, h);
+        }
         if (half < M_PI / 2 - 0.02 && half > 1e-3)
             corners.append({v, dist / std::tan(half) + tol, dist / std::sin(half) + tol});
     }
@@ -1566,22 +1593,116 @@ public:
         return *w >= 1.0;
     }
 
-    // Tabs for one job, placed once on its roughing ring and kept as XY
-    // points: every ring of the job - each depth, every finishing ring,
-    // whatever its own length and start - then lifts at those same places.
-    // Placed per ring, a finishing ring 1.5 mm out on a rounded corner
-    // spaced its tabs differently and cut straight through the ones the
-    // roughing passes had left.
-    void placeTabs(const QPolygonF &ring, const CutParams &cp)
+    // Tabs for one job, placed once on one of its rings (see runJob) and
+    // kept as the XY points where each starts and ends: every ring of the
+    // job - each depth, every finishing ring, whatever its own length and
+    // start - lifts between those two points projected onto it. Placed per ring, a
+    // finishing ring 1.5 mm out on a rounded corner spaced its tabs
+    // differently and cut straight through the ones the roughing passes
+    // had left; kept as a centre and a width, the longer finishing rings
+    // of a hole lifted for less of the wall than the roughing ring had.
+    //
+    // With the part's outline (`edge`) the tabs are spaced and sized on it
+    // (or on the ring where that is the shorter side), not on the
+    // tool-centre ring alone: the round corner arc of an outside ring all
+    // sits against one corner point of the part, so a tab measured there
+    // held nothing.
+    void placeTabs(const QPolygonF &ring, const CutParams &cp, const QList<QPolygonF> &edge)
     {
         m_tabsPlaced = true;
-        m_tabAt.clear();
-        QVector<double> at;
-        if (tabSpots(ring, cp, &at, &m_tabW))
-            for (double s : at)
-                m_tabAt.append(pointAtArc(ring, s));
+        m_tabEnds.clear();
+        if (!(cp.tabWidth > 0.01 && ring.isClosed() && ring.size() > 3))
+            return;
+        // Samples of the ring (s along it) and how much of the outline they
+        // have passed so far (h): the foot of each sample on the outline.
+        QVector<double> ss, hh;
+        {
+            const QRectF reach = ring.boundingRect();
+            QList<QPolygonF> near;
+            QVector<double> nearLen;
+            for (const QPolygonF &e : edge)
+                if (e.size() > 2 && e.boundingRect().adjusted(-1, -1, 1, 1).intersects(reach)) {
+                    near << e;
+                    nearLen << perimeter(e);
+                }
+            int lastRing = -1;
+            double lastPos = 0, h = 0, s = 0;
+            auto sample = [&](const QPointF &q, double segLen) {
+                int bestRing = -1;
+                double bestPos = 0, bestD = std::numeric_limits<double>::max();
+                for (int k = 0; k < near.size(); ++k) {
+                    double d = 0;
+                    const double pos = arcPosOf(near.at(k), q, &d);
+                    if (d < bestD) {
+                        bestD = d;
+                        bestRing = k;
+                        bestPos = pos;
+                    }
+                }
+                if (!ss.isEmpty()) {
+                    // What a tab holds is the narrower side of the kerf it
+                    // bridges: the outline, or the ring itself where the
+                    // outline is the longer side (round a corner of a hole,
+                    // which the tool cannot reach anyway).
+                    double dh = segLen;
+                    if (bestRing >= 0 && bestRing == lastRing) {
+                        const double L = nearLen.at(bestRing);
+                        const double moved = qAbs(bestPos - lastPos);
+                        dh = qMin(segLen, qMin(moved, L - moved));
+                    }
+                    h += dh;
+                }
+                ss << s;
+                hh << h;
+                lastRing = bestRing;
+                lastPos = bestPos;
+            };
+            if (near.isEmpty())
+                return placeTabsOnRing(ring, cp);
+            sample(ring.first(), 0);
+            for (int i = 1; i < ring.size(); ++i) {
+                const QLineF seg(ring.at(i - 1), ring.at(i));
+                const int n = qMax(1, int(std::ceil(seg.length() / 0.5)));
+                for (int k = 1; k <= n; ++k) {
+                    s += seg.length() / n;
+                    sample(seg.pointAt(double(k) / n), seg.length() / n);
+                }
+            }
+        }
+        const double total = hh.last();
+        if (total < 1.0)
+            return placeTabsOnRing(ring, cp);
+        const int nTabs = qBound(3, int(total / 150.0) + 3, 8);
+        const double w = qMin(cp.tabWidth, total / (3.0 * nTabs));
+        if (w < 1.0)
+            return;
+        // Ring position where the outline has been passed for h: inside a
+        // step over which it grows, never on a corner arc where it stands.
+        auto ringAt = [&](double h) {
+            const int k = int(std::lower_bound(hh.begin(), hh.end(), h) - hh.begin());
+            if (k <= 0)
+                return ss.first();
+            if (k >= hh.size())
+                return ss.last();
+            const double dh = hh.at(k) - hh.at(k - 1);
+            const double t = dh > 1e-12 ? (h - hh.at(k - 1)) / dh : 1.0;
+            return ss.at(k - 1) + t * (ss.at(k) - ss.at(k - 1));
+        };
+        for (int t = 0; t < nTabs; ++t) {
+            const double c = total * (t + 0.5) / nTabs;
+            m_tabEnds.append({pointAtArc(ring, ringAt(c - w / 2)), pointAtArc(ring, ringAt(c + w / 2))});
+        }
     }
-    void forgetTabs() { m_tabsPlaced = false; m_tabAt.clear(); }
+    // No outline to measure on: tabs spaced and sized along the ring itself.
+    void placeTabsOnRing(const QPolygonF &ring, const CutParams &cp)
+    {
+        QVector<double> at;
+        double w = 0;
+        if (tabSpots(ring, cp, &at, &w))
+            for (double c : at)
+                m_tabEnds.append({pointAtArc(ring, c - w / 2), pointAtArc(ring, c + w / 2)});
+    }
+    void forgetTabs() { m_tabsPlaced = false; m_tabEnds.clear(); }
 
     // Whether followRing lifts over tabs on this ring at depth z.
     bool hasTabs(const QPolygonF &poly, double z, const CutParams &cp) const
@@ -1589,7 +1710,7 @@ public:
         if (!(z < cp.tabTop - 1e-9 && cp.tabWidth > 0.01 && poly.isClosed() && poly.size() > 3))
             return false;
         if (m_tabsPlaced)
-            return !m_tabAt.isEmpty();
+            return !m_tabEnds.isEmpty();
         QVector<double> at;
         double w = 0;
         return tabSpots(poly, cp, &at, &w);
@@ -1617,47 +1738,69 @@ public:
         }
 
         // Tabbed pass: the tabs (see tabSpots / placeTabs) crossed at
-        // cp.tabTop instead of z.
+        // cp.tabTop instead of z. Each tab is the stretch [from, to] along
+        // this ring, wrapping round its start when to < from.
         const double len = perimeter(poly);
-        QVector<double> centres;
-        double tabW = m_tabW;
+        QVector<QPair<double, double>> spans;
         if (m_tabsPlaced) {
-            for (const QPointF &p : m_tabAt)
-                centres.append(arcPosOf(poly, p));
+            for (const auto &e : m_tabEnds) {
+                double from = arcPosOf(poly, e.first), to = arcPosOf(poly, e.second);
+                // Projected the wrong way round (a ring that doubles back
+                // near the tab): the shorter of the two stretches.
+                const double ahead = to >= from ? to - from : len - from + to;
+                if (ahead > len / 2)
+                    std::swap(from, to);
+                spans.append({from, to});
+            }
         } else {
+            QVector<double> centres;
+            double tabW = 0;
             tabSpots(poly, cp, &centres, &tabW);
+            for (const double c : centres)
+                spans.append({c - tabW / 2, c + tabW / 2});
         }
         auto inTab = [&](double s) {
-            for (const double c : centres) {
-                if (qAbs(s - c) <= tabW / 2
-                    || qAbs(s - c + len) <= tabW / 2
-                    || qAbs(s - c - len) <= tabW / 2)
+            for (const auto &sp : spans) {
+                if (sp.first <= sp.second ? s >= sp.first && s <= sp.second
+                                          : s >= sp.first || s <= sp.second)
                     return true;
             }
             return false;
         };
+        // Each edge split exactly where a tab starts or ends, so the lift
+        // and the drop come at the tab's ends, not at the next millimetre.
+        QVector<double> ends;
+        for (const auto &sp : spans)
+            for (const double e : {sp.first, sp.second})
+                ends << e - len * std::floor(e / len);
         double s = 0;
-        const double step = 1.0;   // 1 mm resolution along the loop
         bool up = false;
         for (int i = 1; i < poly.size(); ++i) {
             const QLineF seg(poly.at(i - 1), poly.at(i));
             const double L = seg.length();
+            if (L < 1e-12)
+                continue;
+            QVector<double> cuts;
+            for (const double e : ends)
+                if (e > s + 1e-9 && e < s + L - 1e-9)
+                    cuts << e - s;
+            std::sort(cuts.begin(), cuts.end());
+            cuts << L;
             double done = 0;
-            while (done < L - 1e-9) {
-                const double d = qMin(step, L - done);
-                done += d;
-                s += d;
-                const QPointF p = seg.pointAt(done / L);
-                const bool tab = inTab(s);
+            for (const double t : cuts) {
+                const bool tab = inTab(s + (done + t) / 2);
+                done = t;
                 if (tab != up) {
                     up = tab;
                     m_ops.append(Op::feedTo(m_x, m_y, up ? cp.tabTop : z,
                                             up ? m_feed : m_plunge));
                 }
+                const QPointF p = seg.pointAt(t / L);
                 m_ops.append(Op::feedTo(p.x(), p.y(), up ? cp.tabTop : z, m_feed));
                 m_x = p.x();
                 m_y = p.y();
             }
+            s += L;
         }
         // Deliberately no descent here. The tab spacing above keeps every tab
         // clear of s = 0, so a pass cannot end inside one; if it ever did,
@@ -1782,8 +1925,11 @@ public:
     {
         // A contour's one roughing ring and its finishing rings share their
         // tabs; separate loops (pocket rings) each keep their own.
+        // They are placed on the ring nearest the part, the last finishing
+        // ring when there is one: that ring's cut is the one that frees the
+        // part, so it is the one the tab widths are measured on.
         if (job.closed && job.rings.size() == 1)
-            placeTabs(job.rings.first(), cp);
+            placeTabs(job.finish.isEmpty() ? job.rings.first() : job.finish.last(), cp, job.edge);
         runJobRings(job, cp);
         forgetTabs();
     }
@@ -1870,9 +2016,8 @@ private:
     QVector<Op> &m_ops;
     double m_safeZ, m_feed, m_plunge;
     double m_x = 0, m_y = 0;
-    bool m_tabsPlaced = false;   // placeTabs: m_tabAt holds this job's tabs
-    QVector<QPointF> m_tabAt;
-    double m_tabW = 0;
+    bool m_tabsPlaced = false;   // placeTabs: m_tabEnds holds this job's tabs
+    QVector<QPair<QPointF, QPointF>> m_tabEnds;   // each tab's start and end on the ring it was placed on
 };
 
 // Greedy nearest-neighbor ordering of jobs to keep rapids short.
@@ -2265,12 +2410,31 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             continue;
         }
 
-        const QVector<const Element *> elems = referenced(doc, j);
+        QVector<const Element *> elems = referenced(doc, j);
         // Facing works on the stock when it has no vectors of its own.
         const QRectF stock(0, 0, doc.boardWidth(), doc.boardHeight());
         if (elems.isEmpty() && !(face && stock.width() > 0 && stock.height() > 0)) {
             res.skipped << QStringLiteral("%1 (no vectors)").arg(name);
             continue;
+        }
+        // Region types cut inside or around an area: an open vector has
+        // none. Taken as a polygon closed by its first and last points it
+        // pocketed, contoured or carved a shape that was never drawn. (A
+        // contour on the line follows open vectors as they are.)
+        if (pocket || (contour && j.value("ofset_dir").toInt(0) != 0) || cutout || vcarve) {
+            QVector<const Element *> closedEls;
+            for (const Element *e : elems)
+                if (vec::isClosed(*e))
+                    closedEls.append(e);
+            if (closedEls.isEmpty()) {
+                res.skipped << QStringLiteral("%1 (needs closed vectors, open vectors ignored)").arg(name);
+                continue;
+            }
+            if (closedEls.size() < elems.size()) {
+                res.notes << QStringLiteral("%1: %2 open vector(s) ignored")
+                                 .arg(name).arg(elems.size() - closedEls.size());
+                elems = closedEls;
+            }
         }
 
         QVector<Op> body;
@@ -2702,6 +2866,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             if (plan.unreached)
                 res.skipped << QStringLiteral("%1 (%2 area(s) narrower than the tool)")
                                    .arg(name).arg(plan.unreached);
+            if (plan.capped)
+                res.notes << QStringLiteral("%1: adaptive plan stopped at %2 moves, part of the area left uncut")
+                                 .arg(name).arg(adaptive::kMaxMoves);
             if (plan.moves.isEmpty()) {
                 if (!plan.unreached)
                     res.skipped << QStringLiteral("%1 (nothing the tool fits in)").arg(name);
@@ -2768,6 +2935,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                             const adaptive::Plan bp = adaptive::plan(bandRings, ap, [&] {
                                 return watch && watch->stop(myIndex, tpTotal, name);
                             });
+                            if (bp.capped)
+                                res.notes << QStringLiteral("%1: adaptive plan stopped at %2 moves, part of the area left uncut")
+                                                 .arg(name).arg(adaptive::kMaxMoves);
                             if (bp.moves.isEmpty())
                                 continue;
                             centres << planCentres(bp);
@@ -3250,8 +3420,17 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                      ? qMax(0.0, numOr(j.value("lead_radius"), 0)) : 0.0;
             const QPainterPath centres = leadR > 0 ? regionFromRings(rings) : QPainterPath();
             auto allowed = [&](const QPointF &p) { return centres.contains(p) == inside; };
+            QList<QPolygonF> edge;
+            if (cp.tabWidth > 0.01)
+                for (QPolygonF e : region.toSubpathPolygons())
+                    if (e.size() > 2) {
+                        closeLoop(e);
+                        edge << e;
+                    }
+            int finSkipped = 0;
             for (const QPolygonF &p : rings) {
                 Job job;
+                job.edge = edge;
                 QPolygonF rough = p;
                 QList<QPolygonF> finish;
                 if (nFin > 0) {
@@ -3269,6 +3448,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         rough = levels.at(nFin - 1).at(r);
                         finish = mids;
                         finish << p;
+                    } else {
+                        ++finSkipped;
                     }
                 }
                 if (spring)
@@ -3292,6 +3473,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 }
                 jobs.append(job);
             }
+            if (finSkipped)
+                res.notes << QStringLiteral("%1: finishing passes skipped on %2 loop(s), "
+                                            "their offsets do not stay parallel")
+                                 .arg(name).arg(finSkipped);
         } else { // pocket
             const double stepover = qMax(0.1, numOr(j.value("stepover"), toolR));
             cp.linkDist = qMax(2.5 * stepover, 4 * toolR);

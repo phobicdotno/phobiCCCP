@@ -349,6 +349,48 @@ int main(int argc, char **argv)
         check(turn(climb) > 0 && turn(conv) < 0, "climb runs counter-clockwise, conventional clockwise");
     }
 
+    // A small tool on a large region: the rim samples, at 0.97 r, fell in
+    // raster cells whose centres lay beyond r, which no pass ever stamped.
+    // One run along the wall stayed live and was planned again every pass,
+    // 3770 times in 20 s (up to the 20000 guard, and again at every depth;
+    // on text it ran the app out of memory).
+    {
+        const QVector<QPolygonF> rings{QPolygonF(
+            {QPointF(44.678402350738025, 27.491187620961174), QPointF(63.521995897565468, 16.12149589317297),
+             QPointF(78.201784780811963, 31.010709707642807), QPointF(87.008753833541704, 58.47745638842688),
+             QPointF(63.57685234125907, 67.27634192298359), QPointF(51.973697519832292, 83.967442200846619),
+             QPointF(27.198262912179828, 71.607152717468168), QPointF(22.180164815495388, 53.281165214095289),
+             QPointF(22.775839784268992, 35.162329651545221), QPointF(44.678402350738025, 27.491187620961174)})};
+        adaptive::Params p;
+        p.toolR = 0.52841272530377315;
+        p.stepover = 0.22317487143797304;
+        p.leave = 0.33238890832477241;
+        p.climb = true;
+        QElapsedTimer t;
+        t.start();
+        bool gaveUp = false;
+        const adaptive::Plan pl = adaptive::plan(rings, p, [&] {
+            gaveUp = gaveUp || t.elapsed() > 60000;
+            return gaveUp;
+        });
+        int repeats = 0;
+        for (int i = 0; i < pl.moves.size(); ++i)
+            for (int k = i + 1; k < pl.moves.size(); ++k) {
+                const QPolygonF &a = pl.moves.at(i).path, &b = pl.moves.at(k).path;
+                if (pl.moves.at(i).kind != adaptive::Move::Cut || a.size() != b.size())
+                    continue;
+                bool same = true;
+                for (int j = 0; same && j < a.size(); ++j)
+                    same = QLineF(a.at(j), b.at(j)).length() < 0.01;
+                repeats += same;
+            }
+        std::fprintf(stderr, "small tool, large star: %d moves in %lld ms, %d repeated\n",
+                     int(pl.moves.size()), t.elapsed(), repeats);
+        check(!gaveUp && !pl.capped, "the plan ends by itself");
+        check(repeats == 0, "no pass is planned twice");
+        check(pl.moves.size() < 2000, "the plan stays its real size");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

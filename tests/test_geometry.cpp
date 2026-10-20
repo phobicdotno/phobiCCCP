@@ -20,6 +20,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QRegularExpression>
@@ -244,6 +245,53 @@ static double signedRingDist(const QVector<QPolygonF> &rings, double x, double y
         in += ring.containsPoint(q, Qt::OddEvenFill) ? 1 : 0;
     }
     return (in & 1) ? d : -d;
+}
+
+// Lengths of the stretches of the closed outline `part` that no cut below
+// `tabTop` touched (a tool of radius r reaching within 0.01 mm of it): the
+// part's edge each tab holds.
+static QVector<double> tabHolds(const QVector<c2d::Op> &ops, const QPolygonF &part, double r, double tabTop)
+{
+    QHash<QPair<int, int>, QVector<QPointF>> grid;
+    const double cs = r + 0.01;
+    forEachCutPoint(ops, [&](double x, double y, double z) {
+        if (z < tabTop - 0.02)
+            grid[qMakePair(int(std::floor(x / cs)), int(std::floor(y / cs)))].append(QPointF(x, y));
+    });
+    auto touched = [&](const QPointF &q) {
+        const int ix = int(std::floor(q.x() / cs)), iy = int(std::floor(q.y() / cs));
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int dy = -1; dy <= 1; ++dy)
+                for (const QPointF &c : grid.value(qMakePair(ix + dx, iy + dy)))
+                    if (QLineF(c, q).length() <= cs)
+                        return true;
+        return false;
+    };
+    QVector<bool> cut;
+    const double step = 0.05;
+    for (int i = 0; i + 1 < part.size(); ++i) {
+        const QLineF e(part.at(i), part.at(i + 1));
+        const int n = std::max(1, int(std::ceil(e.length() / step)));
+        for (int k = 0; k < n; ++k)
+            cut << touched(e.pointAt(double(k) / n));
+    }
+    const int n = cut.size();
+    int s0 = 0;
+    while (s0 < n && !cut.at(s0))
+        ++s0;
+    if (s0 == n)
+        return {n * step};
+    QVector<double> holds;
+    int run = 0;
+    for (int k = 1; k <= n; ++k) {
+        if (!cut.at((s0 + k) % n)) {
+            ++run;
+        } else if (run) {
+            holds << run * step;
+            run = 0;
+        }
+    }
+    return holds;
 }
 
 int main(int argc, char *argv[])
@@ -1977,6 +2025,164 @@ int main(int argc, char *argv[])
             }
         }
         check(steep == 0, "ramp: no steep descent at the cutting feed");
+    }
+
+    // Tabs were spaced by length along the tool-centre ring. The round
+    // corner arc of an outside ring all sits against one corner point of
+    // the part, and with a lead-in (the ring starting mid-edge) every tab of
+    // this square landed on one: nothing held the part. Tabs are measured
+    // on the part's own outline now.
+    for (const double lead : {0.0, 2.0}) {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 40, 40, layer));   // 30..70
+        r.addToolpath("contour", {{"ofset_dir", 1}, {"end_depth", "9.000"}, {"stepdown", 3.0},
+                                  {"ignore_tabs", false}, {"tab_height", 3.0}, {"tab_width", 4.0},
+                                  {"lead_radius", lead}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        const QVector<double> holds = tabHolds(g.ops, QPolygonF(QRectF(30, 30, 40, 40)), 6.35 / 2, -6.0);
+        double total = 0;
+        for (const double h : holds)
+            total += h;
+        std::fprintf(stderr, "square tabs, lead %.0f: %d piece(s), %.2f mm of edge held\n",
+                     lead, int(holds.size()), total);
+        // 4 tabs on a 160 mm outline; the reach of 0.01 mm takes 0.25 mm
+        // off either end of each.
+        check(g.done.size() == 1 && total > 4 * (4.0 - 0.8) && total < 4 * 4.0 + 0.5,
+              lead > 0 ? "tabs hold their width of the part's edge (lead-in)"
+                       : "tabs hold their width of the part's edge");
+    }
+
+    // Finishing rings lifted for the tab width along their own length: in a
+    // hole they are longer than the roughing ring and cut the sides off the
+    // tabs it had left (5.6 mm of wall per tab down to 3.1). Each tab is
+    // kept as its two ends now, projected onto every ring.
+    {
+        QVector<double> totals;
+        QPolygonF hole;
+        for (int k = 0; k <= 96; ++k)
+            hole << QPointF(50 + 10 * std::cos(k * M_PI / 48), 50 + 10 * std::sin(k * M_PI / 48));
+        for (const int nFin : {0, 3}) {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({50, 50}, 10, layer));
+            const QJsonObject tool{{"diameter", 3.175}, {"number", 201}};
+            r.addToolpath("contour", {{"ofset_dir", -1}, {"end_depth", "9.000"}, {"stepdown", 3.0},
+                                      {"tool", tool}, {"ignore_tabs", false}, {"tab_height", 3.0},
+                                      {"tab_width", 6.0}, {"finish_passes", nFin},
+                                      {"finish_stepover", 1.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            double total = 0;
+            for (const double h : tabHolds(g.ops, hole, 3.175 / 2, -6.0))
+                total += h;
+            totals << total;
+        }
+        std::fprintf(stderr, "hole tabs: %.2f mm of wall held, %.2f with 3 finishing passes\n",
+                     totals.at(0), totals.at(1));
+        check(totals.at(0) > 3 * 6.0 - 1.5, "hole tabs hold their width of the wall");
+        check(std::fabs(totals.at(1) - totals.at(0)) < 0.5, "finishing passes keep the tabs' width");
+    }
+
+    // Pocket, contour, cutout and V-carve took an open path as a polygon
+    // closed by its ends and cut a shape that was never drawn. They leave it
+    // out now and say so; engraving and a contour on the line follow it.
+    {
+        const c2d::Element open = c2d::Element::makePath({{10, 10}, {60, 10}, {60, 60}}, false, layer);
+        const c2d::Element closed = c2d::Element::makeRectangle({100, 100}, 20, 20, layer);
+        const QList<QPair<const char *, QJsonObject>> refused{
+            {"pocket_toolpath", {}}, {"contour", {{"ofset_dir", 1}}}, {"contour", {{"ofset_dir", -1}}},
+            {"cutout", {{"cut_depth", 3.0}}}, {"advanced_vcarve_toolpath", {}}};
+        for (const auto &t : refused) {
+            Rig r;
+            r.addShape(open);
+            r.addToolpath(t.first, t.second);
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            int cuts = 0;
+            forEachCutPoint(g.ops, [&](double, double, double) { ++cuts; });
+            check(g.done.isEmpty() && g.skipped.join(" ").contains("open vectors ignored") && cuts == 0,
+                  "an open path alone is not pocketed, contoured or carved");
+            // With a closed vector beside it: that one is cut, the open one
+            // left out, with a note.
+            Rig both;
+            both.addShape(open);
+            both.addShape(closed);
+            QJsonObject extra = t.second;
+            extra.insert("elements", QJsonArray{QJsonObject{{"uuid", open.id}}, QJsonObject{{"uuid", closed.id}}});
+            both.addToolpath(t.first, extra);
+            const c2d::GcodeResult g2 = c2d::exportGcode(both.doc);
+            bool nearOpen = false;
+            forEachCutPoint(g2.ops, [&](double x, double y, double) { nearOpen = nearOpen || (x < 70 && y < 70); });
+            check(g2.done.size() == 1 && g2.notes.join(" ").contains("1 open vector(s) ignored") && !nearOpen,
+                  "an open path beside a closed one is left out, with a note");
+        }
+        for (const auto &t : QList<QPair<const char *, QJsonObject>>{
+                 {"engrave_toolpath", {}}, {"contour", {{"ofset_dir", 0}}}}) {
+            Rig r;
+            r.addShape(open);
+            r.addToolpath(t.first, t.second);
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1, "engraving and a contour on the line still follow an open path");
+        }
+    }
+
+    // A finishing pass asked for and not cut said nothing. And the check
+    // that a finishing ring stays parallel all along only allowed for a
+    // sharp corner made at one vertex: Clipper rounds the cusp of this "R"
+    // (DejaVu Sans, 22.2 mm) over a few micro-segments, so its outline lost
+    // the pass. The offsets of its counter vanish: skipped, with a note.
+    {
+        const QVector<QVector<QPointF>> rings{
+            {             {20.615, 18.175}, {20.992, 18.010}, {21.364, 17.772}, {21.731, 17.461}, {22.093, 17.077},
+             {22.452, 16.617}, {22.812, 16.078}, {23.173, 15.461}, {23.535, 14.765}, {25.929, 10.000},
+             {23.395, 10.000}, {21.164, 14.473}, {20.735, 15.275}, {20.313, 15.930}, {19.898, 16.437},
+             {19.692, 16.635}, {19.488, 16.797}, {19.046, 17.047}, {18.529, 17.226}, {17.939, 17.333},
+             {17.275, 17.369}, {14.706, 17.369}, {14.706, 10.000}, {12.347, 10.000}, {12.347, 27.435},
+             {17.672, 27.435}, {18.396, 27.416}, {19.072, 27.357}, {19.701, 27.260}, {20.283, 27.123},
+             {20.816, 26.947}, {21.303, 26.732}, {21.742, 26.479}, {22.134, 26.186}, {22.478, 25.854},
+             {22.777, 25.481}, {23.030, 25.070}, {23.237, 24.618}, {23.398, 24.127}, {23.513, 23.595},
+             {23.582, 23.025}, {23.605, 22.414}, {23.593, 22.011}, {23.557, 21.626}, {23.497, 21.258},
+             {23.414, 20.907}, {23.306, 20.574}, {23.175, 20.259}, {23.019, 19.961}, {22.840, 19.681},
+             {22.638, 19.420}, {22.414, 19.180}, {22.169, 18.960}, {21.901, 18.761}, {21.612, 18.584},
+             {21.302, 18.426}, {20.969, 18.290}, {20.615, 18.175}},
+            {             {14.706, 25.497}, {14.706, 19.307}, {17.672, 19.307}, {18.086, 19.320}, {18.473, 19.357},
+             {18.834, 19.418}, {19.169, 19.504}, {19.478, 19.615}, {19.760, 19.751}, {20.017, 19.911},
+             {20.248, 20.096}, {20.451, 20.304}, {20.628, 20.536}, {20.778, 20.791}, {20.900, 21.069},
+             {20.995, 21.371}, {21.063, 21.695}, {21.104, 22.043}, {21.118, 22.414}, {21.104, 22.784},
+             {21.063, 23.132}, {20.995, 23.455}, {20.900, 23.755}, {20.778, 24.032}, {20.628, 24.285},
+             {20.451, 24.514}, {20.248, 24.720}, {20.017, 24.902}, {19.760, 25.060}, {19.478, 25.193},
+             {19.169, 25.303}, {18.834, 25.388}, {18.473, 25.448}, {18.086, 25.485}, {17.672, 25.497},
+             {14.706, 25.497}}};
+        QString notes[2];
+        int ops[2];
+        for (const int nFin : {0, 1}) {
+            c2d::Document doc;
+            QJsonArray els;
+            for (const QVector<QPointF> &ring : rings) {
+                const c2d::Element e = c2d::Element::makePath(ring, true, layer);
+                doc.addElement(e);
+                els.append(QJsonObject{{"uuid", e.id}});
+            }
+            c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {});
+            tp.json["elements"] = els;
+            tp.json["ofset_dir"] = 1;
+            tp.json["start_depth"] = "0.000";
+            tp.json["end_depth"] = "3.000";
+            tp.json["stepdown"] = 3.0;
+            QJsonObject tool = tp.json["tool"].toObject();
+            tool["diameter"] = 6.03;
+            tp.json["tool"] = tool;
+            tp.json["finish_passes"] = nFin;
+            tp.json["finish_stepover"] = 0.5;
+            tp.json["ignore_tabs"] = true;
+            tp.json["lead_radius"] = 0.0;
+            doc.addToolpath(tp);
+            const c2d::GcodeResult g = c2d::exportGcode(doc);
+            notes[nFin] = g.notes.join("|");
+            ops[nFin] = g.ops.size();
+        }
+        std::fprintf(stderr, "R finishing: %d ops without, %d with; notes [%s]\n", ops[0], ops[1],
+                     qPrintable(notes[1]));
+        check(ops[1] > ops[0], "the R's outline gets its finishing pass");
+        check(notes[1].contains("finishing passes skipped on 1 loop(s)"),
+              "finishing passes skipped are reported");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

@@ -19,6 +19,7 @@
 #include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QPushButton>
 #include <QTest>
 #include <QUndoStack>
 #include <QWheelEvent>
@@ -976,6 +977,122 @@ int main(int argc, char *argv[])
         check(!rc.selectedElementIds().isEmpty(), "rectangle selected");
         rc.setDocument(&rdoc);
         check(rc.selectedElementIds().isEmpty(), "setDocument clears the selection");
+    }
+
+    // --- a selected sketch point or small circle moves when dragged -----------------
+    // The resize handle used to cover the whole of it, so the drag resized it.
+    {
+        for (double zoom : {1.0, 3.0, 10.0}) {
+            c2d::Document pdoc;
+            const c2d::Element pt = c2d::Element::makePoint({50, 50}, pdoc.defaultLayer());
+            const c2d::Element hole = c2d::Element::makeCircle({100, 50}, 2, pdoc.defaultLayer());
+            pdoc.addElement(pt);
+            pdoc.addElement(hole);
+            c2d::Canvas pc;
+            pc.resize(900, 700);
+            pc.show();
+            pc.setDocument(&pdoc);
+            pc.resetTransform();
+            pc.scale(zoom, -zoom);
+            pc.centerOn(QPointF(75, 50));
+            QTest::qWait(20);
+            pc.setTool(c2d::Canvas::Select);
+            pc.selectElements({pt.id});
+            drag(&pc, {50, 50}, {70, 60});
+            const c2d::Element *pe = pdoc.elementById(pt.id);
+            const QJsonArray pcen = pe ? pe->raw.value("center").toArray() : QJsonArray();
+            check(pe && c2d::Element::isPoint(*pe)
+                      && near(QPointF(pcen.at(0).toDouble(), pcen.at(1).toDouble()), {70, 60}, 1e-6)
+                      && std::fabs(pe->raw.value("radius").toDouble()
+                                   - pt.raw.value("radius").toDouble()) < 1e-9,
+                  "dragging a selected sketch point moves it and keeps its size");
+            if (zoom < 4) {   // 2 mm radius: under 16 px on screen
+                pc.selectElements({hole.id});
+                drag(&pc, {100, 50}, {110, 40});
+                const c2d::Element *he = pdoc.elementById(hole.id);
+                const QJsonArray hc = he->raw.value("center").toArray();
+                check(near(QPointF(hc.at(0).toDouble(), hc.at(1).toDouble()), {110, 40}, 1e-6)
+                          && std::fabs(he->raw.value("radius").toDouble() - 2) < 1e-9,
+                      "dragging a small selected circle moves it and keeps its size");
+            }
+        }
+    }
+
+    // --- Properties: no Radius or Convert for a sketch point; text height as drawn ---
+    {
+        c2d::Document pdoc;
+        const c2d::Element pt = c2d::Element::makePoint({50, 50}, pdoc.defaultLayer());
+        const c2d::Element ring = c2d::Element::makeCircle({100, 50}, 5, pdoc.defaultLayer());
+        QJsonObject to = c2d::Element::makeText(QStringLiteral("H"), {20, 20}, 10,
+                                                QStringLiteral("DejaVu Sans"), pdoc.defaultLayer()).raw;
+        to.insert("transform", QJsonArray{2, 0, 0, 0, 2, 0, 20, 20, 1});   // a scale from an older file
+        const c2d::Element txt = c2d::Element::fromJson(to);
+        pdoc.addElement(pt);
+        pdoc.addElement(ring);
+        pdoc.addElement(txt);
+        c2d::Canvas pc;
+        c2d::PropertiesPanel panel(&pc);
+        pc.setDocument(&pdoc);
+        panel.setDocument(&pdoc);
+        panel.show();
+        auto shown = [&] {
+            QList<QDoubleSpinBox *> out;
+            for (QDoubleSpinBox *s : panel.findChildren<QDoubleSpinBox *>())
+                if (s->isVisibleTo(&panel))
+                    out << s;
+            return out;
+        };
+        auto convertShown = [&] {
+            for (QPushButton *b : panel.findChildren<QPushButton *>())
+                if (b->text() == QLatin1String("Convert to path"))
+                    return b->isVisibleTo(&panel);
+            return false;
+        };
+        panel.setSelection({ring.id});
+        check(shown().size() == 3 && convertShown(), "a circle shows Center, Radius and Convert");
+        panel.setSelection({pt.id});
+        check(shown().size() == 2 && !convertShown(), "a sketch point shows no Radius and no Convert");
+        // An X edit on the point keeps its radius (the hidden field still holds it).
+        shown().at(0)->setValue(60);
+        const c2d::Element *pe = pdoc.elementById(pt.id);
+        check(pe && c2d::Element::isPoint(*pe), "editing a point's X keeps it a point");
+
+        panel.setSelection({txt.id});
+        const QList<QDoubleSpinBox *> ts = shown();
+        check(ts.size() == 3 && std::fabs(ts.at(2)->value() - 20) < 1e-6,
+              "text Height shows the drawn size when its transform scales it");
+        ts.at(2)->setValue(10);
+        const c2d::Element *te = pdoc.elementById(txt.id);
+        check(te && std::fabs(te->raw.value("font_height").toDouble() - 5) < 1e-6,
+              "setting text Height to 10 draws it 10 mm high");
+    }
+
+    // --- pen tool: clicking the start after one more straight node does not close --
+    {
+        c2d::Document pdoc;
+        c2d::Canvas pc;
+        pc.resize(900, 700);
+        pc.show();
+        pc.setDocument(&pdoc);
+        pc.resetTransform();
+        pc.scale(3, -3);
+        pc.centerOn(QPointF(50, 50));
+        QTest::qWait(20);
+        pc.setTool(c2d::Canvas::DrawPath);
+        click(&pc, {20, 20});
+        click(&pc, {60, 20});
+        click(&pc, {20, 20});
+        check(pdoc.elements().size() == 1, "two nodes and a click on the start make one shape");
+        const c2d::PathModel m = c2d::Element::pathModel(pdoc.elements().first());
+        check(m.subs.size() == 1 && !m.subs.first().closed && m.subs.first().nodes.size() == 2,
+              "a straight two-node path is not closed (it would enclose nothing)");
+        click(&pc, {20, 50});
+        click(&pc, {60, 50});
+        click(&pc, {40, 80});
+        click(&pc, {20, 50});
+        check(pdoc.elements().size() == 2
+                  && c2d::Element::pathModel(pdoc.elements().last()).subs.first().closed,
+              "three nodes still close on the start");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

@@ -64,13 +64,41 @@ class DesignStore {
     return plausibleStamp(next, now) ? next : now;
   }
 
+  String? _replica;
+
+  /// This pad's own id in version vectors ([Design.vv]), made once and kept
+  /// beside the designs.
+  String get replicaId {
+    final known = _replica;
+    if (known != null) return known;
+    final f = File('${dir.path}/.replica');
+    try {
+      final id = f.readAsStringSync().trim();
+      if (validId.hasMatch(id)) return _replica = id;
+    } catch (_) {}
+    final id = newId();
+    final tmp = File('${f.path}.tmp');
+    tmp.writeAsStringSync(id, flush: true);
+    tmp.renameSync(f.path);
+    return _replica = id;
+  }
+
+  /// [vv] (the stored copy's) with this pad's edit at [modified] noted.
+  Map<String, int> _edited(Map<String, int> vv, int was, int modified) =>
+      {...believedVv(vv, was), replicaId: modified};
+
   /// An edit made here: stamped with the time, so it wins the next sync. Its
-  /// base is the stored copy's (the last one exchanged with a phobiCCCP),
-  /// whatever older copy the edit was made from (an undo, say).
+  /// bases and versions are the stored copy's (the last one exchanged with a
+  /// phobiCCCP), whatever older copy the edit was made from (an undo, say).
+  /// A design not stored here yet is new: it was never exchanged with any
+  /// computer.
   Design save(Design d, {int? now}) {
     final have = get(d.id);
     final was = have != null && have.modified > d.modified ? have.modified : d.modified;
-    final s = d.copyWith(modified: stamp(was, now ?? DateTime.now().millisecondsSinceEpoch), base: have?.base ?? d.base);
+    final m = stamp(was, now ?? DateTime.now().millisecondsSinceEpoch);
+    final s = have == null
+        ? d.copyWith(modified: m, base: 0, bases: const {}, vv: {replicaId: m})
+        : d.copyWith(modified: m, base: have.base, bases: have.bases, vv: _edited(have.vv, have.modified, m));
     put(s);
     return s;
   }
@@ -78,13 +106,10 @@ class DesignStore {
   void delete(String id, {int? now}) {
     final d = get(id);
     if (d == null) return;
-    // With its base, so a computer that changed it since can refuse.
+    final m = stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch);
+    // With its bases and versions, so a computer that changed it since can refuse.
     put(Design(
-        id: d.id,
-        name: d.name,
-        deleted: true,
-        base: d.base,
-        modified: stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch)));
+        id: d.id, name: d.name, deleted: true, base: d.base, bases: d.bases, vv: _edited(d.vv, d.modified, m), modified: m));
   }
 
   File? _file(String id) => validId.hasMatch(id) ? File('${dir.path}/$id.json') : null;

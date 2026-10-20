@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.2.9 (build 82) — 2026-10-20
+
+> Bug hunt round 2: adaptive no longer cuts one pass thousands of times, tabs hold the part, pad edits survive syncing with two computers, and Preview no longer freezes the window
+
+- **Toolpaths:**
+  - Adaptive could plan the same small pass thousands of times (text with a small bit: the
+    export never finished and memory ran out). Each pass is cut once now; a plan that still runs
+    away stops with a note.
+  - Tabs could land on the corners of an outside cut, where they hold nothing, and finishing
+    passes cut the sides off tabs. Tabs are now spaced and sized on the part's own edge and keep
+    their width through finishing passes.
+  - Pocket, contour, cutout and V-carve treated open paths as closed (cutting a shape that isn't
+    drawn). Open paths are left out with a note; engrave and contour on the line still cut them.
+    The pad warns about it too.
+  - Finishing passes that are left out now say so, and a rounded cusp no longer stops them.
+  - 3D ball-nose finishing took up to 0.12 mm off sharp peaks; it rests on the model's points now.
+- **Machine:**
+  - After an end-stop or travel alarm, Initialize and Unlock did nothing (and blocked later
+    commands); they reset the controller first now.
+  - A pad button set to home no longer homes during a tool-change pause, and zeroing is refused
+    while a surface map runs.
+  - Machine settings are read again after every controller reset; zeroing Z by hand in a tool
+    change counts as zeroed with the BitSetter on.
+- **Drawing:**
+  - Dragging a sketch point or a small circle resized it instead of moving it.
+  - Trim just past a corner removed the wrong piece.
+  - Characters outside the basic set (𝐀, emoji) drew as two boxes.
+  - Text height and arc radius show and keep the real size after Scale.
+  - Convert to path and Break keep a 3D component on all the new pieces.
+  - Horizontal and Vertical on one line are refused instead of shrinking it to nothing; a
+    two-point path no longer closes into nothing; a crafted angle value can't hang the solver.
+  - SVG: page alignment (preserveAspectRatio) and sizes with units ("10mm") import correctly.
+- **Panels:**
+  - With Preview on, every edit froze the window while the program was rebuilt (up to minutes
+    with adaptive). It is rebuilt in the background now.
+  - Undo after stepping a field with the arrow keys showed the old number.
+  - The setup sheet left out or used an old 3D model.
+  - The window can't be closed while an update step runs.
+- **Pad link:**
+  - With two or more computers, a pad could overwrite edits made on one of them. Designs now
+    carry who edited them (version vectors): copies edited apart are kept as "<name> (conflict)"
+    the same way on every computer, and nothing is lost. Older pads and desktops still work.
+  - Saving one of several files linked to the same design left the others on the old design;
+    they follow now.
+  - A Send from a pad that hadn't synced opened its older copy; it opens the newest.
+
 ## v1.2.8 (build 81) — 2026-10-20
 
 > Bug hunt round 1: tiled programs no longer rapid through the work, finishing passes and adaptive links stay off neighbouring parts, and the tool-change pause can't be skipped

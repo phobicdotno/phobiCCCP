@@ -11,6 +11,7 @@ import 'package:phobicccp/model.dart';
 import 'package:phobicccp/store.dart';
 import 'package:phobicccp/ui/canvas.dart';
 import 'package:phobicccp/ui/main_window.dart';
+import 'package:phobicccp/ui/panels.dart';
 import 'package:phobicccp/ui/theme.dart';
 
 void main() {
@@ -22,6 +23,22 @@ void main() {
     expect(hitShape(d, 50, 51, 2), 'p');
     expect(hitShape(d, 80, 10, 2), null);
     expect(hitShape(d, 205, 5, 2), 'r');
+  });
+
+  test('a pocket or an inside/outside contour says it leaves open paths out', () {
+    final d = Design(shapes: const [
+      Shape(id: 'p', type: Shape.path, points: [[0, 0], [100, 100], [100, 0]], closed: false),
+      Shape(id: 'q', type: Shape.path, points: [[0, 0], [10, 10], [10, 0]], closed: true),
+      Shape(id: 'r', type: Shape.rect, x: 200, y: 0, w: 10, h: 10),
+    ]);
+    ToolpathSpec tp(String type, [String side = 'outside']) =>
+        ToolpathSpec(name: 't', type: type, shapes: const ['p', 'q', 'r'], tool: 201, depth: 1, side: side);
+    expect(openPathsLeftOut(d, tp('pocket')), 1);
+    expect(openPathsLeftOut(d, tp('profile')), 1);
+    expect(openPathsLeftOut(d, tp('profile', 'inside')), 1);
+    expect(openPathsLeftOut(d, tp('profile', 'on')), 0);
+    expect(openPathsLeftOut(d, tp('engrave')), 0);
+    expect(openPathsWords(1), contains('1 open path left out'));
   });
 
   late AppState app;

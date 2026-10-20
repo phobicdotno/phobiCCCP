@@ -1212,8 +1212,12 @@ double side(QPointF p, QPointF a, QPointF b)
 }
 double wrapPi(double a)
 {
-    while (a > M_PI) a -= 2 * M_PI;
-    while (a < -M_PI) a += 2 * M_PI;
+    // remainder, not a loop: an angle of 1e300 (a crafted file) would spin
+    // the loop for ever.
+    if (!std::isfinite(a))
+        return a;
+    if (a > M_PI || a < -M_PI)
+        a = std::remainder(a, 2 * M_PI);
     return a;
 }
 
@@ -1871,6 +1875,24 @@ SolveResult solve(Document &doc, const QSet<QString> &keep, bool force)
                     res.failing << c.uid;
                     break;
                 }
+    }
+    // A line the constraints can only meet by shrinking it to nothing
+    // (Horizontal and Vertical on the same line) is a conflict, not a
+    // solution: the constraints on it fail rather than the line vanishing.
+    for (const Constraint &c : sys.constraints()) {
+        if (res.failing.contains(c.uid))
+            continue;
+        for (const GeoRef &ref : c.refs) {
+            if (ref.kind != GeoRef::Line)
+                continue;
+            QPointF a, b, a0, b0;
+            if (!sys.line(x.constData(), ref, &a, &b) || !sys.line(x0.constData(), ref, &a0, &b0))
+                continue;
+            if (len(b - a) < 1e-6 && len(b0 - a0) > 1e-6) {
+                res.failing << c.uid;
+                break;
+            }
+        }
     }
     res.ok = res.failing.isEmpty();
     if (!res.ok && !force)

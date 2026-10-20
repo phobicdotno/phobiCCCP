@@ -4,6 +4,7 @@
 #include "canvas.h"
 #include "recovery.h"
 #include <QMainWindow>
+#include <memory>
 
 class QAction;
 class QTabWidget;
@@ -15,9 +16,11 @@ class QMenuBar;
 class QToolBar;
 class QLabel;
 class QPlainTextEdit;
+class QTimer;
 
 namespace c2d {
 
+struct GcodeResult;
 class IsoPreview;
 class ProjectReceiver;
 struct ReceivedProject;
@@ -34,6 +37,7 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
     void openFile(const QString &path);
     void showParameters();          // Design page, Parameters tab
     // A blank design the size of the machine in Settings, not yet saved
@@ -63,8 +67,11 @@ private slots:
     void onSettings();
     void onExportGcode();
     void onExportGcodeTiled();   // one program per tile_height band in Y
-    // `interactive` puts a cancellable progress dialog in front of a long
-    // export. --shot needs the synchronous form: it screenshots straight after.
+    // `interactive` (every edit with Preview on) schedules the export: a
+    // moment after the last edit it runs on a worker with a snapshot of the
+    // document, and only the result for the newest edit is shown. The window
+    // never waits for it. --shot needs the synchronous form: it screenshots
+    // straight after.
     void refreshPreview(bool interactive = true);
 
 protected:
@@ -101,6 +108,7 @@ private:
     // rebuilds the .c2d when it holds nothing the pad cannot (padDesignChanged).
     void padShareSaved(const QString &c2dPath);
     void padDesignChanged(const QString &id);
+    void padMoveLinks(const QString &id, const QString &forkId);
     // Machine menu: several machines on this computer (machineprofiles.h).
     void buildMachineMenu();
     void rebuildMachineMenu();
@@ -154,6 +162,21 @@ private:
     bool m_linkBusy = false;
     QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
+    // The background preview export (refreshPreview). Every request bumps
+    // m_previewGen; a run's result is shown only if no request came after
+    // it. m_previewServed is the generation last shown (or rebuilt by
+    // refreshIso), so a request still unserved is restarted when the busy
+    // run ends.
+    struct PreviewRun;
+    QTimer *m_previewTimer = nullptr;
+    std::shared_ptr<PreviewRun> m_previewRun;   // the run on the worker, if any
+    quint64 m_previewGen = 0, m_previewServed = 0;
+    void startPreviewRun();
+    void dropPreviewRequests();   // what is about to be built synchronously serves them
+    void applyPreview(const GcodeResult &r, bool overlay);
+    // An install-update step's process is running: the window refuses to
+    // close, because the process goes with it (see installUpdate).
+    std::shared_ptr<bool> m_updateStep;
     QAction *m_previewAct;       // toolpath overlay toggle
     QAction *m_fullScreenAct = nullptr;
     bool m_dirty = false;
