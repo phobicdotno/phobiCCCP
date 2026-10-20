@@ -163,7 +163,13 @@ class CccpConnection {
     return m;
   }
 
-  Future<DesktopInfo> info() async => DesktopInfo.fromJson(await request({'op': 'info'}));
+  /// [pad] ({id, name}) tells the computer which pad asks, so File › Send to
+  /// pad… there can list it and answer with a design for it to open.
+  Future<DesktopInfo> info({Map<String, String>? pad}) async =>
+      DesktopInfo.fromJson(await request({'op': 'info', 'pad': ?pad}));
+
+  /// Tell the computer its [OpenRequest] was opened here.
+  Future<void> opened(int seq, String padId) async => request({'op': 'opened', 'seq': seq, 'pad': padId});
 
   Future<ToolLibrary> tools() async => ToolLibrary.fromJson(await request({'op': 'tools'}));
 

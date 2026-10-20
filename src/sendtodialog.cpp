@@ -77,9 +77,9 @@ SendToDialog::SendToDialog(const QString &name, const QString &ownId,
     // Asked again now and then: a computer may be switched on meanwhile.
     auto *again = new QTimer(this);
     again->setInterval(3000);
-    connect(again, &QTimer::timeout, this, &SendToDialog::discover);
+    connect(again, &QTimer::timeout, this, [this] { discover(m_udp); });
     again->start();
-    discover();
+    discover(m_udp);
     // The last one used, in case discovery does not reach it (Tailscale).
     const QString last = QSettings().value(QStringLiteral("sendTo/last")).toString();
     if (!last.isEmpty()) {
@@ -90,23 +90,24 @@ SendToDialog::SendToDialog(const QString &name, const QString &ownId,
     m_status->setText(QStringLiteral("Looking for phobiCCCP on the network…"));
 }
 
-void SendToDialog::discover()
+void SendToDialog::discover(QUdpSocket *udp)
 {
     const QByteArray ask = QByteArrayLiteral("PHOBICCCP-DISCOVER 1");
-    m_udp->writeDatagram(ask, QHostAddress::Broadcast, ProjectReceiver::kPort);
+    udp->writeDatagram(ask, QHostAddress::Broadcast, ProjectReceiver::kPort);
     for (const QNetworkInterface &i : QNetworkInterface::allInterfaces()) {
         if (!(i.flags() & QNetworkInterface::IsUp) || (i.flags() & QNetworkInterface::IsLoopBack))
             continue;
         for (const QNetworkAddressEntry &e : i.addressEntries())
             if (!e.broadcast().isNull())
-                m_udp->writeDatagram(ask, e.broadcast(), ProjectReceiver::kPort);
+                udp->writeDatagram(ask, e.broadcast(), ProjectReceiver::kPort);
     }
 }
 
-void SendToDialog::onDatagrams()
+QList<SendToDialog::Computer> SendToDialog::answers(QUdpSocket *udp)
 {
-    while (m_udp->hasPendingDatagrams()) {
-        const QNetworkDatagram d = m_udp->receiveDatagram(8192);
+    QList<Computer> out;
+    while (udp->hasPendingDatagrams()) {
+        const QNetworkDatagram d = udp->receiveDatagram(8192);
         const QJsonObject o = QJsonDocument::fromJson(d.data()).object();
         if (o.value(QStringLiteral("app")).toString() != QLatin1String("phobiCCCP"))
             continue;
@@ -115,6 +116,7 @@ void SendToDialog::onDatagrams()
         c.host = o.value(QStringLiteral("host")).toString().left(60);
         c.machine = o.value(QStringLiteral("machine")).toString().left(60);
         c.port = quint16(o.value(QStringLiteral("port")).toInt(ProjectReceiver::kPort));
+        c.pad = o.value(QStringLiteral("pad")).toBool();
         QHostAddress a = d.senderAddress();
         if (a.protocol() == QAbstractSocket::IPv6Protocol) {
             bool ok = false;
@@ -123,9 +125,16 @@ void SendToDialog::onDatagrams()
                 a = v4;
         }
         c.address = a.toString();
+        out.append(c);
+    }
+    return out;
+}
+
+void SendToDialog::onDatagrams()
+{
+    for (const Computer &c : answers(m_udp))
         if (c.id.isEmpty() || c.id != m_ownId)
             addComputer(c);
-    }
 }
 
 void SendToDialog::addComputer(const Computer &c)
@@ -144,7 +153,9 @@ void SendToDialog::addComputer(const Computer &c)
     }
     m_computers.append(c);
     QString label = c.host.isEmpty() ? c.address : c.host;
-    if (!c.machine.isEmpty())
+    if (c.pad)
+        label += QStringLiteral(" (pad)");
+    else if (!c.machine.isEmpty())
         label += QStringLiteral(" — %1").arg(c.machine);
     m_list->addItem(label);
     if (m_list->currentRow() < 0)
@@ -188,7 +199,7 @@ void SendToDialog::selectComputer()
     const Computer c = m_computers[row];
     m_status->setText(QStringLiteral("Asking %1…").arg(c.host));
     const int serial = ++m_infoSerial;
-    call(c.address, c.port, QJsonObject{{QStringLiteral("op"), QStringLiteral("info")}}, 8000,
+    call(this, c.address, c.port, QJsonObject{{QStringLiteral("op"), QStringLiteral("info")}}, 8000,
          [this, serial, c](const QJsonObject &r) {
              if (serial != m_infoSerial)
                  return;
@@ -256,7 +267,7 @@ void SendToDialog::send()
     setBusy(true);
     m_status->setText(QStringLiteral("Sending to %1… (it may ask there first)").arg(c.host));
     // Long: the other side may ask its user to save first.
-    call(c.address, c.port, req, 5 * 60 * 1000, [this, c](const QJsonObject &r) {
+    call(this, c.address, c.port, req, 5 * 60 * 1000, [this, c](const QJsonObject &r) {
         setBusy(false);
         if (r.value(QStringLiteral("ok")).toBool()) {
             QString msg = r.value(QStringLiteral("message")).toString();
@@ -276,14 +287,14 @@ void SendToDialog::setBusy(bool busy)
     m_list->setEnabled(!busy);
 }
 
-void SendToDialog::call(const QString &address, quint16 port, const QJsonObject &req, int timeoutMs,
-                        std::function<void(const QJsonObject &)> done)
+void SendToDialog::call(QObject *owner, const QString &address, quint16 port, const QJsonObject &req,
+                        int timeoutMs, std::function<void(const QJsonObject &)> done)
 {
-    auto *s = new QTcpSocket(this);
+    auto *s = new QTcpSocket(owner);
     auto *timer = new QTimer(s);
     auto buf = std::make_shared<QByteArray>();
     auto finished = std::make_shared<bool>(false);
-    QPointer<SendToDialog> self(this);
+    QPointer<QObject> self(owner);
     auto finish = [s, finished, done, self](const QJsonObject &r) {
         if (*finished)
             return;

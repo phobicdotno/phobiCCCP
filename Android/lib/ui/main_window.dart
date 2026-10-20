@@ -43,6 +43,7 @@ class _MainWindowState extends State<MainWindow> {
   String _status = '';
   bool _saving = false;
   int _notices = 0;
+  int _opens = 0;
 
   /// Said once with the next status after the first edit of a design whose
   /// file a computer will not rebuild from the pad (Design.desktopOnly).
@@ -61,6 +62,7 @@ class _MainWindowState extends State<MainWindow> {
             ? _copyWords(d)
             : 'Select — tap to select, drag to move or to select an area';
     _notices = app.noticeCount;
+    _opens = app.openCount;
     app.addListener(_synced);
   }
 
@@ -79,6 +81,19 @@ class _MainWindowState extends State<MainWindow> {
     if (app.noticeCount != _notices) {
       _notices = app.noticeCount;
       _status = app.notice;
+    }
+    // Sent from a computer to edit here: it opens in place of this one,
+    // which is already saved (every edit here is).
+    final sent = app.toOpen;
+    if (app.openCount != _opens && sent != null) {
+      _opens = app.openCount;
+      final d = app.design(sent.id) ?? sent;
+      setState(() {
+        _open(d);
+        _mode = 0;
+        _status = d.desktopOnly.isNotEmpty ? '“${d.name}” from ${app.openFrom} · ${_copyWords(d)}' : '“${d.name}” from ${app.openFrom}';
+      });
+      return;
     }
     if (cur == null) {
       setState(() {});

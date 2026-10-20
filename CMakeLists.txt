@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.2.7 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -110,6 +110,7 @@ set(PHOBICCCP_APP_SOURCES
     src/settingsdialog.cpp
     src/toolbarorder.cpp
     src/projectreceiver.cpp
+    src/sendtopaddialog.cpp
     src/sendtodialog.cpp
 )
 if(ANDROID)
@@ -251,6 +252,10 @@ if(Qt6Test_FOUND)
     add_executable(test_sendto tests/test_sendto.cpp src/sendtodialog.cpp src/projectreceiver.cpp)
     target_link_libraries(test_sendto PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
     add_test(NAME sendto COMMAND test_sendto)
+    add_executable(test_sendtopad tests/test_sendtopad.cpp src/sendtopaddialog.cpp src/sendtodialog.cpp
+                   src/projectreceiver.cpp)
+    target_link_libraries(test_sendtopad PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
+    add_test(NAME sendtopad COMMAND test_sendtopad)
     add_executable(test_canvasparametric tests/test_canvasparametric.cpp src/canvas.cpp
                    src/canvasparametric.cpp src/parameterspanel.cpp)
     target_link_libraries(test_canvasparametric PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)

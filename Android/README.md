@@ -23,6 +23,9 @@ laid out for a pad in landscape.
   (Carbide Create), the pads still get the change, but a pad edit no longer overwrites the
   file: it goes to a copy beside it, `<name> (pad).c2d`, and the status bar says so. The pad
   says this too when such a design is opened or edited there.
+- **Sent from the computer to edit.** On the desktop, **File › Send to pad…** lists the pads
+  that are open on the network and sends the open design to one of them; it opens there within
+  a few seconds, and edits made on the pad come back to that file as above.
 - **Several machines on one phobiCCCP.** The Machine page lists each computer's machines
   (desktop: Machine › Add machine…) with their state; tap one to make it the one in use.
   Switching drops the machine's connection and homing, so while one is connected a pad
@@ -91,13 +94,22 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 
 | op | sends | answer |
 |---|---|---|
-| `info` | | host, version, id, `machines` [{id, name, active, size}], `activeMachine`, `status` {connected, state, homed, busy, streaming, job}, `allowStart`, `document` |
+| `info` | `pad` {id, name} (optional) | host, version, id, `machines` [{id, name, active, size}], `activeMachine`, `status` {connected, state, homed, busy, streaming, job}, `allowStart`, `document` |
 | `tools` | | `materials` [{id, name}], `tools` [{number, name, kind, diameter, angle, flutes, materials}] |
 | `designs` | | `designs` [{id, name, modified, deleted}] |
 | `get` | `id` | `design` |
 | `put` | `design` (with `base`) | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id the design was kept under instead, or `conflict`: a deletion refused |
 | `machine` | `id` | as `info`, after switching (refused while a machine is connected, unless pads may start cutting) |
 | `send` | `design`, `machine` (id or ""), `start`, `from` | `started`, `message`, `notes`; as for `put`, `modified` and `forked` (what opens is then the fork) |
+| `opened` | `seq`, `pad` (its id) | (nothing more) |
+
+**Sent from the computer** (File › Send to pad…): the pad never listens, so a design for it
+waits on the computer. Each sync round's `info` names the pad (`pad`: its own id, made once,
+and its name); the computer lists the pads heard in the last 20 seconds, and when a design
+waits for that pad, the answer carries `open` {seq, design, name, from}. The design is an
+ordinary synced one, so the same round pulls it; then the pad opens it and answers `opened`
+with the `seq`. A request not taken in two minutes is given up. A pad that already opened a
+`seq` (its `opened` answer lost) says `opened` again without opening it twice.
 
 The design format is described in `src/padlink.h`; `tests/data/pad-design.json` is an
 example both the app's tests and the desktop's `test_padlink` check against.

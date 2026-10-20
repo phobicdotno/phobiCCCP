@@ -433,11 +433,31 @@ class MachineStatus {
 }
 
 /// The answer to "info".
+/// A design someone at the computer sent to this pad to edit (desktop: File ›
+/// Send to pad…). [seq] tells one sending from the next.
+class OpenRequest {
+  final int seq;
+  final String design, name, from;
+  const OpenRequest({required this.seq, required this.design, this.name = '', this.from = ''});
+
+  /// Null when [v] is not a whole request.
+  static OpenRequest? fromJson(Object? v) {
+    if (v is! Map) return null;
+    final j = v.cast<String, Object?>();
+    final seq = _i(j['seq']), design = _s(j['design']);
+    if (seq <= 0 || design.isEmpty) return null;
+    return OpenRequest(seq: seq, design: design, name: _s(j['name']), from: _s(j['from']));
+  }
+}
+
 class DesktopInfo {
   final String host, version, id, activeMachine, document;
   final List<MachineInfo> machines;
   final MachineStatus status;
   final bool allowStart;
+
+  /// A design sent from there for this pad to open; null when none waits.
+  final OpenRequest? open;
   const DesktopInfo({
     this.host = '',
     this.version = '',
@@ -447,6 +467,7 @@ class DesktopInfo {
     this.machines = const [],
     this.status = const MachineStatus(),
     this.allowStart = false,
+    this.open,
   });
   factory DesktopInfo.fromJson(Map<String, Object?> j) => DesktopInfo(
         host: _s(j['host']),
@@ -457,6 +478,7 @@ class DesktopInfo {
         machines: _l(j['machines']).map((m) => MachineInfo.fromJson(_m(m))).toList(),
         status: MachineStatus.fromJson(_m(j['status'])),
         allowStart: _b(j['allowStart']),
+        open: OpenRequest.fromJson(j['open']),
       );
 }
 

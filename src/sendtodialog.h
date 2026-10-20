@@ -1,6 +1,7 @@
 #pragma once
 #include <QDialog>
 #include <QJsonObject>
+#include <QList>
 #include <functional>
 
 class QCheckBox;
@@ -34,21 +35,28 @@ public:
     // The biggest design that fits in one request.
     static constexpr qint64 kMaxDesign = 12LL * 1024 * 1024;
 
-private:
+    // A phobiCCCP found on the network. `pad`: it runs on a pad (Android or
+    // iPad), so it has no machine of its own.
     struct Computer {
         QString id, host, address, machine;
         quint16 port = 0;
+        bool pad = false;
     };
-    void discover();
+    // Send the discovery datagram from `udp` to every broadcast address.
+    static void discover(QUdpSocket *udp);
+    // The phobiCCCPs among the answers waiting on `udp`.
+    static QList<Computer> answers(QUdpSocket *udp);
+    // One request on its own connection, owned by `owner`; `done` gets the
+    // reply, or {"ok": false, "error": …}, unless `owner` is gone by then.
+    static void call(QObject *owner, const QString &address, quint16 port, const QJsonObject &req,
+                     int timeoutMs, std::function<void(const QJsonObject &)> done);
+
+private:
     void onDatagrams();
     void addComputer(const Computer &c);
     void addByAddress();
     void selectComputer();
     void send();
-    // One request on its own connection; `done` gets the reply, or
-    // {"ok": false, "error": …}.
-    void call(const QString &address, quint16 port, const QJsonObject &req, int timeoutMs,
-              std::function<void(const QJsonObject &)> done);
     void setBusy(bool busy);
 
     QString m_name, m_ownId;

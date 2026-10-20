@@ -48,6 +48,16 @@ class AppState extends ChangeNotifier {
   String notice = '';
   int noticeCount = 0;
 
+  /// A design a computer sent here to edit (File › Send to pad… there), to
+  /// open in place of the one on screen; [openCount] goes up with each.
+  Design? toOpen;
+  String openFrom = '';
+  int openCount = 0;
+
+  /// The request last opened from each computer (by id), so one whose answer
+  /// was lost is not opened again over what the user has opened since.
+  final _opened = <String, int>{};
+
   Timer? _timer, _soon;
   bool _busy = false;
   bool _disposed = false;
@@ -166,10 +176,19 @@ class AppState extends ChangeNotifier {
         final withTools = t - c.toolsAt > toolsEvery || tools.isEmpty || settings.toolsOf(c.desktop.id).isEmpty;
         Computer next;
         try {
-          final r = await syncWith(c.desktop, store, withTools: withTools, onPulled: () {
+          final r = await syncWith(c.desktop, store,
+              withTools: withTools,
+              pad: {'id': settings.deviceId, 'name': deviceName},
+              handled: _opened[c.desktop.id] ?? 0, onPulled: () {
             designs = store.live();
             _changed();
           });
+          final open = r.open;
+          final want = open == null ? null : store.get(open.design);
+          if (open != null && want != null) {
+            _opened[c.desktop.id] = open.seq;
+            openSent(want, r.info.host.isEmpty ? c.name : r.info.host);
+          }
           next = Computer(c.desktop.seenAt(now),
               info: r.info,
               warning: r.refused.isEmpty ? null : 'Not taken: ${r.refused.join('; ')}',
@@ -214,6 +233,14 @@ class AppState extends ChangeNotifier {
         unawaited(_syncAll().catchError((_) {}).whenComplete(() => _busy = false));
       }
     });
+  }
+
+  /// Open [d] on screen, sent from the computer [from].
+  void openSent(Design d, String from) {
+    toOpen = d;
+    openFrom = from;
+    openCount++;
+    _changed();
   }
 
   Design? design(String id) => store.get(id);

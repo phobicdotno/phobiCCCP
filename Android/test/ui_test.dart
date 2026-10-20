@@ -56,6 +56,17 @@ void main() {
     await close(t);
   });
 
+  testWidgets('a design sent from a computer opens in place of the one on screen', (t) async {
+    await open(t);
+    final sent = app.saveDesign(Design(name: 'From the shop', stock: d.stock, material: d.material));
+    app.openSent(sent, 'shop');
+    await t.pumpAndSettle();
+    expect(find.text('·  From the shop'), findsOneWidget);
+    expect(find.textContaining('“From the shop” from shop'), findsOneWidget);
+    expect(app.lastDesign, sent.id);
+    await close(t);
+  });
+
   testWidgets('a rectangle is drawn by dragging, and Undo takes it away', (t) async {
     await open(t);
     await t.tap(find.byTooltip('Rectangle'));

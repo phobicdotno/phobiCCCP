@@ -545,6 +545,48 @@ static void testProfiles(const QString &dir)
     check(!activate(s, first), "a removed machine is gone");
 }
 
+// File > Send to pad…: pads in touch are listed, and a design sent to one
+// waits for its next "info" until it says it opened it.
+static void testPads()
+{
+    padlink::Pads pads;
+    const qint64 t = 1700000000000;
+    check(!pads.seen(QJsonObject(), QStringLiteral("10.0.0.5"), t), "an info without a pad is no pad");
+    check(!pads.seen(QJsonObject{{QStringLiteral("id"), QStringLiteral("bad id/..")}}, QStringLiteral("10.0.0.5"), t),
+          "nor is one with a malformed id");
+    check(pads.seen(QJsonObject{{QStringLiteral("id"), QStringLiteral("p1")}, {QStringLiteral("name"), QStringLiteral("Tab")}},
+                    QStringLiteral("10.0.0.5"), t), "a pad is noted");
+    pads.seen(QJsonObject{{QStringLiteral("id"), QStringLiteral("p2")}}, QStringLiteral("10.0.0.6"), t + 1000);
+    auto recent = pads.recent(t + 1000);
+    check(recent.size() == 2 && recent.first().id == QLatin1String("p2"), "the newest pad first");
+    check(recent.last().name == QLatin1String("Tab") && recent.first().name == QLatin1String("10.0.0.6"),
+          "named as it says, else by its address");
+    check(pads.recent(t + padlink::Pads::kRecentMs + 500).size() == 1, "a pad quiet for long is not listed");
+
+    check(pads.pendingFor(QStringLiteral("p1"), t).isEmpty(), "nothing waits for a pad at first");
+    const qint64 a = pads.sendOpen(QStringLiteral("p1"), QStringLiteral("d1"), QStringLiteral("Sign"),
+                                   QStringLiteral("shop"), t + 2000);
+    const qint64 b = pads.sendOpen(QStringLiteral("p1"), QStringLiteral("d2"), QStringLiteral("Box"),
+                                   QStringLiteral("shop"), t + 2000);
+    check(a > 0 && b > a, "each send is numbered after the one before");
+    const QJsonObject open = pads.pendingFor(QStringLiteral("p1"), t + 3000);
+    check(open.value(QStringLiteral("design")).toString() == QLatin1String("d2")
+              && qint64(open.value(QStringLiteral("seq")).toDouble()) == b,
+          "the pad gets the design sent it last");
+    check(pads.pendingFor(QStringLiteral("p2"), t + 3000).isEmpty(), "and only that pad");
+    check(!pads.opened(QStringLiteral("p1"), a), "opening an older send does not count");
+    QString name;
+    check(pads.waiting(QStringLiteral("p1"), b) && pads.opened(QStringLiteral("p1"), b, &name) && name == QLatin1String("Box"),
+          "the pad says it opened it");
+    check(!pads.waiting(QStringLiteral("p1"), b) && pads.pendingFor(QStringLiteral("p1"), t + 3000).isEmpty(),
+          "then nothing waits any more");
+    pads.sendOpen(QStringLiteral("p2"), QStringLiteral("d1"), QStringLiteral("Sign"), QStringLiteral("shop"), t);
+    check(pads.pendingFor(QStringLiteral("p2"), t + padlink::Pads::kOpenMs + 1).isEmpty(), "a send not taken is given up");
+    for (int i = 0; i < 200; ++i)
+        pads.seen(QJsonObject{{QStringLiteral("id"), QStringLiteral("x%1").arg(i)}}, QStringLiteral("10.0.1.1"), t + 5000 + i);
+    check(pads.recent(t + 5300).size() == 64, "only so many pads are kept");
+}
+
 int main(int argc, char **argv)
 {
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
@@ -565,6 +607,7 @@ int main(int argc, char **argv)
     testDeletedShapesToolpath(tmp.path(), d);
     testForkRetryAndUnreadable(tmp.path(), d);
     testProfiles(tmp.path());
+    testPads();
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;
 }
