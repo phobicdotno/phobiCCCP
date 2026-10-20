@@ -804,6 +804,8 @@ MainWindow::MainWindow(QWidget *parent)
                                      QStringLiteral("There are no toolpaths to describe yet."));
             return;
         }
+        ++m_holdDoc;
+        const auto hold = qScopeGuard([this] { --m_holdDoc; });
         const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
         const QString title = fi.fileName().isEmpty() ? QStringLiteral("Untitled") : fi.completeBaseName();
         const QString dest = QFileDialog::getSaveFileName(
@@ -1731,6 +1733,8 @@ void MainWindow::setMode(Mode m, bool autoRun)
 
 void MainWindow::onExportGcode()
 {
+    ++m_holdDoc;
+    const auto hold = qScopeGuard([this] { --m_holdDoc; });
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code"),
                                  QStringLiteral("Open a .c2d file first."));
@@ -1801,6 +1805,8 @@ void MainWindow::onExportGcode()
 
 void MainWindow::onExportGcodeTiled()
 {
+    ++m_holdDoc;
+    const auto hold = qScopeGuard([this] { --m_holdDoc; });
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code (tiled)"),
                                  QStringLiteral("Open a .c2d file first."));
@@ -2600,6 +2606,11 @@ void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
             m_receiver->answer(id, false, QStringLiteral("%1 is busy; try again when the machine is done").arg(host));
         return;
     }
+    if (docHeld()) {
+        if (m_receiver)
+            m_receiver->answer(id, false, QStringLiteral("%1 is busy with the open design; try again shortly").arg(host));
+        return;
+    }
     m_linkBusy = true;
     const auto release = qScopeGuard([this] { m_linkBusy = false; });
     if (isMinimized())
@@ -2837,6 +2848,13 @@ QJsonObject MainWindow::padInfo()
         {QStringLiteral("unsaved"), m_dirty}};
 }
 
+bool MainWindow::docHeld() const
+{
+    // Any modal step (a dialog, the export's progress) may be working on the
+    // open design; so may an export not yet showing its dialog.
+    return m_holdDoc > 0 || QApplication::activeModalWidget() != nullptr || exportRunning();
+}
+
 void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &peer)
 {
     const QString op = req.value(QStringLiteral("op")).toString();
@@ -2847,6 +2865,10 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
     if (changes && m_linkBusy) {
         // Another send (or a received project) is waiting on a question here.
         reply = padError(QStringLiteral("%1 is busy with another design; try again shortly")
+                             .arg(QSysInfo::machineHostName()));
+    } else if ((op == QLatin1String("send") || op == QLatin1String("open")) && docHeld()) {
+        // Opening it would swap the design under a dialog or an export.
+        reply = padError(QStringLiteral("%1 is busy with the open design; try again shortly")
                              .arg(QSysInfo::machineHostName()));
     } else if (op == QLatin1String("info")) {
         reply = padInfo();

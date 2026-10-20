@@ -2030,6 +2030,30 @@ int main(int argc, char *argv[])
               "rest contour: lead arcs in uncut stock keep the first pass at the top");
     }
 
+    // --- site order: a straight dado listed before its part's cutout ---------
+    // A horizontal line's box has no height; it still overlaps the part, so
+    // the earlier dado is cut before the cutout frees the part.
+    {
+        Rig r;
+        r.doc.setParam("site_order", "1");
+        const c2d::Element part = c2d::Element::makeRectangle({100, 60}, 200, 100, layer);
+        const c2d::Element dado = c2d::Element::makePath({QPointF(205, 60), QPointF(-5, 60)}, false, layer);
+        r.addShape(part);
+        r.doc.addElement(dado);
+        r.shapeId = dado.id;
+        r.addToolpath("contour", {{"ofset_dir", 0}, {"end_depth", "6.000"}, {"name", "dado"}, {"uuid", "{tp-d}"}});
+        r.shapeId = part.id;
+        r.addToolpath("cutout", {{"cut_depth", "18.000"}, {"depth_per_pass", 2.0}, {"break_through", "0.200"},
+                                 {"name", "cutout"}, {"uuid", "{tp-c}"}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        QStringList seen;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Comment && (o.text == QLatin1String("dado") || o.text == QLatin1String("cutout"))
+                && !seen.contains(o.text))
+                seen << o.text;
+        check(seen == QStringList({"dado", "cutout"}), "site order: a straight dado runs before the cutout");
+    }
+
     // --- spindle speed 0, a bad tool diameter, start below end: skipped -----
     {
         auto skippedWith = [&](const char *type, const QJsonObject &extra, const char *msg) {

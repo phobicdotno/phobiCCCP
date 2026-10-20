@@ -707,6 +707,15 @@ int main(int argc, char **argv)
         const c2d::ImportResult t = c2d::importHpglData(
             QByteArray("IN;DT@;LBPrinted@;PU0,0;PD400,0;PU;"), opts(0, 0), "dt.plt");
         check(t.ok && std::abs(t.bounds.width() - 10.0) < 0.1, "HPGL DT: the label ends at its own terminator");
+        const c2d::ImportResult q = c2d::importHpglData(
+            QByteArray("IN;SP1;PU0,0;PD4000,0;PU;CO\"Project 7\";PU8000,0;PD12000,0,12000,4000,8000,4000,8000,0;PU;"),
+            opts(0, 0), "co.plt");
+        check(q.ok && std::abs(q.bounds.width() - 300.0) < 0.1 && std::abs(q.bounds.height() - 100.0) < 0.1,
+              "HPGL CO: a quoted comment is not read as commands");
+        const c2d::ImportResult w = c2d::importHpglData(
+            QByteArray("IN;WDPress any key\x03;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "wd.plt");
+        check(w.ok && std::abs(w.bounds.width() - 100.0) < 0.1 && std::abs(w.bounds.height() - 100.0) < 0.1,
+              "HPGL WD: display text is skipped like a label");
     }
 
     std::printf("test_import: %d checks OK\n", g_checks);

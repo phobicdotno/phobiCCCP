@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QProgressDialog>
+#include <QScopeGuard>
 #include <QThread>
 #include <QTimer>
 
@@ -25,9 +26,13 @@ struct Shared {
 // Drives the dialog while `body` runs on a worker. Returns when the worker
 // finishes; the dialog's Cancel only sets the flag, so the export always stops
 // at a safe point of its own choosing rather than being killed.
+int g_running = 0;   // interface thread only
+
 void runBehindDialog(QWidget *parent, const QString &title, Shared &sh,
                      std::function<void()> body)
 {
+    ++g_running;
+    const auto running = qScopeGuard([] { --g_running; });
     QProgressDialog dlg(QStringLiteral("Preparing toolpaths…"),
                         QStringLiteral("Cancel"), 0, 0, parent);
     dlg.setWindowTitle(title);
@@ -157,6 +162,11 @@ TiledExport exportTiledWithProgress(QWidget *parent, Document &doc, const QStrin
     if (sh.cancel.load() && out.error.isEmpty())
         out.error = QStringLiteral("cancelled");
     return out;
+}
+
+bool exportRunning()
+{
+    return g_running > 0;
 }
 
 } // namespace c2d

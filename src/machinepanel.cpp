@@ -1006,6 +1006,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         }
     });
     connect(m_stopBtn, &QPushButton::clicked, this, [this] {
+        ++m_stopSeq;
         resetFlow();
         m_grbl->stopStream();
     });
@@ -1060,6 +1061,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         saveSettings();
     });
     connect(m_grbl, &GrblStreamer::disconnected, this, [this] {
+        ++m_stopSeq;
         resetFlow();
         stopHoldJog();
         m_deferredJogs.clear();
@@ -2117,6 +2119,7 @@ void MachinePanel::cancelJob()
             setHeld(wasHeld || m_machineState.startsWith(QLatin1String("Hold")));
         return;
     }
+    m_endOfJobPending = false;   // cancelled: no end-of-job moves behind the hold
     holdResetThen([this] {
         log(QStringLiteral("job cancelled: spindle off, Z up to the top"));
         // Not after a Stop in the meantime: nothing moves after Stop.
@@ -2138,10 +2141,11 @@ void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
     auto *t = new QTimer(this);
     t->setInterval(100);
     auto tries = std::make_shared<int>(0);
-    // A Stop (or anything else that resets the flow) while waiting has
-    // already reset the controller: nothing more goes out after it.
-    connect(t, &QTimer::timeout, this, [this, t, tries, then, evenAfterStop, seq = m_flowSeq] {
-        if (seq != m_flowSeq) {
+    // A Stop while waiting has already reset the controller: nothing more
+    // goes out after it. (The job finishing meanwhile is no Stop: its last
+    // lines went into the held planner, and the reset is still needed.)
+    connect(t, &QTimer::timeout, this, [this, t, tries, then, evenAfterStop, seq = m_stopSeq] {
+        if (seq != m_stopSeq) {
             t->stop();
             t->deleteLater();
             if (evenAfterStop && then)
@@ -2350,6 +2354,7 @@ void MachinePanel::toggleConnect()
             stopHoldJog();
             setHeld(true);
             log(QStringLiteral("disconnecting: holding, then resetting the controller"));
+            m_endOfJobPending = false;
             holdResetThen([this] {
                 // Let the reset go out before the port closes.
                 QTimer::singleShot(300, this, [this] { m_grbl->disconnectPort(); });
@@ -2565,6 +2570,7 @@ void MachinePanel::onStatus(const MachineStatus &st)
             if (!m_lastLimitPins.contains(a))
                 fresh += a;
         if (!homing && moving && !fresh.isEmpty()) {
+            ++m_stopSeq;
             m_grbl->stopStream();
             m_homed = false;
             m_unhomedWhy = QStringLiteral("an end stop fired during a move");
@@ -3078,6 +3084,7 @@ void MachinePanel::askForTool()
     const ShopAnswer ans = shopChoose(this, a);
     // "Stop the job" stops whatever is still streaming, parked or not.
     if (ans == ShopAnswer::Cancel && m_grbl->isStreaming()) {
+        ++m_stopSeq;
         resetFlow();
         m_grbl->stopStream();
         return;

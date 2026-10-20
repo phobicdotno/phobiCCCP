@@ -172,6 +172,10 @@ private:
     // the program export run the event loop, and another one must not open a
     // design (or start the machine) in the middle of it.
     bool m_linkBusy = false;
+    // A step here works on the open design across a dialog or an export
+    // (Export G-code, the setup sheet): a pad or computer must not replace it.
+    int m_holdDoc = 0;
+    bool docHeld() const;
     QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
     // refreshIso runs the event loop behind its progress dialog. An edit made

@@ -1626,7 +1626,9 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
         }
         const QString cmd = text.mid(at, 2).toUpper();
         at += 2;
-        if (cmd == QLatin1String("LB")) {
+        // Text up to the label terminator: a label, a display text, a
+        // buffered label.
+        if (cmd == QLatin1String("LB") || cmd == QLatin1String("WD") || cmd == QLatin1String("BL")) {
             const int end = int(text.indexOf(labelEnd, at));
             at = end < 0 ? len : end + 1;
             addSkipped(res, skipped, cmd);
@@ -1646,10 +1648,19 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
             addSkipped(res, skipped, cmd);
             continue;
         }
+        // A quoted string (CO's comment, BP's picture name) is one argument,
+        // whatever letters it holds; it carries nothing to draw.
+        QString args;
         int argEnd = at;
-        while (argEnd < len && !isLetter(text.at(argEnd)) && text.at(argEnd) != QLatin1Char(';'))
-            ++argEnd;
-        const QString args = text.mid(at, argEnd - at);
+        while (argEnd < len && !isLetter(text.at(argEnd)) && text.at(argEnd) != QLatin1Char(';')) {
+            if (text.at(argEnd) == QLatin1Char('"')) {
+                const int close = int(text.indexOf(QLatin1Char('"'), argEnd + 1));
+                argEnd = close < 0 ? len : close + 1;
+                args += QLatin1Char(',');
+                continue;
+            }
+            args += text.at(argEnd++);
+        }
         at = argEnd;
         QVector<double> nums;
         for (const QString &n : args.split(QRegularExpression(QStringLiteral("[,\\s]+")),

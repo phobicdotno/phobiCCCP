@@ -28,4 +28,8 @@ GcodeResult exportWithProgress(QWidget *parent, Document &doc, const QString &ti
 TiledExport exportTiledWithProgress(QWidget *parent, Document &doc, const QString &outBase,
                                     double tileHeight, const QString &title);
 
+// Whether an export started by one of these is running (it runs its own
+// event loop, so the window still takes network requests meanwhile).
+bool exportRunning();
+
 } // namespace c2d

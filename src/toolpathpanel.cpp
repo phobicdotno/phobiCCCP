@@ -675,7 +675,8 @@ void ToolpathPanel::createInlayMale()
     const Toolpath female = *t;
     QVector<QPainterPath> els;
     for (const QJsonValue &v : t->json.value("elements").toArray())
-        if (const Element *e = m_doc->elementById(v.toObject().value("uuid").toString()))
+        if (const Element *e = m_doc->elementById(v.toObject().value("uuid").toString());
+            e && !Element::isConstruction(*e) && !Element::isPoint(*e))   // as the export
             els.append(e->painterPath);
     if (els.isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Inlay male"),

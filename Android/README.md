@@ -154,7 +154,8 @@ made from nothing a newer pad or phobiCCCP did. An edit of such a copy by a newe
 its vv and notes the older edit under an id made from the copy's time and vv
 (`olderEditId`, `e-` and 16 hex digits), so it counts as made from it. At most 64 entries
 are kept: past that the oldest `e-` entries are dropped, so a design edited in turn by an
-older and a newer client keeps a vv that is believed. Two copies neither of
+older and a newer client keeps a vv that is believed. Against a full vv, an `e-` entry it
+lacks at or below the oldest `e-` time it holds counts as one of those dropped, known to it. Two copies neither of
 which has a believed vv, or a deletion from an older pad (which keeps no vv), follow the
 rules below (`base`, newer time wins).
 

@@ -963,14 +963,34 @@ Order order(const QJsonObject &a, const QJsonObject &b)
         }
         return Order::Unknown;
     }
+    // A full vv dropped its oldest older-edit entries (Store::edited): an
+    // entry it lacks at or below the oldest it still holds is one of those,
+    // known to it, not an edit made apart.
+    auto dropped = [](const QJsonObject &full) {
+        double oldest = -1;
+        if (full.size() >= kMaxReplicas)
+            for (auto it = full.constBegin(); it != full.constEnd(); ++it)
+                if (it.key().startsWith(QLatin1String("e-"))
+                    && (oldest < 0 || it.value().toDouble() < oldest))
+                    oldest = it.value().toDouble();
+        return oldest;
+    };
+    const double droppedA = dropped(va), droppedB = dropped(vb);
+    auto known = [](const QString &k, double t, double droppedUpTo) {
+        return droppedUpTo >= 0 && k.startsWith(QLatin1String("e-")) && t <= droppedUpTo;
+    };
     bool aAhead = false, bAhead = false;
     auto entry = [](const QJsonObject &v, const QString &k) { return v.value(k).toDouble(); };
     for (auto it = va.constBegin(); it != va.constEnd(); ++it) {
-        aAhead = aAhead || it.value().toDouble() > entry(vb, it.key());
-        bAhead = bAhead || it.value().toDouble() < entry(vb, it.key());
+        const double t = it.value().toDouble();
+        if (!vb.contains(it.key()) && known(it.key(), t, droppedB))
+            continue;
+        aAhead = aAhead || t > entry(vb, it.key());
+        bAhead = bAhead || t < entry(vb, it.key());
     }
     for (auto it = vb.constBegin(); it != vb.constEnd(); ++it)
-        bAhead = bAhead || (!va.contains(it.key()) && it.value().toDouble() > 0);
+        bAhead = bAhead || (!va.contains(it.key()) && it.value().toDouble() > 0
+                            && !known(it.key(), it.value().toDouble(), droppedA));
     return aAhead ? (bAhead ? Order::Concurrent : Order::After) : (bAhead ? Order::Before : Order::Same);
 }
 

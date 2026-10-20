@@ -334,6 +334,17 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     target_link_libraries(test_machine PRIVATE phobicccp_core Qt6::Widgets)
     add_test(NAME machine COMMAND test_machine)
     set_tests_properties(machine PROPERTIES SKIP_RETURN_CODE 77)
+    # Cancel job / Disconnect while the hold settles: a Stop in the wait, and
+    # the job's last lines answered in it.
+    add_executable(test_machinestop tests/test_machinestop.cpp src/machinepanel.cpp src/shopdialog.cpp
+                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
+                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
+    target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)
+    foreach(mode cancelstop cancelend disconnend)
+        add_test(NAME machinestop_${mode} COMMAND test_machinestop)
+        set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
+                             ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")
+    endforeach()
 endif()
 
 find_package(Python3 COMPONENTS Interpreter)

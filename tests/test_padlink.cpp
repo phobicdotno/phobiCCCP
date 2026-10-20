@@ -741,6 +741,8 @@ static void testVersions(const QString &dir, QJsonObject d)
                   && !cv.contains(QStringLiteral("e-%1").arg(1, 16, 16, QLatin1Char('0')))
                   && !padlink::versionVector(capped).isEmpty(),
               "64 versions at most: the oldest older-edit entry goes");
+        check(padlink::order(capped, full) == Order::After && padlink::order(full, capped) == Order::Before,
+              "and the capped copy is still made from the one it edited");
     }
     // The same on the pad (Android/lib/model.dart olderEditId, forkIdFor).
     check(olderEdit == QLatin1String("e-e625dcdd1333364a"), "the older edit's id is the pad's");

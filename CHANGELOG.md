@@ -8,21 +8,30 @@
   - The inlay male started the glue gap below the top, so the plug seated only that deep
     and left a void of most of the pocket under it. It now starts the gap short of the
     pocket's depth and ends at it: the gap of glue below, the plug the gap proud.
+  - The inlay male no longer carves construction guides and points into the male as real
+    vectors (the female leaves them out).
+  - Site order ran a straight horizontal or vertical line toolpath (a dado, a groove) out of
+    list order, before a cutout or a pocket at the same place.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
-  - HPGL import read label text as commands (the "Pr" of "Project" switched to relative
-    moves); labels and encoded polylines are skipped.
+  - HPGL import read text as commands (the "Pr" of "Project" switched to relative moves);
+    labels, display texts, quoted comments and names, and encoded polylines are skipped.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
-    afterwards; nothing moves after Stop now.
+    afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
+    are answered still resets the held controller (and adds no end-of-job moves).
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
+  - A design sent from a pad or another computer no longer replaces the open one under a
+    dialog or an export (Export G-code wrote the old design's program under the new name);
+    the sender is told to try again shortly.
 - **Pad link:**
-  - phobiCCCP on a tablet is no longer backed up, so a restored tablet cannot share another's
+  - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
     identity, and the pad's id on the computer is its own id in the versions.
-  - A design edited in turn by an older and a newer client no longer outgrows its versions.
+  - A design edited in turn by an older and a newer client no longer outgrows its versions,
+    and the copies made after that are still known to be made from each other.
   - A design sent by another computer no longer warns that the pad is old.
   - The pad shows its real version (it said 1.2.3).
 

@@ -2090,7 +2090,9 @@ static QRectF jobBounds(const Job &j)
     QRectF r;
     for (const QPolygonF &p : j.rings)
         r |= p.boundingRect();
-    return r;
+    // A straight horizontal or vertical line has no area, and QRectF never
+    // counts such a box as overlapping: grown a little it does.
+    return r.isNull() ? r : r.adjusted(-0.01, -0.01, 0.01, 0.01);
 }
 
 // A ring job held back so it can be interleaved with the jobs of neighbouring
