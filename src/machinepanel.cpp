@@ -2130,7 +2130,7 @@ void MachinePanel::cancelJob()
     });
 }
 
-void MachinePanel::holdResetThen(std::function<void()> then)
+void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
 {
     m_grbl->pauseStream();               // again: harmless when already held
     // Wait for the hold to finish decelerating (Hold:0), at most 5 s. The
@@ -2138,7 +2138,16 @@ void MachinePanel::holdResetThen(std::function<void()> then)
     auto *t = new QTimer(this);
     t->setInterval(100);
     auto tries = std::make_shared<int>(0);
-    connect(t, &QTimer::timeout, this, [this, t, tries, then] {
+    // A Stop (or anything else that resets the flow) while waiting has
+    // already reset the controller: nothing more goes out after it.
+    connect(t, &QTimer::timeout, this, [this, t, tries, then, evenAfterStop, seq = m_flowSeq] {
+        if (seq != m_flowSeq) {
+            t->stop();
+            t->deleteLater();
+            if (evenAfterStop && then)
+                then();   // no motion in it (a disconnect): still wanted
+            return;
+        }
         const bool still = m_machineState == QLatin1String("Hold:0")
                            || m_machineState == QLatin1String("Idle");
         ++*tries;
@@ -2344,7 +2353,7 @@ void MachinePanel::toggleConnect()
             holdResetThen([this] {
                 // Let the reset go out before the port closes.
                 QTimer::singleShot(300, this, [this] { m_grbl->disconnectPort(); });
-            });
+            }, true);
             return;
         }
         m_grbl->disconnectPort();

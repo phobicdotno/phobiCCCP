@@ -13,6 +13,9 @@
     letter spacing or on an arc; each letter moves with its marks now.
   - HPGL import read label text as commands (the "Pr" of "Project" switched to relative
     moves); labels and encoded polylines are skipped.
+- **Machine:**
+  - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
+    afterwards; nothing moves after Stop now.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.

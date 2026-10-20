@@ -121,7 +121,7 @@ private:
     bool zeroAllowed(bool xy);
     // Feed hold, wait for it to settle (Hold:0 or Idle, at most 5 s), soft
     // reset, then `then`. Used to cancel a job and to disconnect during one.
-    void holdResetThen(std::function<void()> then);
+    void holdResetThen(std::function<void()> then, bool evenAfterStop = false);
     void rehearseToolChange();
     void finishRehearsal(bool ok, bool measured);
     void onStatus(const MachineStatus &st);
