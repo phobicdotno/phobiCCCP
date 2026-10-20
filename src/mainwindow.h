@@ -85,6 +85,7 @@ private:
     void removeUntitledFile();    // the scratch file behind an untitled design
     // Crash recovery (recovery.h): a copy of the unsaved design every couple
     // of minutes, offered again at start-up if the session died.
+    void onSendTo();
     void autosave();
     void offerRecovery();
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
@@ -107,6 +108,8 @@ private:
                           QString *error = nullptr);
     // File > Send to pad…: the open file to a pad, to edit it there.
     void onSendToPad();
+    // The design as it is now, saved or not, as a .c2d in the cache (to send whole).
+    QString sendCopy(QString *error);
     qint64 sendToPad(const QString &padId, QString *note, QString *error);
     padlink::Pads m_pads;   // pads in touch lately, and designs waiting for them
     void padDesignChanged(const QString &id);

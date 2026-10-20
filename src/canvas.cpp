@@ -30,6 +30,8 @@
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QWheelEvent>
+#include <QGestureEvent>
+#include <QPinchGesture>
 #include <QtMath>
 #include <algorithm>
 
@@ -360,6 +362,10 @@ Canvas::Canvas(QWidget *parent)
     // view, and the scene leaves room around the board to move it in.
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Touchscreens and pads: two fingers pinch to zoom and move the view;
+    // one finger still arrives as the mouse.
+    viewport()->setAttribute(Qt::WA_AcceptTouchEvents);
+    viewport()->grabGesture(Qt::PinchGesture);
 
     // Zoom out / in and the zoom % + cursor position, bottom right on the
     // canvas, where they sit with the drawing instead of under the panels.
@@ -2555,6 +2561,35 @@ void Canvas::deleteSelected()
     }
     if (!victims.isEmpty())
         pushEdit(new DeleteCmd(this, m_doc, victims), {});
+}
+
+bool Canvas::viewportEvent(QEvent *event)
+{
+    if (event->type() != QEvent::Gesture)
+        return QGraphicsView::viewportEvent(event);
+    auto *ge = static_cast<QGestureEvent *>(event);
+    auto *pg = static_cast<QPinchGesture *>(ge->gesture(Qt::PinchGesture));
+    if (!pg)
+        return QGraphicsView::viewportEvent(event);
+    if (pg->state() == Qt::GestureStarted)
+        cancelDrawing();   // the first finger began a drag or a shape: the pinch wins
+    const double f = pg->scaleFactor();
+    if (f > 0.0 && std::isfinite(f) && qAbs(f - 1.0) > 1e-4) {
+        // Zoom about the point between the fingers, as the wheel does about the mouse.
+        const QPoint at = viewport()->mapFromGlobal(pg->centerPoint().toPoint());
+        const QPointF before = mapToScene(at);
+        scale(f, f);
+        const QPoint moved = mapFromScene(before) - at;
+        horizontalScrollBar()->setValue(horizontalScrollBar()->value() + moved.x());
+        verticalScrollBar()->setValue(verticalScrollBar()->value() + moved.y());
+    }
+    // Moving the fingers together moves the view, like the hand tool.
+    const QPoint d = (pg->centerPoint() - pg->lastCenterPoint()).toPoint();
+    horizontalScrollBar()->setValue(horizontalScrollBar()->value() - d.x());
+    verticalScrollBar()->setValue(verticalScrollBar()->value() - d.y());
+    emitZoom();
+    ge->accept(pg);
+    return true;
 }
 
 void Canvas::wheelEvent(QWheelEvent *event)

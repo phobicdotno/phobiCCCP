@@ -17,6 +17,24 @@
   {seq, design, name, from}, and the pad answers with a new `opened` request once the design is
   in. Older pads and computers ignore the new fields.
 
+## v1.2.7 (build 80) — 2026-10-20
+
+> The desktop program runs on a pad, and any phobiCCCP can send a design to the computer by the machine
+
+- **phobiCCCP for Android.** The desktop program itself now builds as an Android app, so the
+  pad gets exactly the same tools, icons, panels and look. CI builds the APK on every push
+  (`android-qt`). For now it sits beside the Flutter pad app, which stays the released one
+  until the new one has been tried on the pad.
+- **Touch.** Hold a finger still for a moment to right-click (context menus); pinch with two
+  fingers on the canvas to zoom, and move them to pan.
+- **File > Send to phobiCCCP…** Sends the open design, whole, to phobiCCCP on another
+  computer found on the network (or typed in by address), picks its machine, and can start
+  cutting there when that computer allows it (Machine > Pads may start cutting). Works from a
+  pad and between two computers alike. The other side opens it under
+  Documents/phobiCCCP/Received and asks to save first if it has unsaved changes.
+- On Android the file dialogs are Qt's own (as on the desktop) and designs are kept in the
+  app's Documents/phobiCCCP folder.
+
 ## v1.2.6 (build 79) — 2026-10-20
 
 > Bug check 4: pockets no longer cut through islands, tool changes name the right bit, and pad sends that clash are kept as a copy
