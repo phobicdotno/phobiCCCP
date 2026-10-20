@@ -40,16 +40,25 @@ class SyncResult {
 
   /// Designs changed both here and there: what became of them, to tell the user.
   final List<String> conflicts;
-  const SyncResult(this.info, this.tools, this.pulled, this.pushed, [this.refused = const [], this.conflicts = const []]);
+
+  /// A design sent from the computer for this pad to open, now in the store.
+  final OpenRequest? open;
+  const SyncResult(this.info, this.tools, this.pulled, this.pushed,
+      [this.refused = const [], this.conflicts = const [], this.open]);
 }
 
 /// One round with one phobiCCCP: its status, its tool library when [withTools]
 /// (it seldom changes, and it is the big answer), and the designs both ways.
 /// [onPulled] runs after each design taken in, so an open copy is replaced
 /// before more edits are made on top of the old one.
-Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = true, void Function()? onPulled}) =>
+/// [pad] ({id, name}) says who asks; a design the computer sent for this pad
+/// to open comes back in [SyncResult.open] once it is in the store, and the
+/// computer is told it arrived. [handled] is the request already opened from
+/// this computer, which is not opened again when its answer was lost.
+Future<SyncResult> syncWith(Desktop desk, DesignStore store,
+        {bool withTools = true, void Function()? onPulled, Map<String, String>? pad, int handled = 0}) =>
     CccpConnection.use(desk.address, desk.port, (c) async {
-      final info = await c.info();
+      final info = await c.info(pad: pad);
       final tools = withTools ? await c.tools() : null;
       final now = DateTime.now().millisecondsSinceEpoch;
       final remote = await c.designs();
@@ -124,7 +133,20 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
         final d = store.get(id);
         if (d != null) await give(d);
       }
-      return SyncResult(info, tools, pulled, pushed, refused, conflicts);
+      // Asked for by the computer: the design came with this round (or was
+      // here already). Not there (it could not be pulled): asked again next round.
+      OpenRequest? open;
+      final req = info.open;
+      final want = req == null ? null : store.get(req.design);
+      if (req != null && pad != null && want != null && !want.deleted) {
+        if (req.seq != handled) open = req;
+        try {
+          await c.opened(req.seq, pad['id'] ?? '');
+        } on CccpException catch (e) {
+          if (!e.refused) rethrow;
+        }
+      }
+      return SyncResult(info, tools, pulled, pushed, refused, conflicts, open);
     });
 
 /// After a send to [host] over [c]: the copy kept there is this pad's base

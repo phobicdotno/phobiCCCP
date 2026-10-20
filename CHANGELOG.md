@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.3.0 (build 90) — 2026-10-20
+
+> Send the open design from the computer to a pad, to edit it there
+
+- **File › Send to pad…** lists the PhobiCCCP pads in touch with this computer (each one shows
+  within a few seconds of the pad app being open on the same network). Pick one and Send: the
+  design opens on the pad on its next sync round, and the dialog says when it is open there.
+  An unsaved design is saved first, since the pad gets the file as saved.
+- Edits made on the pad come back to the same file, as for a design sent from a pad. A design
+  that holds what the pad cannot (curves, tabs, parameters, a 3D model…) still goes, and the
+  dialog says the pad's edits then come back as a copy beside the file.
+- **Pad:** a design sent from a computer opens in place of the one on screen (which is already
+  saved), with a line saying where it came from.
+- **Link:** a pad's `info` request now carries `pad` {id, name}; the answer may carry `open`
+  {seq, design, name, from}, and the pad answers with a new `opened` request once the design is
+  in. Older pads and computers ignore the new fields.
+
 ## v1.2.6 (build 79) — 2026-10-20
 
 > Bug check 4: pockets no longer cut through islands, tool changes name the right bit, and pad sends that clash are kept as a copy

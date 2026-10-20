@@ -144,6 +144,16 @@ class Settings {
     _save();
   }
 
+  /// This pad's own id, made once, so a computer can send designs to it.
+  String get deviceId {
+    final v = _v['deviceId'];
+    if (v is String && v.isNotEmpty) return v;
+    final id = newId();
+    _v['deviceId'] = id;
+    _save();
+    return id;
+  }
+
   String get lastTarget => _v['lastTarget'] is String ? _v['lastTarget'] as String : '';
   set lastTarget(String v) {
     _v['lastTarget'] = v;

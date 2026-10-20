@@ -1,5 +1,7 @@
 #pragma once
+#include <QHash>
 #include <QJsonArray>
+#include <QList>
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
@@ -144,5 +146,49 @@ private:
 };
 
 bool validId(const QString &id);
+
+// The pads that asked this computer for its "info" lately (each sync round
+// does, every few seconds), and designs sent to them from File > Send to
+// pad…. A pad is never connected to between its rounds, so a design for it
+// waits here: the pad's next "info" answer carries it, the pad syncs it in,
+// opens it and says "opened".
+class Pads
+{
+public:
+    struct Pad {
+        QString id, name, address;
+        qint64 lastSeen = 0;
+    };
+    // A pad that has not asked for this long is not shown as connected.
+    static constexpr qint64 kRecentMs = 20000;
+    // A design no pad took this long is given up.
+    static constexpr qint64 kOpenMs = 120000;
+
+    // Note the pad in an "info" request (its "pad": {id, name}); false when
+    // it carries none, or not a valid one.
+    bool seen(const QJsonObject &pad, const QString &address, qint64 now);
+    QList<Pad> recent(qint64 now) const;   // newest first
+    QString nameOf(const QString &padId) const;
+
+    // Ask `padId` to open `designId`, in place of anything sent it before;
+    // the request's number.
+    qint64 sendOpen(const QString &padId, const QString &designId, const QString &name,
+                    const QString &from, qint64 now);
+    // What goes in the pad's "info" answer as "open"; empty when nothing waits.
+    QJsonObject pendingFor(const QString &padId, qint64 now) const;
+    // The pad says it opened request `seq`: true (with the design's name) when
+    // that was the one waiting for it, which is then done.
+    bool opened(const QString &padId, qint64 seq, QString *name = nullptr);
+    bool waiting(const QString &padId, qint64 seq) const;
+
+private:
+    struct Open {
+        qint64 seq = 0, at = 0;
+        QString design, name, from;
+    };
+    QHash<QString, Pad> m_pads;
+    QHash<QString, Open> m_open;
+    qint64 m_seq = 0;
+};
 
 } // namespace c2d::padlink

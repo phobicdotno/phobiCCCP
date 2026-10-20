@@ -17,6 +17,7 @@
 #include "projectreceiver.h"
 #include "machineprofiles.h"
 #include "padlink.h"
+#include "sendtopaddialog.h"
 #include <QActionGroup>
 #include <QLineEdit>
 #include <QJsonDocument>
@@ -768,6 +769,9 @@ MainWindow::MainWindow(QWidget *parent)
             ->setToolTip(QStringLiteral("SVG, DXF, HPGL (.plt), PDF, Illustrator (.ai), EPS, PostScript"));
     installImportDropHandler(this, m_canvas, &m_doc, [this](const QString &p) { openFile(p); });
     fileMenu->addSeparator();
+    fileMenu->addAction(QStringLiteral("Send to &pad…"), this, &MainWindow::onSendToPad)
+            ->setToolTip(QStringLiteral("Open this design on a PhobiCCCP pad to edit it there; "
+                                        "the edits come back to this file"));
     fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
                         &MainWindow::onExportGcode)
             ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
@@ -2618,6 +2622,21 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
                              .arg(QSysInfo::machineHostName()));
     } else if (op == QLatin1String("info")) {
         reply = padInfo();
+        // A pad's sync round says who it is, so Send to pad… can list it,
+        // and gets the design sent it, if one waits.
+        const QJsonObject pad = req.value(QStringLiteral("pad")).toObject();
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (m_pads.seen(pad, peer, now)) {
+            const QJsonObject open = m_pads.pendingFor(pad.value(QStringLiteral("id")).toString(), now);
+            if (!open.isEmpty())
+                reply.insert(QStringLiteral("open"), open);
+        }
+    } else if (op == QLatin1String("opened")) {
+        const QString padId = req.value(QStringLiteral("pad")).toString();
+        QString name;
+        if (m_pads.opened(padId, qint64(req.value(QStringLiteral("seq")).toDouble()), &name))
+            statusBar()->showMessage(QStringLiteral("“%1” is open on %2").arg(name, m_pads.nameOf(padId)), 10000);
+        reply = QJsonObject{{QStringLiteral("ok"), true}};
     } else if (op == QLatin1String("tools")) {
         reply = padlink::toolsJson();
         reply.insert(QStringLiteral("ok"), !reply.isEmpty());
@@ -2804,26 +2823,43 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     return reply;
 }
 
-void MainWindow::padShareSaved(const QString &c2dPath)
+QString MainWindow::padShareSaved(const QString &c2dPath, bool startLink, QStringList *lostOut,
+                                  QString *error)
 {
     padlink::Links links(padDir());
     if (!links.ok()) {
         statusBar()->showMessage(QStringLiteral("Saved %1, but not to the pads: %2").arg(c2dPath, links.error()),
                                  10000);
-        return;
+        if (error)
+            *error = links.error();
+        return {};
     }
-    const QString id = links.idFor(c2dPath);
-    if (id.isEmpty())
-        return;
+    QString id = links.idFor(c2dPath);
     padlink::Store store(padDir());
-    QJsonObject base = store.get(id);
-    if (base.isEmpty() || base.value(QStringLiteral("deleted")).toBool())
-        return;
+    QJsonObject base = id.isEmpty() ? QJsonObject() : store.get(id);
+    if (startLink && (base.isEmpty() || base.value(QStringLiteral("deleted")).toBool())) {
+        // Sent to a pad for the first time (File > Send to pad…), or its pad
+        // design was deleted since: it becomes a pad design of its own,
+        // linked like one a pad sent here.
+        id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        base = QJsonObject{{QStringLiteral("id"), id},
+                           {QStringLiteral("name"), QFileInfo(c2dPath).completeBaseName().left(60)},
+                           {QStringLiteral("modified"), 0}};
+    }
+    if (id.isEmpty() || base.isEmpty() || base.value(QStringLiteral("deleted")).toBool()) {
+        if (error)
+            *error = QStringLiteral("it is not a pad design");
+        return {};
+    }
     // Saved here but not shared: the file now holds what the pads do not, so
     // a pad edit must not be rebuilt over it.
     auto notShared = [&](const QString &why) {
-        links.set(c2dPath, id, false, links.modified(c2dPath));
+        if (error)
+            *error = why;
+        if (!links.idFor(c2dPath).isEmpty())
+            links.set(c2dPath, id, false, links.modified(c2dPath));
         statusBar()->showMessage(QStringLiteral("Not sent to the pads: %1").arg(why), 10000);
+        return QString();
     };
     // A pad changed the design after this file was made from it (and it was
     // not rebuilt, as it was open with changes or holds what a pad cannot).
@@ -2852,6 +2888,8 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     // bound to them), so such a design is not rebuilt from a pad.
     if (!m_doc.parametric().isEmpty())
         lost << QStringLiteral("the constraints and parameters");
+    if (lostOut)
+        *lostOut = lost;
     // Newer than what the pads have, even with this computer's clock behind.
     const double modified = padlink::nextStamp(base.value(QStringLiteral("modified")).toDouble(),
                                                double(QDateTime::currentMSecsSinceEpoch()));
@@ -2861,14 +2899,14 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     if (!links.set(c2dPath, d.value(QStringLiteral("id")).toString(), lost.isEmpty(), modified)) {
         statusBar()->showMessage(QStringLiteral("Saved %1 and sent to the pads, but its link could not be "
                                                 "kept: %2").arg(c2dPath, links.error()), 10000);
-        return;
+        return d.value(QStringLiteral("id")).toString();
     }
     if (!forkedFrom.isEmpty()) {
         statusBar()->showMessage(QStringLiteral("Saved %1. “%2” had changed on a pad since, so the "
                                                 "pads get this as “%3” and keep their own")
                                      .arg(c2dPath, forkedFrom, d.value(QStringLiteral("name")).toString()),
                                  10000);
-        return;
+        return d.value(QStringLiteral("id")).toString();
     }
     statusBar()->showMessage(
         lost.isEmpty() ? QStringLiteral("Saved %1, and the pads get the change").arg(c2dPath)
@@ -2876,6 +2914,74 @@ void MainWindow::padShareSaved(const QString &c2dPath)
                                         "edit no longer replaces this file")
                              .arg(c2dPath, lost.join(QStringLiteral(", "))),
         10000);
+    return d.value(QStringLiteral("id")).toString();
+}
+
+void MainWindow::onSendToPad()
+{
+    if (m_doc.filePath().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Nothing to send"),
+                                 QStringLiteral("Open or make a design first."));
+        return;
+    }
+    // The pad gets the file as saved, and its edits come back into it.
+    if (m_untitled || m_dirty) {
+        const auto b = QMessageBox::question(
+            this, QStringLiteral("Send to pad"),
+            m_untitled ? QStringLiteral("Save this design first? Edits made on the pad come back to its file.")
+                       : QStringLiteral("Save the changes first? The pad gets the design as saved."),
+            QMessageBox::Save | QMessageBox::Cancel, QMessageBox::Save);
+        if (b != QMessageBox::Save)
+            return;
+        onSave();
+        if (m_untitled || m_dirty)
+            return;
+    }
+    SendToPadDialog::Hooks hooks;
+    hooks.pads = [this] { return m_pads.recent(QDateTime::currentMSecsSinceEpoch()); };
+    hooks.send = [this](const QString &padId, QString *note, QString *error) {
+        return sendToPad(padId, note, error);
+    };
+    hooks.waiting = [this](const QString &padId, qint64 seq) { return m_pads.waiting(padId, seq); };
+    SendToPadDialog dlg(QFileInfo(m_doc.filePath()).completeBaseName(), m_receiver != nullptr, hooks, this);
+    dlg.exec();
+}
+
+qint64 MainWindow::sendToPad(const QString &padId, QString *note, QString *error)
+{
+    const QString path = m_doc.filePath();
+    if (m_untitled || m_dirty || path.isEmpty()) {
+        *error = QStringLiteral("save the design first");
+        return 0;
+    }
+    if (!QFileInfo::exists(path)) {
+        *error = QStringLiteral("%1 is not there any more").arg(path);
+        return 0;
+    }
+    // Already the pads' copy as it is in the file: sent as it is. Otherwise
+    // (not a pad design yet, or the file is newer) it is shared first, as a
+    // save shares it.
+    const padlink::Links links(padDir());
+    QString id = links.idFor(path);
+    const QJsonObject kept = id.isEmpty() ? QJsonObject() : padlink::Store(padDir()).get(id);
+    const bool current = !kept.isEmpty() && !kept.value(QStringLiteral("deleted")).toBool()
+                         && links.modified(path) > 0
+                         && kept.value(QStringLiteral("modified")).toDouble() == links.modified(path)
+                         && !links.changedOutside(path);
+    bool whole = current && links.padOnly(path);
+    if (!current) {
+        QStringList lost;
+        id = padShareSaved(path, true, &lost, error);
+        if (id.isEmpty())
+            return 0;
+        whole = lost.isEmpty();
+    }
+    if (!whole)
+        *note = QStringLiteral("The pad gets it without what only this program holds (curves, tabs, "
+                               "parameters…), so edits there come back as a copy beside this file.");
+    const QJsonObject d = padlink::Store(padDir()).get(id);
+    return m_pads.sendOpen(padId, id, d.value(QStringLiteral("name")).toString(), QSysInfo::machineHostName(),
+                           QDateTime::currentMSecsSinceEpoch());
 }
 
 void MainWindow::padDesignChanged(const QString &id)

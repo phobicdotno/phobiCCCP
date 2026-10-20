@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.2.6 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -97,6 +97,7 @@ add_executable(phobicccp
     src/settingsdialog.cpp
     src/toolbarorder.cpp
     src/projectreceiver.cpp
+    src/sendtopaddialog.cpp
 )
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
