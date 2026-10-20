@@ -271,6 +271,59 @@ int main(int argc, char **argv)
         }
         runShape("disc", {disc}, 1.5875, 0.5, 0.3);
     }
+    // Stay-down links were decided from the coarse cleared raster alone (rim
+    // sampled inside the tool, cells of r/25): one hop here passed 2.82 mm
+    // from an island with a 3 mm cutter, nicking it 0.18 mm at full depth.
+    // A link that stays down must keep the tool centre in the part.
+    {
+        const QVector<QPolygonF> rings{
+            QPolygonF({QPointF(34.754, 43.375), QPointF(48.840, 28.397), QPointF(79.525, 39.294),
+                       QPointF(65.652, 70.914), QPointF(35.684, 69.203), QPointF(34.754, 43.375)}),
+            QPolygonF({QPointF(55.632, 61.811), QPointF(53.657, 60.859), QPointF(54.800, 58.686),
+                       QPointF(56.408, 57.108), QPointF(57.503, 58.509), QPointF(59.340, 60.162),
+                       QPointF(57.622, 61.851), QPointF(55.632, 61.811)}),
+            QPolygonF({QPointF(55.050, 46.993), QPointF(56.420, 45.862), QPointF(58.857, 46.574),
+                       QPointF(58.458, 48.766), QPointF(57.480, 50.103), QPointF(55.240, 49.602),
+                       QPointF(55.050, 46.993)})};
+        const double r = 3.0010596782163472;
+        adaptive::Params p;
+        p.toolR = r;
+        p.stepover = 0.75223120892584472;
+        p.climb = true;
+        const adaptive::Plan pl = adaptive::plan(rings, p);
+        QPainterPath region;
+        region.setFillRule(Qt::OddEvenFill);
+        for (const QPolygonF &ring : rings)
+            region.addPolygon(ring);
+        double worst = 1e30;
+        int stays = 0;
+        QPointF last;
+        bool have = false;
+        for (const adaptive::Move &m : pl.moves) {
+            if (m.kind == adaptive::Move::Helix) {
+                last = m.center + QPointF(m.radius, 0);
+                have = true;
+                continue;
+            }
+            if (have && m.link == adaptive::Move::StayDown) {
+                ++stays;
+                const QLineF hop(last, m.path.first());
+                const int n = std::max(2, int(std::ceil(hop.length() / 0.05)));
+                for (int k = 0; k <= n; ++k) {
+                    const QPointF q = hop.pointAt(double(k) / n);
+                    double d = 1e30;
+                    for (const QPolygonF &ring : rings)
+                        d = std::min(d, polyDist(q, ring));
+                    worst = std::min(worst, region.contains(q) ? d : -d);
+                }
+            }
+            last = m.path.last();
+            have = true;
+        }
+        std::fprintf(stderr, "stay-down links: %d, closest %.3f mm to the walls (tool r %.3f)\n",
+                     stays, worst, r);
+        check(stays > 0 && worst >= r - 0.03, "stay-down links keep clear of islands and walls");
+    }
     // A slot narrower than the tool: nothing to do, and said so.
     {
         adaptive::Params p;

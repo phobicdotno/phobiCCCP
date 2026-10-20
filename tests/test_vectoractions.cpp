@@ -387,6 +387,31 @@ int main(int argc, char *argv[])
         canvas->setDocument(&doc);
     }
 
+    // A sketch point only moves under Scale: it never stretches into a path
+    // nor grows.
+    for (int k = 0; k < 2; ++k) {
+        Document cd;
+        const Element rect = Element::makeRectangle({50, 50}, 40, 20, layer);
+        const Element pt = Element::makePoint({30, 40}, layer);
+        cd.addElement(rect);
+        cd.addElement(pt);
+        canvas->setDocument(&cd);
+        canvas->selectIds({rect.id, pt.id});
+        if (k == 0)
+            va.scale(2, 1);
+        else
+            va.scale(2, 2);
+        const Element *e = cd.elementById(pt.id);
+        check(e && Element::isPoint(*e), "scaled sketch point is still a point");
+        check(std::fabs(e->raw.value("radius").toDouble() - pt.raw.value("radius").toDouble()) < 1e-9,
+              "scaled sketch point keeps its size");
+        const QRectF rb = cd.elementById(rect.id)->painterPath.boundingRect();
+        const QPointF c = e->painterPath.boundingRect().center();
+        check(std::fabs(c.x() - rb.left()) < 1e-6 && std::fabs(c.y() - rb.top()) < 1e-6,
+              "scaled sketch point moves with the shape (its corner)");
+        canvas->setDocument(&doc);
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

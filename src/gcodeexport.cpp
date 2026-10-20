@@ -1228,20 +1228,68 @@ static QPolygonF startNearest(const QPolygonF &ring, const QPointF &p)
     return out;
 }
 
-// The ring of `level` that runs `dist` from the point p of a finishing
-// ring: the same loop offset further, or none when it vanished or merged.
-static int parallelRing(const QList<QPolygonF> &level, const QPointF &p, double dist, double tol)
+// The ring of `level` that runs `dist` from the finishing ring p all along:
+// the same loop offset further, or none when it vanished, merged or split.
+// Matching on one point of p took a ring that two parts' offsets had merged
+// into: both loops then roughed it, and the step across from it to p went
+// straight through the neighbouring part at full depth. So every vertex and
+// edge midpoint of the candidate must lie `dist` from p, and p must lie
+// along it in turn - or the candidate is what is left of one corner of a
+// loop whose narrow arms vanished, and roughing only that corner leaves the
+// rest of the loop to the finishing rings at full depth. Only at p's sharp
+// corners may p stand further off: there the offset's corner stands back
+// dist / sin(angle / 2), over dist / tan(angle / 2) of either edge.
+static int parallelRing(const QList<QPolygonF> &level, const QPolygonF &p, double dist, double tol)
 {
-    int best = -1;
-    double bestErr = tol;
-    for (int i = 0; i < level.size(); ++i) {
-        const double err = qAbs(distToPoly(p, level.at(i)) - dist);
-        if (err <= bestErr) {
-            bestErr = err;
-            best = i;
+    const QRectF reach = p.boundingRect().adjusted(-dist - tol, -dist - tol, dist + tol, dist + tol);
+    auto runsAlong = [&](const QPolygonF &q) {
+        for (int i = 0; i < q.size(); ++i) {
+            if (qAbs(distToPoly(q.at(i), p) - dist) > tol)
+                return false;
+            if (i + 1 < q.size()
+                && qAbs(distToPoly((q.at(i) + q.at(i + 1)) / 2, p) - dist) > tol)
+                return false;
         }
+        return true;
+    };
+    struct Corner { QPointF at; double reach, off; };
+    QVector<Corner> corners;
+    const int n = p.size() - (p.size() > 1 && p.first() == p.last() ? 1 : 0);
+    for (int i = 0; n >= 3 && i < n; ++i) {
+        const QPointF v = p.at(i), u = p.at((i + n - 1) % n) - v, w = p.at((i + 1) % n) - v;
+        const double lu = std::hypot(u.x(), u.y()), lw = std::hypot(w.x(), w.y());
+        if (lu < 1e-9 || lw < 1e-9)
+            continue;
+        const double half = std::acos(qBound(-1.0, (u.x() * w.x() + u.y() * w.y()) / (lu * lw), 1.0)) / 2;
+        if (half < M_PI / 2 - 0.02 && half > 1e-3)
+            corners.append({v, dist / std::tan(half) + tol, dist / std::sin(half) + tol});
     }
-    return best;
+    auto covers = [&](const QPolygonF &q) {
+        auto near = [&](const QPointF &x) {
+            const double e = distToPoly(x, q);
+            if (e <= dist + tol)
+                return true;
+            for (const Corner &c : corners)
+                if (QLineF(x, c.at).length() <= c.reach && e <= c.off)
+                    return true;
+            return false;
+        };
+        for (int i = 0; i < p.size(); ++i)
+            if (!near(p.at(i)) || (i + 1 < p.size() && !near((p.at(i) + p.at(i + 1)) / 2)))
+                return false;
+        return true;
+    };
+    int found = -1;
+    for (int i = 0; i < level.size(); ++i) {
+        const QPolygonF &q = level.at(i);
+        if (q.isEmpty() || !reach.contains(q.boundingRect())
+            || qAbs(distToPoly(q.first(), p) - dist) > tol || !runsAlong(q) || !covers(q))
+            continue;
+        if (found >= 0)
+            return -1;
+        found = i;
+    }
+    return found;
 }
 
 static Job::Helix helixIn(const QList<QPolygonF> &rings, double want, double angle);
@@ -1371,17 +1419,25 @@ static Job::Lead makeLead(const QPolygonF &ring, double radius,
             // Left of travel turns counter-clockwise onto the ring.
             const bool cw = side < 0;
             bool fits = true;
-            for (int k = 0; k <= 16 && fits; ++k) {
+            // Samples no more than 0.25 mm apart: an island's tip fits
+            // between 16 of them on a large lead.
+            const int half = qMax(8, int(std::ceil(M_PI * r / 2 / 0.25)));
+            for (int k = 0; k <= 2 * half && fits; ++k) {
                 // Both quarter arcs make up the half circle from a through
                 // the tangent point to b (which way round the cutter turns
                 // does not change where it goes). The tangent point itself
                 // sits on the ring and is skipped.
-                if (k == 8)
+                if (k == half)
                     continue;
-                const double a = (k - 8) * (M_PI / 2) / 8;
+                const double a = (k - half) * (M_PI / 2) / half;
                 const QPointF u = -n * std::cos(a) + t * std::sin(a);
                 fits = allowed(c + u * r);
             }
+            // Between passes the cutter feeds back from b to a straight
+            // across the circle, at depth: that chord must stay clear too.
+            const int across = qMax(2, int(std::ceil(2 * r / 0.25)));
+            for (int k = 1; k < across && fits; ++k)
+                fits = allowed(c + t * (r - 2 * r * k / across));
             fits = fits && allowed(c);
             if (fits) {
                 lead.on = true;
@@ -3200,11 +3256,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 QList<QPolygonF> finish;
                 if (nFin > 0) {
                     const double tol = 0.3 * fs + 0.02;
-                    const int r = parallelRing(levels.at(nFin - 1), p.first(), nFin * fs, tol);
+                    const int r = parallelRing(levels.at(nFin - 1), p, nFin * fs, tol);
                     QList<QPolygonF> mids;
                     bool ok = r >= 0;
                     for (int k = nFin - 1; ok && k >= 1; --k) {
-                        const int m = parallelRing(levels.at(k - 1), p.first(), k * fs, tol);
+                        const int m = parallelRing(levels.at(k - 1), p, k * fs, tol);
                         ok = m >= 0;
                         if (ok)
                             mids << levels.at(k - 1).at(m);

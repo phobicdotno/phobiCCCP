@@ -136,15 +136,25 @@ public:
     }
 
     void setJob(const QVector<Op> &ops, double w, double h, double t);
-    // Tool changes along the program: (time, tool number), in order.
-    const QVector<QPair<double, int>> &toolChanges() const { return m_toolChanges; }
+    // Tool changes along the program, in order: when, the tool number and
+    // the bit's key (Op::text; two bits may share a number).
+    struct ToolChange { double time; int number; QString key; };
+    const QVector<ToolChange> &toolChanges() const { return m_toolChanges; }
     int toolAt(double t) const
     {
         int n = 0;
         for (const auto &c : m_toolChanges)
-            if (c.first <= t + 1e-9)
-                n = c.second;
+            if (c.time <= t + 1e-9)
+                n = c.number;
         return n;
+    }
+    QString bitAt(double t) const
+    {
+        QString k;
+        for (const auto &c : m_toolChanges)
+            if (c.time <= t + 1e-9)
+                k = c.key;
+        return k;
     }
     void zoomBy(double f)
     {
@@ -226,7 +236,7 @@ private:
     void boundsCorners(QVector<QPointF> &out) const;
 
     QVector<Seg> m_segs;
-    QVector<QPair<double, int>> m_toolChanges;
+    QVector<ToolChange> m_toolChanges;
     double m_total = 0, m_time = 0;
     int m_opCount = 0, m_stride = 1;
     double m_w = 0, m_h = 0, m_t = 0;
@@ -321,7 +331,7 @@ void IsoView::setJob(const QVector<Op> &ops, double w, double h, double t)
             break;
         }
         case Op::Tool:
-            m_toolChanges.append({tm, op.ival});
+            m_toolChanges.append({tm, op.ival, op.text});
             break;
         default:
             break;
@@ -611,21 +621,23 @@ IsoPreview::IsoPreview(QWidget *parent)
 
 void IsoPreview::announceTool()
 {
-    const int n = m_view->toolAt(m_view->time());
-    if (n != m_lastTool) {
-        m_lastTool = n;
-        emit currentToolChanged(n);
+    const QString k = m_view->bitAt(m_view->time());
+    if (k != m_lastBit) {
+        m_lastBit = k;
+        emit currentToolChanged(k);
     }
 }
 
 int IsoPreview::currentTool() const { return m_view->toolAt(m_view->time()); }
 
-void IsoPreview::seekToTool(int number)
+QString IsoPreview::currentBit() const { return m_view->bitAt(m_view->time()); }
+
+void IsoPreview::seekToTool(const QString &bit)
 {
     for (const auto &c : m_view->toolChanges())
-        if (c.second == number) {
+        if (c.key == bit) {
             pause();
-            m_view->setTime(c.first);
+            m_view->setTime(c.time);
             syncSlider();
             updateStatus();
             announceTool();
@@ -639,7 +651,7 @@ void IsoPreview::setJob(const QVector<Op> &ops, double stockW, double stockH, do
     m_view->setJob(ops, stockW, stockH, stockT);
     syncSlider();
     updateStatus();
-    m_lastTool = -1;
+    m_lastBit = QStringLiteral("\x01");   // announce even an empty job's "none"
     announceTool();
 }
 
@@ -673,6 +685,7 @@ void IsoPreview::setProgress(double fraction)
     m_view->setTime(m_view->totalTime() * qBound(0.0, fraction, 1.0));
     syncSlider();
     updateStatus();
+    announceTool();   // syncSlider() blocks the slider signal that would announce it
 }
 
 double IsoPreview::progress() const
@@ -693,8 +706,8 @@ void IsoPreview::tick()
     // and let Play carry on with the next tool.
     bool stopped = false;
     for (const auto &c : m_view->toolChanges())
-        if (c.first > was + 1e-9 && c.first <= t && c.first > 1e-9) {
-            t = c.first;
+        if (c.time > was + 1e-9 && c.time <= t && c.time > 1e-9) {
+            t = c.time;
             stopped = true;
             break;
         }

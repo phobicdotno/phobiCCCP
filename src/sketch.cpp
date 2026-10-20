@@ -180,8 +180,8 @@ PathModel arcCenter(QPointF c, QPointF start, QPointF end, bool ccw)
     double sweep = ccwTurn(a0, a1);
     if (sweep < 1e-9)
         sweep = 2 * M_PI;            // end on the start's ray: a full turn
-    if (!ccw)
-        sweep -= 2 * M_PI;
+    if (!ccw)                        // the other way round; on the ray, a full turn clockwise
+        sweep = sweep >= 2 * M_PI - 1e-9 ? -2 * M_PI : sweep - 2 * M_PI;
     SubPath sp = arc(c, r, a0, sweep);
     sp.nodes.first().p = start;
     m.subs.append(sp);

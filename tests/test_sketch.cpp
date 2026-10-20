@@ -256,6 +256,12 @@ int main(int argc, char **argv)
         const PathModel cw = sketch::arcCenter({0, 0}, {10, 0}, {0, 5}, false);
         check(cw.painterPath().boundingRect().width() > 19.9, "clockwise: the three-quarter turn");
         check(sketch::arcCenter({0, 0}, {0, 0}, {1, 1}, true).isEmpty(), "zero radius: nothing");
+        // Back onto the start's ray: a full turn either way, never a zero sweep.
+        const PathModel fullCw = sketch::arcCenter({0, 0}, {10, 0}, {20, 0}, false);
+        check(fullCw.painterPath().boundingRect().width() > 19.9
+                  && fullCw.painterPath().boundingRect().height() > 19.9, "clockwise onto the start ray: a full circle");
+        const PathModel fullCcw = sketch::arcCenter({0, 0}, {10, 0}, {20, 0}, true);
+        check(fullCcw.painterPath().boundingRect().width() > 19.9, "counter-clockwise onto the start ray: a full circle");
     }
 
     // --- tangent arc: leaves the end along its direction ---------------------------

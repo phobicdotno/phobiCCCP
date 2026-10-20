@@ -11,6 +11,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QLineEdit>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
@@ -195,6 +196,45 @@ int main(int argc, char *argv[])
         QTest::keyClick(stepD, Qt::Key_Return);
         check(std::fabs(last.value("stepdown").toDouble() - 3.175) < 1e-3
                   && !last.contains(QStringLiteral("phobic_expr")), "1/8 in is 3.175 mm, unbound");
+    }
+
+    // An undo while the cursor is still in a committed field shows the
+    // undone value there; a field with uncommitted typing keeps it.
+    {
+        form.setDocument(nullptr);
+        form.setToolpath("{u}", "pocket_toolpath", j);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        auto *end = editorFor<QDoubleSpinBox>(&form, "end_depth");
+        check(end != nullptr, "undo: end depth field");
+        end->setFocus();
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("7"));
+        QTest::keyClick(end, Qt::Key_Return);
+        check(last.value("end_depth").toString() == QLatin1String("-7.000") && end->hasFocus(),
+              "undo: 7 committed, field keeps focus");
+        form.setToolpath("{u}", "pocket_toolpath", j);   // the undo
+        check(qAbs(end->value() - 5.0) < 1e-9, "undo: the focused field shows the undone 5 mm");
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("9"));        // typing, not committed yet
+        QJsonObject other = j;
+        other.insert("stepdown", 1.5);
+        form.setToolpath("{u}", "pocket_toolpath", other);
+        check(end->text().startsWith(QLatin1Char('9')), "undo: uncommitted typing survives a refresh");
+        QTest::keyClick(end, Qt::Key_Return);
+        check(last.value("end_depth").toString() == QLatin1String("-9.000"), "undo: and commits on Enter");
+
+        QLineEdit *name = nullptr;
+        for (QLineEdit *e : form.findChildren<QLineEdit *>())
+            if (e->text() == QLatin1String("Card recess") && !qobject_cast<QAbstractSpinBox *>(e->parentWidget()))
+                name = e;
+        check(name != nullptr, "undo: name field");
+        name->setFocus();
+        name->selectAll();
+        QTest::keyClicks(name, QStringLiteral("Renamed"));
+        QTest::keyClick(name, Qt::Key_Return);
+        check(last.value("name").toString() == QLatin1String("Renamed"), "undo: rename committed");
+        form.setToolpath("{u}", "pocket_toolpath", j);
+        check(name->text() == QLatin1String("Card recess"), "undo: the focused name shows the undone name");
     }
 
     std::printf("test_toolpathform: %d checks OK\n", g_checks);

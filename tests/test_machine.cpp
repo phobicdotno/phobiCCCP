@@ -54,24 +54,40 @@ static void check(bool cond, const char *what)
 }
 
 // The far end of the pty: Idle at a set machine position (Hold:0 after a
-// feed hold), acks every line except a dwell when `hangDwell` and a jog when
-// not `ackJogs`. Everything it receives goes into `events`, realtime bytes
-// as "!", "~" and "^X".
+// feed hold, Home for 300 ms after $H), acks every line except a dwell when
+// `hangDwell` and a jog when not `ackJogs`. Like GRBL 1.1 it answers G-code
+// sent while jogging with error:9, and lines starting with `reject` too.
+// `$$` reports a 425 mm machine. With `holdAcks`, every ok from the first G4
+// on is held back until release(). Everything it receives goes into
+// `events`, realtime bytes as "!", "~", "^X" and "JOGCANCEL".
 struct FakeGrbl {
     int fd = -1;
     QByteArray line;
     bool held = false;
     bool hangDwell = false;
     bool ackJogs = true;
+    bool holdAcks = false;
+    int heldOks = 0;
+    QByteArray reject;
     double mx = -100, my = -100, mz = -30;
     // A jog reports Jog for `jogMs` after its line (it does not move the
     // position: tests set that), or until a jog cancel.
     int jogMs = 300;
-    QElapsedTimer jogClock;
+    QElapsedTimer jogClock, homeClock;
+    QByteArray travel = "$130=425.000\r\n$131=425.000\r\n$132=75.000\r\n$27=1.500\r\n";
     QList<QByteArray> events;
 
     void send(const QByteArray &s) { (void)!::write(fd, s.constData(), size_t(s.size())); }
     QByteArray num(double v) const { return QByteArray::number(v, 'f', 3); }
+    bool jogging() const { return jogClock.isValid() && jogClock.elapsed() < jogMs; }
+    void release()
+    {
+        while (heldOks > 0) {
+            send("ok\r\n");
+            --heldOks;
+        }
+        holdAcks = false;
+    }
 
     void onRead()
     {
@@ -80,9 +96,10 @@ struct FakeGrbl {
         for (ssize_t i = 0; i < n; ++i) {
             const char c = buf[i];
             if (c == '?') {
-                const bool jog = jogClock.isValid() && jogClock.elapsed() < jogMs;
-                send("<" + QByteArray(held ? "Hold:0" : jog ? "Jog" : "Idle") + "|MPos:" + num(mx) + ',' + num(my)
-                     + ',' + num(mz) + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n");
+                const bool home = homeClock.isValid() && homeClock.elapsed() < 300;
+                send("<" + QByteArray(held ? "Hold:0" : home ? "Home" : jogging() ? "Jog" : "Idle")
+                     + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
+                     + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n");
             } else if (c == '!') {
                 held = true;
                 events << "!";
@@ -91,20 +108,35 @@ struct FakeGrbl {
                 events << "~";
             } else if (uchar(c) == 0x85) {
                 jogClock.invalidate();
+                events << "JOGCANCEL";
             } else if (c == 0x18) {
                 held = false;
                 jogClock.invalidate();
                 line.clear();
+                heldOks = 0;
+                holdAcks = false;
                 events << "^X";
                 send("\r\nGrbl 1.1h ['$' for help]\r\n");
             } else if (c == '\n') {
                 events << line;
-                if (line.startsWith("$J="))
+                QByteArray reply = "ok\r\n";
+                if (line == "$$")
+                    send(travel);
+                else if (line == "$H")
+                    homeClock.start();
+                else if (line.startsWith("$J="))
                     jogClock.start();
+                else if (!line.isEmpty() && line[0] != '$'
+                         && (jogging() || (!reject.isEmpty() && line.startsWith(reject))))
+                    reply = "error:9\r\n";
                 const bool hang = (hangDwell && line.startsWith("G4"))
                                   || (!ackJogs && line.startsWith("$J="));
-                if (!hang)
-                    send("ok\r\n");
+                if (!hang) {
+                    if (holdAcks && (line.startsWith("G4") || heldOks > 0))
+                        ++heldOks;
+                    else
+                        send(reply);
+                }
                 line.clear();
             } else if (c != '\r' && uchar(c) < 0x80) {   // 0x85 jog cancel &c.
                 line += c;
@@ -117,6 +149,13 @@ struct FakeGrbl {
         for (const QByteArray &e : events)
             k += e.startsWith(prefix);
         return k;
+    }
+    int indexOf(const QByteArray &prefix, int from = 0) const
+    {
+        for (int i = from; i < events.size(); ++i)
+            if (events.at(i).startsWith(prefix))
+                return i;
+        return -1;
     }
 };
 
@@ -267,7 +306,21 @@ int main(int argc, char **argv)
     check(s->connectPort(QString::fromLatin1(name)), "connects to the fake controller");
     spin(1500, [&] { return panel.statusJson().value("homed").toBool(); });
     check(panel.statusJson().value("homed").toBool(), "homed (resumed where the last session left it)");
-    spin(800, [] { return false; });
+    spin(800, [] { return false; });   // $$ answered
+
+    // Park stays inside the travel the controller reports ($131=425), not
+    // the Settings size (a 4x4 by default).
+    {
+        grbl.events.clear();
+        button(QStringLiteral("Park front right"))->click();
+        spin(1500, [&] { return grbl.count("G53 G0 X") > 0 && !s->isMacroRunning(); });
+        const int i = grbl.indexOf("G53 G0 X");
+        check(i >= 0, "park: moves");
+        const QByteArray mv = grbl.events.at(i);
+        const double y = mv.mid(mv.indexOf('Y') + 1).toDouble();
+        check(y >= -425 && y <= -400, "park: Y inside the reported 425 mm travel");
+        spin(800, [] { return false; });
+    }
 
     // Jog targets come from a fresh report only. The panel's last report says
     // Z -30; the machine has since moved to Z -20 (a hold-jog decelerating
@@ -383,6 +436,149 @@ int main(int argc, char **argv)
         spin(2500, [&] { return !panel.isBusy(); });
     }
 
+    // Continue pressed while the park is still on its way: refused, the
+    // prompt comes up at the spot, and its "Stop the job" stops the job.
+    {
+        seen.clear();
+        int toolPrompts = 0;
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("TOOL CHANGE")) {
+                ++toolPrompts;
+                return QStringLiteral("Stop the job");
+            }
+            return QStringLiteral("OK");
+        };
+        bool parkDone = false;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::macroFinished, [&](bool) { parkDone = true; });
+        grbl.events.clear();
+        s->startStream({QStringLiteral("M0 ;T2"), QStringLiteral("G90G21"),
+                        QStringLiteral("M3S10000"), QStringLiteral("G4P30.00"), QStringLiteral("G0X1")});
+        spin(1500, [&] { return parkDone; });
+        QObject::disconnect(c);
+        check(parkDone && runBtn->text().contains(QLatin1String("Continue")), "early continue: parked");
+        runBtn->click();                     // the machine is still travelling
+        spin(200, [] { return false; });
+        check(s->isParkedForTool() && grbl.count("G90G21") == 0,
+              "early continue: refused until the tool prompt was answered");
+        spin(3000, [&] { return toolPrompts > 0; });
+        spin(500, [] { return false; });
+        check(toolPrompts == 1, "early continue: the prompt comes up at the spot");
+        check(!s->isStreaming() && grbl.count("G90G21") == 0, "early continue: Stop the job stops it");
+        spin(2000, [&] { return !panel.isBusy(); });
+        spin(500, [] { return false; });
+    }
+
+    // Manual zero: Zero pressed while the last jog still moves is refused
+    // (GRBL would answer error:9), and so is Continue; once it stands
+    // still both work and the job runs to the end.
+    {
+        seen.clear();
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("TOOL CHANGE"))
+                return QStringLiteral("Close: I'll zero Z");
+            return QStringLiteral("Cancel");
+        };
+        bool finished = false, finishedOk = false;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        s->startStream({QStringLiteral("M0 ;T2"), QStringLiteral("G90G21"), QStringLiteral("G0X1")});
+        spin(5000, [&] { return !seen.isEmpty() && !QApplication::activeModalWidget(); });
+        spin(400, [] { return false; });
+        check(s->isParkedForTool(), "zero while jogging: parked, prompt closed");
+        grbl.jogMs = 1500;
+        grbl.events.clear();
+        key(Qt::Key_PageDown, true);
+        key(Qt::Key_PageDown, false);
+        spin(1200, [&] { return grbl.count("$J=") > 0; });
+        spin(100, [] { return false; });
+        button(QStringLiteral("Zero"), QStringLiteral("work Z0"))->click();
+        spin(300, [] { return false; });
+        check(grbl.count("G10") == 0 && grbl.count("G49") == 0, "zero while jogging: refused");
+        runBtn->click();
+        spin(400, [] { return false; });
+        check(s->isParkedForTool() && !finished && grbl.count("G90G21") == 0,
+              "continue while jogging: refused, the job is not lost");
+
+        // Standing still, but the controller refuses the zero: not counted.
+        spin(2000, [&] { return !grbl.jogging(); });
+        spin(700, [] { return false; });
+        grbl.jogMs = 300;
+        grbl.reject = "G10";
+        button(QStringLiteral("Zero"), QStringLiteral("work Z0"))->click();
+        spin(600, [&] { return grbl.count("G10 L20 P1 Z0") > 0; });
+        spin(300, [] { return false; });
+        grbl.reject.clear();
+        check(grbl.count("G10 L20 P1 Z0") == 1, "zero refused by the controller: sent once");
+        int dialogs = seen.size();
+        runBtn->click();                     // "Z not zeroed" -> Cancel
+        spin(500, [] { return false; });
+        check(seen.size() == dialogs + 1 && seen.last().headline.contains(QLatin1String("not been zeroed")),
+              "zero refused by the controller: Continue warns Z was not zeroed");
+        check(s->isParkedForTool(), "zero refused by the controller: still parked");
+
+        button(QStringLiteral("Zero"), QStringLiteral("work Z0"))->click();
+        spin(600, [&] { return grbl.count("G10 L20 P1 Z0") > 1; });
+        spin(300, [] { return false; });
+        dialogs = seen.size();
+        runBtn->click();
+        spin(5000, [&] { return finished; });
+        QObject::disconnect(c);
+        check(seen.size() == dialogs, "zero acked: Continue asks nothing");
+        check(finished && finishedOk, "zero acked: the job runs to the end");
+        spin(2000, [&] { return !panel.isBusy(); });
+        spin(500, [] { return false; });
+    }
+
+    // A tap still waiting for a fresh report, then Zero: the zero must not
+    // land before the step.
+    {
+        grbl.jogMs = 50;
+        button(QStringLiteral("STOP"))->click();   // forgets the jog plan
+        grbl.events.clear();
+        key(Qt::Key_PageDown, true);
+        key(Qt::Key_PageDown, false);
+        button(QStringLiteral("Zero"), QStringLiteral("work Z0"))->click();
+        spin(1500, [&] { return grbl.count("$J=") > 0; });
+        spin(300, [] { return false; });
+        const int g = grbl.indexOf("G10"), j = grbl.indexOf("$J=");
+        check(j >= 0 && (g < 0 || g > j), "tap then zero: the zero never lands before the tap");
+        grbl.jogMs = 300;
+        spin(800, [] { return false; });
+    }
+
+    // Hold in the last seconds: the stream finishes while the machine holds.
+    // The button keeps offering Resume and Cancel job still works.
+    {
+        grbl.holdAcks = true;
+        bool finished = false;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s->startStream({QStringLiteral("G90G21"), QStringLiteral("G1X5F500"), QStringLiteral("G4P1.00"),
+                        QStringLiteral("G0Z5")});
+        spin(300, [] { return false; });
+        QPushButton *pause = button(QStringLiteral("⏸ Hold"));
+        pause->click();
+        spin(300, [] { return false; });
+        grbl.release();                      // the last lines go into the planner while held
+        spin(1500, [&] { return finished; });
+        spin(600, [] { return false; });
+        QObject::disconnect(c);
+        check(finished && grbl.held && pause->text().contains(QLatin1String("Resume")),
+              "hold at the end: the button still says Resume");
+        seen.clear();
+        answer = [&](const Seen &) { return QStringLiteral("Keep running"); };
+        button(QStringLiteral("✕ Cancel job"))->click();
+        spin(400, [] { return false; });
+        check(seen.size() == 1 && seen.last().headline.contains(QLatin1String("Cancel")),
+              "hold at the end: Cancel job asks, not 'nothing to cancel'");
+        check(pause->text().contains(QLatin1String("Resume")), "hold at the end: Keep running stays held");
+        grbl.held = false;                   // lifted at the machine
+        spin(1500, [&] { return pause->text().contains(QLatin1String("Hold")); });
+        check(pause->text().contains(QLatin1String("Hold")), "hold lifted: the button follows the machine");
+        spin(800, [] { return false; });
+    }
+
     // BitSetter on and no reference: Run refuses, as the rehearsal does.
     {
         QToolButton *bs = nullptr;
@@ -418,6 +614,38 @@ int main(int argc, char **argv)
         check(grbl.count("$J=") - before <= 2, "jog: taps stop while two are unanswered");
         grbl.ackJogs = true;
         spin(4000, [&] { return s->pendingCommands() == 0; });
+    }
+
+    // A pad cannot start the job while the surface map waits for the plate.
+    {
+        spin(800, [] { return false; });
+        panel.showPage(QStringLiteral("bitzero"));
+        for (QToolButton *b : panel.findChildren<QToolButton *>())
+            if (b->text() == QLatin1String("Surface map (grid of Z)"))
+                b->click();
+        QPushButton *begin = nullptr;
+        for (QPushButton *b : panel.findChildren<QPushButton *>())
+            if (b->objectName() == QLatin1String("start") && b != runBtn)
+                begin = b;
+        check(begin != nullptr, "map: Begin found");
+        seen.clear();
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+        begin->click();
+        QString logText;
+        spin(3000, [&] {
+            logText.clear();
+            for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+                logText += t->toPlainText();
+            return logText.contains(QLatin1String("Put the plate under the tool"));
+        });
+        check(logText.contains(QLatin1String("Put the plate under the tool")), "map: waits for the plate");
+        check(panel.isBusy(), "map: waiting for the plate is busy");
+        QString why;
+        check(!panel.startFromRemote(&why) && !s->isStreaming(), "map: a pad's start is refused");
+        button(QStringLiteral("Stop the surface map"))->click();
+        spin(800, [] { return false; });
+        check(!panel.isBusy(), "map: stopped, not busy");
+        panel.showPage(QStringLiteral("job"));
     }
 
     // Disconnect mid-job: asked, then hold, reset, and only then closed.

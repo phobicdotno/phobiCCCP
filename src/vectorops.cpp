@@ -577,6 +577,12 @@ Element transformElement(const Element &e, const QTransform &t)
     if (shape && e.raw.contains("center")) {
         const QPointF c = jsonPt(e.raw.value("center"));
         const QPointF nc = t.map(c);
+        if (Element::isPoint(e)) {
+            // A sketch point has no size: it only moves, never stretches.
+            Element moved = e;
+            moved.translate(nc.x() - c.x(), nc.y() - c.y());
+            return moved;
+        }
         // How the transform scales: lengths along x and y, and whether it
         // keeps angles (rotation / reflection / uniform scale).
         const double sx = std::hypot(t.m11(), t.m12()), sy = std::hypot(t.m21(), t.m22());

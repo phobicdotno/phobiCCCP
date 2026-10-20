@@ -190,6 +190,62 @@ static int retractsFromCut(const QVector<c2d::Op> &ops)
     return n;
 }
 
+// Every point the tool centre (or a V-bit's cone, `coneTan` > 0: the
+// radius it cuts at that depth) passes below Z -0.01 on feeds and arcs,
+// handed to `at(x, y, z)`, sampled every 0.02 mm.
+template <typename At>
+static void forEachCutPoint(const QVector<c2d::Op> &ops, At at)
+{
+    double cx = 0, cy = 0, cz = 10;
+    for (const c2d::Op &o : ops) {
+        if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && std::max(cz, o.z) < -0.01) {
+            double sweep = 0, R = 0, a0 = 0, ox = 0, oy = 0;
+            if (o.kind == c2d::Op::Arc) {
+                ox = cx + o.ci;
+                oy = cy + o.cj;
+                R = std::hypot(o.ci, o.cj);
+                a0 = std::atan2(cy - oy, cx - ox);
+                sweep = std::atan2(o.y - oy, o.x - ox) - a0;
+                if (o.cw) { while (sweep >= -1e-9) sweep -= 2 * M_PI; }
+                else { while (sweep <= 1e-9) sweep += 2 * M_PI; }
+            }
+            const double len = o.kind == c2d::Op::Arc ? std::fabs(sweep) * R
+                                                      : std::hypot(o.x - cx, o.y - cy);
+            const int n = std::max(2, int(len / 0.02));
+            for (int i = 0; i <= n; ++i) {
+                const double t = double(i) / n;
+                const double x = o.kind == c2d::Op::Arc ? ox + R * std::cos(a0 + sweep * t) : cx + (o.x - cx) * t;
+                const double y = o.kind == c2d::Op::Arc ? oy + R * std::sin(a0 + sweep * t) : cy + (o.y - cy) * t;
+                at(x, y, cz + (o.z - cz) * t);
+            }
+        }
+        if (o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) {
+            cx = o.x;
+            cy = o.y;
+            cz = o.z;
+        }
+    }
+}
+
+// Distance from (x, y) to the closed rings, negative outside the region
+// they bound (even-odd).
+static double signedRingDist(const QVector<QPolygonF> &rings, double x, double y)
+{
+    const QPointF q(x, y);
+    double d = 1e30;
+    int in = 0;
+    for (const QPolygonF &ring : rings) {
+        for (int i = 0; i < ring.size(); ++i) {
+            const QPointF a = ring.at(i), b = ring.at((i + 1) % ring.size()), ab = b - a;
+            const double l2 = ab.x() * ab.x() + ab.y() * ab.y();
+            const double t = l2 > 0 ? std::clamp(((x - a.x()) * ab.x() + (y - a.y()) * ab.y()) / l2, 0.0, 1.0) : 0.0;
+            d = std::min(d, QLineF(q, a + ab * t).length());
+        }
+        in += ring.containsPoint(q, Qt::OddEvenFill) ? 1 : 0;
+    }
+    return (in & 1) ? d : -d;
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -853,6 +909,35 @@ int main(int argc, char *argv[])
         check(bb.width() > L * 0.8, "slot v-carve rides the whole axis, not one plunge");
     }
 
+    // A notch in a bar: the medial axis runs between the notch's two reflex
+    // corners, where the clearance dips well below both end vertices' (2.2
+    // and 5.2 mm). Fed straight from vertex to vertex, the cone cut 0.19 mm
+    // into the corners; each piece of such an edge now has its own depth.
+    {
+        c2d::Document doc;
+        const QVector<QPointF> pts{{0, 0}, {30, 0}, {30, 10}, {17, 10}, {15, 13.923780136749714}, {13, 10}, {0, 10}};
+        const c2d::Element e = c2d::Element::makePath(pts, true, layer);
+        doc.addElement(e);
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("advanced_vcarve_toolpath"), {e.id});
+        tp.json["start_depth"] = "0.000";
+        tp.json["end_depth"] = "9.384";
+        const double angle = 57.721149050169402;
+        QJsonObject tool = tp.json["tool"].toObject();
+        tool["angle"] = angle;
+        tool["type"] = 2;
+        tool["diameter"] = 12.7;
+        tp.json["tool"] = tool;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const double ht = std::tan(angle / 2 * M_PI / 180);
+        const QVector<QPolygonF> rings{QPolygonF(pts)};
+        double over = 0;
+        forEachCutPoint(g.ops, [&](double x, double y, double z) {
+            over = std::max(over, -z * ht - signedRingDist(rings, x, y));
+        });
+        check(g.done.size() == 1 && over < 0.03, "v-carve between two corners stays inside the walls");
+    }
+
     // --- post: a tool change forgets every modal word ------------------------
     {
         QVector<c2d::Op> ops;
@@ -1407,6 +1492,88 @@ int main(int argc, char *argv[])
         check(approx(last, std::max(plain, rough), 0.05) && nFin > nPlain,
               "finishing: extra rings at the final depth");
         check(nSpring > nFin, "spring pass repeats the last ring");
+    }
+
+    // Two parts 8 mm apart: their roughing offsets merge into one ring round
+    // both, their final rings do not. Matched by one point, both loops took
+    // the merged ring as their own roughing, and one stepped across from it
+    // to its final ring straight through the other part at full depth. Such
+    // a loop is cut as before, without finishing rings.
+    for (const double lead : {3.175, 0.0}) {
+        c2d::Document doc;
+        const c2d::Element a = c2d::Element::makeRectangle({20, 20}, 30, 10, layer);   // x 5..35
+        const c2d::Element b = c2d::Element::makeRectangle({48, 20}, 10, 40, layer);   // x 43..53
+        doc.addElement(a);
+        doc.addElement(b);
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {a.id, b.id});
+        tp.json["ofset_dir"] = 1;
+        tp.json["start_depth"] = "0.000";
+        tp.json["end_depth"] = "3.000";
+        tp.json["stepdown"] = 3.0;
+        QJsonObject tool = tp.json["tool"].toObject();
+        tool["diameter"] = 6.35;
+        tp.json["tool"] = tool;
+        tp.json["finish_passes"] = 2;
+        tp.json["finish_stepover"] = 1.0;
+        tp.json["ignore_tabs"] = true;
+        tp.json["lead_radius"] = lead;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const QVector<QPolygonF> parts{QPolygonF(QRectF(5, 15, 30, 10)), QPolygonF(QRectF(43, 0, 10, 40))};
+        double worst = 1e30;
+        forEachCutPoint(g.ops, [&](double x, double y, double) {
+            for (const QPolygonF &part : parts)
+                worst = std::min(worst, -signedRingDist({part}, x, y));
+        });
+        check(g.done.size() == 1 && worst >= 6.35 / 2 - 0.05,
+              lead > 0 ? "finishing never steps across a neighbouring part (leads)"
+                       : "finishing never steps across a neighbouring part");
+    }
+
+    // Lead-in larger than the tool in a hole with islands: the feed back
+    // from the lead's end to its start between passes runs straight across
+    // the lead circle, and that chord was never checked - it took the tool
+    // centre 0.175 mm into an island, a 1.25 mm gouge.
+    {
+        c2d::Document doc;
+        const QVector<QPolygonF> rings{
+            QPolygonF({QPointF(75.240, 20.558), QPointF(74.057, 52.491), QPointF(75.203, 79.873),
+                       QPointF(42.686, 87.084), QPointF(35.232, 58.598), QPointF(27.651, 39.653),
+                       QPointF(40.143, 12.950)}),
+            QPolygonF({QPointF(47.484, 46.301), QPointF(47.497, 44.117), QPointF(48.709, 42.564),
+                       QPointF(50.389, 43.525), QPointF(51.490, 44.605), QPointF(51.174, 46.991),
+                       QPointF(49.025, 47.554)}),
+            QPolygonF({QPointF(63.144, 50.589), QPointF(59.666, 52.945), QPointF(56.755, 49.979),
+                       QPointF(60.023, 46.199), QPointF(62.540, 47.504)})};
+        QJsonArray els;
+        for (const QPolygonF &ring : rings) {
+            const c2d::Element e = c2d::Element::makePath(QVector<QPointF>(ring.begin(), ring.end()), true, layer);
+            doc.addElement(e);
+            els.append(QJsonObject{{"uuid", e.id}});
+        }
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {});
+        tp.json["elements"] = els;
+        tp.json["ofset_dir"] = -1;
+        tp.json["start_depth"] = "0.000";
+        tp.json["end_depth"] = "5.711";
+        tp.json["stepdown"] = 3.606213057502436;
+        tp.json["stock_to_leave"] = 0.0;
+        tp.json["climb"] = false;
+        QJsonObject tool = tp.json["tool"].toObject();
+        tool["diameter"] = 2.1538238049284382;
+        tool["type"] = 0;
+        tool["angle"] = 0;
+        tool.remove("corner_radius");
+        tp.json["tool"] = tool;
+        tp.json["lead_radius"] = 5.093207597666928;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        double worst = 1e30;
+        forEachCutPoint(g.ops, [&](double x, double y, double) {
+            worst = std::min(worst, signedRingDist(rings, x, y));
+        });
+        check(g.done.size() == 1 && worst >= 2.1538238049284382 / 2 - 0.06,
+              "a lead's step back between passes stays off the islands");
     }
 
     // --- helical pocket entry ------------------------------------------------------

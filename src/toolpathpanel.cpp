@@ -752,6 +752,30 @@ void ToolpathPanel::createInlayMale()
     };
     setDepth("start_depth", qAbs(num(j.value("start_depth"))) + gap);
     setDepth("end_depth", qAbs(num(j.value("end_depth"))) + gap);
+    // A depth bound to a parameter keeps the gap when the parameter is
+    // re-evaluated: the male's binding is the female's plus the gap.
+    QJsonObject binds = j.value(QStringLiteral("phobic_expr")).toObject();
+    for (const char *key : {"start_depth", "end_depth"}) {
+        QJsonObject b = binds.value(QLatin1String(key)).toObject();
+        const QString expr = b.value(QStringLiteral("expr")).toString();
+        if (expr.isEmpty())
+            continue;
+        const QString g = QString::number(gap, 'g', 10);
+        // A size binding (neg/abs) is worked out as |expr| and signed
+        // afterwards; a plain one is the signed depth itself.
+        if (b.value(QStringLiteral("neg")).toBool() || b.value(QStringLiteral("abs")).toBool()) {
+            b.insert(QStringLiteral("expr"), QStringLiteral("abs(%1) + %2").arg(expr, g));
+            // The female's range was for the female: the male goes gap deeper.
+            if (b.contains(QStringLiteral("max")))
+                b.insert(QStringLiteral("max"), b.value(QStringLiteral("max")).toDouble() + gap);
+        } else {
+            b.insert(QStringLiteral("expr"), QStringLiteral("(%1) %2 %3")
+                         .arg(expr, sign < 0 ? QStringLiteral("-") : QStringLiteral("+"), g));
+        }
+        binds.insert(QLatin1String(key), b);
+    }
+    if (!binds.isEmpty())
+        j.insert(QStringLiteral("phobic_expr"), binds);
     male.json = j;
     male.uuid = j.value("uuid").toString();
     m_canvas->insertGenerated(newEls, male);

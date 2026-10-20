@@ -99,6 +99,8 @@
 #include <algorithm>
 #include <cmath>
 #include <QHash>
+#include <QKeyEvent>
+#include <QPointer>
 
 namespace c2d {
 
@@ -1388,6 +1390,29 @@ void MainWindow::checkForUpdate()
 // source folder this build came from, build it, install it and start it.
 // Every step's output scrolls by in the dialog; a failed step stops there
 // and leaves the running version untouched.
+// Swallows Escape and close requests on the update dialog while one of its
+// steps runs: the step's process is a child of the dialog.
+class StepGuard : public QObject
+{
+public:
+    StepGuard(std::shared_ptr<bool> running, QObject *parent) : QObject(parent), m_running(std::move(running)) {}
+protected:
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        if (*m_running) {
+            if (e->type() == QEvent::Close) {
+                e->ignore();
+                return true;
+            }
+            if (e->type() == QEvent::KeyPress && static_cast<QKeyEvent *>(e)->key() == Qt::Key_Escape)
+                return true;
+        }
+        return QObject::eventFilter(o, e);
+    }
+private:
+    std::shared_ptr<bool> m_running;
+};
+
 void MainWindow::installUpdate(const QString &version)
 {
     const QString src = QStringLiteral(PHOBICCCP_SOURCE_DIR), build = QStringLiteral(PHOBICCCP_BUILD_DIR);
@@ -1475,8 +1500,12 @@ void MainWindow::installUpdate(const QString &version)
     });
     auto *closeBtn = new QPushButton(QStringLiteral("Close"), dlg);
     closeBtn->setEnabled(false);
-    // Close and Escape both take the dialog down for good; the step that is
-    // running (if any) finishes on its own and the chain stops after it.
+    // Close and Escape both take the dialog down for good, but only between
+    // steps: the step's QProcess is a child of the dialog, so deleting it
+    // would kill `git reset --hard` or the install half-way. While a step
+    // runs Close is disabled and Escape / close requests are swallowed.
+    auto stepRunning = std::make_shared<bool>(false);
+    dlg->installEventFilter(new StepGuard(stepRunning, dlg));
     auto takeDown = [dlg] { dlg->hide(); dlg->deleteLater(); };
     connect(closeBtn, &QPushButton::clicked, dlg, takeDown);
     connect(dlg, &QDialog::rejected, dlg, takeDown);
@@ -1505,9 +1534,12 @@ void MainWindow::installUpdate(const QString &version)
         if (i == steps.size()) {
             head->setText(QStringLiteral("v%1 installed \u2014 restarting").arg(version));
             closeBtn->setEnabled(true);
+            *stepRunning = false;
             const QString file = m_untitled ? QString() : m_doc.filePath();
-            QTimer::singleShot(800, this, [this, file, dlg] {
-                dlg->close();
+            // Close is live during the pause: the dialog may be gone by now.
+            QTimer::singleShot(800, this, [this, file, guard = QPointer<QDialog>(dlg)] {
+                if (guard)
+                    guard->close();
                 if (!close())            // save prompt cancelled: stay, new version next start
                     return;
                 QProcess::startDetached(QCoreApplication::applicationFilePath(),
@@ -1525,6 +1557,7 @@ void MainWindow::installUpdate(const QString &version)
         } else {
             pulse(b);
         }
+        *stepRunning = true;
         auto *p = new QProcess(dlg);
         p->setProcessChannelMode(QProcess::MergedChannels);
         connect(p, &QProcess::readyRead, log, [p, log, b, buildBar, pctOf] {
@@ -1550,6 +1583,7 @@ void MainWindow::installUpdate(const QString &version)
                 (*run)(i, true);
                 return;
             }
+            *stepRunning = false;
             b->setRange(0, 100);
             head->setText(QStringLiteral("%1 failed \u2014 nothing was changed").arg(s.what));
             details->setChecked(true);
@@ -1565,6 +1599,7 @@ void MainWindow::installUpdate(const QString &version)
                 (*run)(i, true);
                 return;
             }
+            *stepRunning = false;
             b->setRange(0, 100);
             head->setText(QStringLiteral("%1 failed: %2 not found").arg(s.what, s.prog));
             details->setChecked(true);
@@ -2047,8 +2082,8 @@ void MainWindow::onSaveAs()
         if (m_untitled) {
             m_untitled = false;
             removeUntitledFile();
-            rememberRecent(path);
         }
+        rememberRecent(path);          // a titled design's new name belongs in Open Recent too
         saveExtras(path);
         padShareSaved(path);
     }

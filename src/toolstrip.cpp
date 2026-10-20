@@ -140,7 +140,7 @@ ToolStrip::ToolStrip(QWidget *parent)
     lay->addWidget(title);
     lay->addWidget(m_list, 1);
     connect(m_list, &QListWidget::itemClicked, this, [this](QListWidgetItem *it) {
-        emit toolClicked(it->data(Qt::UserRole).toInt());
+        emit toolClicked(it->data(Qt::UserRole).toString());
     });
 }
 
@@ -163,15 +163,15 @@ void ToolStrip::setJob(const Document &doc, const QVector<Op> &ops)
         if (lt.angle > 0)
             label += QStringLiteral(" %1\u00b0").arg(lt.angle);
         auto *it = new QListWidgetItem(toolKindIcon(lt), label, m_list);
-        it->setData(Qt::UserRole, n);
+        it->setData(Qt::UserRole, op.text);   // the bit, not the number
         it->setToolTip(QStringLiteral("T%1 %2\n%3").arg(n).arg(lt.name, users.join(QLatin1Char('\n'))));
     }
 }
 
-void ToolStrip::setCurrent(int number)
+void ToolStrip::setCurrent(const QString &bit)
 {
     for (int i = 0; i < m_list->count(); ++i)
-        if (m_list->item(i)->data(Qt::UserRole).toInt() == number) {
+        if (m_list->item(i)->data(Qt::UserRole).toString() == bit) {
             m_list->setCurrentRow(i);
             return;
         }

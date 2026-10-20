@@ -271,6 +271,30 @@ int main(int argc, char **argv)
         QObject::disconnect(&s, &c2d::GrblStreamer::macroFinished, nullptr, nullptr);
     }
 
+    // Ad-hoc lines report their answer (a zero counts only on its ok), and
+    // the $$ settings belong to one connection: a reconnect may be another
+    // machine, so the old travel must not be used for it.
+    {
+        QList<QPair<QString, bool>> answers;
+        auto c = QObject::connect(&s, &c2d::GrblStreamer::commandAnswered,
+                                  [&](const QString &l, bool ok) { answers.append({l, ok}); });
+        s.sendCommand(QStringLiteral("G10 L20 P1 Z0"));
+        spin(1000, [&] { return answers.size() == 1; });
+        s.sendCommand(QStringLiteral("G10 L20 P1 Z0 BAD"));
+        spin(1000, [&] { return answers.size() == 2; });
+        QObject::disconnect(c);
+        check(answers.size() == 2 && answers.at(0).first == QLatin1String("G10 L20 P1 Z0")
+                  && answers.at(0).second && !answers.at(1).second,
+              "answers: ok and error reported per command");
+        grbl.send("$131=425.000\r\n");
+        spin(500, [&] { return s.setting(131, 0) == 425.0; });
+        check(s.setting(131, 0) == 425.0, "settings: $131 kept");
+        s.disconnectPort();
+        check(s.connectPort(QString::fromLatin1(name)), "settings: reconnects");
+        check(s.setting(131, 1237.0) == 1237.0, "settings: forgotten on reconnect");
+        spin(400, [] { return false; });
+    }
+
     // Surface map: a head jogged sideways while waiting for the plate is
     // taken back over the point before it touches, and the touch is filed
     // with where it really was.

@@ -220,6 +220,27 @@ protected:
     }
 };
 
+// A text field marks itself "typed" while it holds text the user typed and
+// has not committed yet (Enter or leaving it commits). updateValues() keeps
+// such a field as it is; any other field, focused or not, shows the value
+// it is given, so an undo with the cursor still in the field shows too.
+void trackTyping(QLineEdit *le)
+{
+    QObject::connect(le, &QLineEdit::textEdited, le, [le] { le->setProperty("typed", true); });
+    QObject::connect(le, &QLineEdit::editingFinished, le, [le] { le->setProperty("typed", false); });
+}
+
+void trackTyping(QAbstractSpinBox *sp)
+{
+    QObject::connect(sp->findChild<QLineEdit *>(), &QLineEdit::textEdited, sp, [sp] { sp->setProperty("typed", true); });
+    QObject::connect(sp, &QAbstractSpinBox::editingFinished, sp, [sp] { sp->setProperty("typed", false); });
+}
+
+bool typing(const QWidget *w)
+{
+    return w->hasFocus() && w->property("typed").toBool();
+}
+
 QJsonValue flatGet(const QJsonObject &j, const QString &key)
 {
     const int dot = key.indexOf(QLatin1Char('.'));
@@ -632,6 +653,7 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
         s->setValue(int(numberOf(v)));
         s->setKeyboardTracking(false);
         connect(s, &QSpinBox::valueChanged, this, [this, key](int n) { commit(key, QJsonValue(n)); });
+        trackTyping(s);
         return s;
     }
     case Field::Depth:
@@ -701,6 +723,7 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
                 && (!b.isEmpty() || !param::namesIn(shown).contains(bindingOf(key))))
                 commitBound(key, out, b);
         });
+        trackTyping(s);   // after the handlers: they commit first
         return s;
     }
     }
@@ -734,6 +757,7 @@ void ToolpathForm::rebuild()
             if (!n.isEmpty() && n != m_json.value(QStringLiteral("name")).toString())
                 commit(QStringLiteral("name"), n);
         });
+        trackTyping(m_name);
         row->addWidget(m_name, 1);
         auto *on = new Switch(this);
         on->setChecked(m_json.value(QStringLiteral("enabled")).toBool(true));
@@ -843,6 +867,7 @@ void ToolpathForm::rebuild()
                         if (e->text() != flatGet(m_json, k).toString())
                             commit(k, e->text());
                     });
+                    trackTyping(e);
                     ed = e;
                     row->addWidget(ed, 1);
                 }
@@ -864,7 +889,7 @@ void ToolpathForm::rebuild()
 void ToolpathForm::updateValues()
 {
     m_loading = true;
-    if (m_name && !m_name->hasFocus())
+    if (m_name && !typing(m_name))
         m_name->setText(m_json.value(QStringLiteral("name")).toString());
     if (m_toolIcon) {
         const LibraryTool t = toolOf(m_json.value(QStringLiteral("tool")).toObject());
@@ -887,15 +912,24 @@ void ToolpathForm::updateValues()
             sw->setChecked(inv ? !v.toBool(true) : v.toBool(it.key() == QLatin1String("enabled")));
             sw->update();
         } else if (auto *sp = qobject_cast<QDoubleSpinBox *>(w)) {
-            if (!sp->hasFocus())
-                sp->setValue(sp->property("depth").toBool() ? std::fabs(numberOf(v)) : numberOf(v));
-            if (auto *bs = dynamic_cast<Spin *>(sp))
+            auto *bs = dynamic_cast<Spin *>(sp);
+            if (!typing(sp)) {
+                const double want = sp->property("depth").toBool() ? std::fabs(numberOf(v)) : numberOf(v);
+                // Rewriting an unchanged focused field would only move its cursor.
+                if (!sp->hasFocus() || std::fabs(sp->value() - want) > 0.5 * std::pow(10.0, -sp->decimals())
+                    || (bs && bs->binding() != bindingOf(it.key()))) {
+                    sp->setValue(want);
+                    if (sp->hasFocus() && !bindingOf(it.key()).isEmpty())
+                        sp->findChild<QLineEdit *>()->setText(bindingOf(it.key()));   // as focusInEvent shows it
+                }
+            }
+            if (bs)
                 bs->setBinding(bindingOf(it.key()));
         } else if (auto *ip = qobject_cast<QSpinBox *>(w)) {
-            if (!ip->hasFocus())
+            if (!typing(ip) && ip->value() != int(numberOf(v)))
                 ip->setValue(int(numberOf(v)));
         } else if (auto *le = qobject_cast<QLineEdit *>(w)) {
-            if (!le->hasFocus())
+            if (!typing(le) && le->text() != v.toString())
                 le->setText(v.toString());
         } else if (auto *cb = qobject_cast<QComboBox *>(w)) {
             // Undo/redo of a side, mode or direction must show in the box too.

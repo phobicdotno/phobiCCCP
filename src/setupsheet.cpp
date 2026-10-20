@@ -131,20 +131,67 @@ QString setupSheetHtml(const Document &doc, const QString &title)
     }
     h += QStringLiteral("</table>");
 
-    // Tools, in the order the program loads them.
-    struct ToolRow { int number; QJsonObject tool; QStringList used; };
+    // Tools, in the order the program loads them: one row per bit, keyed
+    // as the export keys its tool changes (number and shape), so two bits
+    // that share a number are two rows, as they are two tool changes.
+    struct ToolRow { QString key; int number; QJsonObject tool; QStringList used; };
     QVector<ToolRow> tools;
+    auto rowFor = [&tools](const QString &key, int number, const QJsonObject &tool) -> ToolRow & {
+        auto it = std::find_if(tools.begin(), tools.end(), [&key](const ToolRow &r) { return r.key == key; });
+        if (it != tools.end())
+            return *it;
+        tools.append({key, number, tool, {}});
+        return tools.last();
+    };
+    // The export's key for a bit (toolOp in gcodeexport.cpp): number, kind,
+    // diameter, angle, corner radius.
+    auto keyOf = [](const QJsonObject &tool) {
+        const ToolGeom g = toolGeomFromJson(tool);
+        return QStringLiteral("%1|%2|%3|%4|%5").arg(g.number).arg(int(g.kind))
+            .arg(g.diameter, 0, 'g', 10).arg(g.angle, 0, 'g', 10).arg(g.cornerRadius, 0, 'g', 10);
+    };
+    // The tool object of an enabled toolpath named `name` that is the bit
+    // with export key `key`.
+    auto toolOfChange = [&doc, &keyOf](const QString &name, const QString &key) {
+        for (const Toolpath &t : doc.toolpaths()) {
+            if (!t.json.value("enabled").toBool(true) || t.json.value("name").toString() != name)
+                continue;
+            for (const char *k : {"tool", "tool_pocket"}) {
+                const QJsonObject tool = t.json.value(QLatin1String(k)).toObject();
+                if (!tool.isEmpty() && keyOf(tool) == key)
+                    return tool;
+            }
+        }
+        return QJsonObject();
+    };
+    QSet<QString> listed;   // toolpath names the program's tool rows cover
+    {
+        QString cur;
+        int curNumber = 0;
+        for (const Op &op : whole.ops) {
+            if (op.kind == Op::Tool) {
+                cur = op.text;
+                curNumber = op.ival;
+            } else if (op.kind == Op::Comment && !cur.isEmpty()) {
+                const QJsonObject tool = toolOfChange(op.text, cur);
+                if (tool.isEmpty())
+                    continue;
+                ToolRow &r = rowFor(cur, curNumber, tool);
+                if (!r.used.contains(op.text))
+                    r.used << op.text;
+                listed.insert(op.text);
+            }
+        }
+    }
+    // Enabled toolpaths the program leaves out still name their bit.
     for (const Toolpath &t : doc.toolpaths()) {
-        if (!t.json.value("enabled").toBool(true))
+        const QString name = t.json.value("name").toString();
+        if (!t.json.value("enabled").toBool(true) || listed.contains(name))
             continue;
         const QJsonObject tool = t.json.value("tool").toObject();
-        const int n = int(numOr(tool.value("number"), 0));
-        auto it = std::find_if(tools.begin(), tools.end(), [n](const ToolRow &r) { return r.number == n; });
-        if (it == tools.end()) {
-            tools.append({n, tool, {}});
-            it = tools.end() - 1;
-        }
-        it->used << t.json.value("name").toString();
+        ToolRow &r = rowFor(keyOf(tool), int(numOr(tool.value("number"), 0)), tool);
+        if (!r.used.contains(name))
+            r.used << name;
     }
     h += QStringLiteral("<h2>Tools</h2><table><tr><th>#</th><th>Tool</th><th>Type</th>"
                         "<th>Diameter</th><th>Used by</th></tr>");

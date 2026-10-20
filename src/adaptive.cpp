@@ -447,9 +447,14 @@ Plan plan(const QVector<QPolygonF> &rings, const Params &p, const std::function<
                         return false;
                 return true;
             };
-            if (clear) {
+            // The raster only knows what is cleared, to a cell and with the
+            // rim sampled inside the tool: a hop it calls clear can still
+            // graze an island or a wall at full depth. Stay down only when
+            // the tool centre also keeps to the part the whole way.
+            const bool direct = overPocket(last, path.first());
+            if (clear && direct) {
                 mv.link = Move::StayDown;
-            } else if (overPocket(last, path.first())) {
+            } else if (direct) {
                 mv.link = Move::Lift;
             } else {
                 mv.link = Move::Retract;

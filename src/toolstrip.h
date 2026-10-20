@@ -36,11 +36,11 @@ class ToolStrip : public QWidget
 public:
     explicit ToolStrip(QWidget *parent = nullptr);
     void setJob(const Document &doc, const QVector<Op> &ops);
-    void setCurrent(int number);
+    void setCurrent(const QString &bit);   // an Op::Tool's text (number and shape)
     QSize sizeHint() const override { return {118, 400}; }
 
 signals:
-    void toolClicked(int number);
+    void toolClicked(const QString &bit);  // the entry's Op::Tool text
 
 private:
     QListWidget *m_list;

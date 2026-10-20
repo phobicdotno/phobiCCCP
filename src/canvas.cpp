@@ -582,8 +582,8 @@ void Canvas::convertToPaths(const QStringList &ids)
     QHash<QString, QStringList> piecesOf;
     for (const QString &id : ids) {
         Element *e = m_doc->elementById(id);
-        if (!e || e->geometryType == QLatin1String("path"))
-            continue;
+        if (!e || e->geometryType == QLatin1String("path") || Element::isPoint(*e))
+            continue;   // a sketch point has no outline to cut: it stays a point
         before.append(*e);
         const QVector<Element> pieces = Element::toPaths(*e);
         for (const Element &p : pieces)
@@ -866,7 +866,10 @@ void Canvas::syncEditTarget()
     m_editId.clear();
     m_model = PathModel();
     if (m_doc && ids.size() == 1) {
-        if (Element *e = m_doc->elementById(ids.first())) {
+        Element *e = m_doc->elementById(ids.first());
+        if (e && Element::isPoint(*e)) {
+            emit statusHint(tr("A sketch point has no nodes — drag it to move it"));
+        } else if (e) {
             m_editId = e->id;
             m_model = Element::pathModel(*e);
             if (m_model.isEmpty())
@@ -1718,6 +1721,12 @@ void Canvas::modifyAt(const QPointF &q)
     QVector<PathModel> others;
     if (!modifyTarget(q, &id, &m, &others)) {
         emit statusHint(tr("No curve there"));
+        return;
+    }
+    // A shape locked with Fix stays as it is: a trim, extend or break of it
+    // would only be put back (and a break would leave its pieces behind).
+    if (param::lockedElements(*m_doc).contains(id)) {
+        emit statusHint(tr("This shape is locked with Fix: remove the Fix to change it"));
         return;
     }
     const Element before = *m_doc->elementById(id);

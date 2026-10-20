@@ -1,5 +1,47 @@
 # Changelog
 
+## v1.2.8 (build 81) — 2026-10-20
+
+> Bug hunt round 1: tiled programs no longer rapid through the work, finishing passes and adaptive links stay off neighbouring parts, and the tool-change pause can't be skipped
+
+(v1.2.7 is left for the Desktop-on-pad change.)
+
+- **Toolpaths:**
+  - A tiled program could rapid diagonally out of a cut, through the wall between two
+    pockets, at the start of a tile. Every tile now lifts straight up before moving across.
+  - Contour finishing passes could step across to the roughing ring of a part next to it (or an
+    island), straight through it. Finishing is only added where its rings follow the part.
+  - Adaptive clearing stayed down on links that nicked islands and walls; they lift now.
+  - V-carve went up to 0.6 mm too deep between corners facing each other; it follows the real
+    depth along those stretches now.
+  - A lead-in's step back could cut an island; leads that would are shortened or dropped.
+- **Machine:**
+  - Continue while the machine was still travelling to the tool-change spot skipped the tool
+    prompt (and the prompt then opened mid-cut). Continue now waits for the prompt and the
+    machine to stand still; Stop the job always stops.
+  - Zero pressed while still jogging was refused by the controller but counted as done. Zeroing
+    now waits until the machine stands still and only counts once the controller confirms it.
+  - Park drove past the machine's travel on machines smaller than the size in Settings (into the
+    front stop); it stays inside what the controller reports.
+  - A hold in the last seconds of a job left the Hold button and Cancel wrong.
+  - A pad could start a job while the surface map waited for the plate to be placed.
+- **Drawing:**
+  - Break, Trim and Extend on a shape locked with Fix duplicated it; they are refused now.
+  - Scaling or node-editing a sketch point turned it into an ellipse that got cut.
+  - SVG: layers hidden by a style class (as Illustrator saves hidden layers) and nested `<svg>`
+    sizes and positions are imported correctly.
+  - A centre-point arc drawn clockwise all the way round made nothing; it makes a circle.
+- **Panels:**
+  - Closing the update dialog right after "installed - restarting" crashed; Esc no longer stops
+    a running update step half way.
+  - Undo while a toolpath field still had focus left the old number showing (and it wasn't the
+    one cut).
+  - An inlay male lost its glue gap on the next parameter edit.
+  - The setup sheet and the Simulate tool strip now list each bit, also when two share a number.
+  - Save As adds the new name to Open Recent.
+- **Pad:** an offline edit was thrown away when the desktop turned down the sync (for instance
+  while it was asking about a Send); it is kept and offered again.
+
 ## v1.2.6 (build 79) — 2026-10-20
 
 > Bug check 4: pockets no longer cut through islands, tool changes name the right bit, and pad sends that clash are kept as a copy

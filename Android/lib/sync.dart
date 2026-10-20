@@ -82,7 +82,7 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
       }
 
       // Send ours, and sort out a conflict it runs into.
-      Future<void> give(Design d) async {
+      Future<bool> give(Design d) async {
         final PutResult r;
         // One design it will not take must not hold back the rest.
         try {
@@ -90,14 +90,14 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
         } on CccpException catch (e) {
           if (!e.refused) rethrow;
           refused.add('“${d.name}”: ${e.message}');
-          return;
+          return false;
         }
         if (r.forked.isNotEmpty || r.conflict) {
           if (await take(d.id, evenIfOlder: true)) pulled++;
           conflicts.add(r.conflict
               ? '“${d.name}” changed on $host since, so it was not deleted there and is back here'
               : '“${d.name}” changed on $host too: theirs is here now, and yours comes as “${d.name} (pad)”');
-          return;
+          return true;
         }
         if (r.stored) pushed++;
         // Kept there, or it already had this very copy: the next edit here is
@@ -106,6 +106,7 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
           final cur = store.get(d.id);
           if (cur != null && cur.modified == d.modified) store.put(cur.copyWith(base: d.modified));
         }
+        return true;
       }
 
       for (final id in plan.pull) {
@@ -115,7 +116,8 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
         // this pull throwing the edit made here away.
         if (mine != null && mine.base > 0 && mine.modified != mine.base) {
           final before = conflicts.length;
-          await give(mine);
+          // Not taken there (busy, refused): the edit here must not be pulled over.
+          if (!await give(mine)) continue;
           if (conflicts.length > before) continue;
         }
         if (await take(id)) pulled++;

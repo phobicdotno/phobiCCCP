@@ -79,7 +79,8 @@ public:
     double lastProbeZ() const { return m_probeZ; }      // machine Z at contact
     double toolLengthOffset() const { return m_tlo; }
     // A setting from the controller's `$$` listing ($130 = X max travel…),
-    // or `fallback` when it has not been seen on this connection.
+    // or `fallback` when it has not been seen on this connection (the list
+    // is emptied on every connect: another machine may answer now).
     double setting(int n, double fallback) const { return m_settings.value(n, fallback); }
 
 public slots:
@@ -134,6 +135,9 @@ signals:
     void probeResult(double mx, double my, double mz, bool ok);
     void macroFinished(bool ok);
     void consoleLine(const QString &line);      // raw traffic for the log
+    // A sendCommand() line was answered: `ok` true for "ok", false for an
+    // error or alarm. The panel counts a zero as done only on its ok.
+    void commandAnswered(const QString &line, bool ok);
     void errorOccurred(const QString &message);
 
 private:

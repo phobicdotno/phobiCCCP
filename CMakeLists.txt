@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.2.6 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.2.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -238,6 +238,12 @@ if(Qt6Test_FOUND)
     target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
+    # Two bits on one tool number (setup sheet, Simulate strip) and inlay bindings.
+    add_executable(test_uifixes tests/test_uifixes.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
+    target_link_libraries(test_uifixes PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME uifixes COMMAND test_uifixes)
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.
     add_executable(test_dragscroll tests/test_dragscroll.cpp src/canvas.cpp src/canvasparametric.cpp
                    src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp

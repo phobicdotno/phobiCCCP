@@ -574,6 +574,47 @@ int main(int argc, char *argv[])
         canvas.setDocument(&doc);
     }
 
+    // Trim, Extend and Break refuse a shape locked with Fix: no "done" in the
+    // status bar, and no pieces left beside the shape put back.
+    {
+        Document fd;
+        const Element h = Element::makePath({{0, 50}, {100, 50}}, false, fd.defaultLayer());
+        const Element v1 = Element::makePath({{30, 0}, {30, 100}}, false, fd.defaultLayer());
+        const Element v2 = Element::makePath({{120, 0}, {120, 100}}, false, fd.defaultLayer());
+        fd.addElement(h);
+        fd.addElement(v1);
+        fd.addElement(v2);
+        Constraint c;
+        c.type = Constraint::Fix;
+        GeoRef r;
+        r.kind = GeoRef::Line;
+        r.id = h.id;
+        r.index = 0;
+        c.refs = {r};
+        c.uid = fd.parametric().nextUid();
+        fd.parametricRef().constraints.append(c);
+        canvas.setDocument(&fd);
+        canvas.resetTransform();
+        canvas.scale(3, -3);
+        canvas.centerOn(QPointF(60, 50));
+        QString hint;
+        auto conn = QObject::connect(&canvas, &Canvas::statusHint, [&](const QString &s) { hint = s; });
+        const int steps = undo->count();
+        for (Canvas::Tool t : {Canvas::Break, Canvas::Trim, Canvas::Extend}) {
+            canvas.setTool(t);
+            hint.clear();
+            click(&canvas, QPointF(t == Canvas::Extend ? 95 : 60, 50));
+            check(fd.elements().size() == 3, "locked line: nothing added or removed");
+            check(hint.contains(QStringLiteral("locked")), "locked line: the status bar says why");
+        }
+        const Element *still = fd.elementById(h.id);
+        check(still && still->raw == h.raw, "locked line: unchanged");
+        check(undo->count() == steps, "locked line: no undo step");
+        QObject::disconnect(conn);
+        canvas.setTool(Canvas::Select);
+        canvas.setDocument(&doc);
+    }
+
     std::printf("canvasparametric: %d checks passed\n", g_checks);
     return 0;
 }

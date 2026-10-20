@@ -200,6 +200,26 @@ int main(int argc, char *argv[])
     undo->undo();
     check(doc.elementById(rect.id)->geometryType == QLatin1String("rectangle"), "convert undoes");
 
+    // --- a sketch point is never node-edited or converted into a path ----------------------
+    {
+        const c2d::Element pt = c2d::Element::makePoint({250, 250}, doc.defaultLayer());
+        doc.addElement(pt);
+        canvas.rebuild();
+        canvas.convertToPaths({pt.id});
+        check(c2d::Element::isPoint(*doc.elementById(pt.id)), "convert to path leaves a sketch point a point");
+        canvas.setTool(c2d::Canvas::NodeEdit);
+        canvas.selectElements({pt.id});
+        const double r = pt.raw.value("radius").toDouble();
+        drag(&canvas, {250 + r, 250}, {260, 250});
+        check(c2d::Element::isPoint(*doc.elementById(pt.id))
+                  && std::abs(doc.elementById(pt.id)->raw.value("radius").toDouble() - r) < 1e-9,
+              "node edit leaves a sketch point a point");
+        canvas.setTool(c2d::Canvas::Select);
+        canvas.selectElements({});
+        doc.removeElementById(pt.id);   // the counts below are of the shapes before it
+        canvas.rebuild();
+    }
+
     const c2d::Element text = c2d::Element::makeText(QStringLiteral("Hi"), {10, 200}, 10,
                                                      QStringLiteral("Helvetica"), doc.defaultLayer());
     doc.addElement(text);

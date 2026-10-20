@@ -153,6 +153,35 @@ static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
     return out;
 }
 
+// Block filtering can drop the rapid up that was put in for a tool change or
+// a spindle stop (it sits in the dropped block's preamble), while each tile's
+// own reconnects assumed it was there. Re-lift wherever the filtered program
+// would move sideways, change tools or stop the spindle below safe Z: a
+// straight G0 from the bottom of one cut to the start of the next goes
+// through whatever stands between them.
+static QVector<Op> liftBeforeTraverse(const QVector<Op> &ops, double safeZ)
+{
+    QVector<Op> out;
+    out.reserve(ops.size());
+    bool havePos = false;
+    P3 at;
+    for (const Op &o : ops) {
+        const bool low = havePos && at.z < safeZ - 1e-9;
+        const bool sideways = o.kind == Op::Rapid
+                              && (qAbs(o.x - at.x) > 1e-9 || qAbs(o.y - at.y) > 1e-9);
+        if (low && (sideways || o.kind == Op::Tool || o.kind == Op::Spindle)) {
+            out.append(Op::rapid(at.x, at.y, safeZ));
+            at.z = safeZ;
+        }
+        out.append(o);
+        if (o.kind == Op::Rapid || o.kind == Op::Feed || o.kind == Op::Arc) {
+            at = {o.x, o.y, o.z};
+            havePos = true;
+        }
+    }
+    return out;
+}
+
 } // namespace
 
 int tileCount(const QVector<Op> &ops, double tileHeight)
@@ -422,7 +451,7 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
             out.append(QVector<Op>());
             continue;
         }
-        QVector<Op> kept = dropUncutBlocks(t.ops);
+        QVector<Op> kept = liftBeforeTraverse(dropUncutBlocks(t.ops), safeZ);
         // Retract last, so the closing rapid is not what keeps a dead block
         // alive (and is still emitted for the blocks we did keep).
         if (!kept.isEmpty() && t.havePos && t.pos.z < safeZ - 1e-9)

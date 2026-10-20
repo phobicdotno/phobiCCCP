@@ -460,6 +460,26 @@ int main(int argc, char **argv)
         check(r.ok && r.elements.size() == 1
                   && c2d::Element::pathModel(r.elements.first()).subs.value(0).closed,
               "svg: a path ending within tolerance of its start is closed");
+        // A class an internal <style> sheet hides (Illustrator's hidden
+        // layer) is hidden, as style='display:none' is; an inline style wins.
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><style><![CDATA[ /* x */ .st1{fill:red} "
+                               ".st0, .st2{display : none;} ]]></style>"
+                               "<g class='a st0'><rect x='0' y='0' width='5' height='5'/></g>"
+                               "<rect class='st2' style='display:inline' x='20' y='20' width='5' height='5'/>"
+                               "<rect class='st1' x='50' y='50' width='5' height='5'/></svg>", opts(100, 100));
+        check(r.ok && r.elements.size() == 2 && rectNear(r.bounds, 20, 45, 55, 80),
+              "svg: a class hidden by <style> is not imported");
+        // A nested <svg> is a viewport: placed at x,y, its viewBox fitted into width x height.
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><svg x='50' y='50' width='50' height='50' "
+                               "viewBox='0 0 10 10'><rect width='10' height='10'/></svg>"
+                               "<svg x='10' y='10'><rect width='5' height='5'/></svg></svg>", opts(100, 100));
+        check(r.ok && r.elements.size() == 2, "svg: nested viewports import");
+        check(r.ok && rectNear(r.elements.at(0).painterPath.boundingRect(), 50, 0, 100, 50),
+              "svg: nested <svg> viewBox scales into its viewport");
+        check(r.ok && rectNear(r.elements.at(1).painterPath.boundingRect(), 10, 85, 15, 90),
+              "svg: nested <svg> without a viewBox is moved to x,y");
         // Inkscape's own metadata is not reported as skipped.
         r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' "
                                "xmlns:sodipodi='http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd' "

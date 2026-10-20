@@ -6,6 +6,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QHash>
+#include <QSet>
 #include <QJsonArray>
 #include <QLocale>
 #include <QRegularExpression>
@@ -637,13 +638,92 @@ bool svgLengthMm(const QString &text, double *mm)
     return true;
 }
 
-bool svgHidden(const QXmlStreamAttributes &at)
+// The classes an internal <style> sheet hides (".st0{display:none}", as
+// Illustrator writes for a hidden layer). Only plain class selectors count.
+QSet<QString> svgHiddenClasses(const QByteArray &data)
 {
-    if (at.value(QLatin1String("display")).trimmed() == QLatin1String("none"))
-        return true;
+    QSet<QString> out;
+    QXmlStreamReader xml(data);
+    QString css;
+    while (!xml.atEnd()) {
+        if (xml.readNext() == QXmlStreamReader::StartElement && xml.name() == QLatin1String("style"))
+            css += xml.readElementText(QXmlStreamReader::IncludeChildElements) + QLatin1Char('\n');
+    }
+    static const QRegularExpression comment(QStringLiteral("/\\*.*?\\*/"),
+                                            QRegularExpression::DotMatchesEverythingOption);
+    css.remove(comment);
+    static const QRegularExpression rule(QStringLiteral("([^{}]+)\\{([^}]*)\\}"));
+    static const QRegularExpression none(QStringLiteral("(^|[;\\s])display\\s*:\\s*none\\b"));
+    static const QRegularExpression cls(QStringLiteral("^\\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)$"));
+    for (auto it = rule.globalMatch(css); it.hasNext();) {
+        const QRegularExpressionMatch m = it.next();
+        if (!none.match(m.captured(2)).hasMatch())
+            continue;
+        for (const QString &sel : m.captured(1).split(QLatin1Char(','))) {
+            const QRegularExpressionMatch c = cls.match(sel.trimmed());
+            if (c.hasMatch())
+                out.insert(c.captured(1));
+        }
+    }
+    return out;
+}
+
+bool svgHidden(const QXmlStreamAttributes &at, const QSet<QString> &hiddenClasses)
+{
+    // The inline style wins over a class rule, which wins over the attribute.
     const QString style = at.value(QLatin1String("style")).toString();
-    static const QRegularExpression re(QStringLiteral("display\\s*:\\s*none"));
-    return re.match(style).hasMatch();
+    static const QRegularExpression re(QStringLiteral("(^|[;\\s])display\\s*:\\s*([-a-zA-Z]+)"));
+    const QRegularExpressionMatch m = re.match(style);
+    if (m.hasMatch())
+        return m.captured(2) == QLatin1String("none");
+    if (!hiddenClasses.isEmpty())
+        for (const QString &c : at.value(QLatin1String("class")).toString().split(QLatin1Char(' '), Qt::SkipEmptyParts))
+            if (hiddenClasses.contains(c))
+                return true;
+    return at.value(QLatin1String("display")).trimmed() == QLatin1String("none");
+}
+
+// A length in user units: a plain number, a CSS unit (as px), or a
+// percentage of `ref` (the parent viewport's size). False when unusable.
+bool svgUserLength(QStringView text, double ref, double *out)
+{
+    const QString s = text.trimmed().toString();
+    if (s.isEmpty())
+        return false;
+    if (s.endsWith(QLatin1Char('%'))) {
+        bool ok = false;
+        const double v = s.chopped(1).toDouble(&ok);
+        if (!ok || ref <= 0)
+            return false;
+        *out = v * ref / 100;
+        return true;
+    }
+    double mm;
+    if (!svgLengthMm(s, &mm))
+        return false;
+    *out = mm / (25.4 / 96);
+    return true;
+}
+
+// The viewBox -> viewport mapping of preserveAspectRatio, in the viewport's
+// own units: (vx,vy,vw,vh) onto (0,0,w,h).
+QTransform svgViewBoxTransform(double vx, double vy, double vw, double vh,
+                               double w, double h, QStringView par)
+{
+    const QStringList words = par.trimmed().toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const QString align = words.value(0, QStringLiteral("xMidYMid"));
+    const bool slice = words.value(1) == QLatin1String("slice");
+    double sx = w / vw, sy = h / vh, tx = 0, ty = 0;
+    if (align != QLatin1String("none")) {
+        const double s = slice ? qMax(sx, sy) : qMin(sx, sy);
+        const double fx = align.contains(QLatin1String("xMin")) ? 0 : align.contains(QLatin1String("xMax")) ? 1 : 0.5;
+        const double fy = align.contains(QLatin1String("YMin")) ? 0 : align.contains(QLatin1String("YMax")) ? 1 : 0.5;
+        tx = (w - vw * s) * fx;
+        ty = (h - vh * s) * fy;
+        sx = sy = s;
+    }
+    QTransform t = QTransform::fromTranslate(-vx, -vy);
+    return t * QTransform::fromScale(sx, sy) * QTransform::fromTranslate(tx, ty);
 }
 
 // The conditional attributes a <switch> chooses its child by. Extensions
@@ -752,13 +832,15 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     QHash<QString, int> skippedCounts;
     QPainterPath user;        // Y-down user units, all shapes mapped by their CTM
     // A <switch> draws only its first child whose conditions pass.
-    struct Ctx { QTransform xf; bool hidden; bool isSwitch = false; bool switchChosen = false; };
+    struct Ctx { QTransform xf; bool hidden; bool isSwitch = false; bool switchChosen = false;
+                 double vpW = 0, vpH = 0; };   // the viewport's size in its user units (0: unknown)
     QVector<Ctx> stack;
     bool rootSeen = false;
     double vx = 0, vy = 0, vw = 0, vh = 0;   // viewBox
     double wMm = -1, hMm = -1;
     bool aspectNone = false;
     int malformed = 0;
+    const QSet<QString> hiddenClasses = svgHiddenClasses(data);
 
     static const QStringList skipContainers = {
         QStringLiteral("defs"), QStringLiteral("symbol"), QStringLiteral("clipPath"),
@@ -793,7 +875,10 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 svgLengthMm(at.value(QLatin1String("height")).toString(), &hMm);
                 aspectNone = at.value(QLatin1String("preserveAspectRatio")).trimmed()
                                  .startsWith(QLatin1String("none"));
-                stack.append(Ctx{QTransform(), false});
+                Ctx root{QTransform(), false};
+                if (vw > 0 && vh > 0) { root.vpW = vw; root.vpH = vh; }
+                else if (wMm > 0 && hMm > 0) { root.vpW = wMm / (25.4 / 96); root.vpH = hMm / (25.4 / 96); }
+                stack.append(root);
                 continue;
             }
 
@@ -818,8 +903,32 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
             // sodipodi:namedview, ...) draws nothing and is not "skipped".
             const QStringView ns = xml.namespaceUri();
             const bool foreign = !ns.isEmpty() && ns != QLatin1String("http://www.w3.org/2000/svg");
-            Ctx ctx{parseSvgTransform(at.value(QLatin1String("transform")).toString()) * parent.xf,
-                    parent.hidden || foreign || svgHidden(at) || skipContainers.contains(name)};
+            QTransform own = parseSvgTransform(at.value(QLatin1String("transform")).toString());
+            double vpW = parent.vpW, vpH = parent.vpH;
+            if (name == QLatin1String("svg")) {
+                // A nested viewport: placed at x,y, sized width x height
+                // (100% by default), its viewBox fitted into that.
+                double x = 0, y = 0, w = parent.vpW, h = parent.vpH;
+                svgUserLength(at.value(QLatin1String("x")), parent.vpW, &x);
+                svgUserLength(at.value(QLatin1String("y")), parent.vpH, &y);
+                svgUserLength(at.value(QLatin1String("width")), parent.vpW, &w);
+                svgUserLength(at.value(QLatin1String("height")), parent.vpH, &h);
+                QTransform vp;
+                vpW = w; vpH = h;
+                Scanner sc{at.value(QLatin1String("viewBox"))};
+                double a[4];
+                bool vb = true;
+                for (double &v : a) vb = vb && sc.number(&v);
+                if (vb && a[2] > 0 && a[3] > 0 && w > 0 && h > 0) {
+                    vp = svgViewBoxTransform(a[0], a[1], a[2], a[3], w, h,
+                                             at.value(QLatin1String("preserveAspectRatio")));
+                    vpW = a[2]; vpH = a[3];
+                }
+                own = vp * QTransform::fromTranslate(x, y) * own;
+            }
+            Ctx ctx{own * parent.xf,
+                    parent.hidden || foreign || svgHidden(at, hiddenClasses) || skipContainers.contains(name)};
+            ctx.vpW = vpW; ctx.vpH = vpH;
             ctx.isSwitch = name == QLatin1String("switch");
             stack.append(ctx);
             if (ctx.hidden)

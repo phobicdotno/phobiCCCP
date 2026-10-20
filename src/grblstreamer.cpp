@@ -94,6 +94,11 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     m_rx.clear();
     m_status = MachineStatus();
     m_adhocPending = 0;
+    // The last connection's $$ and WCO belong to whatever answered then: a
+    // reconnect may be another machine (machine profiles) or a controller
+    // whose settings changed. Until the new $$ arrives the fallbacks apply.
+    m_settings.clear();
+    m_wcoX = m_wcoY = m_wcoZ = 0;
     m_statusTimer->start();
     emit connected(portName);
     return true;
@@ -674,6 +679,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
         // Unlock and homing both leave GRBL without the G43.1 it had.
         if (ok && (sent == QLatin1String("$X") || sent == QLatin1String("$H")) && m_tlo != 0.0)
             m_tloPending = true;
+        emit commandAnswered(sent, ok);
         if (m_adhocPending == 0) {
             flushTlo();
             pumpMacro();

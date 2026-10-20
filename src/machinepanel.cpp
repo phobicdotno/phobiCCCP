@@ -929,6 +929,29 @@ MachinePanel::MachinePanel(QWidget *parent)
             log(QStringLiteral("== still moving — wait for it to finish, then Continue =="));
             return;
         }
+        // The park "finishes" when its last move is acked, which is when
+        // the move starts; the prompt comes up once the machine stands at
+        // the tool-change spot. Resuming before it skipped the prompt (and
+        // so the new bit) and opened it later, in the middle of the cut.
+        if (!m_toolPromptAnswered) {
+            if (m_onIdle) {
+                log(QStringLiteral("== still on the way to the tool-change spot — answer the "
+                                   "tool prompt there first =="));
+                return;
+            }
+            // The park did not get there (an alarm on the way): go again,
+            // and the prompt follows.
+            log(QStringLiteral("parking for the tool change again"));
+            parkForTool();
+            return;
+        }
+        // GRBL refuses G-code while a jog runs (error:9): the rise to the
+        // top would be rejected and the job aborted.
+        if (!standingStill()) {
+            log(QStringLiteral("== %1 — wait until it stands still, then Continue ==")
+                    .arg(stillMovingWhy()));
+            return;
+        }
         // BitSetter off: nothing measures the new tool; the operator either
         // said it has the same length, or closed the prompt to zero Z.
         if (!m_bsEnabled->isChecked()) {
@@ -977,11 +1000,9 @@ MachinePanel::MachinePanel(QWidget *parent)
         // machine held, and the button must keep saying so.
         if (!m_held) {
             m_grbl->pauseStream();
-            m_held = true;
-            m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
+            setHeld(true);
         } else if (m_grbl->resumeStream()) {
-            m_held = false;
-            m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+            setHeld(false);
         }
     });
     connect(m_stopBtn, &QPushButton::clicked, this, [this] {
@@ -1108,6 +1129,24 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_grbl, &GrblStreamer::errorOccurred, this, [this](const QString &e) {
         log(QStringLiteral("!! %1").arg(e));
     });
+    // A manual zero for the new bit counts once the controller took it:
+    // refused (error:9 while still jogging, say), Z still belongs to the
+    // old bit and Continue has to say so.
+    connect(m_grbl, &GrblStreamer::commandAnswered, this, [this](const QString &line, bool ok) {
+        if (!m_awaitToolZero || !line.startsWith(QLatin1String("G10 L20"))
+            || !line.contains(QChar('Z')))
+            return;
+        m_awaitToolZero = false;
+        if (!m_manualZero || !m_grbl->isParkedForTool())
+            return;
+        if (ok) {
+            m_zeroedForTool = true;
+            log(QStringLiteral("Z zeroed for the new tool — press Continue to resume the job"));
+        } else {
+            log(QStringLiteral("!! the controller refused the Z zero — Z is still the previous "
+                               "tool's. Wait until the machine stands still and zero again"));
+        }
+    });
     connect(m_grbl, &GrblStreamer::probeResult, this,
             [this](double x, double y, double z, bool ok) {
         log(QStringLiteral("probe %1 at machine X%2 Y%3 Z%4")
@@ -1134,7 +1173,14 @@ MachinePanel::MachinePanel(QWidget *parent)
                : QStringLiteral("== program stopped =="));
         const bool endJob = m_endOfJobPending && ok && !rehearsal;
         m_endOfJobPending = false;
+        const bool wasHeld = m_held;
         resetFlow();
+        // Held in the last seconds: the last lines went into the planner
+        // and the stream is done, but the machine still holds (spindle on,
+        // moves queued). The button keeps saying Resume. A stopped program
+        // was reset, which ends any hold.
+        if (ok && (wasHeld || m_machineState.startsWith(QLatin1String("Hold"))))
+            setHeld(true);
         if (rehearsal)
             finishRehearsal(ok, measured);
         // A finished job: retract to the top of Z, then stop the spindle,
@@ -1316,6 +1362,11 @@ void MachinePanel::forgetJogPlan()
 
 bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
 {
+    if (m_jogCancelTimer) {
+        if (defer)
+            m_deferredJogs.append({axis, delta, feed});
+        return false;
+    }
     const int i = axis == 'X' ? 0 : axis == 'Y' ? 1 : 2;
     const MachineStatus &st = m_grbl->status();
     if (!m_homed || !st.valid) {
@@ -1328,6 +1379,7 @@ bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
         }
         m_grbl->sendCommand(QStringLiteral("$J=G91 %1%2 F%3")
                                 .arg(QChar::fromLatin1(axis)).arg(delta, 0, 'f', 3).arg(feed));
+        m_moveFreshAfter = m_statusSeq + 2;
         return true;
     }
     if (!m_jogPlanValid) {
@@ -1369,6 +1421,7 @@ bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
     }
     m_jogPlan[i] = to;
     m_jogSeedOk = false;
+    m_moveFreshAfter = m_statusSeq + 2;
     m_grbl->sendCommand(QStringLiteral("$J=G53 G90 %1%2 F%3")
                             .arg(QChar::fromLatin1(axis)).arg(to, 0, 'f', 3).arg(feed));
     return true;
@@ -1420,9 +1473,13 @@ void MachinePanel::endHoldJog()
         // still waiting unread in its serial buffer is read after the cancel
         // and would start moving again - the "rest of the step" after letting
         // go. So cancel again once every jog sent has been answered.
+        // Jogs sent before that second cancel would be cancelled with it,
+        // so jogBy() holds new ones back while it is pending.
         m_grbl->jogCancel();
         forgetJogPlan();
+        delete m_jogCancelTimer;
         auto *t = new QTimer(this);
+        m_jogCancelTimer = t;
         t->setInterval(15);
         auto waited = std::make_shared<int>(0);
         connect(t, &QTimer::timeout, this, [this, t, waited] {
@@ -1432,6 +1489,9 @@ void MachinePanel::endHoldJog()
             forgetJogPlan();
             t->stop();
             t->deleteLater();
+            m_jogCancelTimer = nullptr;
+            if (!m_deferredJogs.isEmpty())
+                m_grbl->requestStatus();     // the held-back taps go on a fresh report
         });
         t->start();
     }
@@ -1832,6 +1892,9 @@ void MachinePanel::continueAfterToolChange()
                            "lifts to its safe height first"));
     m_manualZero = false;
     m_zeroedForTool = false;
+    m_awaitToolZero = false;
+    m_toolPromptAnswered = false;
+    m_onIdle = nullptr;                  // a prompt still waiting for Idle is void now
     m_grbl->continueAfterToolChange(m_homed ? riseToTop() : QStringList{});
 }
 
@@ -1876,10 +1939,8 @@ void MachinePanel::bitZeroApply()
                 m_grbl->sendCommand(c);
             if (m_bzWantZ)
                 forgetReference();   // see zero()
-            if (m_bzWantZ && m_manualZero) {
-                m_zeroedForTool = true;
-                log(QStringLiteral("Z zeroed for the new tool — press Continue to resume the job"));
-            }
+            if (m_bzWantZ && m_manualZero)
+                m_awaitToolZero = true;      // m_zeroedForTool on the G10's ok
             log(QStringLiteral("BitZero: %1set. Remove the plate and the magnet before cutting")
                     .arg(what));
         }
@@ -1999,8 +2060,12 @@ void MachinePanel::hideEvent(QHideEvent *event)
 // position, no ALARM:3), which also stops the spindle, and Z up to the top.
 void MachinePanel::cancelJob()
 {
+    // Held or running with the stream done counts too: held in the last
+    // seconds, the last lines are in the planner and the spindle is on.
     const bool active = m_grbl->isConnected()
-        && (m_grbl->isStreaming() || m_grbl->isMacroRunning() || m_phase != Phase::Idle);
+        && (m_grbl->isStreaming() || m_grbl->isMacroRunning() || m_phase != Phase::Idle
+            || m_held || m_machineState.startsWith(QLatin1String("Hold"))
+            || m_machineState == QLatin1String("Run"));
     if (!active) {
         log(QStringLiteral("nothing to cancel"));
         return;
@@ -2016,8 +2081,7 @@ void MachinePanel::cancelJob()
     const bool wasHeld = m_held;
     if (moving)
         m_grbl->pauseStream();
-    m_held = true;
-    m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
+    setHeld(true);
     ShopAsk a;
     a.title = QStringLiteral("Cancel job");
     a.headline = QStringLiteral("Cancel the job?");
@@ -2033,10 +2097,9 @@ void MachinePanel::cancelJob()
         // Back as it was: running again only if this held it (and the
         // resume went out); a hold from before stays, Resume still lifts it.
         if (moving && !wasHeld)
-            m_held = !m_grbl->resumeStream();
+            setHeld(!m_grbl->resumeStream());
         else
-            m_held = wasHeld || m_machineState.startsWith(QLatin1String("Hold"));
-        m_pauseBtn->setText(m_held ? QStringLiteral("⏵ Resume") : QStringLiteral("⏸ Hold"));
+            setHeld(wasHeld || m_machineState.startsWith(QLatin1String("Hold")));
         return;
     }
     holdResetThen([this] {
@@ -2084,11 +2147,20 @@ void MachinePanel::resetFlow()
     m_toolMeasured = false;
     m_manualZero = false;
     m_zeroedForTool = false;
+    m_awaitToolZero = false;
+    m_toolPromptAnswered = false;
     m_rehearsal = false;
     m_onIdle = nullptr;
-    m_held = false;
-    m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+    setHeld(false);
     m_runBtn->setText(QStringLiteral("▶ Run"));
+}
+
+void MachinePanel::setHeld(bool held)
+{
+    m_held = held;
+    m_holdSeen = false;
+    m_heldClock.restart();
+    m_pauseBtn->setText(held ? QStringLiteral("⏵ Resume") : QStringLiteral("⏸ Hold"));
 }
 
 // ---- gamepad -----------------------------------------------------------------
@@ -2243,8 +2315,7 @@ void MachinePanel::toggleConnect()
             if (!shopAsk(this, a) || !m_grbl->isConnected())
                 return;
             stopHoldJog();
-            m_held = true;
-            m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
+            setHeld(true);
             log(QStringLiteral("disconnecting: holding, then resetting the controller"));
             holdResetThen([this] {
                 // Let the reset go out before the port closes.
@@ -2353,6 +2424,14 @@ void MachinePanel::onStatus(const MachineStatus &st)
 {
     m_machineState = st.state;
     ++m_statusSeq;
+    // The pause button follows the machine: a hold stays until a report
+    // shows it lifted (or it never took, e.g. `!` in Alarm).
+    if (m_held) {
+        if (st.state.startsWith(QLatin1String("Hold")) || st.state.startsWith(QLatin1String("Door")))
+            m_holdSeen = true;
+        else if (!st.state.isEmpty() && (m_holdSeen || m_heldClock.elapsed() > 2000))
+            setHeld(false);
+    }
     // Busy file: touched every 10 s while the machine works, so a
     // screensaver (or anything else) can stay out of the way.
     if (isBusy() && (!m_busyClock.isValid() || m_busyClock.elapsed() > 10000)) {
@@ -2467,7 +2546,8 @@ void MachinePanel::onStatus(const MachineStatus &st)
         if (settled)
             m_jogPlanValid = false;          // the next jog starts from this report
         m_jogSeedOk = settled && m_statusSeq >= m_jogFreshAfter;
-        if (!m_deferredJogs.isEmpty() && m_jogSeedOk && m_grbl->canSendCommand()) {
+        if (!m_deferredJogs.isEmpty() && m_jogSeedOk && !m_jogCancelTimer
+            && m_grbl->canSendCommand()) {
             const QVector<PendingJog> taps = std::exchange(m_deferredJogs, {});
             for (const PendingJog &j : taps)
                 jogBy(j.axis, j.delta, j.feed, false);
@@ -2521,7 +2601,10 @@ bool MachinePanel::isBusy() const
     if (!m_grbl->isConnected())
         return false;
     const QString &st = m_machineState;
+    // A surface map waiting for the plate counts: the operator's hand and
+    // the plate are under the tool.
     return m_grbl->isStreaming() || m_grbl->isMacroRunning() || m_phase != Phase::Idle
+        || (m_mapper && m_mapper->isRunning())
         || st == QLatin1String("Run") || st == QLatin1String("Jog")
         || st.startsWith(QLatin1String("Home")) || st.startsWith(QLatin1String("Hold"));
 }
@@ -2602,10 +2685,18 @@ void MachinePanel::park()
     QSettings st;
     const auto machine = appsettings::machine(st);
     constexpr double kMargin = 5.0;
-    const double x = -kMargin, y = -(machine.height - kMargin);
+    // Inside the travel the controller reports ($130-$132) when it is
+    // smaller than the Settings size (which defaults to a 4x4): soft limits
+    // are off, so a target past the end is a rapid into the hard stop.
+    const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
+    const double ty = qMin(machine.height, m_grbl->setting(131, machine.height));
+    const double tz = m_grbl->setting(132, 75.0);
+    const double clear = switchClearance();
+    const double x = -qMin(qMax(kMargin, clear), tx / 2), y = -qMax(clear, ty - kMargin);
+    const double z = qBound(-(tz - kMargin), m_bsSafeZ->value(), -clear);
     log(QStringLiteral("parking front right (X%1 Y%2, machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
     m_grbl->startMacro({QStringLiteral("G90"),
-                        QStringLiteral("G53 G0 Z%1").arg(m_bsSafeZ->value(), 0, 'f', 3),
+                        QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
                         QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
 }
 
@@ -2616,6 +2707,23 @@ void MachinePanel::whenIdle(std::function<void()> fn)
 }
 
 // ---- zero / go ---------------------------------------------------------------
+
+bool MachinePanel::standingStill() const
+{
+    return m_machineState == QLatin1String("Idle") && m_grbl->pendingCommands() == 0
+           && m_deferredJogs.isEmpty() && !m_jogCancelTimer && m_statusSeq >= m_moveFreshAfter;
+}
+
+QString MachinePanel::stillMovingWhy() const
+{
+    if (m_machineState.isEmpty())
+        return QStringLiteral("no status from the controller yet");
+    if (m_machineState != QLatin1String("Idle"))
+        return QStringLiteral("the machine is not idle (%1)").arg(m_machineState);
+    if (!m_deferredJogs.isEmpty() || m_jogCancelTimer)
+        return QStringLiteral("a jog is still to go out");
+    return QStringLiteral("the last jog may still be moving");
+}
 
 bool MachinePanel::zeroAllowed(bool xy)
 {
@@ -2647,6 +2755,13 @@ void MachinePanel::zero(const QString &axes)
         log(QStringLiteral("!! busy — cannot zero now"));
         return;
     }
+    // GRBL refuses G-code while jogging (error:9), and a tap still waiting
+    // for a fresh report would run after the zero: Z0 a step off the bit.
+    if (!standingStill()) {
+        log(QStringLiteral("!! zeroing refused: %1 — wait until it stands still, then zero")
+                .arg(stillMovingWhy()));
+        return;
+    }
     QStringList cmds;
     const bool zeroZ = axes.contains(QChar('Z'));
     if (zeroZ) {
@@ -2673,10 +2788,8 @@ void MachinePanel::zero(const QString &axes)
         // tool was zeroed before, and offsets from it would be wrong.
         if (zeroZ)
             forgetReference();
-        if (zeroZ && m_manualZero) {
-            m_zeroedForTool = true;
-            log(QStringLiteral("Z zeroed for the new tool — press Continue to resume the job"));
-        }
+        if (zeroZ && m_manualZero)
+            m_awaitToolZero = true;          // m_zeroedForTool on the G10's ok
     }
     updateOffsetLabels();
 }
@@ -2733,7 +2846,16 @@ void MachinePanel::onToolChange(int tool, int ordinal)
     m_toolMeasured = false;
     m_manualZero = false;
     m_zeroedForTool = false;
+    m_awaitToolZero = false;
+    m_toolPromptAnswered = false;
     m_runBtn->setText(QStringLiteral("▶ Continue"));
+    parkForTool();
+}
+
+void MachinePanel::parkForTool()
+{
+    if (needsInit() || !requireHomed(QStringLiteral("Parking for the tool change")))
+        return;
     m_phase = Phase::ParkForTool;
     // Spindle off, up, and over to where the operator can reach the collet.
     m_grbl->startMacro({QStringLiteral("M5"), QStringLiteral("G90"),
@@ -2761,7 +2883,7 @@ void MachinePanel::onMacroFinished(bool ok)
     case Phase::ParkForTool:
         if (!ok) {
             log(QStringLiteral("!! could not park for the tool change — fix the alarm, "
-                               "then press Continue"));
+                               "then press Continue to park again"));
             return;
         }
         whenIdle([this] { askForTool(); });
@@ -2826,6 +2948,8 @@ void MachinePanel::onMacroFinished(bool ok)
 // The tool-change prompt, once the machine stands at the tool-change spot.
 void MachinePanel::askForTool()
 {
+    if (!m_grbl->isParkedForTool())
+        return;
     const bool bs = m_bsEnabled->isChecked();
     ShopAsk a;
     a.title = QStringLiteral("Tool change");
@@ -2870,13 +2994,15 @@ void MachinePanel::askForTool()
         a.altText = QStringLiteral("Close: I'll zero Z");
     a.cancelText = QStringLiteral("Stop the job");
     const ShopAnswer ans = shopChoose(this, a);
-    if (!m_grbl->isParkedForTool())
-        return;                          // stopped meanwhile (Stop, a pad, the cable)
-    if (ans == ShopAnswer::Cancel) {
+    // "Stop the job" stops whatever is still streaming, parked or not.
+    if (ans == ShopAnswer::Cancel && m_grbl->isStreaming()) {
         resetFlow();
         m_grbl->stopStream();
         return;
     }
+    if (!m_grbl->isParkedForTool())
+        return;                          // stopped meanwhile (Stop, a pad, the cable)
+    m_toolPromptAnswered = true;
     if (ans == ShopAnswer::Alt) {
         m_manualZero = true;
         m_zeroedForTool = false;
@@ -2884,10 +3010,24 @@ void MachinePanel::askForTool()
                            "tool, then press Continue"));
         return;
     }
-    if (bs)
-        measureTool(Phase::MeasureAfterChange);
-    else
-        continueAfterToolChange();
+    // A gamepad jogs with the prompt open: G-code would be refused while it
+    // moves (error:9), so go on once it stands still.
+    auto proceed = [this, bs] {
+        if (!m_grbl->isParkedForTool())
+            return;
+        if (bs)
+            measureTool(Phase::MeasureAfterChange);
+        else
+            continueAfterToolChange();
+    };
+    if (standingStill()) {
+        proceed();
+    } else {
+        stopHoldJog();
+        m_deferredJogs.clear();
+        log(QStringLiteral("waiting for the machine to stand still before carrying on"));
+        whenIdle(proceed);
+    }
 }
 
 // A real tool change with nothing around it: the rehearsal program goes through
@@ -2941,8 +3081,7 @@ void MachinePanel::rehearseToolChange()
     if (!shopAsk(this, ask))
         return;
     log(QStringLiteral("== tool-change rehearsal (spindle off, no cut) =="));
-    m_held = false;
-    m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+    setHeld(false);
     m_rehearsal = true;
     m_jobTools.clear();
     m_grbl->startStream(GrblStreamer::toolChangeRehearsalLines(bitSetter(), 1));
@@ -3113,8 +3252,7 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         log(QStringLiteral("surface map applied: %1").arg(m_map.summary()));
     if (air)
         log(QStringLiteral("air cut: spindle off, Z lifted %1 mm").arg(m_airLift->value(), 0, 'f', 1));
-    m_held = false;
-    m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+    setHeld(false);
     // The post ends with M05 M02, and GRBL's M2 stops the spindle too. Take
     // those off so the ending is ours: up to the top first, then spindle off
     // (see streamFinished). Only the trailing lines go; a tool-change M05

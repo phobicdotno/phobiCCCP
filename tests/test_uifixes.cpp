@@ -1,0 +1,164 @@
+// Desktop UI regressions: two bits that share a tool number (setup sheet,
+// Simulate tool strip and preview) and the inlay male's depth bindings.
+//
+// Plain asserts, no framework; exits 0 on success.
+
+#include "../src/c2ddocument.h"
+#include "../src/canvas.h"
+#include "../src/element.h"
+#include "../src/gcodeexport.h"
+#include "../src/isopreview.h"
+#include "../src/parametric.h"
+#include "../src/setupsheet.h"
+#include "../src/toolpathfactory.h"
+#include "../src/toolpathpanel.h"
+#include "../src/toolstrip.h"
+
+#include <QApplication>
+#include <QDialog>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QListWidget>
+#include <QPushButton>
+#include <QTemporaryDir>
+#include <QTimer>
+
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+static int g_checks = 0;
+
+static void check(bool cond, const char *what)
+{
+    ++g_checks;
+    if (!cond) {
+        std::fprintf(stderr, "FAIL: %s\n", what);
+        std::exit(1);
+    }
+}
+
+static double num(const QJsonValue &v) { return v.isString() ? v.toString().toDouble() : v.toDouble(); }
+
+int main(int argc, char *argv[])
+{
+    qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication app(argc, argv);
+    QTemporaryDir tmp;
+    QString err;
+    const QString blank = tmp.filePath("a.c2d");
+    check(c2d::Document::createBlank(blank, 200, 200, 19, &err), "createBlank");
+
+    // Two pockets, both T0: a 6.35 then a 3.175 bit. The program changes
+    // tools between them, so everything that lists tools lists both.
+    {
+        c2d::Document d;
+        check(d.load(blank, &err), "load");
+        const c2d::Element r1 = c2d::Element::makeRectangle({50, 50}, 40, 40, d.defaultLayer());
+        const c2d::Element r2 = c2d::Element::makeRectangle({150, 150}, 40, 40, d.defaultLayer());
+        d.addElement(r1);
+        d.addElement(r2);
+        c2d::Toolpath a = c2d::makeToolpath(d, "pocket_toolpath", {r1.id});
+        QJsonObject ta = a.json.value("tool").toObject();
+        ta["number"] = 0;
+        ta["diameter"] = 6.35;
+        ta["name"] = "quarter";
+        a.json["tool"] = ta;
+        a.json["name"] = "A";
+        a.json["end_depth"] = "-2.000";
+        d.insertToolpath(0, a);
+        c2d::Toolpath b = c2d::makeToolpath(d, "pocket_toolpath", {r2.id});
+        QJsonObject tb = b.json.value("tool").toObject();
+        tb["number"] = 0;
+        tb["diameter"] = 3.175;
+        tb["name"] = "eighth";
+        b.json["tool"] = tb;
+        b.json["name"] = "B";
+        b.json["end_depth"] = "-2.000";
+        d.insertToolpath(1, b);
+        c2d::Document e = d;
+        const c2d::GcodeResult g = c2d::exportGcode(e);
+        check(g.gcode.count(QStringLiteral("M0 ;T0")) == 2, "two tool changes in the program");
+
+        const QString h = c2d::setupSheetHtml(d, QStringLiteral("t"));
+        const int s = h.indexOf(QStringLiteral("<h2>Tools</h2>"));
+        const QString tools = h.mid(s, h.indexOf(QStringLiteral("</table>"), s) - s);
+        check(tools.count(QStringLiteral("<tr><td")) == 2, "setup sheet: one row per bit");
+        check(tools.contains(QStringLiteral("6.350")) && tools.contains(QStringLiteral("3.175")),
+              "setup sheet: both diameters listed");
+        check(tools.indexOf(QStringLiteral("quarter")) < tools.indexOf(QStringLiteral("eighth")),
+              "setup sheet: in the order they are loaded");
+
+        c2d::ToolStrip strip;
+        c2d::IsoPreview iso;
+        QObject::connect(&strip, &c2d::ToolStrip::toolClicked, &iso, &c2d::IsoPreview::seekToTool);
+        QObject::connect(&iso, &c2d::IsoPreview::currentToolChanged, &strip, &c2d::ToolStrip::setCurrent);
+        strip.setJob(d, g.ops);
+        iso.setJob(g.ops, 200, 200, 19);
+        auto *list = strip.findChild<QListWidget *>();
+        check(list && list->count() == 2, "strip: two entries");
+        iso.setProgress(0);
+        check(list->currentRow() == 0, "strip: the first bit is current at the start");
+        emit list->itemClicked(list->item(1));
+        check(iso.progress() > 0.01, "strip: the second entry seeks to the second bit");
+        check(iso.currentTool() == 0 && iso.currentBit().contains(QStringLiteral("3.175")),
+              "preview: the 3.175 bit is in the spindle");
+        check(list->currentRow() == 1, "strip: the second entry is highlighted");
+        emit list->itemClicked(list->item(0));
+        check(iso.progress() < 1e-9 && list->currentRow() == 0, "strip: back to the first bit");
+        iso.setProgress(0.99);
+        check(list->currentRow() == 1, "strip: a seek by progress moves the highlight too");
+    }
+
+    // Inlay male from a v-carve whose end depth is bound to a parameter:
+    // the male's binding carries the glue gap, so re-evaluating keeps it.
+    {
+        c2d::Document d;
+        check(d.load(blank, &err), "load");
+        d.parametricRef().params.append({QStringLiteral("carve"), QStringLiteral("3"), QString()});
+        const c2d::Element r = c2d::Element::makeCircle({50, 50}, 15, d.defaultLayer());
+        d.addElement(r);
+        c2d::Toolpath t = c2d::makeToolpath(d, "advanced_vcarve_toolpath", {r.id});
+        t.json["end_depth"] = "-3.000";
+        t.json["phobic_expr"] = QJsonObject{{"end_depth", QJsonObject{{"expr", "carve"}, {"neg", true},
+                                                                        {"str", true}, {"min", 0.0},
+                                                                        {"max", 100.0}}}};
+        d.insertToolpath(0, t);
+        c2d::Canvas canvas;
+        c2d::ToolpathPanel panel(&canvas);
+        canvas.setDocument(&d);
+        panel.setDocument(&d);
+        check(panel.currentUuid() == t.uuid, "the v-carve is current");
+        QPushButton *inlay = nullptr;
+        for (QPushButton *b : panel.findChildren<QPushButton *>())
+            if (b->text().contains(QStringLiteral("nlay")))
+                inlay = b;
+        check(inlay != nullptr, "an inlay button");
+        QTimer accept;   // the gap / margin questions and the summary: defaults
+        accept.setInterval(50);
+        QObject::connect(&accept, &QTimer::timeout, [] {
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (auto *dlg = qobject_cast<QDialog *>(w); dlg && dlg->isVisible() && dlg->isModal())
+                    dlg->accept();
+        });
+        accept.start();
+        inlay->click();
+        accept.stop();
+        check(d.toolpaths().size() == 2, "a male toolpath was added");
+        const QString male = d.toolpaths().at(1).uuid;
+        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 3.5) < 1e-9,
+              "male end depth is carve + 0.5 gap");
+        c2d::param::applyToolpathBindings(d, nullptr);
+        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 3.5) < 1e-9,
+              "re-evaluating the bindings keeps the gap");
+        check(std::fabs(num(d.toolpathByUuid(t.uuid)->json.value("end_depth")) + 3.0) < 1e-9,
+              "the female stays at carve");
+        d.parametricRef().params[0].expr = QStringLiteral("4");
+        c2d::param::applyToolpathBindings(d, nullptr);
+        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 4.5) < 1e-9,
+              "a parameter edit moves the male with the gap");
+    }
+
+    std::printf("test_uifixes: %d checks OK\n", g_checks);
+    return 0;
+}
