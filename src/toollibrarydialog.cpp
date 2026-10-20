@@ -171,8 +171,14 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
     mid->addLayout(right, 2);
     lay->addLayout(mid, 1);
     connect(m_stock, &QSpinBox::valueChanged, this, [this](int v) {
-        if (const LibraryTool *t = selectedTool())
+        if (const LibraryTool *t = selectedTool()) {
             QSettings().setValue(QStringLiteral("toolStock/%1/have").arg(t->number), v);
+            // The bin and the list's "· N in stock" follow the typed count,
+            // not the one the bit was selected with.
+            m_trash->setEnabled(v > 0);
+            if (QListWidgetItem *it = m_list->currentItem())
+                it->setText(itemLabel(*t));
+        }
     });
     connect(m_trash, &QToolButton::clicked, this, [this] {
         const LibraryTool *t = selectedTool();
@@ -227,6 +233,19 @@ int ToolLibraryDialog::stockBroken(const LibraryTool &t)
     return QSettings().value(QStringLiteral("toolStock/%1/broken").arg(t.number), 0).toInt();
 }
 
+QString ToolLibraryDialog::itemLabel(const LibraryTool &t)
+{
+    QString label = QStringLiteral("%1   Ø%2 mm · %3 fl")
+                        .arg(t.name, mmText(t.diameter)).arg(t.flutes);
+    if (t.angle > 0)
+        label += QStringLiteral(" · %1°").arg(t.angle);
+    if (t.uncertain)
+        label += QStringLiteral(" · unverified");
+    if (const int have = stockHave(t); have > 0 || t.bought > 0)
+        label += QStringLiteral(" · %1 in stock").arg(have);
+    return label;
+}
+
 void ToolLibraryDialog::updateStock()
 {
     const LibraryTool *t = selectedTool();
@@ -238,6 +257,8 @@ void ToolLibraryDialog::updateStock()
     }
     const QSignalBlocker block(m_stock);
     m_stock->setValue(stockHave(*t));
+    if (QListWidgetItem *it = m_list->currentItem())
+        it->setText(itemLabel(*t));       // "· N in stock" follows the count
     const int b = stockBroken(*t);
     m_broken->setText(b == 0 ? QString()
                       : b == 1 ? QStringLiteral("1 thrown away")
@@ -283,15 +304,7 @@ void ToolLibraryDialog::rebuildList()
                           .arg(t.number).arg(t.name, t.kind, t.model).arg(t.diameter);
         if (!q.isEmpty() && !hay.contains(q, Qt::CaseInsensitive))
             continue;
-        QString label = QStringLiteral("%1   Ø%2 mm · %3 fl")
-                            .arg(t.name, mmText(t.diameter)).arg(t.flutes);
-        if (t.angle > 0)
-            label += QStringLiteral(" · %1°").arg(t.angle);
-        if (t.uncertain)
-            label += QStringLiteral(" · unverified");
-        if (const int have = stockHave(t); have > 0 || t.bought > 0)
-            label += QStringLiteral(" · %1 in stock").arg(have);
-        auto *it = new QListWidgetItem(label, m_list);
+        auto *it = new QListWidgetItem(itemLabel(t), m_list);
         it->setData(Qt::UserRole, t.number);
         it->setIcon(toolKindIcon(t));
         it->setToolTip(t.notes);

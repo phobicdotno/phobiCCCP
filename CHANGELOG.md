@@ -1,5 +1,133 @@
 # Changelog
 
+## v1.3.1 (build 91) — 2026-10-20
+
+> Recursive bug hunt, rounds 1 to 3: about 70 bugs fixed in toolpaths, the machine, drawing, panels and the pad link
+
+### Round 3
+
+> Finishing passes cut narrow arms in steps again, 3D toolpaths stay out of the model, text is shaped properly, and nothing moves after Stop
+
+- **Toolpaths:**
+  - Round 2's finishing check let narrow arms and letter stems be cut at full depth in one
+    pass; they are stepped down again (finishing is left out there, with a note).
+  - 3D: ball-nose and V-bit finishing now find the true highest point under the tool (up to
+    0.1 mm into steep walls before), flat roughing with no stock to leave stays out of the model,
+    and waterline links no longer cut through walls.
+  - An inlay plug was a coarse polygon (0.2 mm undersized on round shapes); it follows the
+    curve now.
+  - Texture and the 3D boundary leave open paths out, as pockets do.
+  - A thread starting below the top no longer runs its helix up into the stock; circular
+    "outside" spirals down instead of plunging into uncut stock.
+- **Machine:**
+  - Jog taps waiting for a position could still go out after Stop; they are dropped.
+  - Reconnecting to a controller locked by an end-stop alarm left Initialize and Unlock dead.
+  - Run while held, or with an alarm raised while the Run question was open, is refused; the
+    Hold button no longer shows the wrong state, and a macro stops on an end-stop alarm.
+  - Stop during homing no longer parks afterwards, and Stop after Cancel no longer rises.
+- **Drawing:**
+  - Text is laid out as a whole: Hebrew and Arabic come out right, accents sit on their
+    letters, and kerning is applied.
+  - Dragging something attached to a free rectangle moves the rectangle instead of squashing it.
+  - Deleting a node of a triangle no longer leaves a closed path with no area.
+  - The "constraints can't hold" warning stays visible after rotate, scale and mirror.
+- **Panels:**
+  - Ctrl+Z pressed twice quickly on the Simulate page undid one step twice.
+  - G is Constrain; Snap moved to Shift+G (both were on G and neither worked).
+  - The tool library's "Broke one" follows the stock count as it is typed.
+- **Pad link:**
+  - A tablet restored from a backup (or a copied Documents folder) shared its identity with
+    the original, and their edits overwrote each other. The identity is kept out of backups and
+    renewed when a copy is detected.
+  - Pads and computers on older versions mixed with new ones no longer lose edits; the computer
+    warns when an older pad that can't be made safe syncs with it.
+
+### Round 2
+
+> Bug hunt round 2: adaptive no longer cuts one pass thousands of times, tabs hold the part, pad edits survive syncing with two computers, and Preview no longer freezes the window
+
+- **Toolpaths:**
+  - Adaptive could plan the same small pass thousands of times (text with a small bit: the
+    export never finished and memory ran out). Each pass is cut once now; a plan that still runs
+    away stops with a note.
+  - Tabs could land on the corners of an outside cut, where they hold nothing, and finishing
+    passes cut the sides off tabs. Tabs are now spaced and sized on the part's own edge and keep
+    their width through finishing passes.
+  - Pocket, contour, cutout and V-carve treated open paths as closed (cutting a shape that isn't
+    drawn). Open paths are left out with a note; engrave and contour on the line still cut them.
+    The pad warns about it too.
+  - Finishing passes that are left out now say so, and a rounded cusp no longer stops them.
+  - 3D ball-nose finishing took up to 0.12 mm off sharp peaks; it rests on the model's points now.
+- **Machine:**
+  - After an end-stop or travel alarm, Initialize and Unlock did nothing (and blocked later
+    commands); they reset the controller first now.
+  - A pad button set to home no longer homes during a tool-change pause, and zeroing is refused
+    while a surface map runs.
+  - Machine settings are read again after every controller reset; zeroing Z by hand in a tool
+    change counts as zeroed with the BitSetter on.
+- **Drawing:**
+  - Dragging a sketch point or a small circle resized it instead of moving it.
+  - Trim just past a corner removed the wrong piece.
+  - Characters outside the basic set (𝐀, emoji) drew as two boxes.
+  - Text height and arc radius show and keep the real size after Scale.
+  - Convert to path and Break keep a 3D component on all the new pieces.
+  - Horizontal and Vertical on one line are refused instead of shrinking it to nothing; a
+    two-point path no longer closes into nothing; a crafted angle value can't hang the solver.
+  - SVG: page alignment (preserveAspectRatio) and sizes with units ("10mm") import correctly.
+- **Panels:**
+  - With Preview on, every edit froze the window while the program was rebuilt (up to minutes
+    with adaptive). It is rebuilt in the background now.
+  - Undo after stepping a field with the arrow keys showed the old number.
+  - The setup sheet left out or used an old 3D model.
+  - The window can't be closed while an update step runs.
+- **Pad link:**
+  - With two or more computers, a pad could overwrite edits made on one of them. Designs now
+    carry who edited them (version vectors): copies edited apart are kept as "<name> (conflict)"
+    the same way on every computer, and nothing is lost. Older pads and desktops still work.
+  - Saving one of several files linked to the same design left the others on the old design;
+    they follow now.
+  - A Send from a pad that hadn't synced opened its older copy; it opens the newest.
+
+### Round 1
+
+> Bug hunt round 1: tiled programs no longer rapid through the work, finishing passes and adaptive links stay off neighbouring parts, and the tool-change pause can't be skipped
+
+- **Toolpaths:**
+  - A tiled program could rapid diagonally out of a cut, through the wall between two
+    pockets, at the start of a tile. Every tile now lifts straight up before moving across.
+  - Contour finishing passes could step across to the roughing ring of a part next to it (or an
+    island), straight through it. Finishing is only added where its rings follow the part.
+  - Adaptive clearing stayed down on links that nicked islands and walls; they lift now.
+  - V-carve went up to 0.6 mm too deep between corners facing each other; it follows the real
+    depth along those stretches now.
+  - A lead-in's step back could cut an island; leads that would are shortened or dropped.
+- **Machine:**
+  - Continue while the machine was still travelling to the tool-change spot skipped the tool
+    prompt (and the prompt then opened mid-cut). Continue now waits for the prompt and the
+    machine to stand still; Stop the job always stops.
+  - Zero pressed while still jogging was refused by the controller but counted as done. Zeroing
+    now waits until the machine stands still and only counts once the controller confirms it.
+  - Park drove past the machine's travel on machines smaller than the size in Settings (into the
+    front stop); it stays inside what the controller reports.
+  - A hold in the last seconds of a job left the Hold button and Cancel wrong.
+  - A pad could start a job while the surface map waited for the plate to be placed.
+- **Drawing:**
+  - Break, Trim and Extend on a shape locked with Fix duplicated it; they are refused now.
+  - Scaling or node-editing a sketch point turned it into an ellipse that got cut.
+  - SVG: layers hidden by a style class (as Illustrator saves hidden layers) and nested `<svg>`
+    sizes and positions are imported correctly.
+  - A centre-point arc drawn clockwise all the way round made nothing; it makes a circle.
+- **Panels:**
+  - Closing the update dialog right after "installed - restarting" crashed; Esc no longer stops
+    a running update step half way.
+  - Undo while a toolpath field still had focus left the old number showing (and it wasn't the
+    one cut).
+  - An inlay male lost its glue gap on the next parameter edit.
+  - The setup sheet and the Simulate tool strip now list each bit, also when two share a number.
+  - Save As adds the new name to Open Recent.
+- **Pad:** an offline edit was thrown away when the desktop turned down the sync (for instance
+  while it was asking about a Send); it is kept and offered again.
+
 ## v1.3.0 (build 90) — 2026-10-20
 
 > Send the open design from the computer to a pad, to edit it there

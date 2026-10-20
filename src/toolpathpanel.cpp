@@ -715,8 +715,13 @@ void ToolpathPanel::createInlayMale()
     // Mirror every subpath about the design's vertical centerline, then shift
     // beside the original. Border + mirrored design under even-odd fill = the
     // inverse region: the male carves the field, leaving the design standing.
+    // Flattened in a 100x space, as the female's region is (Qt's 0.5 unit
+    // threshold made a 20 mm circle a 17-gon, the plug 0.2 mm undersize).
     for (const QPainterPath &e : els) {
-        const QList<QPolygonF> polys = e.toSubpathPolygons();
+        QList<QPolygonF> polys = e.toSubpathPolygons(QTransform::fromScale(100, 100));
+        for (QPolygonF &p : polys)
+            for (QPointF &pt : p)
+                pt /= 100;
         for (const QPolygonF &p : polys) {
             const bool closed = p.size() > 3 && p.first() == p.last();
             const int n = closed ? int(p.size()) - 1 : int(p.size());
@@ -752,6 +757,30 @@ void ToolpathPanel::createInlayMale()
     };
     setDepth("start_depth", qAbs(num(j.value("start_depth"))) + gap);
     setDepth("end_depth", qAbs(num(j.value("end_depth"))) + gap);
+    // A depth bound to a parameter keeps the gap when the parameter is
+    // re-evaluated: the male's binding is the female's plus the gap.
+    QJsonObject binds = j.value(QStringLiteral("phobic_expr")).toObject();
+    for (const char *key : {"start_depth", "end_depth"}) {
+        QJsonObject b = binds.value(QLatin1String(key)).toObject();
+        const QString expr = b.value(QStringLiteral("expr")).toString();
+        if (expr.isEmpty())
+            continue;
+        const QString g = QString::number(gap, 'g', 10);
+        // A size binding (neg/abs) is worked out as |expr| and signed
+        // afterwards; a plain one is the signed depth itself.
+        if (b.value(QStringLiteral("neg")).toBool() || b.value(QStringLiteral("abs")).toBool()) {
+            b.insert(QStringLiteral("expr"), QStringLiteral("abs(%1) + %2").arg(expr, g));
+            // The female's range was for the female: the male goes gap deeper.
+            if (b.contains(QStringLiteral("max")))
+                b.insert(QStringLiteral("max"), b.value(QStringLiteral("max")).toDouble() + gap);
+        } else {
+            b.insert(QStringLiteral("expr"), QStringLiteral("(%1) %2 %3")
+                         .arg(expr, sign < 0 ? QStringLiteral("-") : QStringLiteral("+"), g));
+        }
+        binds.insert(QLatin1String(key), b);
+    }
+    if (!binds.isEmpty())
+        j.insert(QStringLiteral("phobic_expr"), binds);
     male.json = j;
     male.uuid = j.value("uuid").toString();
     m_canvas->insertGenerated(newEls, male);

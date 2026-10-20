@@ -10,7 +10,12 @@ import 'model.dart';
 /// the removal reaches every phobiCCCP too.
 class DesignStore {
   final Directory dir;
-  DesignStore(this.dir) {
+
+  /// Somewhere on this pad that is neither backed up nor copied with [dir]
+  /// (Android's no_backup folder, iOS's Caches): it holds the token that
+  /// ties [replicaId] to this pad. Null: [dir]'s own path does.
+  final Directory? device;
+  DesignStore(this.dir, {this.device}) {
     dir.createSync(recursive: true);
   }
 
@@ -64,13 +69,67 @@ class DesignStore {
     return plausibleStamp(next, now) ? next : now;
   }
 
+  String? _replica;
+
+  /// This pad's own id in version vectors ([Design.vv]), made once and kept
+  /// beside the designs with the token of the pad it was made on. Designs
+  /// restored from a backup onto another tablet, or copied there, come
+  /// without that token, so the id is made again there: two pads with one id
+  /// would each take the other's edit as made from its own, and one of the
+  /// two would be lost without a word.
+  String get replicaId {
+    final known = _replica;
+    if (known != null) return known;
+    final f = File('${dir.path}/.replica');
+    final token = _deviceToken();
+    try {
+      final lines = f.readAsStringSync().split('\n');
+      final id = lines.first.trim();
+      if (validId.hasMatch(id) && lines.length > 1 && lines[1].trim() == token) return _replica = id;
+    } catch (_) {}
+    final id = newId();
+    final tmp = File('${f.path}.tmp');
+    tmp.writeAsStringSync('$id\n$token', flush: true);
+    tmp.renameSync(f.path);
+    return _replica = id;
+  }
+
+  String _deviceToken() {
+    final d = device;
+    if (d != null) {
+      final f = File('${d.path}/replica-token');
+      try {
+        final t = f.readAsStringSync().trim();
+        if (validId.hasMatch(t)) return t;
+      } catch (_) {}
+      try {
+        d.createSync(recursive: true);
+        final t = newId();
+        final tmp = File('${f.path}.tmp');
+        tmp.writeAsStringSync(t, flush: true);
+        tmp.renameSync(f.path);
+        return t;
+      } catch (_) {}
+    }
+    return dir.absolute.path;
+  }
+
+  /// [vv] (the stored copy's) with this pad's edit at [modified] noted.
+  Map<String, int> _edited(Design have, int modified) =>
+      {...ancestryOf(have.vv, have.modified, deleted: have.deleted), replicaId: modified};
+
   /// An edit made here: stamped with the time, so it wins the next sync. Its
-  /// base is the stored copy's (the last one exchanged with a phobiCCCP),
-  /// whatever older copy the edit was made from (an undo, say).
+  /// bases and versions are the stored copy's (the last one exchanged with a
+  /// phobiCCCP), whatever older copy the edit was made from (an undo, say).
+  /// A design not stored here yet is new: it was never exchanged with any
+  /// computer.
   Design save(Design d, {int? now}) {
     final have = get(d.id);
     final was = have != null && have.modified > d.modified ? have.modified : d.modified;
-    final s = d.copyWith(modified: stamp(was, now ?? DateTime.now().millisecondsSinceEpoch), base: have?.base ?? d.base);
+    final m = stamp(was, now ?? DateTime.now().millisecondsSinceEpoch);
+    final s = have == null
+        ? d.copyWith(modified: m, base: 0, bases: const {}, vv: {replicaId: m})
+        : d.copyWith(modified: m, base: have.base, bases: have.bases, vv: _edited(have, m));
     put(s);
     return s;
   }
@@ -78,13 +137,10 @@ class DesignStore {
   void delete(String id, {int? now}) {
     final d = get(id);
     if (d == null) return;
-    // With its base, so a computer that changed it since can refuse.
+    final m = stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch);
+    // With its bases and versions, so a computer that changed it since can refuse.
     put(Design(
-        id: d.id,
-        name: d.name,
-        deleted: true,
-        base: d.base,
-        modified: stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch)));
+        id: d.id, name: d.name, deleted: true, base: d.base, bases: d.bases, vv: _edited(d, m), modified: m));
   }
 
   File? _file(String id) => validId.hasMatch(id) ? File('${dir.path}/$id.json') : null;

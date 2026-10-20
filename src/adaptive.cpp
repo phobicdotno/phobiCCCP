@@ -1,6 +1,7 @@
 #include "adaptive.h"
 
 #include <QLineF>
+#include <QHash>
 #include <QtGlobal>
 #include <QRectF>
 #include <algorithm>
@@ -196,6 +197,14 @@ public:
 
     double res() const { return m_res; }
 
+    // Radius of the rim samples for a tool of radius r: just inside it so a
+    // cell stamped by a neighbouring position at exactly one radius does
+    // not alias, and a cell's half-diagonal inside it besides. At 0.97 r a
+    // rim sample on a coarse raster (a small tool, a large region) fell in
+    // a cell whose centre was beyond r, which no pass along there ever
+    // stamped: the run stayed live and was planned again every pass.
+    double rim(double r) const { return r * qBound(0.5, 1.0 - 0.75 * m_res / r, 0.97); }
+
 private:
     QPointF m_org;
     double m_res = 0.1, m_r = 1;
@@ -203,8 +212,11 @@ private:
     std::vector<unsigned char> m_cells;
 };
 
-// Samples on the cutter's rim, just inside it so a cell stamped by a
-// neighbouring position at exactly one radius does not alias.
+// Passes in a row without growth, planning only clean-up (see plan()):
+// real pockets take under a hundred.
+const int kMaxStalled = 1000;
+
+// Samples on the cutter's rim (see Cleared::rim).
 const int kRim = 72;
 
 // Degrees of the cutter's front half (facing `dir`) buried in uncut material.
@@ -215,7 +227,7 @@ double engagement(const Cleared &cl, const QPointF &c, const QPointF &dir, doubl
     const int half = kRim / 2;
     for (int k = -half / 2; k <= half / 2; ++k) {
         const double a = a0 + k * 2 * M_PI / kRim;
-        if (!cl.cut(c + QPointF(std::cos(a), std::sin(a)) * (r * 0.97)))
+        if (!cl.cut(c + QPointF(std::cos(a), std::sin(a)) * cl.rim(r)))
             ++buried;
     }
     return buried * 360.0 / kRim;
@@ -226,7 +238,7 @@ bool cutsHere(const Cleared &cl, const QPointF &c, double r)
 {
     for (int k = 0; k < kRim; k += 2) {
         const double a = k * 2 * M_PI / kRim;
-        if (!cl.cut(c + QPointF(std::cos(a), std::sin(a)) * (r * 0.97)))
+        if (!cl.cut(c + QPointF(std::cos(a), std::sin(a)) * cl.rim(r)))
             return true;
     }
     for (int k = 0; k < 12; ++k) {
@@ -447,9 +459,14 @@ Plan plan(const QVector<QPolygonF> &rings, const Params &p, const std::function<
                         return false;
                 return true;
             };
-            if (clear) {
+            // The raster only knows what is cleared, to a cell and with the
+            // rim sampled inside the tool: a hop it calls clear can still
+            // graze an island or a wall at full depth. Stay down only when
+            // the tool centre also keeps to the part the whole way.
+            const bool direct = overPocket(last, path.first());
+            if (clear && direct) {
                 mv.link = Move::StayDown;
-            } else if (overPocket(last, path.first())) {
+            } else if (direct) {
                 mv.link = Move::Lift;
             } else {
                 mv.link = Move::Retract;
@@ -562,9 +579,40 @@ Plan plan(const QVector<QPolygonF> &rings, const Params &p, const std::function<
         // Visited centres so far: the helix disc.
         C2::Paths64 visited = C2::Intersect(C2::Paths64{toPath(circle(c, hr, step))}, part,
                                             C2::FillRule::NonZero);
+        // runsOf could keep handing back the same live run (a sliver the
+        // raster never marked as cut, see Cleared::rim), every pass, up to
+        // the guard and at every depth. A run already planned for this part
+        // (the same points to within 5 um; kept by their start, in 0.01 mm
+        // cells) is not planned again. Once the area stops growing, the
+        // passes left only clean up slivers: the part ends at the first
+        // that plans nothing new, or after kMaxStalled of them.
+        QHash<QPair<qint64, qint64>, QVector<QPolygonF>> planned;
+        auto cellOf = [](const QPointF &q) {
+            return qMakePair(qint64(std::floor(q.x() * 100)), qint64(std::floor(q.y() * 100)));
+        };
+        auto plannedBefore = [&](const QPolygonF &run) {
+            const auto c = cellOf(run.first());
+            for (qint64 dx = -1; dx <= 1; ++dx)
+                for (qint64 dy = -1; dy <= 1; ++dy)
+                    for (const QPolygonF &o : planned.value(qMakePair(c.first + dx, c.second + dy))) {
+                        if (o.size() != run.size())
+                            continue;
+                        bool same = true;
+                        for (int k = 0; same && k < o.size(); ++k)
+                            same = QLineF(o.at(k), run.at(k)).length() < 0.005;
+                        if (same)
+                            return true;
+                    }
+            return false;
+        };
+        int stalled = 0;
         for (int guard = 0; guard < 20000; ++guard) {
             if (cancel && cancel())
                 return out;
+            if (out.moves.size() >= kMaxMoves) {
+                out.capped = true;
+                return out;
+            }
             const double before = area(visited);
             double grow = s;
             C2::Paths64 next;
@@ -577,13 +625,23 @@ Plan plan(const QVector<QPolygonF> &rings, const Params &p, const std::function<
                 grow /= 2;
             }
             const double after = area(next);
-            for (const QPolygonF &run : cand.runs)
+            bool fresh = false;
+            for (const QPolygonF &run : cand.runs) {
+                if (run.isEmpty() || plannedBefore(run))
+                    continue;
+                planned[cellOf(run.first())].append(run);
                 addCut(run);
+                fresh = true;
+            }
             if (!cand.runs.isEmpty())
                 out.maxEngageDeg = std::max(out.maxEngageDeg, cand.maxEngage);
             visited = next;
-            if (after - before < 1e-4 * std::max(1.0, after) && cand.runs.isEmpty())
-                break;
+            if (after - before < 1e-4 * std::max(1.0, after)) {
+                if (!fresh || ++stalled >= kMaxStalled)
+                    break;
+            } else {
+                stalled = 0;
+            }
         }
     }
     return out;

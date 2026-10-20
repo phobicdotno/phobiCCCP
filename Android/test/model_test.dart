@@ -58,6 +58,25 @@ void main() {
     expect(Design.fromJson(const {'id': 'a', 'desktopOnly': true}).desktopOnly, isNotEmpty);
   });
 
+  test('the same copy is the same time and the same versions', () {
+    // Two copies edited apart can carry the same time; a computer that
+    // settled them may keep the other, which the editor must then show.
+    final a = Design(id: 'd', modified: 100, vv: const {'p1': 100});
+    expect(a.isSameCopy(a.copyWith(bases: {'desk': 100})), true);
+    expect(a.isSameCopy(a.copyWith(vv: {'p2': 100})), false);
+    expect(a.isSameCopy(a.copyWith(modified: 101)), false);
+    expect(a.isSameCopy(a.copyWith(deleted: true)), false);
+  });
+
+  test('which phobiCCCPs keep two copies edited apart themselves', () {
+    expect(const DesktopInfo(version: '1.3.1').keepsBoth, true);
+    expect(const DesktopInfo(version: '1.10.0').keepsBoth, true);
+    expect(const DesktopInfo(version: '2.0').keepsBoth, true);
+    expect(const DesktopInfo(version: '1.2.6').keepsBoth, false);
+    expect(const DesktopInfo(version: '1.3.0').keepsBoth, false);
+    expect(const DesktopInfo().keepsBoth, false);
+  });
+
   test('points repeated in a row are dropped', () {
     expect(dropRepeats([[0, 0], [0, 0], [5, 0], [5, 0], [5, 5]]), [[0, 0], [5, 0], [5, 5]]);
     expect(dropRepeats([[0, 0], [5, 0], [5, 5], [0, 0]], closed: true), [[0, 0], [5, 0], [5, 5]]);

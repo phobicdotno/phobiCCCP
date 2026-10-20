@@ -417,6 +417,49 @@ int main(int argc, char *argv[])
         check(toSafe <= 2, "chip break: no full retract between pecks");
     }
 
+    // Two toolpaths with the same bit; the first leaves tile 2 down in its
+    // cut, at the tile line. The lift put in for the second one's spindle
+    // start sat in a block with no cut of its own ([comment, lift]) and was
+    // dropped, while the tile's position already said "safe": the next
+    // piece started with one G0 diagonally out of the cut, through whatever
+    // stood in between.
+    {
+        QVector<c2d::Op> j;
+        j.append(c2d::Op::tool(201));
+        j.append(c2d::Op::comment(QStringLiteral("first")));
+        j.append(c2d::Op::spindle(10000));
+        j.append(c2d::Op::rapid(10, 90, 5));
+        j.append(c2d::Op::feedTo(10, 90, -3, 300));
+        j.append(c2d::Op::feedTo(10, 110, -3, 1000));
+        j.append(c2d::Op::feedTo(30, 110, -3, 1000));
+        j.append(c2d::Op::feedTo(30, 90, -3, 1000));    // leaves tile 2 low
+        j.append(c2d::Op::rapid(30, 90, 5));
+        j.append(c2d::Op::comment(QStringLiteral("second")));
+        j.append(c2d::Op::spindle(10000));
+        j.append(c2d::Op::rapid(60, 120, 5));
+        j.append(c2d::Op::feedTo(60, 120, -3, 300));
+        j.append(c2d::Op::feedTo(80, 120, -3, 1000));
+        j.append(c2d::Op::rapid(80, 120, 5));
+        j.append(c2d::Op::spindle(0));
+        const QVector<QVector<c2d::Op>> t = c2d::tileOps(j, 100.0, 5.0);
+        check(t.size() == 2, "same-bit pair: two tiles");
+        int diagonal = 0;
+        for (const QVector<c2d::Op> &tile : t) {
+            double x = 0, y = 0, z = 5;
+            for (const c2d::Op &o : tile) {
+                if (o.kind == c2d::Op::Rapid && std::hypot(o.x - x, o.y - y) > 1e-9
+                    && std::fmin(z, o.z) < 5 - 1e-9)
+                    ++diagonal;
+                if ((o.kind == c2d::Op::Tool || o.kind == c2d::Op::Spindle) && z < 5 - 1e-9)
+                    ++diagonal;
+                if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Arc) {
+                    x = o.x; y = o.y; z = o.z;
+                }
+            }
+        }
+        check(diagonal == 0, "every tile lifts straight up before a rapid across");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

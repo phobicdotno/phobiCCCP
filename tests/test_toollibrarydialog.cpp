@@ -1,5 +1,6 @@
 // Tool library popup: the bit-kind icons along the top sort the list, and
 // collections (My Tools, Unused, saved to / loaded from a file) narrow it.
+// The stock row's "Broke one" and the list's "N in stock" follow the count.
 #include "../src/toollibrarydialog.h"
 #include "../src/toollibrary.h"
 
@@ -9,6 +10,7 @@
 #include <QListWidget>
 #include <QSet>
 #include <QSettings>
+#include <QSpinBox>
 #include <QToolButton>
 #include <cstdio>
 
@@ -150,5 +152,42 @@ int main(int argc, char **argv)
     }
     QSettings().remove(QStringLiteral("ui/toolCollection"));
     QSettings().remove(QStringLiteral("tools/collections"));
+
+    // Stock: "Broke one" and the row's "· N in stock" follow the count typed
+    // into In stock, not the one the bit was selected with.
+    {
+        c2d::ToolLibraryDialog dlg(lib, QString(), -1);
+        auto *list = dlg.findChild<QListWidget *>();
+        auto *stock = dlg.findChild<QSpinBox *>();
+        QToolButton *trash = nullptr;
+        for (QToolButton *b : dlg.findChildren<QToolButton *>())
+            if (b->text() == QLatin1String("Broke one"))
+                trash = b;
+        if (!list || !stock || !trash || list->count() < 2) {
+            check(false, "stock row: list, In stock and Broke one");
+            return 1;
+        }
+        const int n = list->item(0)->data(Qt::UserRole).toInt();
+        const QString key = QStringLiteral("toolStock/%1").arg(n);
+        QSettings().remove(key);
+        list->setCurrentRow(1);
+        list->setCurrentRow(0);
+        check(stock->value() == 0 && !trash->isEnabled(), "none in stock: Broke one is off");
+        stock->setValue(3);
+        check(trash->isEnabled(), "typing 3: Broke one turns on");
+        check(list->item(0)->text().contains(QStringLiteral("3 in stock")), "typing 3: the row says 3 in stock");
+        trash->click();
+        check(stock->value() == 2 && list->item(0)->text().contains(QStringLiteral("2 in stock")),
+              "Broke one: 2 left, and the row says so");
+        stock->setValue(0);
+        check(!trash->isEnabled(), "typing 0: Broke one turns off");
+        check(!list->item(0)->text().contains(QStringLiteral("in stock"))
+                  || list->item(0)->text().contains(QStringLiteral("0 in stock")),
+              "typing 0: the row drops the old count");
+        trash->click();   // disabled: must not count a bit that was never there
+        check(QSettings().value(key + QStringLiteral("/broken"), 0).toInt() == 1,
+              "a disabled Broke one counts nothing");
+        QSettings().remove(key);
+    }
     return g_fail ? 1 : 0;
 }

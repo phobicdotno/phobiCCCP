@@ -2,7 +2,10 @@
 // and writes (src/padlink.h and src/projectreceiver.h in phobiCCCP).
 // Millimetres, X right, Y up, X0 Y0 at the stock's front-left corner.
 
+import 'dart:convert';
 import 'dart:math' as math;
+
+import 'package:crypto/crypto.dart';
 
 const padFormat = 'phobicccp-pad';
 
@@ -23,6 +26,129 @@ Map<String, Object?> _extra(Map<String, Object?> j, Set<String> known) =>
 /// taken in, it would win every sync until then.
 const maxAheadMs = 366 * 24 * 3600 * 1000;
 bool plausibleStamp(int modified, int now) => modified <= now + maxAheadMs;
+
+/// How one copy of a design stands to another (src/padlink.h, "Versions"):
+/// the same copy, made from it ([after]), what it was made from ([before]),
+/// edited apart from it ([concurrent]), or [unknown] when either has no
+/// version vector that can be believed (then the newer time wins, as before).
+enum Order { same, after, before, concurrent, unknown }
+
+final _replicaId = RegExp(r'^[A-Za-z0-9-]{1,64}$');
+const maxReplicas = 64;
+
+Map<String, int> _ints(Object? v) =>
+    {for (final e in _m(v).entries) if (e.value is num) e.key: (e.value as num).toInt()};
+
+/// [vv] when it can be believed: a few entries, each a pad's or phobiCCCP's
+/// id and time, the newest of them the copy's [modified] (a pad or phobiCCCP
+/// from before version vectors stamps a new time and keeps the vv it got).
+/// Else empty.
+Map<String, int> believedVv(Map<String, int> vv, int modified) {
+  if (vv.isEmpty || vv.length > maxReplicas) return const {};
+  var newest = 0;
+  for (final e in vv.entries) {
+    if (!_replicaId.hasMatch(e.key) || e.value < 1) return const {};
+    newest = math.max(newest, e.value);
+  }
+  return newest == modified ? vv : const {};
+}
+
+/// [vv] as it is, believed or not (empty for a copy with none); null when
+/// malformed, as nothing can be told from it then.
+Map<String, int>? _rawVv(Map<String, int> vv) =>
+    vv.length <= maxReplicas && vv.entries.every((e) => _replicaId.hasMatch(e.key) && e.value >= 1) ? vv : null;
+
+/// What an older pad's or phobiCCCP's copy tells of the copy it was edited
+/// from: its vv, or for one with none (a design an older pad made), that
+/// nothing of the newer ones went into it. A deletion from an older pad keeps
+/// no vv, so it tells nothing (null).
+Map<String, int>? _olderVv(Map<String, int> vv, bool deleted) {
+  final raw = _rawVv(vv);
+  return raw == null || (raw.isEmpty && deleted) ? null : raw;
+}
+
+/// The id in version vectors that stands for an older pad's or phobiCCCP's
+/// edit (stamped [modified], keeping [vv]); as olderEditId() in
+/// src/padlink.cpp, so every pad and computer names it the same.
+String olderEditId(Map<String, int> vv, int modified) {
+  final raw = _rawVv(vv) ?? const {};
+  final key = '$modified\n${(raw.keys.toList()..sort()).map((k) => '$k=${raw[k]};').join()}';
+  var h1 = 2166136261, h2 = 0x811c9dc5 ^ 0x5bd1e995;
+  for (final c in utf8.encode(key)) {
+    h1 = ((h1 ^ c) * 16777619) & 0xffffffff;
+    h2 = ((h2 ^ c) * 16777619) & 0xffffffff;
+  }
+  return 'e-${h1.toRadixString(16).padLeft(8, '0')}${h2.toRadixString(16).padLeft(8, '0')}';
+}
+
+/// The version vector an edit of the copy with [vv] and [modified] builds on:
+/// its own when believed, else (from an older pad or phobiCCCP) the one it
+/// kept with that edit noted under [olderEditId], so the new edit counts as
+/// made from it. As ancestry() in src/padlink.cpp.
+Map<String, int> ancestryOf(Map<String, int> vv, int modified, {bool deleted = false}) {
+  final b = believedVv(vv, modified);
+  if (b.isNotEmpty) return b;
+  final older = _olderVv(vv, deleted);
+  return older == null || modified < 1 ? const {} : {...older, olderEditId(older, modified): modified};
+}
+
+/// How a copy with the believed [vx] stands to one with [vy] stamped [my]
+/// that is not believed: an older pad's or phobiCCCP's edit of the copy [vy]
+/// names.
+Order _relate(Map<String, int> vx, Map<String, int> vy, int my, bool yDeleted) {
+  final ry = _olderVv(vy, yDeleted);
+  if (ry == null) return Order.unknown;
+  if ((vx[olderEditId(ry, my)] ?? 0) >= my) return Order.after;
+  if (vx.entries.every((e) => e.value <= (ry[e.key] ?? 0))) return Order.before;
+  return Order.concurrent;
+}
+
+/// How the copy with [va] and [ma] stands to the one with [vb] and [mb]; as
+/// phobiCCCP's order() in src/padlink.cpp. Whether either is a deletion
+/// matters only for a copy from an older pad.
+Order orderOf(Map<String, int> va, int ma, Map<String, int> vb, int mb, {bool aDeleted = false, bool bDeleted = false}) {
+  final a = believedVv(va, ma), b = believedVv(vb, mb);
+  if (a.isEmpty || b.isEmpty) {
+    if (ma == mb) return Order.same;
+    if (a.isNotEmpty) return _relate(a, vb, mb, bDeleted);
+    if (b.isNotEmpty) {
+      final o = _relate(b, va, ma, aDeleted);
+      return o == Order.after ? Order.before : (o == Order.before ? Order.after : o);
+    }
+    return Order.unknown;
+  }
+  var aAhead = false, bAhead = false;
+  for (final e in a.entries) {
+    final o = b[e.key] ?? 0;
+    aAhead = aAhead || e.value > o;
+    bAhead = bAhead || e.value < o;
+  }
+  for (final e in b.entries) {
+    bAhead = bAhead || (!a.containsKey(e.key) && e.value > 0);
+  }
+  return aAhead ? (bAhead ? Order.concurrent : Order.after) : (bAhead ? Order.before : Order.same);
+}
+
+/// The same text for the same vv on every pad and computer (src/padlink.cpp vvKey).
+String vvKey(Map<String, int> vv) => (vv.keys.toList()..sort()).map((k) => '$k=${vv[k]};').join();
+
+/// Of two copies edited apart, [a] is the one every phobiCCCP keeps under the
+/// design's id (src/padlink.cpp wins): the later edit.
+bool winsOver(Design a, Design b) => a.modified != b.modified
+    ? a.modified > b.modified
+    : vvKey(believedVv(a.vv, a.modified)).compareTo(vvKey(believedVv(b.vv, b.modified))) > 0;
+
+/// The id every phobiCCCP gives [copy] when it keeps it beside the one that
+/// won (src/padlink.cpp Store::forkIdFor): a name-based (version 5) UUID.
+String forkIdFor(Design copy) {
+  const ns = [0x3e, 0x0b, 0x7c, 0x52, 0x61, 0xa4, 0x4f, 0x0e, 0x9d, 0x27, 0x8b, 0x5c, 0x1a, 0x6e, 0x4f, 0x93];
+  final name = utf8.encode('${copy.id}\n${copy.modified}\n${vvKey(believedVv(copy.vv, copy.modified))}');
+  final h = sha1.convert([...ns, ...name]).bytes.sublist(0, 16);
+  h[6] = (h[6] & 0x0f) | 0x50;
+  h[8] = (h[8] & 0x3f) | 0x80;
+  final hex = h.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
+}
 
 /// [points] without a point equal to the one before it (and, closed, without
 /// a last point equal to the first): each would make a segment of no length.
@@ -270,9 +396,23 @@ class Design {
   final int modified;
 
   /// The [modified] of the copy this pad last got from or gave to a
-  /// phobiCCCP: edits here keep it, so a computer can tell an edit of its
-  /// own copy from one of an older copy (and then keeps both). 0: not known.
+  /// phobiCCCP, from before [bases]: used only where [bases] says nothing.
+  /// 0: not known.
   final int base;
+
+  /// Per phobiCCCP (by its id), the [modified] of the copy this pad last got
+  /// from or gave to it. Edits here keep them, so a computer can tell an edit
+  /// of its own copy from one of an older copy (and then keeps both). Kept on
+  /// the pad only: a put carries just the one of the computer it goes to, as
+  /// "base" ([toWire]). One base for all computers would let a copy given to
+  /// one count as the base at another that never had it.
+  final Map<String, int> bases;
+
+  /// Version vector: the [modified] of the latest edit each pad or phobiCCCP
+  /// (by its own id) made to this design. It travels with the design, so any
+  /// computer can tell a copy made from another from one edited apart from it,
+  /// however the copies went round (src/padlink.h, "Versions").
+  final Map<String, int> vv;
 
   /// A removal, kept so it reaches every phobiCCCP too.
   final bool deleted;
@@ -281,13 +421,17 @@ class Design {
   final List<ToolpathSpec> toolpaths;
   final Map<String, Object?> extra;
 
-  static const _known = {'format', 'version', 'id', 'name', 'modified', 'base', 'deleted', 'stock', 'material', 'shapes', 'toolpaths'};
+  static const _known = {
+    'format', 'version', 'id', 'name', 'modified', 'base', 'bases', 'vv', 'deleted', 'stock', 'material', 'shapes', 'toolpaths'
+  };
 
   Design({
     String? id,
     this.name = '',
     this.modified = 0,
     this.base = 0,
+    this.bases = const {},
+    this.vv = const {},
     this.deleted = false,
     this.stock = const Stock(),
     this.material = 'softwood',
@@ -301,6 +445,8 @@ class Design {
         name: _s(j['name']),
         modified: _i(j['modified']),
         base: _i(j['base']),
+        bases: _ints(j['bases']),
+        vv: _ints(j['vv']),
         deleted: _b(j['deleted']),
         stock: Stock.fromJson(_m(j['stock'])),
         material: _s(j['material'], 'softwood'),
@@ -317,6 +463,8 @@ class Design {
         'name': name,
         'modified': modified,
         if (base > 0) 'base': base,
+        if (bases.isNotEmpty) 'bases': bases,
+        if (vv.isNotEmpty) 'vv': vv,
         'deleted': deleted,
         'stock': stock.toJson(),
         'material': material,
@@ -324,13 +472,25 @@ class Design {
         'toolpaths': toolpaths.map((t) => t.toJson()).toList(),
       };
 
-  Design copyWith({String? id, String? name, int? modified, int? base, bool? deleted, Stock? stock, String? material,
-          List<Shape>? shapes, List<ToolpathSpec>? toolpaths}) =>
+  Design copyWith(
+          {String? id,
+          String? name,
+          int? modified,
+          int? base,
+          Map<String, int>? bases,
+          Map<String, int>? vv,
+          bool? deleted,
+          Stock? stock,
+          String? material,
+          List<Shape>? shapes,
+          List<ToolpathSpec>? toolpaths}) =>
       Design(
         id: id ?? this.id,
         name: name ?? this.name,
         modified: modified ?? this.modified,
         base: base ?? this.base,
+        bases: bases ?? this.bases,
+        vv: vv ?? this.vv,
         deleted: deleted ?? this.deleted,
         stock: stock ?? this.stock,
         material: material ?? this.material,
@@ -338,6 +498,34 @@ class Design {
         toolpaths: toolpaths ?? this.toolpaths,
         extra: extra,
       );
+
+  /// The base for the phobiCCCP [desktop]: what this pad last exchanged with
+  /// it, else (never exchanged there) the oldest it exchanged anywhere, so a
+  /// computer that changed it since still keeps both.
+  int baseFor(String desktop) => bases[desktop] ?? (bases.isEmpty ? base : bases.values.reduce(math.min));
+
+  /// With [modified] noted as exchanged with [desktop].
+  Design withBase(String desktop, int modified) => copyWith(bases: {...bases, desktop: modified});
+
+  /// As sent to [desktop]: its own base, and none of the others.
+  Map<String, Object?> toWire(String desktop) {
+    final j = toJson()..remove('bases')..remove('base');
+    final b = baseFor(desktop);
+    if (b > 0) j['base'] = b;
+    return j;
+  }
+
+  Order orderTo(Map<String, int> otherVv, int otherModified, {bool otherDeleted = false}) =>
+      orderOf(vv, modified, otherVv, otherModified, aDeleted: deleted, bDeleted: otherDeleted);
+
+  /// [other] is this very copy (its bases aside). The time alone is not
+  /// enough: two copies edited apart can carry the same time, and a computer
+  /// that settled them may have kept the other one.
+  bool isSameCopy(Design other) =>
+      modified == other.modified &&
+      deleted == other.deleted &&
+      vv.length == other.vv.length &&
+      vv.entries.every((e) => other.vv[e.key] == e.value);
 
   /// The computer that will not rebuild its linked file from a pad edit (it
   /// holds curves, tabs, parameters, ... the pad cannot), as that computer
@@ -456,6 +644,18 @@ class DesktopInfo {
   final MachineStatus status;
   final bool allowStart;
 
+  /// It keeps two copies edited apart itself, by their version vectors
+  /// (phobiCCCP 1.3.1 and later). An older one lists no versions and keeps
+  /// the later copy or forks by the base alone; the pad then settles such
+  /// pairs for it (sync.dart).
+  bool get keepsBoth {
+    final v = [for (final p in version.split('.')) int.tryParse(p.split(RegExp(r'[^0-9]')).first) ?? 0];
+    while (v.length < 3) {
+      v.add(0);
+    }
+    return v[0] != 1 ? v[0] > 1 : (v[1] != 3 ? v[1] > 3 : v[2] >= 1);
+  }
+
   /// A design sent from there for this pad to open; null when none waits.
   final OpenRequest? open;
   const DesktopInfo({
@@ -565,9 +765,12 @@ class DesignEntry {
   final String id, name;
   final int modified;
   final bool deleted;
-  const DesignEntry(this.id, {this.name = '', this.modified = 0, this.deleted = false});
-  factory DesignEntry.fromJson(Map<String, Object?> j) =>
-      DesignEntry(_s(j['id']), name: _s(j['name']), modified: _i(j['modified']), deleted: _b(j['deleted']));
+
+  /// Its version vector ([Design.vv]); empty from an older phobiCCCP.
+  final Map<String, int> vv;
+  const DesignEntry(this.id, {this.name = '', this.modified = 0, this.deleted = false, this.vv = const {}});
+  factory DesignEntry.fromJson(Map<String, Object?> j) => DesignEntry(_s(j['id']),
+      name: _s(j['name']), modified: _i(j['modified']), deleted: _b(j['deleted']), vv: _ints(j['vv']));
 }
 
 /// The answer to "send".
@@ -580,13 +783,18 @@ class SendResult {
   /// there since this pad's copy, and the time of the copy kept there (null
   /// when it was not kept, or from an older phobiCCCP).
   final String forked;
+
+  /// With [forked]: the pad's was the later edit, so it is kept under its own
+  /// id there and the computer's copy went to [forked] (src/padlink.h).
+  final bool moved;
   final int? modified;
-  const SendResult({this.started = false, this.message = '', this.notes = const [], this.forked = '', this.modified});
+  const SendResult({this.started = false, this.message = '', this.notes = const [], this.forked = '', this.moved = false, this.modified});
   factory SendResult.fromJson(Map<String, Object?> j) => SendResult(
       started: _b(j['started']),
       message: _s(j['message']),
       notes: _l(j['notes']).whereType<String>().toList(),
       forked: _s(j['forked']),
+      moved: j['moved'] == true,
       modified: j['modified'] is num ? (j['modified'] as num).toInt() : null);
 }
 

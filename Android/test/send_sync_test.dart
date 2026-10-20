@@ -84,8 +84,8 @@ class FakeDesk {
 /// As AppState.send: the send, then what it did with the copy.
 Future<SendResult> send(FakeDesk desk, DesignStore store, Design d) =>
     CccpConnection.use('127.0.0.1', desk.server.port, (c) async {
-      final r = await c.send(d, machine: '', start: false, from: 'pad');
-      await settleSend(c, store, d, r, 'shop');
+      final r = await c.send(d, machine: '', start: false, from: 'pad', desktop: 'x');
+      await settleSend(c, store, d, r, 'shop', desktop: 'x');
       return r;
     });
 
@@ -101,7 +101,7 @@ void main() {
       final edited = store.save(store.get('a1')!.copyWith(name: 'Sign v2'), now: 2000);
       await send(desk, store, edited);
       await syncWith(desk.desktop, store, withTools: false);
-      expect(store.get('a1')!.base, 2000);
+      expect(store.get('a1')!.baseFor('x'), 2000);
       store.save(store.get('a1')!.copyWith(name: 'Sign v3'), now: 3000);
       final r = await syncWith(desk.desktop, store, withTools: false);
       expect(desk.forks, isEmpty);
@@ -124,7 +124,7 @@ void main() {
     final r = await send(desk, store, edited);
     expect(r.forked, isNotEmpty);
     expect(store.get('a1')!.name, 'Desk edit');
-    expect(store.get('a1')!.base, 2000);
+    expect(store.get('a1')!.baseFor('x'), 2000);
     await syncWith(desk.desktop, store, withTools: false);
     await syncWith(desk.desktop, store, withTools: false);
     expect(desk.forks.length, 1);

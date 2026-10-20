@@ -89,7 +89,9 @@ QVector<QPointF> distributeDeltas(const QVector<QRectF> &boxes, Axis axis);
 // - path: every anchor and handle is mapped; under a reflection each
 //   subpath's direction is reversed so the winding stays what it was;
 // - text: the transform is composed into the element's own `transform`, so
-//   it stays editable text (mirrored text reads mirrored).
+//   it stays editable text (mirrored text reads mirrored); a uniform scale
+//   goes into its font height and arc radius instead, so they stay the
+//   drawn size.
 Element transformElement(const Element &e, const QTransform &t);
 
 // Reflection about the vertical (Horizontal: left <-> right) or horizontal

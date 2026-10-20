@@ -291,6 +291,16 @@ struct Field {
             }
     }
     int node(int i, int j) const { return (j + 2) * W + (i + 2); }
+    // The bilinear function between the nodes, as HeightModel::sample is.
+    double value(const QPointF &q) const
+    {
+        const double fx = (q.x() - originX) / cell - 0.5, fy = (q.y() - originY) / cell - 0.5;
+        const int i = qBound(-2, int(std::floor(fx)), cols), j = qBound(-2, int(std::floor(fy)), rows);
+        const double tx = qBound(0.0, fx - i, 1.0), ty = qBound(0.0, fy - j, 1.0);
+        const double a = f[node(i, j)] * (1 - tx) + f[node(i + 1, j)] * tx;
+        const double b = f[node(i, j + 1)] * (1 - tx) + f[node(i + 1, j + 1)] * tx;
+        return a * (1 - ty) + b * ty;
+    }
     QPointF pos(int n) const
     {
         const int i = n % W - 2, j = n / W - 2;
@@ -396,6 +406,69 @@ QList<QPolygonF> levelContours(const Field &F, double level, QVector<int> &edgeS
         }
     }
     return out;
+}
+
+// The crossings levelContours puts on the grid edges are exact (the
+// surface is linear along an edge), but inside a cell its level line is a
+// hyperbola, and where the chord between two crossings runs over the high
+// side the region took in surface above the level: the roughing rings,
+// inset from it, then cut into the model by up to that bulge. A vertex on
+// the level line is added across each such chord, found by bisecting
+// along its normal, until the chords hug the line to within 2 microns.
+QPolygonF refineContour(const Field &F, double level, const QPolygonF &poly)
+{
+    QPolygonF cur = poly;
+    for (int pass = 0; pass < 4 && cur.size() >= 2; ++pass) {
+        QPolygonF fine;
+        fine.reserve(cur.size() * 2);
+        bool added = false;
+        for (int k = 0; k + 1 < cur.size(); ++k) {
+            fine.append(cur.at(k));
+            const QPointF a = cur.at(k), b = cur.at(k + 1);
+            const QPointF mid = (a + b) / 2;
+            const double len = QLineF(a, b).length();
+            if (len < 1e-4 || F.value(mid) <= level + 1e-9)
+                continue;
+            const QPointF nrm = QPointF(-(b - a).y(), (b - a).x()) * (0.5 * qMin(len, F.cell) / len);
+            QPointF in = F.value(mid + nrm) <= level ? mid + nrm
+                       : F.value(mid - nrm) <= level ? mid - nrm : QPointF(qQNaN(), 0);
+            if (qIsNaN(in.x())) {
+                // A level exactly on some nodes (the floor with no stock to
+                // leave) is in only along the cell's edges: head for the
+                // node of the cell that is in and furthest off the chord.
+                const int i = int(std::floor((mid.x() - F.originX) / F.cell - 0.5));
+                const int j = int(std::floor((mid.y() - F.originY) / F.cell - 0.5));
+                double best = 1e-6;
+                for (int dj = 0; dj <= 1; ++dj)
+                    for (int di = 0; di <= 1; ++di) {
+                        const int ni = qBound(-2, i + di, F.cols + 1), nj = qBound(-2, j + dj, F.rows + 1);
+                        const int nd = F.node(ni, nj);
+                        const QPointF q = F.pos(nd), d = b - a;
+                        const double off = qAbs((q.x() - a.x()) * d.y() - (q.y() - a.y()) * d.x()) / len;
+                        if (F.f[nd] <= level + 1e-9 && off > best) {
+                            best = off;
+                            in = q;
+                        }
+                    }
+                if (qIsNaN(in.x()))
+                    continue;
+            }
+            QPointF out = mid;
+            for (int it = 0; it < 12; ++it) {
+                const QPointF m2 = (in + out) / 2;
+                (F.value(m2) <= level ? in : out) = m2;
+            }
+            if (QLineF(in, mid).length() > 0.002) {
+                fine.append(in);
+                added = true;
+            }
+        }
+        fine.append(cur.last());
+        cur = fine;
+        if (!added)
+            break;
+    }
+    return cur;
 }
 
 } // namespace
@@ -543,7 +616,9 @@ QList<RoughLevel> roughLevels(const HeightModel &model, const Cam3dParams &p,
         if (watch && watch->stop(k, int(levels.size()), QStringLiteral("3D rough")))
             return out;
         const double L = levels.at(k);
-        const QList<QPolygonF> contours = levelContours(F, L, edgeSeg);
+        QList<QPolygonF> contours = levelContours(F, L, edgeSeg);
+        for (QPolygonF &c : contours)
+            c = refineContour(F, L, c);
         if (!contours.isEmpty()) {
             const QPainterPath region = intersectRegion(regionFromPolys(contours), boundary);
             if (!region.isEmpty())
@@ -579,6 +654,58 @@ static double nodeValue(const HeightModel &m, int c, int r)
 {
     const float h = m.at(c, r);
     return h == HeightModel::NoModel ? m.baseZ : double(h);
+}
+
+// Largest value of  v0 + s (t - t0) - profile(|(t, h) - (c, 0)|)  over t in
+// [t0, t1], a stretch of a line at distance h from the tool centre (at c
+// along it) on which the surface is linear. The profile is convex and grows
+// with the distance for every tool shape, so this is concave in t: its
+// stationary point clamped to the stretch is the maximum.
+static double lineMax(const ToolGeom &tool, double v0, double s, double t0, double t1,
+                      double c, double h)
+{
+    const double r = tool.radius();
+    auto g = [&](double t) {
+        const double d = qMin(r, std::hypot(t - c, h));
+        return v0 + s * (t - t0) - profileAt(tool, d);
+    };
+    double t = c;
+    switch (tool.kind) {
+    case ToolGeom::Ball: {
+        const double rho = std::sqrt(qMax(0.0, r * r - h * h));
+        t = c + s * rho / std::sqrt(1 + s * s);
+        break;
+    }
+    case ToolGeom::VBit: {
+        const double k = 1 / std::tan(qDegreesToRadians(qBound(5.0, tool.angle, 179.0) / 2));
+        const double q = s / k;
+        if (qAbs(q) >= 1)
+            t = q > 0 ? t1 : t0;
+        else
+            t = c + qAbs(h) * q / std::sqrt(1 - q * q);
+        break;
+    }
+    case ToolGeom::Flat:
+    default: {
+        // Bull-nose: bisect on the slope, which falls as t grows.
+        const double cr = qMin(tool.cornerRadius, r), rf = r - cr;
+        auto slope = [&](double tt) {
+            const double d = std::hypot(tt - c, h);
+            const double u = d - rf;
+            if (u <= 0 || d < 1e-12)
+                return s;
+            return s - u / std::sqrt(qMax(1e-12, cr * cr - u * u)) * (tt - c) / d;
+        };
+        double lo = t0, hi = t1;
+        for (int it = 0; it < 30; ++it) {
+            const double mid = (lo + hi) / 2;
+            (slope(mid) > 0 ? lo : hi) = mid;
+        }
+        t = (lo + hi) / 2;
+        break;
+    }
+    }
+    return qMax(qMax(g(t0), g(t1)), g(qBound(t0, t, t1)));
 }
 
 double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double y)
@@ -617,34 +744,60 @@ double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double
         }
     }
 
-    // Curved part (ball, V, bull-nose fillet): supersample the bilinear
-    // surface under the inverted tool profile. `n` is the sub-steps per cell:
-    // small tools get up to 4 (a smoother read of the bilinear surface),
-    // and once the tool is wider than 64 cells the integer division truncates
-    // to 0 and qBound pins it at 1 -- one sample per model cell, which is the
-    // resolution the model actually holds. Sampling coarser than that would
-    // be faster but would step over peaks and cut through them, so the cost
-    // below is inherent: it grows with the tool's area in cells. A 25 mm ball
-    // on a 0.1 mm grid is ~50k samples per point, and exportGcode runs on the
-    // GUI thread, so a large ball over a fine relief takes minutes with the
-    // window unresponsive. That is a missing progress/cancel path, not a
-    // number to clamp away.
+    // Curved part (ball, V, bull-nose fillet): the bilinear surface under
+    // the inverted tool profile. Along any line parallel to a grid axis the
+    // surface is linear within a cell and the profile convex, so their
+    // difference has one maximum on each cell's stretch of the line, found
+    // exactly (lineMax). That is done on every grid line crossing the
+    // footprint -- the cell edges, where the maximum lies by a steep wall,
+    // which a grid of point samples stepped over -- and on `n` lines per
+    // cell between them. `n` is up to 4 for small tools, and once the tool
+    // is wider than 64 cells the integer division truncates to 0 and qBound
+    // pins it at 1: the grid lines alone, the resolution the model actually
+    // holds. The cost grows with the tool's area in cells; a 25 mm ball on a
+    // 0.1 mm grid is still slow, and exportGcode runs on the GUI thread.
+    // That is a missing progress/cancel path, not a number to clamp away.
     if (rFlat < r - 1e-9) {
         const int cellsAcross = qMax(1, int(std::ceil(2 * r / cell)));
         const int n = qBound(1, 64 / cellsAcross, 4);
-        const double step = cell / n;
-        const int k = int(std::ceil(r / step));
-        for (int j = -k; j <= k; ++j) {
-            for (int i = -k; i <= k; ++i) {
-                const double d2 = (i * i + j * j) * step * step;
-                if (d2 > r * r)
+        const int c0 = int(std::floor((x - r - m.originX) / cell - 0.5));
+        const int c1 = int(std::ceil((x + r - m.originX) / cell - 0.5));
+        const int r0 = int(std::floor((y - r - m.originY) / cell - 0.5));
+        const int r1 = int(std::ceil((y + r - m.originY) / cell - 0.5));
+        // Lines along x (horizontal), at node row rr plus fraction fy.
+        for (int rr = r0; rr <= r1; ++rr) {
+            for (int j = 0; j < n; ++j) {
+                const double fy = double(j) / n;
+                const double h = m.originY + (rr + 0.5 + fy) * cell - y;
+                if (qAbs(h) > r)
                     continue;
-                const double d = std::sqrt(d2);
-                if (d < rFlat)
+                const double w = std::sqrt(r * r - h * h);
+                for (int cc = c0; cc <= c1; ++cc) {
+                    const double gx = m.originX + (cc + 0.5) * cell;
+                    const double t0 = qMax(gx, x - w), t1 = qMin(gx + cell, x + w);
+                    if (t1 < t0)
+                        continue;
+                    const double A = nodeValue(m, cc, rr) * (1 - fy) + nodeValue(m, cc, rr + 1) * fy;
+                    const double B = nodeValue(m, cc + 1, rr) * (1 - fy) + nodeValue(m, cc + 1, rr + 1) * fy;
+                    const double s = (B - A) / cell;
+                    best = qMax(best, lineMax(tool, A + s * (t0 - gx), s, t0, t1, x, h));
+                }
+            }
+        }
+        // The vertical grid lines (cell edges along y).
+        for (int cc = c0; cc <= c1; ++cc) {
+            const double h = m.originX + (cc + 0.5) * cell - x;
+            if (qAbs(h) > r)
+                continue;
+            const double w = std::sqrt(r * r - h * h);
+            for (int rr = r0; rr <= r1; ++rr) {
+                const double gy = m.originY + (rr + 0.5) * cell;
+                const double t0 = qMax(gy, y - w), t1 = qMin(gy + cell, y + w);
+                if (t1 < t0)
                     continue;
-                const double v = m.sample(x + i * step, y + j * step) - profileAt(tool, d);
-                if (v > best)
-                    best = v;
+                const double A = nodeValue(m, cc, rr), B = nodeValue(m, cc, rr + 1);
+                const double s = (B - A) / cell;
+                best = qMax(best, lineMax(tool, A + s * (t0 - gy), s, t0, t1, y, h));
             }
         }
     }
@@ -769,8 +922,11 @@ static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
     // Can the tool feed straight from a to b (tip Z linear) without cutting
     // into the model or leaving the boundary?
     auto linkClear = [&](const P3 &a, const P3 &b) {
+        // At least 8 steps: a link down to the next level is short across
+        // but steep, and checked only at its ends it went through the wall
+        // between them.
         const double len = std::hypot(b.x - a.x, b.y - a.y);
-        const int n = qMax(1, int(std::ceil(len / (0.5 * g))));
+        const int n = qMax(8, int(std::ceil(len / (0.5 * g))));
         for (int k = 0; k <= n; ++k) {
             const double t = double(k) / n;
             const QPointF q(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
@@ -810,19 +966,28 @@ static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
                 poly[k] = in;
             }
             poly.last() = poly.first();
-            // compensatedZ is itself a max over discrete samples, so by a
-            // steep wall its contour wiggles between the refined vertices.
-            // Where a chord's midpoint is in the wall, add a vertex on the
-            // clear side, found the same way across the chord.
-            {
+            // Between the refined vertices the contour of the compensated
+            // surface is no straight chord, and by a steep wall it bulges
+            // into the wall. Where a chord's middle or quarters are in the
+            // wall, add a vertex on the clear side, found the same way
+            // across the chord, until none is.
+            for (int pass = 0; pass < 3; ++pass) {
                 QPolygonF fine;
                 fine.reserve(poly.size() * 2);
+                bool added = false;
                 for (int k = 0; k + 1 < poly.size(); ++k) {
                     fine.append(poly.at(k));
                     const QPointF a = poly.at(k), b = poly.at(k + 1);
-                    const QPointF mid = (a + b) / 2;
                     const double len = QLineF(a, b).length();
-                    if (len < 1e-6 || trueZ(mid) <= L + 0.002)
+                    if (len < 1e-6)
+                        continue;
+                    QPointF mid(qQNaN(), 0);
+                    for (const double t : {0.5, 0.25, 0.75})
+                        if (trueZ(a + (b - a) * t) > L + 0.002) {
+                            mid = a + (b - a) * t;
+                            break;
+                        }
+                    if (qIsNaN(mid.x()))
                         continue;
                     const QPointF nrm = QPointF(-(b - a).y(), (b - a).x()) * (0.5 * g / len);
                     QPointF in = trueZ(mid + nrm) <= L ? mid + nrm
@@ -835,9 +1000,12 @@ static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
                         (trueZ(m2) <= L ? in : out) = m2;
                     }
                     fine.append(in);
+                    added = true;
                 }
                 fine.append(fine.first());
                 poly = fine;
+                if (!added)
+                    break;
             }
             for (QPolygonF piece : clipper.polyline(poly)) {
                 if (piece.size() < 2)
@@ -952,7 +1120,14 @@ QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
             [&](const P3 &s, const P3 &e, int depth) {
                 const QPointF q((s.x + e.x) / 2, (s.y + e.y) / 2);
                 const P3 m{q.x(), q.y(), zAt(q)};
-                if (depth >= 6 || m.z - (s.z + e.z) / 2 <= kDown)
+                // A bump off the middle of a sample step (a node standing
+                // between two samples) is looked for at its quarters too.
+                auto above = [&](double t) {
+                    const QPointF r(s.x + (e.x - s.x) * t, s.y + (e.y - s.y) * t);
+                    return zAt(r) - (s.z + (e.z - s.z) * t) > kDown;
+                };
+                if (depth >= 6 || (m.z - (s.z + e.z) / 2 <= kDown
+                                   && (depth > 0 || (!above(0.25) && !above(0.75)))))
                     return;
                 refine(s, m, depth + 1);
                 pts.append(m);

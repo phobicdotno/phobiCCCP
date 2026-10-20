@@ -37,15 +37,18 @@ public:
     void setProgress(double fraction);   // 0..1 of total job time
     double progress() const;
     void resetView();
-    // Jump to the moment tool `number` is picked up (its M0 tool change).
-    void seekToTool(int number);
-    int currentTool() const;
+    // Jump to the moment bit `bit` (an Op::Tool's text: number and shape,
+    // since two bits can share a number) is first picked up.
+    void seekToTool(const QString &bit);
+    int currentTool() const;       // the number in the spindle (0 = none yet)
+    QString currentBit() const;    // its Op::Tool text (empty = none yet)
 
     QSize sizeHint() const override { return {360, 520}; }
 
 signals:
-    // The tool in the spindle at the playback position changed (0 = none yet).
-    void currentToolChanged(int number);
+    // The bit in the spindle at the playback position changed: its Op::Tool
+    // text (empty = none yet).
+    void currentToolChanged(const QString &bit);
 
 private:
     void tick();
@@ -59,7 +62,7 @@ private:
     QLabel *m_status;
     QTimer *m_timer;
     QElapsedTimer m_clock;
-    int m_lastTool = -1;
+    QString m_lastBit = QStringLiteral("\x01");
     void announceTool();
 };
 

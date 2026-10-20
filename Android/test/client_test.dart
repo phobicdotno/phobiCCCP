@@ -77,7 +77,7 @@ void main() {
     expect(r.tools!.tool(201)!.name, 'End mill');
     expect(store.get('r1')!.name, 'From the PC');
     expect(store.get('r1')!.base, 50, reason: 'a pulled copy is the base of edits made on it');
-    expect(store.get('l1')!.base, 9, reason: 'so is a copy the computer kept');
+    expect(store.get('l1')!.baseFor('x'), 9, reason: 'so is a copy the computer kept');
     expect(seen.where((s) => s['op'] == 'put').single['design'], isA<Map>());
     await server.close();
     dir.deleteSync(recursive: true);
@@ -226,12 +226,12 @@ void main() {
     final dir = Directory.systemTemp.createTempSync('pad');
     final store = DesignStore(dir)..put(Design(id: 'a1', modified: 9, base: 5));
     await syncWith(desk, store, withTools: false);
-    expect(store.get('a1')!.base, 9, reason: 'it already had this copy');
+    expect(store.get('a1')!.baseFor('x'), 9, reason: 'it already had this copy');
     // A phobiCCCP that does not say which copy it has, and did not keep ours.
     store.put(Design(id: 'a1', modified: 12, base: 9));
     answer = '{"ok":true,"stored":false}';
     await syncWith(desk, store, withTools: false);
-    expect(store.get('a1')!.base, 9);
+    expect(store.get('a1')!.baseFor('x'), 9);
     await server.close();
     dir.deleteSync(recursive: true);
   });

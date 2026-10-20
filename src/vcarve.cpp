@@ -1,5 +1,8 @@
 #include "vcarve.h"
 
+#include <algorithm>
+#include <cmath>
+
 #include <QHash>
 #include <QLineF>
 #include <QPainterPath>
@@ -160,7 +163,14 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
     QHash<QPair<qint64, qint64>, int> nodeIndex;
     QVector<QPointF> nodes;      // mm
     QVector<QPair<int, int>> edges;
-    QHash<QPair<int, int>, bool> seen;
+    // Edges with a point site on either side (a reflex corner): along them
+    // the clearance is not linear between the end vertices - it dips
+    // towards the bisector's foot, by up to 0.6 mm between two island tips
+    // facing each other across a neck - so they are sampled when chained.
+    QVector<bool> pointEdge;
+    QVector<QPointF> edgeSite;   // that point site (mm): the dip is deepest
+                                 // where the edge passes closest to it
+    QHash<QPair<int, int>, int> seen;
     auto nodeAt = [&](double xs, double ys) -> int {
         const QPair<qint64, qint64> key(qRound64(xs * 4.0), qRound64(ys * 4.0));
         auto it = nodeIndex.constFind(key);
@@ -180,6 +190,8 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
         const auto *c2 = edge.twin()->cell();
         const bool s1 = c1->contains_segment();
         const bool s2 = c2->contains_segment();
+        const bool hasPoint = !s1 || !s2;
+        const IPt site = hasPoint ? pointSiteOf(*(s1 ? c2 : c1), isegs) : IPt{0, 0};
         if (s1 != s2) {
             // segment vs point: drop when the point is that segment's own end
             const ISeg &s = isegs[(s1 ? c1 : c2)->source_index()];
@@ -239,10 +251,19 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
         if (a == b)
             continue;
         const QPair<int, int> key(qMin(a, b), qMax(a, b));
-        if (seen.contains(key))
+        const QPointF siteMm(site.x / kScale, site.y / kScale);
+        const auto it = seen.constFind(key);
+        if (it != seen.constEnd()) {
+            if (hasPoint && !pointEdge.at(it.value())) {
+                pointEdge[it.value()] = true;
+                edgeSite[it.value()] = siteMm;
+            }
             continue;
-        seen.insert(key, true);
+        }
+        seen.insert(key, int(edges.size()));
         edges.append({a, b});
+        pointEdge.append(hasPoint);
+        edgeSite.append(siteMm);
     }
     if (edges.isEmpty())
         return {};
@@ -397,9 +418,14 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
                 break;
         }
         QVector<QPair<int, int>> kept;
+        QVector<bool> keptPoint;
+        QVector<QPointF> keptSite;
         for (int e = 0; e < edges.size(); ++e)
-            if (alive[e])
+            if (alive[e]) {
                 kept.append(edges.at(e));
+                keptPoint.append(pointEdge.at(e));
+                keptSite.append(edgeSite.at(e));
+            }
         if (kept.isEmpty()) {
             // Everything was spur (a circle, an ellipse): the axis collapses to
             // its deepest point — one plunge there carves the whole cone.
@@ -412,6 +438,8 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
         }
         if (kept.size() != edges.size()) {
             edges = kept;
+            pointEdge = keptPoint;
+            edgeSite = keptSite;
             adj = QVector<QVector<int>>(nodes.size());
             for (int i = 0; i < edges.size(); ++i) {
                 adj[edges.at(i).first].append(i);
@@ -424,6 +452,37 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
     // Chain the edge soup into polylines: start walks at junctions and tips
     // (degree != 2), then sweep up any remaining pure loops.
     QVector<QVector<VPoint>> chains;
+    // Pieces of at most kSample mm along a point-site edge, plus the point
+    // nearest the site (the bottom of the dip), each with its own
+    // clearance, wherever the straight line between the ends would let the
+    // bit sink deeper than the walls allow (by more than kDip).
+    const double kSample = 0.2, kDip = 0.002;
+    auto sampleEdge = [&](int e, int from, int to, QVector<VPoint> &ch) {
+        const QPointF a = nodes.at(from), b = nodes.at(to), ab = b - a;
+        const double len2 = ab.x() * ab.x() + ab.y() * ab.y();
+        if (len2 < 1e-12)
+            return;
+        const int pieces = int(std::ceil(std::sqrt(len2) / kSample));
+        QVector<double> ts;
+        for (int k = 1; k < pieces; ++k)
+            ts.append(double(k) / pieces);
+        const QPointF site = edgeSite.at(e);
+        const double tFoot = ((site.x() - a.x()) * ab.x() + (site.y() - a.y()) * ab.y()) / len2;
+        if (tFoot > 1e-3 && tFoot < 1 - 1e-3) {
+            ts.append(tFoot);
+            std::sort(ts.begin(), ts.end());
+        }
+        QVector<VPoint> mid;
+        bool dips = false;
+        for (const double t : ts) {
+            const QPointF q = a + ab * t;
+            const double d = distToBoundary(q, mmSegs);
+            dips = dips || dOf(from) + (dOf(to) - dOf(from)) * t - d > kDip;
+            mid.append({q.x(), q.y(), d});
+        }
+        if (dips)
+            ch += mid;
+    };
     auto walk = [&](int startNode, int startEdge) {
         QVector<VPoint> ch;
         int n = startNode;
@@ -431,7 +490,10 @@ QVector<QVector<VPoint>> medialAxis(const QList<QPolygonF> &rings)
         ch.append({nodes.at(n).x(), nodes.at(n).y(), dOf(n)});
         while (true) {
             used[e] = true;
+            const int from = n;
             n = edges.at(e).first == n ? edges.at(e).second : edges.at(e).first;
+            if (pointEdge.at(e))
+                sampleEdge(e, from, n, ch);
             ch.append({nodes.at(n).x(), nodes.at(n).y(), dOf(n)});
             if (adj.at(n).size() != 2)
                 break;

@@ -330,6 +330,54 @@ int main(int argc, char **argv)
         check(param::freedom(d).fullyConstrained.contains(r.id), "rectangle fully constrained");
     }
 
+    // ---- a free rectangle follows what is attached to it ------------------
+    // Dragging a line whose end is on a free rectangle's corner moves the
+    // rectangle; it used to squash it, and refuse once it went inside out.
+    for (const double up : {10.0, 40.0, 60.0}) {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element r = Element::makeRectangle({50, 50}, 40, 20, layer);   // corner 0 = (30,40)
+        const Element ln = Element::makePath({{30, 40}, {-10, 40}}, false, layer);
+        d.addElement(r);
+        d.addElement(ln);
+        addCon(d, Constraint::Coincident, {ref(GeoRef::Point, ln.id, 0), ref(GeoRef::Point, r.id, 0)});
+        addCon(d, Constraint::Distance, {ref(GeoRef::Line, r.id, 0)}, "40");
+        check(param::solve(d).ok, "rectangle with a line on its corner solves");
+        Element moved = *d.elementById(ln.id);
+        moved.translate(0, up);
+        d.replaceElement(moved);
+        const param::SolveResult res = param::solve(d, {ln.id});
+        const Element *re = d.elementById(r.id);
+        check(res.ok, "dragging the attached line is not refused");
+        check(approx(re->raw.value("height").toDouble(), 20)
+                  && approx(re->raw.value("width").toDouble(), 40),
+              "the free rectangle keeps its size");
+        check(QLineF(pt(d, ref(GeoRef::Point, r.id, 0)), pt(d, ref(GeoRef::Point, ln.id, 0))).length() < 1e-5
+                  && approx(pt(d, ref(GeoRef::Point, ln.id, 0)).y(), 40 + up, 0.5),
+              "the rectangle moved with the line");
+    }
+
+    // ... but one held by its far corner stretches to follow, and what was
+    // dragged stays where it was put.
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element r = Element::makeRectangle({50, 50}, 40, 20, layer);
+        const Element ln = Element::makePath({{30, 40}, {-10, 40}}, false, layer);
+        d.addElement(r);
+        d.addElement(ln);
+        addCon(d, Constraint::Coincident, {ref(GeoRef::Point, ln.id, 0), ref(GeoRef::Point, r.id, 0)});
+        addCon(d, Constraint::Fix, {ref(GeoRef::Point, r.id, 2)});
+        check(param::solve(d).ok, "held rectangle with a line on its corner solves");
+        Element moved = *d.elementById(ln.id);
+        moved.translate(0, -10);
+        d.replaceElement(moved);
+        check(param::solve(d, {ln.id}).ok, "dragging the line stretches the held rectangle");
+        check(approx(d.elementById(r.id)->raw.value("height").toDouble(), 30, 1e-2)
+                  && approx(pt(d, ref(GeoRef::Point, ln.id, 0)).y(), 30, 1e-2),
+              "the held rectangle stretched to the line's new place");
+    }
+
     // ---- toolpath bindings ------------------------------------------------
     {
         Document d;
@@ -674,6 +722,42 @@ int main(int argc, char **argv)
         flip.translate(-50, 0);       // the rectangle maps onto itself
         check(param::reconcile(was, m, nullptr, nullptr, {{r2.id, flip}}) == 0, "nothing dropped");
         check(m.parametric().constraints.first().refs.first().index == 1, "corner 0 follows to corner 1");
+    }
+
+    // ---- Horizontal and Vertical on one line conflict ---------------------------------
+    // Both hold only with the line shrunk to nothing: refused, geometry kept.
+    {
+        Document d;
+        const Element ln = Element::makePath({{10, 10}, {50, 30}}, false, layer);
+        d.addElement(ln);
+        const GeoRef L0 = ref(GeoRef::Line, ln.id, 0);
+        addCon(d, Constraint::Horizontal, {L0});
+        check(param::solve(d).ok, "a line made horizontal");
+        const QString v = addCon(d, Constraint::Vertical, {L0});
+        const QJsonObject before = d.elements().first().raw;
+        const param::SolveResult r = param::solve(d);
+        QPointF a, b;
+        param::line(d, L0, &a, &b);
+        check(!r.ok && r.failing.contains(v) && d.elements().first().raw == before
+                  && QLineF(a, b).length() > 1,
+              "Horizontal + Vertical on one line is a conflict, not a zero-length line");
+    }
+
+    // ---- a crafted angle value can't hang the solver ----------------------------------
+    {
+        Document d;
+        const Element e1 = Element::makePath({{0, 0}, {50, 0}}, false, layer);
+        const Element e2 = Element::makePath({{0, 0}, {40, 20}}, false, layer);
+        d.addElement(e1);
+        d.addElement(e2);
+        auto L = [&](const Element &e) { return ref(GeoRef::Line, e.id, 0); };
+        addCon(d, Constraint::Fix, {L(e1)});
+        addCon(d, Constraint::Angle, {L(e1), L(e2)}, "1e300");
+        const param::SolveResult r = param::solve(d);   // used to spin in wrapPi for ever
+        check(r.iterations >= 0, "an angle of 1e300 degrees solves (or fails) in finite time");
+        d.parametricRef().constraints.last().expr = QStringLiteral("1e308 * 10");
+        param::solve(d);
+        check(true, "an angle expression that overflows does not hang either");
     }
 
     std::printf("parametric: %d checks passed\n", g_checks);

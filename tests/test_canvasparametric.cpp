@@ -13,6 +13,7 @@
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include "../src/parameterspanel.h"
+#include "../src/parametric.h"
 
 #include <QApplication>
 #include <QHeaderView>
@@ -571,6 +572,91 @@ int main(int argc, char *argv[])
         check(hint.contains(QStringLiteral("locked")), "and the status bar says why");
         canvas.undoStack()->undo();
         check(QLineF(node(fd, c1.id, -1), QPointF(50, 50)).length() < 1e-9, "undo leaves it there too");
+        canvas.setDocument(&doc);
+    }
+
+    // Trim, Extend and Break refuse a shape locked with Fix: no "done" in the
+    // status bar, and no pieces left beside the shape put back.
+    {
+        Document fd;
+        const Element h = Element::makePath({{0, 50}, {100, 50}}, false, fd.defaultLayer());
+        const Element v1 = Element::makePath({{30, 0}, {30, 100}}, false, fd.defaultLayer());
+        const Element v2 = Element::makePath({{120, 0}, {120, 100}}, false, fd.defaultLayer());
+        fd.addElement(h);
+        fd.addElement(v1);
+        fd.addElement(v2);
+        Constraint c;
+        c.type = Constraint::Fix;
+        GeoRef r;
+        r.kind = GeoRef::Line;
+        r.id = h.id;
+        r.index = 0;
+        c.refs = {r};
+        c.uid = fd.parametric().nextUid();
+        fd.parametricRef().constraints.append(c);
+        canvas.setDocument(&fd);
+        canvas.resetTransform();
+        canvas.scale(3, -3);
+        canvas.centerOn(QPointF(60, 50));
+        QString hint;
+        auto conn = QObject::connect(&canvas, &Canvas::statusHint, [&](const QString &s) { hint = s; });
+        const int steps = undo->count();
+        for (Canvas::Tool t : {Canvas::Break, Canvas::Trim, Canvas::Extend}) {
+            canvas.setTool(t);
+            hint.clear();
+            click(&canvas, QPointF(t == Canvas::Extend ? 95 : 60, 50));
+            check(fd.elements().size() == 3, "locked line: nothing added or removed");
+            check(hint.contains(QStringLiteral("locked")), "locked line: the status bar says why");
+        }
+        const Element *still = fd.elementById(h.id);
+        check(still && still->raw == h.raw, "locked line: unchanged");
+        check(undo->count() == steps, "locked line: no undo step");
+        QObject::disconnect(conn);
+        canvas.setTool(Canvas::Select);
+        canvas.setDocument(&doc);
+    }
+
+    // --- a press on a dimension label that is already gone ------------------------
+    // The label hit boxes come from the last paint; a press that lands on one
+    // after its dimension was deleted, before the repaint, must not crash.
+    {
+        Document sd;
+        check(sd.load(blank, &err), "load");
+        const Element l = Element::makePath({{20, 50}, {120, 50}}, false, sd.defaultLayer());
+        sd.addElement(l);
+        Constraint c;
+        c.type = Constraint::Distance;
+        GeoRef r;
+        r.kind = GeoRef::Line;
+        r.id = l.id;
+        r.index = 0;
+        c.refs = {r};
+        c.uid = sd.parametric().nextUid();
+        c.name = sd.parametric().nextDimensionName();
+        c.expr = QStringLiteral("100");
+        param::prime(sd, c);
+        c.label = QPointF(0, -15);
+        sd.parametricRef().constraints.append(c);
+        param::solve(sd);
+        canvas.setTool(Canvas::Select);
+        canvas.setDocument(&sd);
+        canvas.resetTransform();
+        canvas.scale(3, -3);
+        canvas.centerOn(QPointF(70, 50));
+        canvas.viewport()->repaint();
+        const QPoint at = vp(&canvas, QPointF(70, 35));
+        QString hint;
+        auto conn = QObject::connect(&canvas, &Canvas::statusHint, [&](const QString &s) { hint = s; });
+        QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        check(hint.startsWith(c.name), "a press on the label picks the dimension");
+        Parametric p = sd.parametric();
+        p.constraints.clear();
+        canvas.applyParametric(p, QStringLiteral("delete dimension"));
+        QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, at);   // no repaint yet
+        QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        check(sd.parametric().constraints.isEmpty(), "a stale label hit is ignored");
+        QObject::disconnect(conn);
         canvas.setDocument(&doc);
     }
 

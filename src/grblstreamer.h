@@ -67,6 +67,20 @@ public:
     int pendingCommands() const { return m_adhocPending; }
     bool isMacroRunning() const { return m_macroActive; }
     bool canSendCommand() const;
+    // A hard or soft limit (ALARM:1/2, "Reset to continue") stopped the
+    // controller: it answers no line, not even $H or $X, until a soft reset.
+    // Cleared by the "Grbl" banner that follows the reset.
+    bool needsReset() const { return m_needsReset; }
+    // Alarm on a connection that has not answered a line yet: maybe a
+    // controller still locked by a limit from before the port was opened
+    // (it does not reboot on open). A reset first costs nothing in Alarm.
+    bool maybeLocked() const
+    {
+        return m_needsReset
+               || (!m_heard && m_status.state.startsWith(QLatin1String("Alarm")));
+    }
+    // Number of lines of the running (or last) macro answered with ok.
+    int macroLinesDone() const { return m_macroDone; }
 
     // Conservative streaming: one line in flight, next only after its ack.
     // Slower than the 120-byte window but immune to USB/usbip stalls that
@@ -79,7 +93,8 @@ public:
     double lastProbeZ() const { return m_probeZ; }      // machine Z at contact
     double toolLengthOffset() const { return m_tlo; }
     // A setting from the controller's `$$` listing ($130 = X max travel…),
-    // or `fallback` when it has not been seen on this connection.
+    // or `fallback` when it has not been seen on this connection (the list
+    // is emptied on every connect: another machine may answer now).
     double setting(int n, double fallback) const { return m_settings.value(n, fallback); }
 
 public slots:
@@ -91,6 +106,9 @@ public slots:
     void pauseStream();                         // '!' feed hold
     bool resumeStream();                        // '~' cycle start (false: refused)
     void stopStream();                          // abort: soft reset (ctrl-X)
+    // Soft reset, then send `line` ($H, $X) as a command once the banner
+    // says the controller listens again. For the way out of needsReset().
+    void resetThen(const QString &line);
     void requestStatus();                       // '?' realtime report
     void sendRealtime(char c);                  // override bytes (0x90-0x97 &c.)
 
@@ -134,6 +152,9 @@ signals:
     void probeResult(double mx, double my, double mz, bool ok);
     void macroFinished(bool ok);
     void consoleLine(const QString &line);      // raw traffic for the log
+    // A sendCommand() line was answered: `ok` true for "ok", false for an
+    // error or alarm. The panel counts a zero as done only on its ok.
+    void commandAnswered(const QString &line, bool ok);
     void errorOccurred(const QString &message);
 
 private:
@@ -182,6 +203,12 @@ private:
     QStringList m_adhocLines;                   // the same lines, oldest first
     QElapsedTimer m_adhocClock;                 // since the last ad-hoc send/ack
     bool m_tloPending = false;                  // G43.1 not yet on the controller
+    bool m_needsReset = false;                  // critical alarm: lines go unanswered
+    bool m_resetNagged = false;                 // said so once for this alarm
+    bool m_heard = false;                       // a line answered on this connection
+    int m_macroDone = 0;                        // macro lines answered ok
+    QString m_afterReset;                       // resetThen()'s line, sent on the banner
+    QElapsedTimer m_afterResetClock;            // ...if the banner comes soon enough
 
     double m_probeZ = 0;
     bool m_probeOk = false;

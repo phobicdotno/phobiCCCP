@@ -48,6 +48,9 @@ struct Move {
                          // (a dog-leg round a corner of the pocket), may be empty
 };
 
+// A plan stops here (Plan::capped); far more than any real pocket needs.
+constexpr int kMaxMoves = 200000;
+
 struct Plan {
     QVector<Move> moves;
     double straightEngageDeg = 0;   // engagement of a straight front at the stepover
@@ -55,6 +58,7 @@ struct Plan {
     double maxEngageDeg = 0;        // the most any planned pass takes (the helix entries,
                                     // which slot by nature, not counted)
     int unreached = 0;              // parts too narrow for even a small helix
+    bool capped = false;            // stopped at kMaxMoves (the rest left uncut)
     bool available = true;          // false: built without Clipper2
 };
 

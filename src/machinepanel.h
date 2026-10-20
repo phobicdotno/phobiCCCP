@@ -7,6 +7,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QElapsedTimer>
+#include <QPointer>
 #include <QWidget>
 #include <functional>
 
@@ -107,7 +108,13 @@ private:
     void measureTool(Phase why);
     void onMacroFinished(bool ok);
     void onToolChange(int tool, int ordinal);
+    void parkForTool();                  // spindle off, up, to the tool-change spot
     void askForTool();                   // the tool-change prompt, once parked
+    // Idle on a report taken after the last jog went out, with no command
+    // unanswered and no jog waiting: GRBL refuses G-code while jogging
+    // (error:9), so zeroing and resuming wait for this.
+    bool standingStill() const;
+    QString stillMovingWhy() const;
     // Zeroing is refused while a program runs: a bumped pad button would
     // shift the rest of the job. The one exception is Z during a tool-change
     // pause the operator kept open to zero the new bit by hand.
@@ -210,6 +217,11 @@ private:
     // and will press Continue; m_zeroedForTool once Z was zeroed meanwhile.
     bool m_manualZero = false;
     bool m_zeroedForTool = false;
+    // A manual-zero G10 is on its way; m_zeroedForTool is set on its ok.
+    bool m_awaitToolZero = false;
+    // The tool-change prompt was answered for the change parked at. It only
+    // comes up once the park has arrived, so until then Continue is refused.
+    bool m_toolPromptAnswered = false;
     // Whether m_pendingTool has actually been measured on the BitSetter. A
     // failed measurement leaves the *previous* tool's G43.1 in force, so
     // resuming without one cuts as deep as the two tools differ in length.
@@ -227,6 +239,7 @@ private:
     void park();                 // safe Z, then the tool-change XY
     bool m_parkAfterHome = false;
     bool m_sawHoming = false;
+    quint64 m_flowSeq = 0;       // counts resetFlow(): a Stop since calls off what was planned
     // Jog limits. Jogs go to absolute machine positions kept inside the
     // travel GRBL reports ($130-$132), because this machine runs with soft
     // and hard limits off ($20=0, $21=0): a jog past the end grinds the
@@ -252,6 +265,12 @@ private:
     bool m_jogSeedOk = false;
     struct PendingJog { char axis; double delta, feed; };
     QVector<PendingJog> m_deferredJogs;
+    // A report is fresh for standingStill() from this sequence number on:
+    // the second report after the last jog was sent.
+    quint64 m_moveFreshAfter = 0;
+    // A released hold-jog's second cancel (endHoldJog), still to go out. A
+    // jog sent meanwhile would be cancelled with it, so jogs wait for it.
+    QPointer<QTimer> m_jogCancelTimer;
     // Hold-jog lookahead when not homed (relative jogs): where the hold began
     // and how far it has been sent since.
     double m_holdOrigin = 0, m_holdSent = 0;
@@ -280,6 +299,11 @@ private:
     QDoubleSpinBox *m_airLift;           // air-cut Z lift (mm)
     QPushButton *m_runBtn, *m_pauseBtn, *m_stopBtn;
     bool m_held = false;
+    // m_held stays until a report shows the machine out of Hold (seen in
+    // Hold before, or never in Hold within 2 s: the hold did not take).
+    bool m_holdSeen = false;
+    QElapsedTimer m_heldClock;
+    void setHeld(bool held);             // m_held and the pause button
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
     QProgressBar *m_progress;
     QPlainTextEdit *m_console;

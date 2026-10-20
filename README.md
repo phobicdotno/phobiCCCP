@@ -155,7 +155,7 @@ under [CLI](#cli).
   center, overall, center point, 3-point arc), Arc (A: 3-point, center point,
   tangent); **Construction** (Shift+X) makes vectors dashed reference
   geometry that is never machined; **Trim** (X), **Extend** (J)
-  and **Break** (B) at the crossings with other curves; **Measure** (M) — with live preview, grid + snap (G), zoom (wheel / F to fit),
+  and **Break** (B) at the crossings with other curves; **Measure** (M) — with live preview, grid + snap (Shift+G), zoom (wheel / F to fit),
   middle-mouse pan
 - Select / rubber-band, drag to move, drag the amber handle to resize,
   Del to delete, full undo/redo (Ctrl+Z / Ctrl+Shift+Z)

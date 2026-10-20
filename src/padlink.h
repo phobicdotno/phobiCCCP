@@ -6,6 +6,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <functional>
+
 // Designs made on the PhobiCCCP pad app (Android/ in this repository, Flutter
 // for Android tablets and iPad).
 // The pad does not know .c2d: it edits a small JSON design and phobiCCCP
@@ -18,8 +20,10 @@
 //   {"format": "phobicccp-pad", "version": 1,
 //    "id": "<letters, digits, -; up to 64>", "name": "Sign",
 //    "modified": <ms since 1970, set by whoever edited it last>,
-//    "base": <the "modified" of the copy the pad last got from or gave to a
-//             phobiCCCP; only in a put, never stored here (Store::put)>,
+//    "base": <the "modified" of the copy the pad last got from or gave to
+//             this phobiCCCP; only in a put, never stored here (Store::put)>,
+//    "vv": {"<replica id>": <the "modified" of that pad's or phobiCCCP's
+//           last edit of the design>, ...},   // see "Versions" below
 //    "desktopOnly": "<host>",             // only in a get: a linked file there
 //                                          // is not rebuilt from pad edits
 //    "deleted": false,                      // a removal, kept so it syncs
@@ -62,6 +66,10 @@ double nextStamp(double was, double now);
 bool buildDocument(const QJsonObject &design, const QString &c2dPath,
                    QStringList *notes, QString *error);
 
+// `design` written to `c2dPath` as buildDocument does, but built beside it
+// and swapped in, so a failure leaves the file that is there as it was.
+bool rebuildDocument(const QJsonObject &design, const QString &c2dPath, QString *error);
+
 // The other way: a .c2d made from a pad design and edited here, as a pad
 // design again, so the edit reaches the pads. `base` is the pad design it was
 // made from; its id and name are kept, `modified` is left for the caller.
@@ -96,6 +104,10 @@ public:
     // the file is written. False with error() set when the links cannot be kept.
     bool set(const QString &c2dPath, const QString &id, bool padOnly, double modified = 0);
     bool remove(const QString &c2dPath);
+    // The files linked to `id` that hold its copy stamped `modified`, linked
+    // to `toId` instead and otherwise left as they were (Store::put moved that
+    // copy there). How many there were; -1 when the links cannot be kept.
+    int moveTo(const QString &id, double modified, const QString &toId);
 
 private:
     bool write();
@@ -104,45 +116,108 @@ private:
     QJsonObject m_links;   // canonical path -> {id, padOnly, modified, size, mtime}
 };
 
+// Rebuild from `design` every file linked to it that a pad edit may replace
+// (padOnly, not changed outside phobiCCCP, there), but `except` and those
+// `leaveAlone` says to (an open document with changes), and note each as
+// holding `design`'s copy. So a save of one linked file reaches the others
+// as a pad edit does. The files rebuilt.
+QStringList followDesign(Links &links, const QJsonObject &design, const QString &except,
+                         const std::function<bool(const QString &)> &leaveAlone = {});
+
 // The embedded tool library as the pad needs it: {"materials": [{id, name}],
 // "tools": [{number, name, kind, diameter, angle, flutes, materials: [ids
 // with feeds]}]}.
 QJsonObject toolsJson();
 
+// Versions. Pads and phobiCCCPs pass designs around without ever talking to
+// every other one, so "the newer `modified` wins" alone would let one edit
+// replace another made meanwhile elsewhere. Every edit therefore also notes,
+// in "vv", the time of the latest edit each pad or phobiCCCP (by a random id
+// of its own) made to the design: a copy whose vv is at least another's in
+// every entry was made from it, and replaces it; two copies neither of which
+// was made from the other are both kept (Store::put). A vv is only believed
+// when its largest time is the copy's `modified`: an older pad or phobiCCCP
+// (before 1.3.1) keeps the vv it got but stamps a new time. Its vv still
+// names the copy it edited, so against a believed vv it tells whether the
+// older one's edit was made from that copy (an entry above its vv says not:
+// both are kept). An edit here of such a copy keeps its vv and notes the
+// older one's edit under olderEditId(), so it counts as made from it. A copy
+// with no vv at all (a design an older pad made, or one from before vvs) is
+// such an edit made from nothing the newer ones did. Two copies neither of
+// which has a believable vv, or a deletion from an older pad (which keeps no
+// vv), follow the older rules (`base`, newer wins).
+enum class Order { Same, After, Before, Concurrent, Unknown };
+// How copy `a` stands to copy `b` of the same design: the same copy, made
+// from it (After), what it was made from (Before), neither, or Unknown (no
+// versions to tell by).
+Order order(const QJsonObject &a, const QJsonObject &b);
+// The design's vv, or empty when it has none that can be believed.
+QJsonObject versionVector(const QJsonObject &design);
+// The vv an edit of `design` builds on: its believed vv, or, from an older pad
+// or phobiCCCP, the vv it kept with that edit noted under olderEditId().
+QJsonObject ancestry(const QJsonObject &design);
+// The id in vvs that stands for an older pad's or phobiCCCP's edit `design`
+// (the same on every computer and pad, from its time and the vv it kept).
+QString olderEditId(const QJsonObject &design);
+constexpr int kMaxReplicas = 64;
+
 // Designs kept on this computer so every pad (and every phobiCCCP a pad
 // talks to) ends up with the same set: one <id>.json per design in `dir`.
-// The newer `modified` wins; a deletion is a design with "deleted": true.
+// A copy made from the one kept replaces it; a deletion is a design with
+// "deleted": true.
 class Store
 {
 public:
-    explicit Store(const QString &dir) : m_dir(dir) {}
+    // `idDir`: where replicaId() is kept, when not in `dir` (which may be
+    // synced or copied to another computer with Documents).
+    explicit Store(const QString &dir, const QString &idDir = {})
+        : m_dir(dir), m_idDir(idDir.isEmpty() ? dir : idDir) {}
     QString dir() const { return m_dir; }
-    // [{id, name, modified, deleted}] for every design kept.
+    // [{id, name, modified, deleted, vv}] for every design kept.
     QJsonArray list() const;
     QJsonObject get(const QString &id) const;   // empty when unknown
     // What a put did besides keeping the design or not.
     struct PutOutcome {
-        // The stored copy changed after the sender's `base`, so the sender's
-        // edit was kept as this new design rather than over it.
+        // The two copies were edited apart (after the sender's `base`, or by
+        // their vvs), so one of them was kept as this new design.
         QString forked;
-        // The same, for a deletion: refused, so the change made here stays.
+        // It was the copy kept here that went to `forked`: the one put is
+        // kept in its place (with vvs, the later of the two edits is).
+        bool moved = false;
+        // A deletion that lost to an edit made meanwhile: refused, so the
+        // edit stays.
         bool conflict = false;
     };
-    // Keep `design` unless the stored one is as new or newer. True when it
-    // was written (as itself or as a fork); `error` says why not when it was
-    // refused as malformed. `now` is for tests.
+    // Keep `design` unless the stored one is the same or made from it. True
+    // when it was written (as itself or as a fork); `error` says why not when
+    // it was refused as malformed. `now` is for tests.
     // When the copy kept here cannot be read (made by a newer phobiCCCP, say),
     // the put is refused with `error` set rather than written over it.
     // A fork's id comes from `forkIdFor`, so the same edit put again is
-    // answered with the fork already made.
+    // answered with the fork already made; with vvs it depends only on the
+    // copy forked, so every phobiCCCP forks the same two copies the same way,
+    // and the forks of one conflict do not multiply as pads carry it around.
     bool put(const QJsonObject &design, QString *error = nullptr, PutOutcome *outcome = nullptr,
              double now = 0);
     static QString forkIdFor(const QString &id, double modified, double base);
+    static QString forkIdFor(const QJsonObject &copy);
+    // `design` as edited here at `modified`: its vv notes this computer's edit
+    // (a design new here, with no id of its own yet in the store, starts a vv).
+    QJsonObject edited(QJsonObject design, double modified) const;
+    // This computer's own id in vvs, made once and kept in `idDir` with what
+    // ties it to this computer and that place. Found anywhere else (Documents
+    // copied to a new computer, a synced folder, a restored backup), a new id
+    // is made: two computers with one id would take each other's edits as
+    // made from their own, and one would be lost without a word. An id kept
+    // in `dir` by an older phobiCCCP is not taken over (it may be such a
+    // copy): it is removed, and a new one made in `idDir`.
+    QString replicaId() const;
 
 private:
     QString path(const QString &id) const;
     bool write(const QJsonObject &design, QString *error);
     QString m_dir;
+    QString m_idDir;
 };
 
 bool validId(const QString &id);

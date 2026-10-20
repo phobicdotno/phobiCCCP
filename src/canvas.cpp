@@ -4,6 +4,7 @@
 #include "sketchgeom.h"
 #include "backgroundimage.h"
 #include "sketch.h"
+#include "model3d.h"
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QGraphicsScene>
@@ -55,6 +56,42 @@ static const QColor kFullyConstrained(0x7c, 0xd6, 0xc2);   // nothing can move i
 // element items' hit corridor and the node editor's hit tests share it, so a
 // double-click that inserts a node is never a click that deselects the path.
 static const double kHitPx = 7.0;
+
+// Can the pen's nodes so far close into a shape? Three nodes always can; two
+// only when a curve handle bows them apart; closed straight, there and back,
+// they would enclose nothing.
+static bool penClosable(const QVector<PathNode> &nodes)
+{
+    if (nodes.size() >= 3)
+        return true;
+    if (nodes.size() < 2)
+        return false;
+    const QPointF a = nodes.first().p, b = nodes.last().p;
+    const QLineF chord(a, b);
+    if (chord.length() < 1e-9)
+        return false;
+    auto off = [&](const QPointF &h) {
+        const QPointF d = b - a, v = h - a;
+        return std::fabs(d.x() * v.y() - d.y() * v.x()) / chord.length() > 1e-6;
+    };
+    return off(nodes.first().in) || off(nodes.first().out)
+        || off(nodes.last().in) || off(nodes.last().out);
+}
+
+// Delete a node in the node editor. A closed subpath left with two nodes
+// that cannot close (straight there and back) opens into a line, as the pen
+// would have drawn it.
+static bool removePathNode(SubPath &sp, int node)
+{
+    if (!sp.removeNode(node))
+        return false;
+    if (sp.closed && !penClosable(sp.nodes)) {
+        sp.closed = false;
+        sp.nodes.first().in = sp.nodes.first().p;
+        sp.nodes.last().out = sp.nodes.last().p;
+    }
+    return true;
+}
 
 // Element item with CAD-style state rendering: closed shapes get a faint fill
 // (which also makes their interior clickable), hover brightens the outline,
@@ -258,6 +295,13 @@ public:
         QSet<QString> afterIds;
         for (const Element &e : after)
             afterIds.insert(e.id);
+        for (auto it = piecesOf.constBegin(); it != piecesOf.constEnd(); ++it) {
+            QStringList kept;
+            for (const QString &n : it.value())
+                if (afterIds.contains(n))
+                    kept << n;
+            m_piecesOf.insert(it.key(), kept);
+        }
         for (const Toolpath &t : d->toolpaths()) {
             const QJsonArray refs = t.json.value("elements").toArray();
             QJsonArray kept;
@@ -287,10 +331,22 @@ public:
     {
         for (const auto &p : m_tps) m_d->replaceToolpath(p.second);
         swap(m_before, m_after);
+        // 3D "From vectors" components follow their vectors like toolpaths
+        // do: one built on a replaced element uses all of its pieces, not
+        // only the piece that kept its id. Each original separately, so a
+        // component keeps only the pieces of the elements it used.
+        m_model.clear();
+        for (auto it = m_piecesOf.constBegin(); it != m_piecesOf.constEnd(); ++it) {
+            const ModelVectorRefs was = retargetModelVectors(*m_d, {it.key()}, it.value());
+            for (auto w = was.constBegin(); w != was.constEnd(); ++w)
+                if (!m_model.contains(w.key()))   // the first is the one before the edit
+                    m_model.insert(w.key(), w.value());
+        }
     }
     void undo() override
     {
         for (const auto &p : m_tps) m_d->replaceToolpath(p.first);
+        restoreModelVectors(*m_d, m_model);
         for (const Element &e : m_after) m_d->removeElementById(e.id);
         QVector<int> order(m_before.size());
         std::iota(order.begin(), order.end(), 0);
@@ -311,6 +367,8 @@ private:
     Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
     QVector<int> m_beforeAt;
     QVector<QPair<Toolpath, Toolpath>> m_tps;
+    QHash<QString, QStringList> m_piecesOf;   // replaced id -> the pieces now in the document
+    ModelVectorRefs m_model;                  // 3D components' vectors before redo
 };
 
 class TpEditCmd : public QUndoCommand
@@ -588,8 +646,8 @@ void Canvas::convertToPaths(const QStringList &ids)
     QHash<QString, QStringList> piecesOf;
     for (const QString &id : ids) {
         Element *e = m_doc->elementById(id);
-        if (!e || e->geometryType == QLatin1String("path"))
-            continue;
+        if (!e || e->geometryType == QLatin1String("path") || Element::isPoint(*e))
+            continue;   // a sketch point has no outline to cut: it stays a point
         before.append(*e);
         const QVector<Element> pieces = Element::toPaths(*e);
         for (const Element &p : pieces)
@@ -720,7 +778,9 @@ bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
     if (sel.size() != 1 || !sel.first()->data(0).isValid())
         return false;
     Element *e = const_cast<Document *>(m_doc)->elementById(sel.first()->data(0).toString());
-    if (!e)
+    // A sketch point has a radius only so it can be drawn; it is moved, never
+    // resized.
+    if (!e || Element::isPoint(*e))
         return false;
     const QJsonArray c = e->raw.value("center").toArray();
     if (c.size() != 2)
@@ -737,6 +797,11 @@ bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
     } else {
         return false;
     }
+    // On a small shape the handle covers most of it, so a press meant to
+    // move the shape would resize it. Offer the handle only when it sits well
+    // clear of the centre on screen; otherwise the drag moves the shape.
+    if (QLineF(center, *pos).length() * qAbs(transform().m11()) < 16.0)
+        return false;
     *id = e->id;
     *type = e->geometryType;
     return true;
@@ -807,7 +872,7 @@ void Canvas::drawForeground(QPainter *p, const QRectF &rect)
             p->drawEllipse(last.out, s, s);
         }
         // Closing hint: ring around the first anchor when it can be closed.
-        if (m_penNodes.size() >= 2) {
+        if (penClosable(m_penNodes)) {
             p->setPen(QPen(kPreview, 0));
             p->setBrush(Qt::NoBrush);
             p->drawEllipse(m_penNodes.first().p, pxToMm(8), pxToMm(8));
@@ -872,7 +937,10 @@ void Canvas::syncEditTarget()
     m_editId.clear();
     m_model = PathModel();
     if (m_doc && ids.size() == 1) {
-        if (Element *e = m_doc->elementById(ids.first())) {
+        Element *e = m_doc->elementById(ids.first());
+        if (e && Element::isPoint(*e)) {
+            emit statusHint(tr("A sketch point has no nodes — drag it to move it"));
+        } else if (e) {
             m_editId = e->id;
             m_model = Element::pathModel(*e);
             if (m_model.isEmpty())
@@ -1726,6 +1794,12 @@ void Canvas::modifyAt(const QPointF &q)
         emit statusHint(tr("No curve there"));
         return;
     }
+    // A shape locked with Fix stays as it is: a trim, extend or break of it
+    // would only be put back (and a break would leave its pieces behind).
+    if (param::lockedElements(*m_doc).contains(id)) {
+        emit statusHint(tr("This shape is locked with Fix: remove the Fix to change it"));
+        return;
+    }
     const Element before = *m_doc->elementById(id);
     const double tol = pxToMm(8);
     switch (m_tool) {
@@ -1870,7 +1944,7 @@ void Canvas::finishPath(bool closed)
         PathModel m;
         SubPath sp;
         sp.nodes = m_penNodes;
-        sp.closed = closed && m_penNodes.size() >= 2;
+        sp.closed = closed && penClosable(m_penNodes);
         if (!sp.closed) {   // no segment arrives at the first / leaves the last node
             sp.nodes.first().in = sp.nodes.first().p;
             sp.nodes.last().out = sp.nodes.last().p;
@@ -1981,10 +2055,12 @@ void Canvas::mousePressEvent(QMouseEvent *event)
 
     if (m_tool == DrawPath && m_doc && event->button() == Qt::LeftButton) {
         const QPointF pos = snap(mapToScene(event->pos()));
-        // Clicking near the start point closes the path.
+        // Clicking near the start point closes the path. Two straight nodes
+        // closed would be a zero-area there-and-back, so that click ends
+        // them as an open line instead.
         if (m_penNodes.size() >= 2) {
             if (QLineF(mapToScene(event->pos()), m_penNodes.first().p).length() <= pxToMm(8)) {
-                finishPath(true);
+                finishPath(penClosable(m_penNodes));
                 event->accept();
                 return;
             }
@@ -2451,7 +2527,7 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
                         commitModel(tr("retract handles"));
                     });
             connect(menu.addAction(tr("Delete node")), &QAction::triggered, this, [this, sub, node, stillThere] {
-                if (stillThere() && m_model.subs[sub].removeNode(node)) {
+                if (stillThere() && removePathNode(m_model.subs[sub], node)) {
                     m_selSub = m_selNode = -1;
                     commitModel(tr("delete node"));
                 }
@@ -2500,7 +2576,7 @@ void Canvas::keyPressEvent(QKeyEvent *event)
         return;
     if (m_tool == NodeEdit && m_selSub >= 0 && m_doc
         && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
-        if (m_model.subs[m_selSub].removeNode(m_selNode)) {
+        if (removePathNode(m_model.subs[m_selSub], m_selNode)) {
             m_selSub = m_selNode = -1;
             commitModel(tr("delete node"));
         } else {

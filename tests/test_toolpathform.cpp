@@ -11,6 +11,8 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QLineEdit>
+#include <QSpinBox>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolButton>
@@ -195,6 +197,78 @@ int main(int argc, char *argv[])
         QTest::keyClick(stepD, Qt::Key_Return);
         check(std::fabs(last.value("stepdown").toDouble() - 3.175) < 1e-3
                   && !last.contains(QStringLiteral("phobic_expr")), "1/8 in is 3.175 mm, unbound");
+    }
+
+    // An undo while the cursor is still in a committed field shows the
+    // undone value there; a field with uncommitted typing keeps it.
+    {
+        form.setDocument(nullptr);
+        form.setToolpath("{u}", "pocket_toolpath", j);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        auto *end = editorFor<QDoubleSpinBox>(&form, "end_depth");
+        check(end != nullptr, "undo: end depth field");
+        end->setFocus();
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("7"));
+        QTest::keyClick(end, Qt::Key_Return);
+        check(last.value("end_depth").toString() == QLatin1String("-7.000") && end->hasFocus(),
+              "undo: 7 committed, field keeps focus");
+        form.setToolpath("{u}", "pocket_toolpath", j);   // the undo
+        check(qAbs(end->value() - 5.0) < 1e-9, "undo: the focused field shows the undone 5 mm");
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("9"));        // typing, not committed yet
+        QJsonObject other = j;
+        other.insert("stepdown", 1.5);
+        form.setToolpath("{u}", "pocket_toolpath", other);
+        check(end->text().startsWith(QLatin1Char('9')), "undo: uncommitted typing survives a refresh");
+        QTest::keyClick(end, Qt::Key_Return);
+        check(last.value("end_depth").toString() == QLatin1String("-9.000"), "undo: and commits on Enter");
+
+        QLineEdit *name = nullptr;
+        for (QLineEdit *e : form.findChildren<QLineEdit *>())
+            if (e->text() == QLatin1String("Card recess") && !qobject_cast<QAbstractSpinBox *>(e->parentWidget()))
+                name = e;
+        check(name != nullptr, "undo: name field");
+        name->setFocus();
+        name->selectAll();
+        QTest::keyClicks(name, QStringLiteral("Renamed"));
+        QTest::keyClick(name, Qt::Key_Return);
+        check(last.value("name").toString() == QLatin1String("Renamed"), "undo: rename committed");
+        form.setToolpath("{u}", "pocket_toolpath", j);
+        check(name->text() == QLatin1String("Card recess"), "undo: the focused name shows the undone name");
+    }
+
+    // Typing and then stepping with the arrow key commits through
+    // valueChanged, with no editingFinished. The field is no longer "typed"
+    // after that, so an undo shows in it.
+    {
+        form.setToolpath("{u}", "pocket_toolpath", j);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        auto *end = editorFor<QDoubleSpinBox>(&form, "end_depth");
+        check(end != nullptr, "step: end depth field");
+        end->setFocus();
+        end->selectAll();
+        QTest::keyClicks(end, QStringLiteral("7"));
+        QTest::keyClick(end, Qt::Key_Up);
+        check(std::fabs(std::fabs(last.value("end_depth").toString().toDouble()) - 7.0) < 0.5
+                  && last.value("end_depth").toString() != QLatin1String("-5.000") && end->hasFocus(),
+              "step: typed 7 then Up commits");
+        form.setToolpath("{u}", "pocket_toolpath", j);   // the undo
+        check(qAbs(end->value() - 5.0) < 1e-9, "step: the focused field shows the undone 5 mm");
+
+        QJsonObject jf = j;
+        jf.insert("finish_passes", 1);
+        form.setToolpath("{u}", "pocket_toolpath", jf);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        auto *n = editorFor<QSpinBox>(&form, "finish_passes");
+        check(n != nullptr, "step: finishing passes field");
+        n->setFocus();
+        n->selectAll();
+        QTest::keyClicks(n, QStringLiteral("3"));
+        QTest::keyClick(n, Qt::Key_Up);
+        check(last.value("finish_passes").toInt() == 4 && n->hasFocus(), "step: typed 3 then Up commits 4");
+        form.setToolpath("{u}", "pocket_toolpath", jf);   // the undo
+        check(n->value() == 1, "step: the focused int field shows the undone value");
     }
 
     std::printf("test_toolpathform: %d checks OK\n", g_checks);

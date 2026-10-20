@@ -98,6 +98,16 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     m_rx.clear();
     m_status = MachineStatus();
     m_adhocPending = 0;
+    m_adhocLines.clear();
+    m_needsReset = false;
+    m_resetNagged = false;
+    m_heard = false;
+    m_afterReset.clear();
+    // The last connection's $$ and WCO belong to whatever answered then: a
+    // reconnect may be another machine (machine profiles) or a controller
+    // whose settings changed. Until the new $$ arrives the fallbacks apply.
+    m_settings.clear();
+    m_wcoX = m_wcoY = m_wcoZ = 0;
     m_statusTimer->start();
     emit connected(portName);
     return true;
@@ -143,8 +153,9 @@ bool GrblStreamer::canSendCommand() const
     // Not while an error's reset is pending either: GRBL is still answering
     // the program lines in its buffer, and those oks would be counted
     // against whatever was sent now.
+    // Nor after a limit alarm, until the reset: nothing would be answered.
     return isConnected() && !m_macroActive && !m_errorResetTimer->isActive()
-           && (!m_streaming || m_waitingTool >= 0);
+           && !m_needsReset && (!m_streaming || m_waitingTool >= 0);
 }
 
 void GrblStreamer::writeLine(const QString &line)
@@ -156,9 +167,20 @@ void GrblStreamer::writeLine(const QString &line)
 
 bool GrblStreamer::sendCommand(const QString &line)
 {
+    const QString l = line.trimmed();
+    // After a hard or soft limit GRBL reads nothing but realtime bytes until
+    // a soft reset: the line would never be answered, and pendingCommands()
+    // would block every later stream, macro and jog behind it.
+    if (m_needsReset && !l.isEmpty() && isConnected()) {
+        if (!m_resetNagged)
+            emit errorOccurred(QStringLiteral("%1 not sent: the controller stopped on a limit "
+                                              "and listens only after a reset (Initialize or "
+                                              "Unlock does it)").arg(l));
+        m_resetNagged = true;
+        return false;
+    }
     if (!canSendCommand())
         return false;
-    const QString l = line.trimmed();
     if (!l.isEmpty()) {
         // Empty lines (the wake newline right after open) are sent uncounted:
         // an Arduino-class board is still resetting then and would swallow it,
@@ -351,6 +373,7 @@ void GrblStreamer::stopStream()
 {
     if (!isConnected())
         return;
+    m_afterReset.clear();                       // a reset of its own: no $H after it
     const char reset = 0x18;                    // ctrl-X: GRBL soft reset
     m_port->write(&reset, 1);
     m_errorResetTimer->stop();                  // this is the reset it waited for
@@ -378,8 +401,24 @@ void GrblStreamer::stopStream()
         emit streamFinished(false);
 }
 
+void GrblStreamer::resetThen(const QString &line)
+{
+    if (!isConnected())
+        return;
+    stopStream();
+    m_afterReset = line.trimmed();
+    m_afterResetClock.start();
+}
+
 void GrblStreamer::pump()
 {
+    // Locked by a limit (an ALARM:1 taken as the answer of a command, say):
+    // nothing written now is answered, and the program would wait for ever.
+    if (m_needsReset && m_streaming) {
+        abortStream(QStringLiteral("the controller stopped on a limit (reset the controller "
+                                   "to continue)"), false);
+        return;
+    }
     while (m_streaming && m_waitingTool < 0 && m_adhocPending == 0
            && m_nextIndex < m_queue.size()) {
         const QString &line = m_queue.at(m_nextIndex);
@@ -428,10 +467,15 @@ void GrblStreamer::pump()
 void GrblStreamer::startMacro(const QStringList &lines)
 {
     if (!isConnected() || m_macroActive || m_errorResetTimer->isActive()
-        || (m_streaming && m_waitingTool < 0)) {
+        || (m_streaming && m_waitingTool < 0) || m_needsReset) {
+        if (m_needsReset && !m_resetNagged)
+            emit errorOccurred(QStringLiteral("not started: the controller stopped on a limit "
+                                              "and listens only after a reset"));
+        m_resetNagged = m_resetNagged || m_needsReset;
         emit macroFinished(false);
         return;
     }
+    m_macroDone = 0;
     m_macroQueue.clear();
     for (const QString &l : lines)
         if (!l.trimmed().isEmpty())
@@ -456,6 +500,16 @@ void GrblStreamer::cancelMacro()
 
 void GrblStreamer::pumpMacro()
 {
+    // The same for a macro: its line in flight and the rest are never
+    // answered once the controller is locked.
+    if (m_macroActive && m_needsReset) {
+        m_macroQueue.clear();
+        m_macroActive = false;
+        m_macroInflight = false;
+        m_macroError = true;
+        emit macroFinished(false);
+        return;
+    }
     if (!m_macroActive || m_macroInflight || m_adhocPending > 0)
         return;
     if (m_macroQueue.isEmpty()) {
@@ -618,6 +672,27 @@ void GrblStreamer::handleLine(const QByteArray &line)
         if (m_adhocPending > 0 && st.state == QLatin1String("Idle")
             && m_adhocClock.isValid() && m_adhocClock.elapsed() > 3000)
             resyncAdhoc(QStringLiteral("no ack while Idle"));
+        // GRBL answers every line at once in Alarm (error:9 at worst). One
+        // left unanswered there means a controller locked by a limit: one
+        // that was locked before this connection opened, which never said
+        // ALARM:1 to us. Without this $H and $X wait for ever.
+        if (m_adhocPending > 0 && !m_needsReset && st.state.startsWith(QLatin1String("Alarm"))
+            && m_adhocClock.isValid() && m_adhocClock.elapsed() > 2000) {
+            m_needsReset = true;
+            emit errorOccurred(QStringLiteral("the controller does not answer in Alarm: it "
+                                              "stopped on a limit and listens only after a "
+                                              "reset (Initialize or Unlock does it)"));
+            m_resetNagged = true;
+            // A $H or $X among them was the operator asking out of the alarm:
+            // do it the way that works, reset first.
+            QString retry;
+            for (const QString &l : std::as_const(m_adhocLines))
+                if (l == QLatin1String("$H") || l == QLatin1String("$X"))
+                    retry = l;
+            resyncAdhoc(QStringLiteral("controller locked"));
+            if (!retry.isEmpty())
+                resetThen(retry);
+        }
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
         // Waiting to reset after an error: do it on the report that shows
@@ -646,6 +721,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
     // will be answered). Put the offset back once the controller is ready;
     // if it boots into Alarm the $X / $H ack re-tries it.
     if (line.startsWith("Grbl ")) {
+        m_heard = true;
         m_adhocPending = 0;
         m_adhocLines.clear();
         m_macroSkipAck = false;             // nothing from before is answered now
@@ -663,11 +739,32 @@ void GrblStreamer::handleLine(const QByteArray &line)
             m_tloPending = true;
             QTimer::singleShot(400, this, [this] { flushTlo(); });
         }
+        m_needsReset = false;
+        m_resetNagged = false;
+        // The $H / $X a resetThen() waited for. Only right after that reset:
+        // a banner minutes later (the reset button) must not start homing.
+        const QString after = m_afterReset;
+        m_afterReset.clear();
+        if (!after.isEmpty() && m_afterResetClock.isValid()
+            && m_afterResetClock.elapsed() < 10000)
+            sendCommand(after);
+        return;
     }
 
     const bool ok = (line == "ok");
     const bool alarm = line.startsWith("ALARM:");
     const bool err = line.startsWith("error:") || alarm;
+    if (ok || line.startsWith("error:"))
+        m_heard = true;
+    // Hard limit (1) or soft limit (2): GRBL locks up until a soft reset and
+    // says "Reset to continue". Remember it, or $H and $X go unanswered.
+    if (alarm) {
+        const int n = line.mid(6).toInt();
+        if (n == 1 || n == 2)
+            m_needsReset = true;
+    } else if (line.contains("Reset to continue")) {
+        m_needsReset = true;
+    }
 
     if ((ok || err) && m_adhocPending > 0) {
         --m_adhocPending;
@@ -678,6 +775,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
         // Unlock and homing both leave GRBL without the G43.1 it had.
         if (ok && (sent == QLatin1String("$X") || sent == QLatin1String("$H")) && m_tlo != 0.0)
             m_tloPending = true;
+        emit commandAnswered(sent, ok);
         if (m_adhocPending == 0) {
             flushTlo();
             pumpMacro();
@@ -692,6 +790,8 @@ void GrblStreamer::handleLine(const QByteArray &line)
     }
     if (m_macroActive && (ok || err)) {
         m_macroInflight = false;
+        if (ok)
+            ++m_macroDone;
         if (err) {
             m_macroError = true;
             m_macroQueue.clear();

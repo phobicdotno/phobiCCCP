@@ -23,15 +23,20 @@ class PutResult {
   /// pad's version was kept there as a new design with this id.
   final String forked;
 
+  /// With [forked]: the pad's was the later edit, so it is kept under its own
+  /// id and the computer's copy went to [forked] instead.
+  final bool moved;
+
   /// The same for a deletion, which the computer refused.
   final bool conflict;
 
   /// The computer's copy's time after the put; null from an older phobiCCCP.
   final int? modified;
-  const PutResult({this.stored = false, this.forked = '', this.conflict = false, this.modified});
+  const PutResult({this.stored = false, this.forked = '', this.moved = false, this.conflict = false, this.modified});
   factory PutResult.fromJson(Map<String, Object?> j) => PutResult(
       stored: j['stored'] == true,
       forked: j['forked'] is String ? j['forked'] as String : '',
+      moved: j['moved'] == true,
       conflict: j['conflict'] == true,
       modified: j['modified'] is num ? (j['modified'] as num).toInt() : null);
 }
@@ -188,17 +193,20 @@ class CccpConnection {
   /// True when phobiCCCP kept it (it had no copy, or an older one).
   Future<bool> put(Design d) async => (await push(d)).stored;
 
-  /// [put], with all phobiCCCP said about it.
-  Future<PutResult> push(Design d) async => PutResult.fromJson(await request({'op': 'put', 'design': d.toJson()}));
+  /// [put], with all phobiCCCP said about it. [desktop] is that computer's
+  /// id, for the base the design carries ([Design.toWire]).
+  Future<PutResult> push(Design d, {String desktop = ''}) async =>
+      PutResult.fromJson(await request({'op': 'put', 'design': d.toWire(desktop), 'versions': 1}));
 
   Future<DesktopInfo> selectMachine(String id) async => DesktopInfo.fromJson(await request({'op': 'machine', 'id': id}));
 
   /// Open [d] on that computer, on [machine] (its id; empty for the one in use),
   /// and start cutting it when [start] and the computer allows it.
-  Future<SendResult> send(Design d, {required String machine, required bool start, required String from}) async {
+  Future<SendResult> send(Design d,
+      {required String machine, required bool start, required String from, String desktop = ''}) async {
     try {
       return SendResult.fromJson(await request(
-          {'op': 'send', 'design': d.toJson(), 'machine': machine, 'start': start, 'from': from},
+          {'op': 'send', 'design': d.toWire(desktop), 'machine': machine, 'start': start, 'from': from, 'versions': 1},
           timeout: sendTimeout));
     } on CccpException catch (e) {
       if (e.refused) rethrow;

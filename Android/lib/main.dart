@@ -14,7 +14,11 @@ import 'ui/theme.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final dir = await getApplicationSupportDirectory();
-  final app = AppState(DesignStore(Directory('${dir.path}/designs')), Settings(File('${dir.path}/settings.json')))..start();
+  // Not backed up and not carried over to another device: Android's
+  // no_backup (beside getFilesDir, which [dir] is there), iOS's Caches.
+  final device = Platform.isAndroid ? Directory('${dir.parent.path}/no_backup') : await getApplicationCacheDirectory();
+  final store = DesignStore(Directory('${dir.path}/designs'), device: device);
+  final app = AppState(store, Settings(File('${dir.path}/settings.json')))..start();
   runApp(PhobiApp(app));
 }
 

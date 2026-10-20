@@ -722,6 +722,215 @@ int main()
         check(flatRim <= e2 + 0.08, "compensatedZ: flat rim within half a cell of slope");
     }
 
+    // --- compensatedZ: a sharp peak on a node ----------------------------------
+    // The ball was let down on a sub-grid tied to the tool's position, which
+    // misses the model's nodes: over a cone's apex it read the flanks, sat
+    // up to 0.225 mm too low, and the raster finish took 0.12 mm off the tip.
+    {
+        c2d::HeightModel m;
+        m.cell = 0.5;
+        m.baseZ = -8;
+        m.resize(80, 80);
+        const double ax = 40.5 * m.cell, ay = 40.5 * m.cell;   // the apex on node (40, 40)
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c) {
+                const double d = std::hypot((c + 0.5) * m.cell - ax, (r + 0.5) * m.cell - ay);
+                m.ref(c, r) = float(std::fmax(m.baseZ, -2.0 * d));
+            }
+        c2d::ToolGeom ball;
+        ball.kind = c2d::ToolGeom::Ball;
+        ball.diameter = 6.35;
+        ball.cornerRadius = 3.175;
+        const double R = ball.radius();
+        double worst = 0;
+        for (double dx = -0.5; dx <= 0.5; dx += 0.01)
+            for (double dy = -0.5; dy <= 0.5; dy += 0.05) {
+                const double onApex = -(R - std::sqrt(R * R - dx * dx - dy * dy));
+                worst = std::fmax(worst, onApex - c2d::compensatedZ(m, ball, ax + dx, ay + dy));
+            }
+        std::fprintf(stderr, "cone apex: compensatedZ at most %.4f mm below the ball on the apex\n", worst);
+        check(worst < 1e-6, "compensatedZ: the ball rests on a peak node");
+
+        c2d::Document doc;
+        addToolpath(doc, toolpath("3d_finish_toolpath",
+                                  QJsonObject{{"number", 1}, {"diameter", 6.35}, {"type", 1}, {"corner_radius", 3.175}},
+                                  {{"stepover", 0.3}, {"stepdown", 1.0}, {"stock_to_leave", 0.0},
+                                   {"strategy", "raster"}, {"direction", "zigzag"}, {"raster_angle", 0.0},
+                                   {"start_depth", "0.000"}, {"max_depth", "0.000"}, {"boundary_offset", 0.0}}));
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
+        double cut = 0, cx = 0, cy = 0, cz = 10;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Feed) {
+                const int n = std::max(1, int(std::hypot(o.x - cx, o.y - cy) / 0.01));
+                for (int i = 0; i <= n; ++i) {
+                    const double t = double(i) / n;
+                    const double rho = std::hypot(cx + (o.x - cx) * t - ax, cy + (o.y - cy) * t - ay);
+                    if (rho < R)   // how far the ball's surface over the apex is below it
+                        cut = std::fmax(cut, -(cz + (o.z - cz) * t + R - std::sqrt(R * R - rho * rho)));
+                }
+            }
+            if (o.kind == Op::Rapid || o.kind == Op::Feed || o.kind == Op::Arc) {
+                cx = o.x;
+                cy = o.y;
+                cz = o.z;
+            }
+        }
+        std::fprintf(stderr, "cone apex: raster finish takes %.3f mm off the tip\n", cut);
+        check(g.done.size() == 1 && cut < 0.03, "3D finish leaves a sharp peak standing");
+    }
+
+    // compensatedZ is the exact maximum of the bilinear surface under the
+    // ball along every cell edge: sampled on a grid at cell/4 it missed the
+    // peak of a steep cell's edge and the ball went up to 0.8 mm into it.
+    {
+        c2d::HeightModel m;
+        m.cell = 0.5;
+        m.baseZ = -12;
+        m.resize(24, 24);
+        quint32 seed = 7;
+        auto rnd = [&] { seed = seed * 1664525u + 1013904223u; return (seed >> 8) / double(1 << 24); };
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c)
+                m.ref(c, r) = float(rnd() < 0.5 ? -3 - rnd() : -11.5 + rnd());
+        c2d::ToolGeom ball;
+        ball.kind = c2d::ToolGeom::Ball;
+        ball.diameter = 3.0;
+        ball.cornerRadius = 1.5;
+        const double R = ball.radius();
+        double worst = 0;
+        for (int k = 0; k < 300; ++k) {
+            const double x = 3 + 6 * rnd(), y = 3 + 6 * rnd();
+            const double z = c2d::compensatedZ(m, ball, x, y);
+            // Brute force: every cell edge under the ball at 1/500 of a cell.
+            double need = -1e9;
+            for (int g = 0; g < 24; ++g) {
+                const double e = (g + 0.5) * m.cell;
+                for (double t = -R; t <= R; t += m.cell / 500)
+                    for (const QPointF q : {QPointF(x + t, e), QPointF(e, y + t)}) {
+                        const double d2 = (q.x() - x) * (q.x() - x) + (q.y() - y) * (q.y() - y);
+                        if (d2 <= R * R)
+                            need = std::fmax(need, m.sample(q.x(), q.y()) - (R - std::sqrt(R * R - d2)));
+                    }
+            }
+            worst = std::fmax(worst, need - z);
+        }
+        std::fprintf(stderr, "compensatedZ on steep cells: at most %.5f mm below an edge's need\n", worst);
+        check(worst < 1e-4, "compensatedZ: exact along the cell edges under the ball");
+    }
+
+    // Flat roughing with no stock to leave stays on or above the model: the
+    // level contours' chords cut across the high side of a cell's level
+    // line, and the rings inset from them dipped up to 0.18 mm into it.
+    {
+        const c2d::HeightModel m = hemisphere(20, 0.5, 60);
+        c2d::Document doc;
+        addToolpath(doc, toolpath("3d_rough_toolpath", kFlat,
+                                  {{"stepover", 2.0}, {"stepdown", 3.0}, {"stock_to_leave", 0.0},
+                                   {"start_depth", "0.000"}, {"max_depth", "0.000"}}));
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
+        // The highest the model stands under the flat disc, 0.01 mm smaller
+        // (a wall is near vertical by the floor): bilinear has no maximum
+        // inside a cell, so it is at a node in the disc or on its rim.
+        const double fr = 6.35 / 2 - 0.01;
+        auto under = [&](double x, double y) {
+            double h = -1e9;
+            for (int k = 0; k < 2000; ++k)
+                h = std::fmax(h, m.sample(x + fr * std::cos(k * M_PI / 1000), y + fr * std::sin(k * M_PI / 1000)));
+            for (int r = 0; r < m.rows; ++r)
+                for (int c = 0; c < m.cols; ++c) {
+                    const double nx = (c + 0.5) * m.cell, ny = (r + 0.5) * m.cell;
+                    if ((nx - x) * (nx - x) + (ny - y) * (ny - y) <= fr * fr)
+                        h = std::fmax(h, m.sample(nx, ny));
+                }
+            return h;
+        };
+        double worst = 0, cx = 0, cy = 0, cz = 10;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Feed && o.z < -1e-6 && std::fabs(o.z - cz) < 1e-9) {
+                const int n = std::max(1, int(std::hypot(o.x - cx, o.y - cy) / 0.1));
+                for (int i = 0; i <= n; ++i) {
+                    const double t = double(i) / n;
+                    const double e = under(cx + (o.x - cx) * t, cy + (o.y - cy) * t) - o.z;
+                    if (e > 0.01 && qgetenv("TEST_DUMP") == "1")
+                        std::fprintf(stderr, "rough dips %.3f at (%.3f, %.3f) z %.3f, move from (%.3f, %.3f)\n", e,
+                                     cx + (o.x - cx) * t, cy + (o.y - cy) * t, o.z, cx, cy);
+                    worst = std::fmax(worst, e);
+                }
+            }
+            if (o.kind == Op::Rapid || o.kind == Op::Feed || o.kind == Op::Arc) {
+                cx = o.x;
+                cy = o.y;
+                cz = o.z;
+            }
+        }
+        std::fprintf(stderr, "rough, no stock to leave: at most %.4f mm into the model\n", worst);
+        check(g.done.size() == 1 && worst < 0.01, "3D rough with no stock to leave stays on the model");
+    }
+
+    // Every move of a ball finish stays on or above the compensated
+    // surface: waterline links down to the next level were checked only at
+    // their ends, and one short and steep went through the wall between.
+    for (const char *strategy : {"waterline", "raster"}) {
+        c2d::HeightModel m;
+        m.cell = 0.5;
+        m.baseZ = -10;
+        m.resize(80, 80);
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c) {
+                const double x = (c + 0.5) * m.cell - 20, y = (r + 0.5) * m.cell - 20;
+                const double rho = std::hypot(x, y), sq = std::fmax(std::fabs(x + 6), std::fabs(y - 5));
+                if (rho < 9 || sq < 4)
+                    m.ref(c, r) = float(rho < 9 ? -1.0 - 0.1 * rho : -0.5);
+            }
+        // The ball 0.01 mm smaller all round: by a wall the compensated
+        // surface is near vertical, and a micron across is a lot down.
+        c2d::ToolGeom ball;
+        ball.kind = c2d::ToolGeom::Ball;
+        ball.diameter = 3.75 - 0.02;
+        ball.cornerRadius = ball.radius();
+        c2d::Document doc;
+        addToolpath(doc, toolpath("3d_finish_toolpath",
+                                  QJsonObject{{"number", 1}, {"diameter", 3.75}, {"type", 1}, {"corner_radius", 1.875}},
+                                  {{"stepover", 0.6}, {"stepdown", 1.5}, {"stock_to_leave", 0.0},
+                                   {"strategy", strategy}, {"direction", "climb"}, {"raster_angle", 30.0},
+                                   {"start_depth", "0.000"}, {"max_depth", "0.000"}, {"boundary_offset", 0.0}}));
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
+        double worst = 0, cx = 0, cy = 0, cz = 10;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Feed) {
+                const int n = std::max(1, int(std::hypot(o.x - cx, o.y - cy) / 0.05));
+                for (int i = 0; i <= n; ++i) {
+                    const double t = double(i) / n, z = cz + (o.z - cz) * t;
+                    if (z < 0)
+                        worst = std::fmax(worst, c2d::compensatedZ(m, ball, cx + (o.x - cx) * t, cy + (o.y - cy) * t) - z - 0.01);
+                }
+            }
+            if (o.kind == Op::Rapid || o.kind == Op::Feed || o.kind == Op::Arc) {
+                cx = o.x;
+                cy = o.y;
+                cz = o.z;
+            }
+        }
+        std::fprintf(stderr, "%s over walls: at most %.4f mm into the model\n", strategy, worst);
+        check(g.done.size() == 1 && worst < 0.01, "ball finish stays out of the model");
+    }
+
+    // A 3D boundary is an area: an open vector closed by its end points
+    // bounded a triangle that was never drawn.
+    {
+        const c2d::HeightModel m = hemisphere();
+        c2d::Document doc;
+        const QJsonObject layer;
+        const c2d::Element v = c2d::Element::makePath({{10, 10}, {30, 50}, {50, 10}}, false, layer);
+        doc.addElement(v);
+        QJsonObject j = toolpath("3d_finish_toolpath", kBall, {{"stepover", 1.0}});
+        j.insert("elements", QJsonArray{QJsonObject{{"uuid", v.id}}});
+        addToolpath(doc, j);
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
+        check(g.done.isEmpty() && g.skipped.size() == 1 && g.skipped.first().contains("needs closed vectors"),
+              "3D boundary: an open vector is not taken as an area");
+    }
+
     std::printf("test_cam3d: %d checks OK\n", g_checks);
     return 0;
 }

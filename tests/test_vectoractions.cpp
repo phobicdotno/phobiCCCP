@@ -20,6 +20,7 @@
 #include <QMenuBar>
 #include <QUndoStack>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -301,6 +302,48 @@ int main(int argc, char *argv[])
         canvas->setDocument(&doc);
     }
 
+    // --- 3D components follow a text converted to paths (one path per glyph) -----------
+    {
+        Document mdoc;
+        const Element txt = Element::makeText(QStringLiteral("HIM"), {30, 50}, 40,
+                                              QStringLiteral("DejaVu Sans"), layer);
+        const Element other = Element::makeCircle({200, 100}, 10, layer);
+        mdoc.addElement(txt);
+        mdoc.addElement(other);
+        ModelStore store;
+        store.attach(&mdoc);
+        ModelComponent relief;
+        relief.id = Model3D::newId();
+        relief.vectorIds = {txt.id};
+        ModelComponent untouched;
+        untouched.id = Model3D::newId();
+        untouched.vectorIds = {other.id};
+        store.model.components = {relief, untouched};
+        canvas->setDocument(&mdoc);
+        QUndoStack *mu = canvas->undoStack();
+        canvas->convertToPaths({txt.id});
+        QStringList paths;
+        for (const Element &e : mdoc.elements())
+            if (e.geometryType == QLatin1String("path"))
+                paths << e.id;
+        QStringList got = store.model.components.at(0).vectorIds;
+        std::sort(got.begin(), got.end());
+        std::sort(paths.begin(), paths.end());
+        check(paths.size() >= 3 && got == paths,
+              "convert to paths points the component at every glyph piece");
+        check(store.model.components.at(1).vectorIds == QStringList({other.id}),
+              "convert leaves a component on other vectors alone");
+        mu->undo();
+        check(store.model.components.at(0).vectorIds == QStringList({txt.id}),
+              "undo convert gives the component the text back");
+        mu->redo();
+        got = store.model.components.at(0).vectorIds;
+        std::sort(got.begin(), got.end());
+        check(got == paths, "redo convert points it at the pieces again");
+        mu->undo();
+        canvas->setDocument(&doc);
+    }
+
     // Mirror and rotate carry constraints with the geometry: a point on a
     // rectangle's lower left corner ends on the corner that went there,
     // and the shape keeps its size.
@@ -384,6 +427,55 @@ int main(int argc, char *argv[])
                       && std::fabs(std::atan2(b.y() - a.y(), b.x() - a.x()) * 180 / M_PI - 30) < 1e-6,
                   "on the turned bottom edge, same direction");
         }
+        {   // the edit's own warning stays in the status bar after the
+            // action's "Rotated ..." / "Mirrored ..." report
+            Document cd;
+            const Element rect = Element::makeRectangle({50, 50}, 40, 20, layer);
+            const Element loose = Element::makeCircle({100, 50}, 5, layer);
+            cd.addElement(rect);
+            cd.addElement(loose);
+            add(cd, Constraint::Fix, {ref(GeoRef::Line, rect.id, 0)});
+            canvas->setDocument(&cd);
+            QString hint;
+            auto conn = QObject::connect(canvas, &Canvas::statusHint, [&](const QString &h) { hint = h; });
+            canvas->selectIds({rect.id, loose.id});
+            va.rotate(90);
+            check(hint.startsWith(QStringLiteral("Rotated")) && hint.contains(QStringLiteral("locked with Fix")),
+                  "rotate keeps the Fix warning after its own report");
+            va.mirror(vec::Axis::Vertical);
+            check(hint.startsWith(QStringLiteral("Mirrored")) && hint.contains(QStringLiteral("locked with Fix")),
+                  "mirror keeps the Fix warning after its own report");
+            canvas->selectIds({loose.id});
+            va.scale(2, 2);
+            check(hint.startsWith(QStringLiteral("Scaled")) && !hint.contains(QStringLiteral("Fix")),
+                  "no stale warning on an edit that raised none");
+            QObject::disconnect(conn);
+        }
+        canvas->setDocument(&doc);
+    }
+
+    // A sketch point only moves under Scale: it never stretches into a path
+    // nor grows.
+    for (int k = 0; k < 2; ++k) {
+        Document cd;
+        const Element rect = Element::makeRectangle({50, 50}, 40, 20, layer);
+        const Element pt = Element::makePoint({30, 40}, layer);
+        cd.addElement(rect);
+        cd.addElement(pt);
+        canvas->setDocument(&cd);
+        canvas->selectIds({rect.id, pt.id});
+        if (k == 0)
+            va.scale(2, 1);
+        else
+            va.scale(2, 2);
+        const Element *e = cd.elementById(pt.id);
+        check(e && Element::isPoint(*e), "scaled sketch point is still a point");
+        check(std::fabs(e->raw.value("radius").toDouble() - pt.raw.value("radius").toDouble()) < 1e-9,
+              "scaled sketch point keeps its size");
+        const QRectF rb = cd.elementById(rect.id)->painterPath.boundingRect();
+        const QPointF c = e->painterPath.boundingRect().center();
+        check(std::fabs(c.x() - rb.left()) < 1e-6 && std::fabs(c.y() - rb.top()) < 1e-6,
+              "scaled sketch point moves with the shape (its corner)");
         canvas->setDocument(&doc);
     }
 

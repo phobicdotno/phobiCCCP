@@ -20,6 +20,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QRegularExpression>
@@ -188,6 +189,109 @@ static int retractsFromCut(const QVector<c2d::Op> &ops)
             cz = o.z;
     }
     return n;
+}
+
+// Every point the tool centre (or a V-bit's cone, `coneTan` > 0: the
+// radius it cuts at that depth) passes below Z -0.01 on feeds and arcs,
+// handed to `at(x, y, z)`, sampled every 0.02 mm.
+template <typename At>
+static void forEachCutPoint(const QVector<c2d::Op> &ops, At at)
+{
+    double cx = 0, cy = 0, cz = 10;
+    for (const c2d::Op &o : ops) {
+        if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && std::max(cz, o.z) < -0.01) {
+            double sweep = 0, R = 0, a0 = 0, ox = 0, oy = 0;
+            if (o.kind == c2d::Op::Arc) {
+                ox = cx + o.ci;
+                oy = cy + o.cj;
+                R = std::hypot(o.ci, o.cj);
+                a0 = std::atan2(cy - oy, cx - ox);
+                sweep = std::atan2(o.y - oy, o.x - ox) - a0;
+                if (o.cw) { while (sweep >= -1e-9) sweep -= 2 * M_PI; }
+                else { while (sweep <= 1e-9) sweep += 2 * M_PI; }
+            }
+            const double len = o.kind == c2d::Op::Arc ? std::fabs(sweep) * R
+                                                      : std::hypot(o.x - cx, o.y - cy);
+            const int n = std::max(2, int(len / 0.02));
+            for (int i = 0; i <= n; ++i) {
+                const double t = double(i) / n;
+                const double x = o.kind == c2d::Op::Arc ? ox + R * std::cos(a0 + sweep * t) : cx + (o.x - cx) * t;
+                const double y = o.kind == c2d::Op::Arc ? oy + R * std::sin(a0 + sweep * t) : cy + (o.y - cy) * t;
+                at(x, y, cz + (o.z - cz) * t);
+            }
+        }
+        if (o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) {
+            cx = o.x;
+            cy = o.y;
+            cz = o.z;
+        }
+    }
+}
+
+// Distance from (x, y) to the closed rings, negative outside the region
+// they bound (even-odd).
+static double signedRingDist(const QVector<QPolygonF> &rings, double x, double y)
+{
+    const QPointF q(x, y);
+    double d = 1e30;
+    int in = 0;
+    for (const QPolygonF &ring : rings) {
+        for (int i = 0; i < ring.size(); ++i) {
+            const QPointF a = ring.at(i), b = ring.at((i + 1) % ring.size()), ab = b - a;
+            const double l2 = ab.x() * ab.x() + ab.y() * ab.y();
+            const double t = l2 > 0 ? std::clamp(((x - a.x()) * ab.x() + (y - a.y()) * ab.y()) / l2, 0.0, 1.0) : 0.0;
+            d = std::min(d, QLineF(q, a + ab * t).length());
+        }
+        in += ring.containsPoint(q, Qt::OddEvenFill) ? 1 : 0;
+    }
+    return (in & 1) ? d : -d;
+}
+
+// Lengths of the stretches of the closed outline `part` that no cut below
+// `tabTop` touched (a tool of radius r reaching within 0.01 mm of it): the
+// part's edge each tab holds.
+static QVector<double> tabHolds(const QVector<c2d::Op> &ops, const QPolygonF &part, double r, double tabTop)
+{
+    QHash<QPair<int, int>, QVector<QPointF>> grid;
+    const double cs = r + 0.01;
+    forEachCutPoint(ops, [&](double x, double y, double z) {
+        if (z < tabTop - 0.02)
+            grid[qMakePair(int(std::floor(x / cs)), int(std::floor(y / cs)))].append(QPointF(x, y));
+    });
+    auto touched = [&](const QPointF &q) {
+        const int ix = int(std::floor(q.x() / cs)), iy = int(std::floor(q.y() / cs));
+        for (int dx = -1; dx <= 1; ++dx)
+            for (int dy = -1; dy <= 1; ++dy)
+                for (const QPointF &c : grid.value(qMakePair(ix + dx, iy + dy)))
+                    if (QLineF(c, q).length() <= cs)
+                        return true;
+        return false;
+    };
+    QVector<bool> cut;
+    const double step = 0.05;
+    for (int i = 0; i + 1 < part.size(); ++i) {
+        const QLineF e(part.at(i), part.at(i + 1));
+        const int n = std::max(1, int(std::ceil(e.length() / step)));
+        for (int k = 0; k < n; ++k)
+            cut << touched(e.pointAt(double(k) / n));
+    }
+    const int n = cut.size();
+    int s0 = 0;
+    while (s0 < n && !cut.at(s0))
+        ++s0;
+    if (s0 == n)
+        return {n * step};
+    QVector<double> holds;
+    int run = 0;
+    for (int k = 1; k <= n; ++k) {
+        if (!cut.at((s0 + k) % n)) {
+            ++run;
+        } else if (run) {
+            holds << run * step;
+            run = 0;
+        }
+    }
+    return holds;
 }
 
 int main(int argc, char *argv[])
@@ -853,6 +957,35 @@ int main(int argc, char *argv[])
         check(bb.width() > L * 0.8, "slot v-carve rides the whole axis, not one plunge");
     }
 
+    // A notch in a bar: the medial axis runs between the notch's two reflex
+    // corners, where the clearance dips well below both end vertices' (2.2
+    // and 5.2 mm). Fed straight from vertex to vertex, the cone cut 0.19 mm
+    // into the corners; each piece of such an edge now has its own depth.
+    {
+        c2d::Document doc;
+        const QVector<QPointF> pts{{0, 0}, {30, 0}, {30, 10}, {17, 10}, {15, 13.923780136749714}, {13, 10}, {0, 10}};
+        const c2d::Element e = c2d::Element::makePath(pts, true, layer);
+        doc.addElement(e);
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("advanced_vcarve_toolpath"), {e.id});
+        tp.json["start_depth"] = "0.000";
+        tp.json["end_depth"] = "9.384";
+        const double angle = 57.721149050169402;
+        QJsonObject tool = tp.json["tool"].toObject();
+        tool["angle"] = angle;
+        tool["type"] = 2;
+        tool["diameter"] = 12.7;
+        tp.json["tool"] = tool;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const double ht = std::tan(angle / 2 * M_PI / 180);
+        const QVector<QPolygonF> rings{QPolygonF(pts)};
+        double over = 0;
+        forEachCutPoint(g.ops, [&](double x, double y, double z) {
+            over = std::max(over, -z * ht - signedRingDist(rings, x, y));
+        });
+        check(g.done.size() == 1 && over < 0.03, "v-carve between two corners stays inside the walls");
+    }
+
     // --- post: a tool change forgets every modal word ------------------------
     {
         QVector<c2d::Op> ops;
@@ -1321,6 +1454,45 @@ int main(int argc, char *argv[])
             check(external ? (!rising && !ccw) : (rising && ccw), "right-hand climb direction");
             check(minZ >= -6 - 1e-9 && approx(maxZ - minZ, 5.25, 1e-9) && (external ? approx(minZ, -6) : approx(maxZ, 0)), "thread covers the length, never deeper");
         }
+        // Started below the top (the lower part of a boss, a hole under a
+        // counterbore): whole turns carried the helix up to a pitch above
+        // the start, into stock. It ends at the start on a part turn and
+        // leaves the wall radially.
+        for (const bool external : {false, true}) {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({30, 30}, 8, layer));
+            r.addToolpath("thread_toolpath",
+                          {{"start_depth", "2.000"}, {"end_depth", "6.000"}, {"pitch", 1.5},
+                           {"side", external ? "external" : "internal"}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1, "thread below the top exports");
+            double minZ = 0, maxZ = -100, pz = 50;
+            QPointF prev;
+            bool arcBefore = false, radialOut = true;
+            int exits = 0;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind == c2d::Op::Arc) {
+                    // An arc runs from where the tool was to its end.
+                    minZ = std::min({minZ, op.z, pz});
+                    maxZ = std::max({maxZ, op.z, pz});
+                } else if (op.kind == c2d::Op::Feed && arcBefore) {
+                    // The move off the wall keeps the angle it ended at.
+                    const QPointF a = prev - QPointF(30, 30), b = QPointF(op.x, op.y) - QPointF(30, 30);
+                    const double cross = a.x() * b.y() - a.y() * b.x();
+                    radialOut = radialOut && std::fabs(cross) < 1e-6 * (1 + std::hypot(b.x(), b.y()))
+                                && approx(op.z, pz, 1e-9);
+                    ++exits;
+                }
+                arcBefore = op.kind == c2d::Op::Arc;
+                if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                    prev = QPointF(op.x, op.y);
+                    pz = op.z;
+                }
+            }
+            check(approx(minZ, -6, 1e-9) && approx(maxZ, -2, 1e-9),
+                  "thread below the top: the helix runs from the end depth to the start, no higher");
+            check(exits >= 1 && radialOut, "thread below the top: it leaves the wall radially");
+        }
         Rig small;
         small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
         small.addToolpath("thread_toolpath", {{"end_depth", "5.000"}, {"pitch", 1.0}});
@@ -1407,6 +1579,88 @@ int main(int argc, char *argv[])
         check(approx(last, std::max(plain, rough), 0.05) && nFin > nPlain,
               "finishing: extra rings at the final depth");
         check(nSpring > nFin, "spring pass repeats the last ring");
+    }
+
+    // Two parts 8 mm apart: their roughing offsets merge into one ring round
+    // both, their final rings do not. Matched by one point, both loops took
+    // the merged ring as their own roughing, and one stepped across from it
+    // to its final ring straight through the other part at full depth. Such
+    // a loop is cut as before, without finishing rings.
+    for (const double lead : {3.175, 0.0}) {
+        c2d::Document doc;
+        const c2d::Element a = c2d::Element::makeRectangle({20, 20}, 30, 10, layer);   // x 5..35
+        const c2d::Element b = c2d::Element::makeRectangle({48, 20}, 10, 40, layer);   // x 43..53
+        doc.addElement(a);
+        doc.addElement(b);
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {a.id, b.id});
+        tp.json["ofset_dir"] = 1;
+        tp.json["start_depth"] = "0.000";
+        tp.json["end_depth"] = "3.000";
+        tp.json["stepdown"] = 3.0;
+        QJsonObject tool = tp.json["tool"].toObject();
+        tool["diameter"] = 6.35;
+        tp.json["tool"] = tool;
+        tp.json["finish_passes"] = 2;
+        tp.json["finish_stepover"] = 1.0;
+        tp.json["ignore_tabs"] = true;
+        tp.json["lead_radius"] = lead;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const QVector<QPolygonF> parts{QPolygonF(QRectF(5, 15, 30, 10)), QPolygonF(QRectF(43, 0, 10, 40))};
+        double worst = 1e30;
+        forEachCutPoint(g.ops, [&](double x, double y, double) {
+            for (const QPolygonF &part : parts)
+                worst = std::min(worst, -signedRingDist({part}, x, y));
+        });
+        check(g.done.size() == 1 && worst >= 6.35 / 2 - 0.05,
+              lead > 0 ? "finishing never steps across a neighbouring part (leads)"
+                       : "finishing never steps across a neighbouring part");
+    }
+
+    // Lead-in larger than the tool in a hole with islands: the feed back
+    // from the lead's end to its start between passes runs straight across
+    // the lead circle, and that chord was never checked - it took the tool
+    // centre 0.175 mm into an island, a 1.25 mm gouge.
+    {
+        c2d::Document doc;
+        const QVector<QPolygonF> rings{
+            QPolygonF({QPointF(75.240, 20.558), QPointF(74.057, 52.491), QPointF(75.203, 79.873),
+                       QPointF(42.686, 87.084), QPointF(35.232, 58.598), QPointF(27.651, 39.653),
+                       QPointF(40.143, 12.950)}),
+            QPolygonF({QPointF(47.484, 46.301), QPointF(47.497, 44.117), QPointF(48.709, 42.564),
+                       QPointF(50.389, 43.525), QPointF(51.490, 44.605), QPointF(51.174, 46.991),
+                       QPointF(49.025, 47.554)}),
+            QPolygonF({QPointF(63.144, 50.589), QPointF(59.666, 52.945), QPointF(56.755, 49.979),
+                       QPointF(60.023, 46.199), QPointF(62.540, 47.504)})};
+        QJsonArray els;
+        for (const QPolygonF &ring : rings) {
+            const c2d::Element e = c2d::Element::makePath(QVector<QPointF>(ring.begin(), ring.end()), true, layer);
+            doc.addElement(e);
+            els.append(QJsonObject{{"uuid", e.id}});
+        }
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {});
+        tp.json["elements"] = els;
+        tp.json["ofset_dir"] = -1;
+        tp.json["start_depth"] = "0.000";
+        tp.json["end_depth"] = "5.711";
+        tp.json["stepdown"] = 3.606213057502436;
+        tp.json["stock_to_leave"] = 0.0;
+        tp.json["climb"] = false;
+        QJsonObject tool = tp.json["tool"].toObject();
+        tool["diameter"] = 2.1538238049284382;
+        tool["type"] = 0;
+        tool["angle"] = 0;
+        tool.remove("corner_radius");
+        tp.json["tool"] = tool;
+        tp.json["lead_radius"] = 5.093207597666928;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        double worst = 1e30;
+        forEachCutPoint(g.ops, [&](double x, double y, double) {
+            worst = std::min(worst, signedRingDist(rings, x, y));
+        });
+        check(g.done.size() == 1 && worst >= 2.1538238049284382 / 2 - 0.06,
+              "a lead's step back between passes stays off the islands");
     }
 
     // --- helical pocket entry ------------------------------------------------------
@@ -1558,6 +1812,32 @@ int main(int argc, char *argv[])
             else
                 check(approx(rMax, 12 - R, 1e-6) && rMin <= 2.5 + 1e-6 && ccwAll,
                       "circular pocket: counter-clockwise laps out to the wall");
+        }
+        // A boss is entered on a helix round its outermost lap: a plunge
+        // beside it went straight down into stock nothing had cut.
+        {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({40, 40}, 12, layer));
+            r.addToolpath("circular_toolpath", {{"end_depth", "3.000"}, {"stepdown", 1.0},
+                                                {"side", "outside"}, {"stepover", 2.5},
+                                                {"boss_clearance", 5.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            double px = 0, py = 0, pz = 50, rOut = 0;
+            int plunges = 0;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind == c2d::Op::Arc)
+                    rOut = std::max(rOut, std::hypot(op.x - 40, op.y - 40));
+                if (op.kind == c2d::Op::Feed && op.z < pz - 1e-9 && op.z < -1e-9
+                    && approx(op.x, px, 1e-9) && approx(op.y, py, 1e-9))
+                    ++plunges;
+                if (op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc) {
+                    px = op.x;
+                    py = op.y;
+                    pz = op.z;
+                }
+            }
+            check(g.done.size() == 1 && plunges == 0, "circular boss: no plunge into the stock");
+            check(approx(rOut, 12 + R + 5, 1e-6), "circular boss: the helix stays on the outermost lap");
         }
         Rig small;
         small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
@@ -1810,6 +2090,226 @@ int main(int argc, char *argv[])
             }
         }
         check(steep == 0, "ramp: no steep descent at the cutting feed");
+    }
+
+    // Tabs were spaced by length along the tool-centre ring. The round
+    // corner arc of an outside ring all sits against one corner point of
+    // the part, and with a lead-in (the ring starting mid-edge) every tab of
+    // this square landed on one: nothing held the part. Tabs are measured
+    // on the part's own outline now.
+    for (const double lead : {0.0, 2.0}) {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 40, 40, layer));   // 30..70
+        r.addToolpath("contour", {{"ofset_dir", 1}, {"end_depth", "9.000"}, {"stepdown", 3.0},
+                                  {"ignore_tabs", false}, {"tab_height", 3.0}, {"tab_width", 4.0},
+                                  {"lead_radius", lead}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        const QVector<double> holds = tabHolds(g.ops, QPolygonF(QRectF(30, 30, 40, 40)), 6.35 / 2, -6.0);
+        double total = 0;
+        for (const double h : holds)
+            total += h;
+        std::fprintf(stderr, "square tabs, lead %.0f: %d piece(s), %.2f mm of edge held\n",
+                     lead, int(holds.size()), total);
+        // 4 tabs on a 160 mm outline; the reach of 0.01 mm takes 0.25 mm
+        // off either end of each.
+        check(g.done.size() == 1 && total > 4 * (4.0 - 0.8) && total < 4 * 4.0 + 0.5,
+              lead > 0 ? "tabs hold their width of the part's edge (lead-in)"
+                       : "tabs hold their width of the part's edge");
+    }
+
+    // Finishing rings lifted for the tab width along their own length: in a
+    // hole they are longer than the roughing ring and cut the sides off the
+    // tabs it had left (5.6 mm of wall per tab down to 3.1). Each tab is
+    // kept as its two ends now, projected onto every ring.
+    {
+        QVector<double> totals;
+        QPolygonF hole;
+        for (int k = 0; k <= 96; ++k)
+            hole << QPointF(50 + 10 * std::cos(k * M_PI / 48), 50 + 10 * std::sin(k * M_PI / 48));
+        for (const int nFin : {0, 3}) {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({50, 50}, 10, layer));
+            const QJsonObject tool{{"diameter", 3.175}, {"number", 201}};
+            r.addToolpath("contour", {{"ofset_dir", -1}, {"end_depth", "9.000"}, {"stepdown", 3.0},
+                                      {"tool", tool}, {"ignore_tabs", false}, {"tab_height", 3.0},
+                                      {"tab_width", 6.0}, {"finish_passes", nFin},
+                                      {"finish_stepover", 1.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            double total = 0;
+            for (const double h : tabHolds(g.ops, hole, 3.175 / 2, -6.0))
+                total += h;
+            totals << total;
+        }
+        std::fprintf(stderr, "hole tabs: %.2f mm of wall held, %.2f with 3 finishing passes\n",
+                     totals.at(0), totals.at(1));
+        check(totals.at(0) > 3 * 6.0 - 1.5, "hole tabs hold their width of the wall");
+        check(std::fabs(totals.at(1) - totals.at(0)) < 0.5, "finishing passes keep the tabs' width");
+    }
+
+    // Pocket, contour, cutout and V-carve took an open path as a polygon
+    // closed by its ends and cut a shape that was never drawn. They leave it
+    // out now and say so; engraving and a contour on the line follow it.
+    {
+        const c2d::Element open = c2d::Element::makePath({{10, 10}, {60, 10}, {60, 60}}, false, layer);
+        const c2d::Element closed = c2d::Element::makeRectangle({100, 100}, 20, 20, layer);
+        const QList<QPair<const char *, QJsonObject>> refused{
+            {"pocket_toolpath", {}}, {"contour", {{"ofset_dir", 1}}}, {"contour", {{"ofset_dir", -1}}},
+            {"cutout", {{"cut_depth", 3.0}}}, {"advanced_vcarve_toolpath", {}}};
+        for (const auto &t : refused) {
+            Rig r;
+            r.addShape(open);
+            r.addToolpath(t.first, t.second);
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            int cuts = 0;
+            forEachCutPoint(g.ops, [&](double, double, double) { ++cuts; });
+            check(g.done.isEmpty() && g.skipped.join(" ").contains("open vectors ignored") && cuts == 0,
+                  "an open path alone is not pocketed, contoured or carved");
+            // With a closed vector beside it: that one is cut, the open one
+            // left out, with a note.
+            Rig both;
+            both.addShape(open);
+            both.addShape(closed);
+            QJsonObject extra = t.second;
+            extra.insert("elements", QJsonArray{QJsonObject{{"uuid", open.id}}, QJsonObject{{"uuid", closed.id}}});
+            both.addToolpath(t.first, extra);
+            const c2d::GcodeResult g2 = c2d::exportGcode(both.doc);
+            bool nearOpen = false;
+            forEachCutPoint(g2.ops, [&](double x, double y, double) { nearOpen = nearOpen || (x < 70 && y < 70); });
+            check(g2.done.size() == 1 && g2.notes.join(" ").contains("1 open vector(s) ignored") && !nearOpen,
+                  "an open path beside a closed one is left out, with a note");
+        }
+        for (const auto &t : QList<QPair<const char *, QJsonObject>>{
+                 {"engrave_toolpath", {}}, {"contour", {{"ofset_dir", 0}}}}) {
+            Rig r;
+            r.addShape(open);
+            r.addToolpath(t.first, t.second);
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1, "engraving and a contour on the line still follow an open path");
+        }
+    }
+
+    // A finishing pass asked for and not cut said nothing. And the check
+    // that a finishing ring stays parallel all along only allowed for a
+    // sharp corner made at one vertex: Clipper rounds the cusp of this "R"
+    // (DejaVu Sans, 22.2 mm) over a few micro-segments, so its outline lost
+    // the pass. The offsets of its counter vanish: skipped, with a note.
+    {
+        const QVector<QVector<QPointF>> rings{
+            {             {20.615, 18.175}, {20.992, 18.010}, {21.364, 17.772}, {21.731, 17.461}, {22.093, 17.077},
+             {22.452, 16.617}, {22.812, 16.078}, {23.173, 15.461}, {23.535, 14.765}, {25.929, 10.000},
+             {23.395, 10.000}, {21.164, 14.473}, {20.735, 15.275}, {20.313, 15.930}, {19.898, 16.437},
+             {19.692, 16.635}, {19.488, 16.797}, {19.046, 17.047}, {18.529, 17.226}, {17.939, 17.333},
+             {17.275, 17.369}, {14.706, 17.369}, {14.706, 10.000}, {12.347, 10.000}, {12.347, 27.435},
+             {17.672, 27.435}, {18.396, 27.416}, {19.072, 27.357}, {19.701, 27.260}, {20.283, 27.123},
+             {20.816, 26.947}, {21.303, 26.732}, {21.742, 26.479}, {22.134, 26.186}, {22.478, 25.854},
+             {22.777, 25.481}, {23.030, 25.070}, {23.237, 24.618}, {23.398, 24.127}, {23.513, 23.595},
+             {23.582, 23.025}, {23.605, 22.414}, {23.593, 22.011}, {23.557, 21.626}, {23.497, 21.258},
+             {23.414, 20.907}, {23.306, 20.574}, {23.175, 20.259}, {23.019, 19.961}, {22.840, 19.681},
+             {22.638, 19.420}, {22.414, 19.180}, {22.169, 18.960}, {21.901, 18.761}, {21.612, 18.584},
+             {21.302, 18.426}, {20.969, 18.290}, {20.615, 18.175}},
+            {             {14.706, 25.497}, {14.706, 19.307}, {17.672, 19.307}, {18.086, 19.320}, {18.473, 19.357},
+             {18.834, 19.418}, {19.169, 19.504}, {19.478, 19.615}, {19.760, 19.751}, {20.017, 19.911},
+             {20.248, 20.096}, {20.451, 20.304}, {20.628, 20.536}, {20.778, 20.791}, {20.900, 21.069},
+             {20.995, 21.371}, {21.063, 21.695}, {21.104, 22.043}, {21.118, 22.414}, {21.104, 22.784},
+             {21.063, 23.132}, {20.995, 23.455}, {20.900, 23.755}, {20.778, 24.032}, {20.628, 24.285},
+             {20.451, 24.514}, {20.248, 24.720}, {20.017, 24.902}, {19.760, 25.060}, {19.478, 25.193},
+             {19.169, 25.303}, {18.834, 25.388}, {18.473, 25.448}, {18.086, 25.485}, {17.672, 25.497},
+             {14.706, 25.497}}};
+        QString notes[2];
+        int ops[2];
+        for (const int nFin : {0, 1}) {
+            c2d::Document doc;
+            QJsonArray els;
+            for (const QVector<QPointF> &ring : rings) {
+                const c2d::Element e = c2d::Element::makePath(ring, true, layer);
+                doc.addElement(e);
+                els.append(QJsonObject{{"uuid", e.id}});
+            }
+            c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {});
+            tp.json["elements"] = els;
+            tp.json["ofset_dir"] = 1;
+            tp.json["start_depth"] = "0.000";
+            tp.json["end_depth"] = "3.000";
+            tp.json["stepdown"] = 3.0;
+            QJsonObject tool = tp.json["tool"].toObject();
+            tool["diameter"] = 6.03;
+            tp.json["tool"] = tool;
+            tp.json["finish_passes"] = nFin;
+            tp.json["finish_stepover"] = 0.5;
+            tp.json["ignore_tabs"] = true;
+            tp.json["lead_radius"] = 0.0;
+            doc.addToolpath(tp);
+            const c2d::GcodeResult g = c2d::exportGcode(doc);
+            notes[nFin] = g.notes.join("|");
+            ops[nFin] = g.ops.size();
+        }
+        std::fprintf(stderr, "R finishing: %d ops without, %d with; notes [%s]\n", ops[0], ops[1],
+                     qPrintable(notes[1]));
+        check(ops[1] > ops[0], "the R's outline gets its finishing pass");
+        check(notes[1].contains("finishing passes skipped on 1 loop(s)"),
+              "finishing passes skipped are reported");
+    }
+
+    // A hole with a narrow arm, finished inside: the corner reading walked
+    // round the arm's tip and back down its other side, read the two sides
+    // as a corner of almost no angle and let a rough ring that had lost the
+    // arm stand 20 mm off it. The arm was then cut by the finishing rings
+    // alone, at full depth in one pass. It must be cut at every stepdown.
+    {
+        for (const double w : {7.5, 8.5}) {
+            c2d::Document doc;
+            const double x0 = 20 - w / 2, x1 = 20 + w / 2;
+            const c2d::Element e = c2d::Element::makePath(
+                {{0, 0}, {40, 0}, {40, 40}, {x1, 40}, {x1, 60}, {x0, 60}, {x0, 40}, {0, 40}}, true, layer);
+            doc.addElement(e);
+            c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {e.id});
+            tp.json["ofset_dir"] = -1;
+            tp.json["start_depth"] = "0.000";
+            tp.json["end_depth"] = "10.000";
+            tp.json["stepdown"] = 2.0;
+            QJsonObject tool = tp.json["tool"].toObject();
+            tool["diameter"] = 6.0;
+            tool["type"] = 0;
+            tp.json["tool"] = tool;
+            tp.json["finish_passes"] = 2;
+            tp.json["finish_stepover"] = 0.5;
+            tp.json["spring_pass"] = false;
+            tp.json["ignore_tabs"] = true;
+            tp.json["lead_radius"] = 0.0;
+            doc.addToolpath(tp);
+            const c2d::GcodeResult g = c2d::exportGcode(doc);
+            QSet<int> armDepths;
+            for (const c2d::Op &op : g.ops)
+                if (op.kind == c2d::Op::Feed && op.z < -1e-6 && op.y > 45)
+                    armDepths.insert(int(std::lround(-op.z)));
+            check(g.done.size() == 1 && armDepths == QSet<int>({2, 4, 6, 8, 10}),
+                  "finishing a hole with a narrow arm: the arm is cut at every stepdown");
+        }
+    }
+
+    // Texture fills an area: an open vector closed by its end points
+    // textured a triangle that was never drawn.
+    {
+        c2d::Document doc;
+        const c2d::Element v = c2d::Element::makePath({{10, 10}, {60, 60}, {110, 10}}, false, layer);
+        doc.addElement(v);
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("texture_toolpath"), {v.id});
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        check(g.done.isEmpty() && g.skipped.size() == 1 && g.skipped.first().contains("needs closed vectors"),
+              "texture: an open vector is not taken as an area");
+        const c2d::Element box = c2d::Element::makeRectangle({60, 80}, 20, 20, layer);
+        doc.addElement(box);
+        tp.json["elements"] = QJsonArray{QJsonObject{{"uuid", v.id}}, QJsonObject{{"uuid", box.id}}};
+        doc.removeToolpath(tp.uuid);
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g2 = c2d::exportGcode(doc);
+        bool inBox = true;
+        for (const c2d::Op &op : g2.ops)
+            if (op.kind == c2d::Op::Feed && op.z < -1e-6)
+                inBox = inBox && op.x > 49.9 && op.x < 70.1 && op.y > 69.9 && op.y < 90.1;
+        check(g2.done.size() == 1 && g2.notes.join(' ').contains("1 open vector(s) ignored") && inBox,
+              "texture: the open vector is left out with a note, the closed one textured");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);
