@@ -389,24 +389,53 @@ void ParametersPanel::removeParameter()
         return;
     const QString name = after.params.at(i).name;
     after.params.removeAt(i);
-    m_canvas->applyParametric(after, tr("remove parameter %1").arg(name), true);
+    // Toolpath fields bound to it keep their value but lose the binding, in
+    // the same undo step: a later parameter of the same name must not
+    // silently take them over.
+    QStringList unbound;
+    for (const Toolpath &t : m_doc->toolpaths()) {
+        const QJsonObject binds = t.json.value(QStringLiteral("phobic_expr")).toObject();
+        for (auto it = binds.begin(); it != binds.end(); ++it)
+            if (param::namesIn(it.value().toObject().value(QStringLiteral("expr")).toString()).contains(name)) {
+                unbound << tr("toolpath “%1”").arg(t.json.value(QStringLiteral("name")).toString());
+                break;
+            }
+    }
+    m_canvas->applyParametric(after, tr("remove parameter %1").arg(name), true, {},
+                              [name](Document &d) {
+        for (Toolpath &t : d.toolpathsRef()) {
+            QJsonObject binds = t.json.value(QStringLiteral("phobic_expr")).toObject();
+            bool any = false;
+            for (auto it = binds.begin(); it != binds.end();) {
+                if (param::namesIn(it.value().toObject().value(QStringLiteral("expr")).toString()).contains(name)) {
+                    it = binds.erase(it);
+                    any = true;
+                } else {
+                    ++it;
+                }
+            }
+            if (!any)
+                continue;
+            if (binds.isEmpty())
+                t.json.remove(QStringLiteral("phobic_expr"));
+            else
+                t.json.insert(QStringLiteral("phobic_expr"), binds);
+        }
+    });
     // What used it now shows "error" until it is given something else.
     QStringList users;
     for (const UserParameter &p : after.params)
         if (param::namesIn(p.expr).contains(name)) users << p.name;
     for (const Constraint &c : after.constraints)
         if (c.isDimension() && param::namesIn(c.expr).contains(name)) users << c.name;
-    // Toolpath fields bound to it keep their last value until bound again.
-    for (const Toolpath &t : m_doc->toolpaths()) {
-        const QJsonObject binds = t.json.value(QStringLiteral("phobic_expr")).toObject();
-        for (auto it = binds.begin(); it != binds.end(); ++it)
-            if (param::namesIn(it.value().toObject().value(QStringLiteral("expr")).toString()).contains(name)) {
-                users << tr("toolpath “%1”").arg(t.json.value(QStringLiteral("name")).toString());
-                break;
-            }
-    }
+    QStringList notes;
     if (!users.isEmpty())
-        emit message(tr("%1 removed — still used by %2").arg(name, users.join(QStringLiteral(", "))));
+        notes << tr("still used by %1").arg(users.join(QStringLiteral(", ")));
+    if (!unbound.isEmpty())
+        notes << tr("%1 keep their values, no longer bound").arg(unbound.join(QStringLiteral(", ")));
+    notes << m_canvas->bindingProblems();
+    if (!notes.isEmpty())
+        emit message(tr("%1 removed — %2").arg(name, notes.join(QStringLiteral("; "))));
 }
 
 bool ParametersPanel::rename(const QString &from, const QString &to)
@@ -468,8 +497,13 @@ void ParametersPanel::paramEdited(QTableWidgetItem *it)
         // Like a dimension typed on the canvas: a value the constraints
         // can't reach is refused rather than half-applied.
         done = m_canvas->applyParametric(after, tr("%1 = %2").arg(up.name, text));
-        emit message(done ? tr("%1 = %2").arg(up.name, text)
-                          : tr("%1 = %2 can't be reached with the constraints").arg(up.name, text));
+        if (!done)
+            emit message(tr("%1 = %2 can't be reached with the constraints").arg(up.name, text));
+        else if (m_canvas->bindingProblems().isEmpty())
+            emit message(tr("%1 = %2").arg(up.name, text));
+        else
+            emit message(tr("%1 = %2 — %3").arg(up.name, text,
+                                                m_canvas->bindingProblems().join(QStringLiteral("; "))));
     } else if (it->column() == 3) {
         Parametric after = m_doc->parametric();
         after.params[i].comment = it->text();
@@ -507,6 +541,8 @@ void ParametersPanel::dimensionEdited(QTableWidgetItem *it)
             done = text == c.expr || m_canvas->applyParametric(after, tr("%1 = %2").arg(c.name, text));
             if (!done)
                 why = tr("can't be reached with the other constraints");
+            else if (text != c.expr && !m_canvas->bindingProblems().isEmpty())
+                emit message(m_canvas->bindingProblems().join(QStringLiteral("; ")));
         }
         if (!why.isEmpty())
             emit message(tr("%1 = %2: %3").arg(c.name, text, why));

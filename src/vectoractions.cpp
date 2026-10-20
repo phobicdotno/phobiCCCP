@@ -1,5 +1,6 @@
 #include "vectoractions.h"
 #include "canvas.h"
+#include "model3d.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -93,6 +94,7 @@ public:
             std::sort(m_removed.begin(), m_removed.end(),
                       [](const auto &a, const auto &b) { return a.first < b.first; });
             m_tps = retargetToolpaths(d, removed, results);
+            m_removedIds = removed;
         }
         for (const Element &e : results)
             m_resultIds << e.id;
@@ -115,6 +117,8 @@ public:
             els.insert(at + i, m_results.at(i));
         for (const auto &p : m_tps)
             m_d->replaceToolpath(p.second);
+        // 3D components follow their vectors like toolpaths do.
+        m_model = retargetModelVectors(*m_d, m_removedIds, m_resultIds);
         refresh(m_c, m_resultIds);
     }
     void undo() override
@@ -129,6 +133,7 @@ public:
         }
         for (const auto &p : m_tps)
             m_d->replaceToolpath(p.first);
+        restoreModelVectors(*m_d, m_model);
         refresh(m_c, inputIds);
     }
 private:
@@ -137,6 +142,8 @@ private:
     QVector<QPair<int, Element>> m_removed;
     QVector<QPair<Toolpath, Toolpath>> m_tps;
     QStringList m_resultIds;
+    QSet<QString> m_removedIds;
+    ModelVectorRefs m_model;
 };
 
 class MoveManyCmd : public QUndoCommand

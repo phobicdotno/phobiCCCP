@@ -242,6 +242,7 @@ QString GrblPost::generate(const QVector<Op> &ops) const
     bool spindleOn = false;
     int lastRpm = -1;
     int lastTool = -1;
+    QString lastToolKey;
 
     auto scale = [&](double mm) { return m_metric ? mm : mm / 25.4; };
 
@@ -299,8 +300,10 @@ QString GrblPost::generate(const QVector<Op> &ops) const
             break;
         }
         case Op::Tool: {
-            if (op.ival != lastTool) {
+            // The same number with another bit (Op::text differs) is a change too.
+            if (op.ival != lastTool || op.text != lastToolKey) {
                 lastTool = op.ival;
+                lastToolKey = op.text;
                 if (spindleOn) { line(QStringLiteral("M05")); spindleOn = false; }
                 // GRBL post: pause for a manual tool change, tool number in comment.
                 line(QStringLiteral("M0 ;T") + QString::number(op.ival));

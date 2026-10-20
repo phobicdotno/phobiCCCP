@@ -18,6 +18,25 @@ Map<String, Object?> _m(Object? v) => v is Map ? v.cast<String, Object?>() : con
 Map<String, Object?> _extra(Map<String, Object?> j, Set<String> known) =>
     {for (final e in j.entries) if (!known.contains(e.key)) e.key: e.value};
 
+/// A design time further ahead of this pad's clock than this is a clock gone
+/// wrong, not an edit (as phobiCCCP judges it, src/padlink.h kMaxAheadMs):
+/// taken in, it would win every sync until then.
+const maxAheadMs = 366 * 24 * 3600 * 1000;
+bool plausibleStamp(int modified, int now) => modified <= now + maxAheadMs;
+
+/// [points] without a point equal to the one before it (and, closed, without
+/// a last point equal to the first): each would make a segment of no length.
+List<List<double>> dropRepeats(List<List<double>> points, {bool closed = false}) {
+  final out = <List<double>>[];
+  for (final p in points) {
+    if (out.isEmpty || out.last[0] != p[0] || out.last[1] != p[1]) out.add(p);
+  }
+  while (closed && out.length > 1 && out.last[0] == out.first[0] && out.last[1] == out.first[1]) {
+    out.removeLast();
+  }
+  return out;
+}
+
 String newId() {
   final r = math.Random.secure();
   String hex(int n) => List.generate(n, (_) => r.nextInt(16).toRadixString(16)).join();
@@ -250,6 +269,11 @@ class Design {
   /// Milliseconds since 1970, set by whoever edited it last. The newer copy wins a sync.
   final int modified;
 
+  /// The [modified] of the copy this pad last got from or gave to a
+  /// phobiCCCP: edits here keep it, so a computer can tell an edit of its
+  /// own copy from one of an older copy (and then keeps both). 0: not known.
+  final int base;
+
   /// A removal, kept so it reaches every phobiCCCP too.
   final bool deleted;
   final Stock stock;
@@ -257,12 +281,13 @@ class Design {
   final List<ToolpathSpec> toolpaths;
   final Map<String, Object?> extra;
 
-  static const _known = {'format', 'version', 'id', 'name', 'modified', 'deleted', 'stock', 'material', 'shapes', 'toolpaths'};
+  static const _known = {'format', 'version', 'id', 'name', 'modified', 'base', 'deleted', 'stock', 'material', 'shapes', 'toolpaths'};
 
   Design({
     String? id,
     this.name = '',
     this.modified = 0,
+    this.base = 0,
     this.deleted = false,
     this.stock = const Stock(),
     this.material = 'softwood',
@@ -275,6 +300,7 @@ class Design {
         id: _s(j['id']),
         name: _s(j['name']),
         modified: _i(j['modified']),
+        base: _i(j['base']),
         deleted: _b(j['deleted']),
         stock: Stock.fromJson(_m(j['stock'])),
         material: _s(j['material'], 'softwood'),
@@ -290,6 +316,7 @@ class Design {
         'id': id,
         'name': name,
         'modified': modified,
+        if (base > 0) 'base': base,
         'deleted': deleted,
         'stock': stock.toJson(),
         'material': material,
@@ -297,12 +324,13 @@ class Design {
         'toolpaths': toolpaths.map((t) => t.toJson()).toList(),
       };
 
-  Design copyWith({String? id, String? name, int? modified, bool? deleted, Stock? stock, String? material,
+  Design copyWith({String? id, String? name, int? modified, int? base, bool? deleted, Stock? stock, String? material,
           List<Shape>? shapes, List<ToolpathSpec>? toolpaths}) =>
       Design(
         id: id ?? this.id,
         name: name ?? this.name,
         modified: modified ?? this.modified,
+        base: base ?? this.base,
         deleted: deleted ?? this.deleted,
         stock: stock ?? this.stock,
         material: material ?? this.material,
@@ -310,6 +338,15 @@ class Design {
         toolpaths: toolpaths ?? this.toolpaths,
         extra: extra,
       );
+
+  /// The computer that will not rebuild its linked file from a pad edit (it
+  /// holds curves, tabs, parameters, ... the pad cannot), as that computer
+  /// said when it gave this copy; empty when none. A pad edit then reaches it
+  /// as a copy beside the file.
+  String get desktopOnly {
+    final v = extra['desktopOnly'];
+    return v is String ? v : (v == true ? 'the computer it came from' : '');
+  }
 
   Shape? shape(String id) {
     for (final s in shapes) {

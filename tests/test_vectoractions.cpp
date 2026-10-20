@@ -8,6 +8,7 @@
 #include "../src/c2ddocument.h"
 #include "../src/canvas.h"
 #include "../src/element.h"
+#include "../src/model3d.h"
 #include "../src/vectoractions.h"
 
 #include <QApplication>
@@ -248,6 +249,53 @@ int main(int argc, char *argv[])
         canvas->selectIds({mark.id});
         va.offsetBy(1, true);
         check(bu->index() == b0, "offsetting a point alone does nothing");
+        canvas->setDocument(&doc);
+    }
+
+    // --- 3D components follow vectors that Union / Offset replace ------------------
+    {
+        Document mdoc;
+        const Element a = Element::makeCircle({100, 100}, 10, layer);
+        const Element b = Element::makeCircle({110, 100}, 10, layer);
+        const Element c = Element::makeCircle({200, 100}, 10, layer);
+        for (const Element &e : {a, b, c})
+            mdoc.addElement(e);
+        ModelStore store;
+        store.attach(&mdoc);
+        ModelComponent relief;
+        relief.id = Model3D::newId();
+        relief.vectorIds = {a.id, c.id};
+        ModelComponent untouched;
+        untouched.id = Model3D::newId();
+        untouched.vectorIds = {c.id};
+        store.model.components = {relief, untouched};
+        canvas->setDocument(&mdoc);
+        QUndoStack *mu = canvas->undoStack();
+
+        canvas->selectIds({a.id, b.id});
+        va.boolean(vec::BoolOp::Union);
+        const QString weld = mdoc.elements().first().id;
+        check(store.model.components.at(0).vectorIds == QStringList({c.id, weld}),
+              "union points the component at the weld");
+        check(store.model.components.at(1).vectorIds == QStringList({c.id}),
+              "a component not using the inputs is left alone");
+        mu->undo();
+        check(store.model.components.at(0).vectorIds == QStringList({a.id, c.id}),
+              "undo gives the component its vectors back");
+        mu->redo();
+        check(store.model.components.at(0).vectorIds == QStringList({c.id, weld}),
+              "redo points it at the weld again");
+        mu->undo();
+
+        canvas->selectIds({c.id});
+        va.offsetBy(1, false);
+        const QString grown = mdoc.elements().last().id;
+        check(store.model.components.at(1).vectorIds == QStringList({grown}),
+              "offset without keeping the original moves the component to the result");
+        mu->undo();
+        va.offsetBy(1, true);
+        check(store.model.components.at(1).vectorIds == QStringList({c.id}),
+              "offset that keeps the original leaves the component on it");
         canvas->setDocument(&doc);
     }
 

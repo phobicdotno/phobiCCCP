@@ -350,6 +350,43 @@ int main(int argc, char **argv)
         check(d.toolpaths().first().json.value("end_depth").toString() == "-19.500", "depth string, negative");
         check(approx(d.toolpaths().first().json.value("feed").toDouble(), 1950), "feed number");
         check(param::applyToolpathBindings(d).isEmpty(), "second pass changes nothing");
+
+        // Clamped to the range the form bound the field with; a binding that
+        // can't be worked out keeps its value; both are reported.
+        Toolpath u;
+        u.uuid = "tp2";
+        u.type = "pocket";
+        u.json.insert("name", "Pocket 1");
+        u.json.insert("stepover", 1.5);
+        u.json.insert("end_depth", QStringLiteral("-6.000"));
+        u.json.insert("feed", 800);
+        QJsonObject b2;
+        b2.insert("stepover", QJsonObject{{"expr", "so"}, {"min", 0.0}, {"max", 100.0}});
+        b2.insert("end_depth", QJsonObject{{"expr", "nope + 1"}, {"neg", true}, {"str", true}});
+        b2.insert("feed", QJsonObject{{"expr", "so * 1000"}});     // old binding: no range
+        u.json.insert("phobic_expr", b2);
+        d.addToolpath(u);
+        d.parametricRef().params.append({"so", "-2", ""});
+        QStringList problems;
+        param::applyToolpathBindings(d, &problems);
+        const QJsonObject &uj = d.toolpaths().last().json;
+        check(approx(uj.value("stepover").toDouble(), 0), "stepover clamped to its least, 0");
+        check(uj.value("end_depth").toString() == "-6.000", "a failing binding keeps its value");
+        check(approx(uj.value("feed").toDouble(), -2000), "a binding without a range is not clamped");
+        check(problems.size() == 2, "two problems reported");
+        check(problems.filter("stepover").size() == 1 && problems.filter("stepover").first().contains("Pocket 1")
+                  && problems.filter("stepover").first().contains("set to 0"), "the clamp is reported");
+        check(problems.filter("end_depth").size() == 1
+                  && problems.filter("end_depth").first().contains("can't be worked out, kept 6"),
+              "the failure is reported with the kept value");
+        // A depth's range is on its size: -8 with max 5 is written as -5.
+        QJsonObject b3 = b2;
+        b3.insert("end_depth", QJsonObject{{"expr", "so * 4"}, {"neg", true}, {"str", true},
+                                           {"min", 0.0}, {"max", 5.0}});
+        d.toolpathsRef().last().json.insert("phobic_expr", b3);
+        problems.clear();
+        param::applyToolpathBindings(d, &problems);
+        check(d.toolpaths().last().json.value("end_depth").toString() == "-5.000", "depth size clamped");
     }
 
     // ---- saved and loaded --------------------------------------------------
@@ -418,6 +455,26 @@ int main(int argc, char **argv)
         check(param::newError(d, d.parametric(), after).contains("more than 0"), "negative radius refused");
         after.params[0].expr = "4";
         check(param::newError(d, d.parametric(), after).isEmpty(), "positive radius fine");
+    }
+
+    // ---- an angle stays between 0 and 180 degrees -------------------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element path = Element::makePath({{0, 0}, {40, 0}, {60, 30}}, false, layer);
+        d.addElement(path);
+        addCon(d, Constraint::Angle, {ref(GeoRef::Line, path.id, 0), ref(GeoRef::Line, path.id, 1)}, "a");
+        d.parametricRef().params = {{"a", "60", ""}};
+        const Constraint &an = d.parametric().constraints.first();
+        check(param::badValue(an, 90).isEmpty(), "90 is an angle");
+        check(!param::badValue(an, 270).isEmpty() && !param::badValue(an, 180).isEmpty()
+                  && !param::badValue(an, 0).isEmpty() && !param::badValue(an, -30).isEmpty(),
+              "0, 180, 270 and -30 are refused");
+        Parametric after = d.parametric();
+        after.params[0].expr = "270";
+        check(param::newError(d, d.parametric(), after).contains("180"), "a parameter driving it to 270 refused");
+        after.params[0].expr = "120";
+        check(param::newError(d, d.parametric(), after).isEmpty(), "120 fine");
     }
 
     // ---- parser limits ----------------------------------------------------------

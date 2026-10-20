@@ -12,9 +12,11 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QScrollBar>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QtMath>
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -322,6 +324,7 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
                              const QSet<QString> &keep,
                              const std::function<void(Document &)> &mutate)
 {
+    m_bindProblems.clear();
     if (!m_doc)
         return false;
     const ParamState s0 = stateOf(m_doc);
@@ -334,21 +337,46 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
     param::SolveResult r = param::solve(*m_doc, keep, false);
     if (!r.ok && !allowFailing) {
         // Constraints that were red before don't block an unrelated edit;
-        // only one that makes something else fail is refused.
+        // one the rest of the sketch can't follow is refused. A forced solve
+        // would bend constraints that hold to meet the red ones halfway (and
+        // its compromise can't tell which fail because of the edit), so
+        // solve without the red ones instead: the rest follows the edit
+        // exactly and nothing else moves. First leave out only the red ones
+        // still failing (an edited red dimension that can now hold is kept),
+        // then every one that was red; neither holding refuses the edit.
         Document was = *m_doc;
         was.setElements(s0.els);
         was.setParametric(s0.par);
         const QStringList red = param::unsatisfied(was);
-        bool news = false;
-        for (const QString &uid : r.failing)
-            news = news || !red.contains(uid);
-        if (news) {
+        const QSet<QString> failing(r.failing.begin(), r.failing.end());
+        QSet<QString> redAndFailing;
+        for (const QString &uid : red)
+            if (failing.contains(uid))
+                redAndFailing.insert(uid);
+        bool solved = false;
+        for (const QSet<QString> &omit : {redAndFailing, QSet<QString>(red.begin(), red.end())}) {
+            if (omit.isEmpty())
+                continue;
+            Document part = *m_doc;
+            Parametric pp = part.parametric();
+            pp.constraints.erase(std::remove_if(pp.constraints.begin(), pp.constraints.end(),
+                                                [&](const Constraint &c) { return omit.contains(c.uid); }),
+                                 pp.constraints.end());
+            part.setParametric(pp);
+            if (param::solve(part, keep, false).ok) {
+                m_doc->setElements(part.elements());
+                solved = true;
+                break;
+            }
+        }
+        if (!solved) {
             restore(m_doc, s0);
             return false;
         }
-        r = param::solve(*m_doc, keep, true);
+        r.failing = param::unsatisfied(*m_doc);
+        r.ok = r.failing.isEmpty();
     }
-    param::applyToolpathBindings(*m_doc);
+    param::applyToolpathBindings(*m_doc, &m_bindProblems);
     const ParamState s1 = stateOf(m_doc);
     restore(m_doc, s0);         // the command's redo puts s1 back
     m_undo->push(new SnapshotCmd(this, m_doc, s0, s1, text));
@@ -356,6 +384,8 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
         emit statusHint(r.failing.size() == 1
             ? tr("1 constraint can't hold with these values — shown in red")
             : tr("%1 constraints can't hold with these values — shown in red").arg(r.failing.size()));
+    else if (!m_bindProblems.isEmpty())
+        emit statusHint(m_bindProblems.join(QStringLiteral("; ")));
     return true;
 }
 
@@ -1155,6 +1185,10 @@ void Canvas::openDimEditor(const Constraint &c, bool isNew)
         e->setAlignment(Qt::AlignCenter);
         e->done = [this](bool escape) { commitDimEditor(escape); };
         m_dimEdit = e;
+        // Follow the dimension when the view zooms, pans or scrolls.
+        connect(this, &Canvas::zoomChanged, e, [this] { placeDimEditor(); });
+        connect(horizontalScrollBar(), &QScrollBar::valueChanged, e, [this] { placeDimEditor(); });
+        connect(verticalScrollBar(), &QScrollBar::valueChanged, e, [this] { placeDimEditor(); });
     }
     m_dimEdit->setStyleSheet(QStringLiteral(
         "#dimEdit { background: #17191e; color: #e8ecf2; border: 1.5px solid #f2a536;"
@@ -1163,19 +1197,27 @@ void Canvas::openDimEditor(const Constraint &c, bool isNew)
     m_dimEdit->setText(c.expr.isEmpty() ? param::formatNumber(c.value) : c.expr);
     m_dimEdit->setToolTip(tr("%1 = a value (50, 1/4 in) or an expression with parameters (plate_w / 2)")
                               .arg(c.name));
-    DimDraw d;
-    QPointF at = mapToScene(viewport()->rect().center());
-    if (dimGeometry(c, &d))
-        at = d.text;
-    const QPointF vp = viewportTransform().map(at);
-    const int w = qMax(130, m_dimEdit->fontMetrics().horizontalAdvance(m_dimEdit->text()) + 40);
-    m_dimEdit->setGeometry(int(vp.x()) - w / 2, int(vp.y()) - 15, w, 30);
+    m_dimEditAt = mapToScene(viewport()->rect().center());
+    placeDimEditor();
     m_dimEdit->show();
     m_dimEdit->raise();
     m_dimEdit->setFocus();
     m_dimEdit->selectAll();
     emit statusHint(tr("%1 — type a value or an expression (parameters, + - * /, units); Enter sets it, Esc %2")
                         .arg(c.name, isNew ? tr("keeps the measured value") : tr("cancels")));
+}
+
+// Over the dimension's label, in viewport pixels for the current view (the
+// middle of the view where the editor opened, when it has no geometry).
+void Canvas::placeDimEditor()
+{
+    if (!m_dimEdit)
+        return;
+    DimDraw d;
+    const QPointF at = dimGeometry(m_dimEditing, &d) ? d.text : m_dimEditAt;
+    const QPointF vp = viewportTransform().map(at);
+    const int w = qMax(130, m_dimEdit->fontMetrics().horizontalAdvance(m_dimEdit->text()) + 40);
+    m_dimEdit->setGeometry(int(vp.x()) - w / 2, int(vp.y()) - 15, w, 30);
 }
 
 void Canvas::closeDimEditor()
@@ -1213,7 +1255,11 @@ void Canvas::commitDimEditor(bool escape)
         return;
     }
     if (const QString bad = param::badValue(c, v); !bad.isEmpty()) {
-        emit statusHint(bad);
+        // Esc on a new dimension whose measured value can't be one (an angle
+        // on parallel lines) drops it, rather than leaving the editor stuck.
+        if (escape)
+            closeDimEditor();
+        emit statusHint(escape ? tr("Dimension not added: %1").arg(bad) : bad);
         return;
     }
     c.expr = text;
@@ -1245,7 +1291,8 @@ void Canvas::commitDimEditor(bool escape)
     const QString what = m_dimEditingNew ? tr("add dimension %1 = %2").arg(c.name, text)
                                          : tr("%1 = %2").arg(c.name, text);
     if (applyParametric(after, what)) {
-        emit statusHint(what);
+        emit statusHint(m_bindProblems.isEmpty()
+            ? what : tr("%1 — %2").arg(what, m_bindProblems.join(QStringLiteral("; "))));
     } else {
         emit statusHint(m_dimEditingNew
             ? tr("%1 would over-constrain the sketch — not added").arg(Constraint::typeName(c.type))

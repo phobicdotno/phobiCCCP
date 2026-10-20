@@ -50,6 +50,43 @@
   a pad edit. An open path is only hit near its line. Number fields keep the old value for
   input they can't read ("1/4 in", "2in") instead of misreading it. Malformed designs from
   the network (one-number points, a 1e9 mm stock) are made safe.
+- **Tool changes:** two toolpaths with the same tool number but a different bit now get a
+  tool change (M0 and the T line) between them, and the simulation uses each toolpath's own
+  bit. Tiling keeps the right bit per tile.
+- **Tiling:** re-entering a tile deep in the stock ramped too short and plunged; the zigzag now
+  has enough legs for the depth. Chip-break lifts are kept in the tile they belong to.
+- **Parametric:** fields bound to an expression are clamped to the field's range (as the form
+  shows) and a binding whose expression fails is reported instead of keeping its old number
+  silently. Angle dimensions must be between 0 and 180. The value editor follows zoom and
+  scroll. Editing a value no longer forces a compromise when the only red constraints were
+  already red. Removing a parameter unbinds its fields in the same undo step. Esc with an
+  unreadable value closes the editor and says the dimension was not added.
+- **Pad link:**
+  - Pad designs carry the version they were made from. An edit on the pad to a design changed
+    on the desktop meanwhile is kept as a copy "<name> (pad)" instead of overwriting the
+    desktop's edit (the pad is told and shows the desktop's copy).
+  - The pad is told when a design is linked to a file it can't rebuild exactly (parametric,
+    curves, tabs, or edited in Carbide Create); its edits go to "<name> (pad).c2d" beside it.
+    A file changed outside phobiCCCP is never rebuilt over.
+  - A pad can no longer switch machines while one is connected unless "Pads may start
+    cutting" is on (also for Send to a machine).
+  - An unreadable or oversized .links.json is reported and never written over. Times more than
+    a year ahead are refused, so a pad with a wrong clock can't win every sync.
+  - Tool libraries are kept per computer; the Send dialog warns when a tool or its feeds are
+    missing there.
+- **Pad app:** hold-to-move now also works after the list started scrolling (wait 500 ms
+  without moving, as on the desktop). Dialog fields are cleaned up properly, the File menu no
+  longer overflows, a computer typed in and found on the LAN shows once, and the path tool
+  drops repeated points.
+- **Other:**
+  - Replacing a vector used by a 3D model keeps the model on it, and the Model panel warns
+    when vectors it used are gone. A .cccp import keeps the drawing where it was.
+  - The mouse wheel scrolls the side panels instead of changing a number or list it passes.
+  - Surface map: rapids clear the highest point along the move; a probe after a jog goes back
+    or retries. The gamepad reopens after it was unplugged.
+  - Texture strokes follow the same entry and lift rules as other toolpaths. Setup sheet
+    times are for the whole program. Continue after a manual tool change rises first when
+    homed. A rectangle, circle or polygon with a size of 0 is refused instead of breaking.
 
 ## v1.2.4 (build 77) — 2026-10-19
 

@@ -209,7 +209,7 @@ void GrblStreamer::startStream(const QStringList &lines)
     pump();
 }
 
-void GrblStreamer::continueAfterToolChange()
+void GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
         return;
@@ -224,9 +224,20 @@ void GrblStreamer::continueAfterToolChange()
                                         "measurement to finish =="));
         return;
     }
+    // Lines to run before the program resumes (the rise to the top) go into
+    // the program itself, so they are sent and acknowledged like any other
+    // program line instead of as commands on the side.
+    int at = m_nextIndex;
+    for (const QString &l : first) {
+        const QString t = l.trimmed();
+        if (!t.isEmpty() && !t.startsWith(QChar('(')))
+            m_queue.insert(at++, t);
+    }
     m_waitingTool = -1;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
+    if (at != m_nextIndex)
+        emit progressChanged(m_ackedCount, m_queue.size());
     pump();
 }
 

@@ -164,6 +164,9 @@ int main(int argc, char *argv[])
         check(last.value("end_depth").toString() == QLatin1String("-6.000"), "expression gives -6.000");
         check(bind.value("expr").toString() == QLatin1String("depth") && bind.value("neg").toBool()
                   && bind.value("str").toBool(), "the field is bound to depth, negative, as a string");
+        check(bind.contains("min") && bind.contains("max")
+                  && bind.value("min").toDouble() == end->minimum() && bind.value("max").toDouble() == end->maximum(),
+              "the binding keeps the field's range");
         form.setToolpath("{tp}", "pocket_toolpath", last);
         app.processEvents();
         check(end->styleSheet().contains(QStringLiteral("c3a6ff")) && end->toolTip().contains(QStringLiteral("depth")),

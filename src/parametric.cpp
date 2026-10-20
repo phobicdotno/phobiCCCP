@@ -706,6 +706,10 @@ QString badValue(const Constraint &c, double v)
     if ((c.type == Constraint::Radius || c.type == Constraint::Diameter
          || (c.type == Constraint::Distance && c.refs.size() == 1)) && !(v > 0))
         return QStringLiteral("%1 must be more than 0").arg(Constraint::typeName(c.type));
+    // An angle is measured between 0 and 180 degrees, its direction kept by
+    // `sense`: 270 would solve to 90 while the label still read 270.
+    if (c.type == Constraint::Angle && !(v > 0 && v < 180))
+        return QStringLiteral("Angle must be more than 0 and less than 180°");
     return QString();
 }
 
@@ -1877,7 +1881,7 @@ static void flatPut(QJsonObject &j, const QString &key, const QJsonValue &v)
     j.insert(key.left(dot), sub);
 }
 
-QStringList applyToolpathBindings(Document &doc)
+QStringList applyToolpathBindings(Document &doc, QStringList *problems)
 {
     QStringList changed;
     const QHash<QString, double> vals = values(doc, doc.parametric());
@@ -1887,24 +1891,50 @@ QStringList applyToolpathBindings(Document &doc)
         *v = it.value();
         return true;
     };
+    auto numberOf = [](const QJsonValue &j) {
+        return j.isString() ? j.toString().toDouble() : j.toDouble();
+    };
     for (Toolpath &t : doc.toolpathsRef()) {
         const QJsonObject binds = t.json.value(QStringLiteral("phobic_expr")).toObject();
         if (binds.isEmpty())
             continue;
+        const QString tpName = t.json.value(QStringLiteral("name")).toString();
         QJsonObject j = t.json;
         for (auto it = binds.begin(); it != binds.end(); ++it) {
             const QJsonObject b = it.value().toObject();
+            const QString expr = b.value("expr").toString();
+            const bool neg = b.value("neg").toBool();
+            // Depths are shown and ranged as their size, the sign kept apart.
+            const bool size = neg || b.value("abs").toBool();
             double v = 0;
-            if (!evaluate(b.value("expr").toString(), look, &v))
+            if (!evaluate(expr, look, &v)) {
+                if (problems) {
+                    const double kept = numberOf(flatValue(j, it.key()));
+                    *problems << QStringLiteral("toolpath %1: %2 = %3 can't be worked out, kept %4")
+                                     .arg(tpName, it.key(), expr,
+                                          formatNumber(size ? std::fabs(kept) : kept));
+                }
                 continue;
-            if (b.value("neg").toBool())
-                v = -std::fabs(v);
+            }
+            if (size)
+                v = std::fabs(v);
+            // The field's range, as the form had it when it bound the field
+            // (bindings made before it was stored have none).
+            const double want = v;
+            if (b.contains("min"))
+                v = qMax(v, b.value("min").toDouble());
+            if (b.contains("max"))
+                v = qMin(v, b.value("max").toDouble());
+            if (v != want && problems)
+                *problems << QStringLiteral("toolpath %1: %2 = %3 is %4, out of range - set to %5")
+                                 .arg(tpName, it.key(), expr, formatNumber(want), formatNumber(v));
+            if (neg)
+                v = -v;
             const QJsonValue nv = b.value("str").toBool()
                 ? QJsonValue(QString::number(v, 'f', 3)) : QJsonValue(v);
             const QJsonValue old = flatValue(j, it.key());
             const bool same = old.isString() == nv.isString()
-                && std::fabs((old.isString() ? old.toString().toDouble() : old.toDouble())
-                             - (nv.isString() ? nv.toString().toDouble() : nv.toDouble())) < 1e-9;
+                && std::fabs(numberOf(old) - numberOf(nv)) < 1e-9;
             if (!same)
                 flatPut(j, it.key(), nv);
         }

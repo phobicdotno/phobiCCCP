@@ -314,6 +314,40 @@ class FormRow extends StatelessWidget {
       );
 }
 
+/// A one-line text box for a dialog, owning its controller: the controller is
+/// disposed with the box, once the dialog's closing animation is over, not
+/// while the box is still on screen.
+class LineBox extends StatefulWidget {
+  final String initial;
+  final ValueChanged<String> onChanged;
+  final bool autofocus;
+  final int? maxLength;
+  const LineBox({super.key, this.initial = '', required this.onChanged, this.autofocus = false, this.maxLength});
+  @override
+  State<LineBox> createState() => _LineBoxState();
+}
+
+class _LineBoxState extends State<LineBox> {
+  late final _c = TextEditingController(text: widget.initial);
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        height: 34,
+        child: TextField(
+          controller: _c,
+          autofocus: widget.autofocus,
+          inputFormatters: [if (widget.maxLength != null) LengthLimitingTextInputFormatter(widget.maxLength)],
+          onChanged: widget.onChanged,
+        ),
+      );
+}
+
 /// Stock size and material, for File › New and Document setup.
 class StockFields extends StatelessWidget {
   final Stock stock;

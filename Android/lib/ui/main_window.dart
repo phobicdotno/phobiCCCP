@@ -42,13 +42,25 @@ class _MainWindowState extends State<MainWindow> {
   final _zoom = CanvasZoom();
   String _status = '';
   bool _saving = false;
+  int _notices = 0;
+
+  /// Said once with the next status after the first edit of a design whose
+  /// file a computer will not rebuild from the pad (Design.desktopOnly).
+  String? _copyNote;
+  bool _copyNoted = false;
 
   @override
   void initState() {
     super.initState();
     final last = app.design(app.lastDesign);
     _d = last != null && !last.deleted ? last : app.designs.firstOrNull;
-    _status = _d == null ? 'File › New or Open to begin' : 'Select — tap to select, drag to move or to select an area';
+    final d = _d;
+    _status = d == null
+        ? 'File › New or Open to begin'
+        : d.desktopOnly.isNotEmpty
+            ? _copyWords(d)
+            : 'Select — tap to select, drag to move or to select an area';
+    _notices = app.noticeCount;
     app.addListener(_synced);
   }
 
@@ -59,16 +71,21 @@ class _MainWindowState extends State<MainWindow> {
   }
 
   // A newer copy came in from a phobiCCCP (edited and saved there, or on
-  // another pad): show it in place of ours.
+  // another pad), or the computer's copy replaced ours after both changed:
+  // show it in place of ours.
   void _synced() {
     final cur = _d;
     if (!mounted || _saving) return;
+    if (app.noticeCount != _notices) {
+      _notices = app.noticeCount;
+      _status = app.notice;
+    }
     if (cur == null) {
       setState(() {});
       return;
     }
     final d = app.design(cur.id);
-    if (d == null || d.modified <= cur.modified) {
+    if (d == null || d.modified == cur.modified) {
       setState(() {});
       return;
     }
@@ -83,7 +100,7 @@ class _MainWindowState extends State<MainWindow> {
         // Undoing past it would put the old copy back everywhere.
         _undo.clear();
         _redo.clear();
-        _status = '“${d.name}” was updated from phobiCCCP';
+        if (_notices == app.noticeCount && !_status.contains(d.name)) _status = '“${d.name}” was updated from phobiCCCP';
       }
     });
   }
@@ -97,8 +114,15 @@ class _MainWindowState extends State<MainWindow> {
     _tp = null;
     _pathDraft = null;
     _zoom.reset();
+    _copyNote = null;
+    _copyNoted = false;
     if (d != null) app.lastDesign = d.id;
   }
+
+  /// What an edit here means for a design one computer keeps more of.
+  String _copyWords(Design d) =>
+      '${d.desktopOnly} keeps more of “${d.name}” than the pad can hold (curves, tabs, parameters…), '
+      'so edits here reach it as a copy beside its file';
 
   /// Save [d] as our edit, without taking our own save for one from elsewhere.
   Design _save(Design d) {
@@ -115,7 +139,7 @@ class _MainWindowState extends State<MainWindow> {
   bool _stale() {
     final cur = _d;
     final stored = cur == null ? null : app.design(cur.id);
-    if (cur == null || stored == null || stored.modified <= cur.modified) return false;
+    if (cur == null || stored == null || stored.modified == cur.modified) return false;
     _synced();
     _say('“${stored.name}” changed on another pad or computer; your last change was not kept');
     return true;
@@ -139,6 +163,13 @@ class _MainWindowState extends State<MainWindow> {
     _redo.clear();
     final saved = _save(next);
     setState(() => _d = saved);
+    if (saved.desktopOnly.isNotEmpty && !_copyNoted) {
+      // Shown now, and added to what the edit itself says right after.
+      _copyNoted = true;
+      final note = _copyNote = _copyWords(saved);
+      setState(() => _status = note);
+      WidgetsBinding.instance.addPostFrameCallback((_) => _copyNote = null);
+    }
   }
 
   void _undoRedo(bool undo) {
@@ -154,7 +185,11 @@ class _MainWindowState extends State<MainWindow> {
     });
   }
 
-  void _say(String s) => setState(() => _status = s);
+  void _say(String s) {
+    final note = _copyNote;
+    _copyNote = null;
+    setState(() => _status = note == null ? s : (s.isEmpty ? note : '$s · $note'));
+  }
 
   void _setTool(DrawTool t) {
     setState(() {
@@ -243,10 +278,14 @@ class _MainWindowState extends State<MainWindow> {
         final pts = _pathDraft ?? [];
         final slop = 8 / (_zoom.fit * _zoom.zoom);
         bool near(List<double> p) => (p[0] - x).abs() < slop && (p[1] - y).abs() < slop;
-        if (pts.length >= 3 && near(pts.first)) {
-          _addShape(Shape(id: d.nextShapeId(), type: Shape.path, points: pts, closed: true));
-        } else if (pts.length >= 2 && near(pts.last)) {
-          _addShape(Shape(id: d.nextShapeId(), type: Shape.path, points: pts, closed: false));
+        // Snapping can bring two taps onto one point: no segment of no length.
+        final closedPts = dropRepeats(pts, closed: true), openPts = dropRepeats(pts);
+        if (closedPts.length >= 3 && near(pts.first)) {
+          _addShape(Shape(id: d.nextShapeId(), type: Shape.path, points: closedPts, closed: true));
+        } else if (openPts.length >= 2 && near(pts.last)) {
+          _addShape(Shape(id: d.nextShapeId(), type: Shape.path, points: openPts, closed: false));
+        } else if (pts.isNotEmpty && pts.last[0] == x && pts.last[1] == y) {
+          _say('Path: that point is already there — tap somewhere else, or the first point to close');
         } else {
           setState(() => _pathDraft = [...pts, [x, y]]);
           _say('Path: ${pts.length + 1} points — tap the first to close, the last again to finish');
@@ -342,39 +381,31 @@ class _MainWindowState extends State<MainWindow> {
   // ---- dialogs -----------------------------------------------------------------
 
   Future<(String, double)?> _askText() {
-    final c = TextEditingController();
+    var text = '';
     var h = 20.0;
     return showPDialog<(String, double)>(context,
         title: 'Text',
         content: StatefulBuilder(
           builder: (ctx, set) => Column(mainAxisSize: MainAxisSize.min, children: [
-            FormRow(
-                'Text',
-                SizedBox(
-                    height: 34,
-                    child: TextField(
-                        controller: c,
-                        autofocus: true,
-                        inputFormatters: [LengthLimitingTextInputFormatter(Shape.maxText)])),
-                labelWidth: 96),
+            FormRow('Text', LineBox(onChanged: (v) => text = v, autofocus: true, maxLength: Shape.maxText), labelWidth: 96),
             FormRow('Height', NumBox(h, (v) => set(() => h = v), min: 0.5, max: 1000, decimals: 2), labelWidth: 96),
           ]),
         ),
         actions: (ctx) => [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-              TextButton(onPressed: () => Navigator.pop(ctx, c.text.trim().isEmpty ? null : (c.text, h)), child: const Text('OK')),
+              TextButton(onPressed: () => Navigator.pop(ctx, text.trim().isEmpty ? null : (text, h)), child: const Text('OK')),
             ]);
   }
 
   Future<void> _newDesign() async {
-    final name = TextEditingController(text: 'Design ${app.designs.length + 1}');
+    var name = 'Design ${app.designs.length + 1}';
     var stock = const Stock();
     var material = 'softwood';
     final ok = await showPDialog<bool>(context,
         title: 'New design',
         content: StatefulBuilder(
           builder: (ctx, set) => Column(mainAxisSize: MainAxisSize.min, children: [
-            FormRow('Name', SizedBox(height: 34, child: TextField(controller: name, autofocus: true)), labelWidth: 96),
+            FormRow('Name', LineBox(initial: name, onChanged: (v) => name = v, autofocus: true), labelWidth: 96),
             StockFields(
                 stock: stock,
                 material: material,
@@ -388,7 +419,7 @@ class _MainWindowState extends State<MainWindow> {
               TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('OK')),
             ]);
     if (ok != true) return;
-    final d = app.newDesign(name.text, stock, material);
+    final d = app.newDesign(name, stock, material);
     setState(() => _open(d));
     _say('New design “${d.name}”: ${fmt(stock.width)} × ${fmt(stock.height)} × ${fmt(stock.thickness)} mm');
   }
@@ -436,21 +467,21 @@ class _MainWindowState extends State<MainWindow> {
         actions: (ctx) => [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))]);
     if (d != null) {
       setState(() => _open(d));
-      _say('Opened “${d.name}”');
+      _say(d.desktopOnly.isEmpty ? 'Opened “${d.name}”' : 'Opened “${d.name}” · ${_copyWords(d)}');
     }
   }
 
   Future<void> _setup() async {
     final d = _d;
     if (d == null) return;
-    final name = TextEditingController(text: d.name);
+    var name = d.name;
     var stock = d.stock;
     var material = d.material;
     final ok = await showPDialog<bool>(context,
         title: 'Document setup',
         content: StatefulBuilder(
           builder: (ctx, set) => Column(mainAxisSize: MainAxisSize.min, children: [
-            FormRow('Name', SizedBox(height: 34, child: TextField(controller: name)), labelWidth: 96),
+            FormRow('Name', LineBox(initial: name, onChanged: (v) => name = v), labelWidth: 96),
             StockFields(
                 stock: stock,
                 material: material,
@@ -463,8 +494,7 @@ class _MainWindowState extends State<MainWindow> {
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
               TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('OK')),
             ]);
-    final newName = name.text.trim();
-    name.dispose();
+    final newName = name.trim();
     if (ok == true && !_replacedSince(d)) {
       _commit(d.copyWith(name: newName.isEmpty ? d.name : newName, stock: stock, material: material));
     }
@@ -487,17 +517,17 @@ class _MainWindowState extends State<MainWindow> {
   }
 
   Future<void> _addComputer() async {
-    final c = TextEditingController();
+    var typed = '';
     final host = await showPDialog<String>(context,
         title: 'Add a computer',
         content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          SizedBox(height: 34, child: TextField(controller: c, autofocus: true)),
+          LineBox(onChanged: (v) => typed = v, autofocus: true),
           const SizedBox(height: 6),
           const Text('Its name or address, for example a Tailscale name or 192.168.1.20.', style: TextStyle(color: C.sub, fontSize: 12)),
         ]),
         actions: (ctx) => [
               TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-              TextButton(onPressed: () => Navigator.pop(ctx, c.text), child: const Text('Add')),
+              TextButton(onPressed: () => Navigator.pop(ctx, typed), child: const Text('Add')),
             ]);
     if (host != null && host.trim().isNotEmpty) {
       app.addHost(host);
@@ -656,11 +686,16 @@ class _MainWindowState extends State<MainWindow> {
                 padding: const EdgeInsets.fromLTRB(12, 0, 28, 0),
                 child: Row(children: [
                   SizedBox(width: 22, child: items[i]!.checked ? const Text('✓', style: TextStyle(fontSize: 14)) : null),
-                  Text(items[i]!.text,
+                  // A menu is at most 240 wide inside its padding: a long
+                  // entry (or large text) is cut short, not drawn past it.
+                  Flexible(
+                    child: Text(items[i]!.text,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                           fontSize: 14,
                           color: items[i]!.onTap != null ? C.text : (items[i]!.text.startsWith(' ') ? C.disabled : C.label),
                           fontWeight: items[i]!.onTap == null && !items[i]!.text.startsWith(' ') ? FontWeight.w600 : null)),
+                  ),
                 ]),
               ),
         ],

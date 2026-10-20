@@ -443,7 +443,17 @@ SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
         switch (op.kind) {
         case Op::Tool: {
             auto it = tools.constFind(op.ival);
-            if (it != tools.constEnd()) {
+            if (op.x > 0) {
+                // The exporter puts the bit's own shape on the tool change,
+                // so one number used for two bits simulates each of them.
+                ToolGeom g = it != tools.constEnd() ? *it : defTool;
+                g.number = op.ival;
+                g.diameter = op.x;
+                g.angle = op.y;
+                g.cornerRadius = op.z;
+                g.kind = op.feed >= 3 ? ToolGeom::VBit : op.feed >= 2 ? ToolGeom::Ball : ToolGeom::Flat;
+                prof = profileOf(g);
+            } else if (it != tools.constEnd()) {
                 prof = profileOf(*it);
             } else {
                 prof = profileOf(defTool);

@@ -20,6 +20,7 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QRegularExpression>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 
@@ -543,6 +544,42 @@ int main(int argc, char *argv[])
         check(g.done.size() == 1 && g.skipped.size() == 1
                   && g.skipped.first().contains(QStringLiteral("already cut to 5.00 mm")),
               "fully cut above: left out");
+        // The setup sheet takes each toolpath's time from that same program:
+        // B is left out there, so its row says so instead of timing B cut
+        // on its own from the top; and the rows add up to the job.
+        {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("5.000")},
+                                              {"stepdown", 2.5}, {"name", QStringLiteral("A")}});
+            r.addShape(c2d::Element::makeRectangle({30, 20}, 20, 10, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"end_depth", QStringLiteral("5.000")},
+                                              {"stepdown", 2.5}, {"uuid", QStringLiteral("{tp-2}")},
+                                              {"name", QStringLiteral("B")}, {"rest_auto", true},
+                                              {"rest_overlap", 0.0}});
+            r.addShape(c2d::Element::makeRectangle({30, 20}, 50, 30, layer));
+            r.addToolpath("contour", {{"name", QStringLiteral("C")}, {"ofset_dir", 1},
+                                      {"uuid", QStringLiteral("{tp-3}")}});
+            const QString html = c2d::setupSheetHtml(r.doc, QStringLiteral("Job"));
+            const int at = html.indexOf(QStringLiteral("<td>B</td>"));
+            const QString rowB = html.mid(at, html.indexOf(QStringLiteral("</tr>"), at) - at);
+            check(at >= 0 && rowB.contains(QStringLiteral("already cut")),
+                  "setup sheet: a toolpath rest depth leaves out has no time of its own");
+            auto secs = [](const QString &m) {
+                const QStringList p = m.split(QLatin1Char(':'));
+                return p.size() == 2 ? p.at(0).toInt() * 60 + p.at(1).toInt() : -1;
+            };
+            const QRegularExpression rowTime(QStringLiteral("<td class=\"n\">(\\d+:\\d\\d)</td></tr>"));
+            int sum = 0, rows = 0;
+            for (auto it = rowTime.globalMatch(html); it.hasNext();) {
+                sum += secs(it.next().captured(1));
+                ++rows;
+            }
+            const QRegularExpressionMatch tot =
+                QRegularExpression(QStringLiteral("Estimated time</th><td>(\\d+:\\d\\d) min")).match(html);
+            check(rows == 2 && tot.hasMatch() && std::abs(sum - secs(tot.captured(1))) <= rows,
+                  "setup sheet: the toolpaths' times add up to the job's");
+        }
         // Same with 1 mm overlap: one finishing pass over the floor.
         g = rig({30, 20}, {{"rest_auto", true}, {"rest_overlap", 1.0}, {"end_depth", QStringLiteral("5.000")}});
         zs = levels(g.gcode);
@@ -628,6 +665,30 @@ int main(int argc, char *argv[])
             if (p.x > 17 && p.x < 43 && p.y > 15 && p.y < 25 && p.z < -3.5)
                 deepMiddle = true;
         check(deepMiddle, "10 then 3 mm deeper: the whole area below the 10 mm floor");
+    }
+
+    // --- one tool number, two bits: still a tool change -----------------------
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"name", QStringLiteral("big")},
+                                          {"tool", QJsonObject{{"diameter", 6.35}, {"number", 1}}}});
+        r.addToolpath("pocket_toolpath", {{"stepover", 1.0}, {"name", QStringLiteral("small")},
+                                          {"uuid", QStringLiteral("{tp-2}")},
+                                          {"tool", QJsonObject{{"diameter", 3.175}, {"number", 1}}}});
+        r.addToolpath("pocket_toolpath", {{"stepover", 1.0}, {"name", QStringLiteral("small again")},
+                                          {"uuid", QStringLiteral("{tp-3}")},
+                                          {"tool", QJsonObject{{"diameter", 3.175}, {"number", 1}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.gcode.count(QStringLiteral("M0 ;T1")) == 2,
+              "same number, other bit: a tool change; same bit again: none");
+        int toolOps = 0;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Tool) {
+                ++toolOps;
+                check(o.x > 0, "the tool change carries the bit's diameter");
+            }
+        check(toolOps == 2, "two tool changes in the ops");
     }
 
     // --- drilling: pecks at the circle center ------------------------------

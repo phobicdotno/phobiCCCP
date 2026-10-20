@@ -37,8 +37,16 @@ class AppState extends ChangeNotifier {
 
   List<Computer> computers = [];
   List<Design> designs = [];
+
+  /// The library from the computer synced last, for picking tools; each
+  /// computer's own is [toolsOf].
   ToolLibrary tools;
   bool syncing = false;
+
+  /// Something a sync did that the user should hear about (a design changed
+  /// both here and on a computer); [noticeCount] goes up with each new one.
+  String notice = '';
+  int noticeCount = 0;
 
   Timer? _timer, _soon;
   bool _busy = false;
@@ -93,6 +101,29 @@ class AppState extends ChangeNotifier {
 
   Future<void> syncNow() => _tick();
 
+  /// One row per phobiCCCP: a computer typed in is also heard on the LAN, or
+  /// answers a sync under its own id, and must not then show twice.
+  static List<Computer> dedupe(List<Computer> list) {
+    final byId = <String, Computer>{};
+    for (final c in list) {
+      if (!c.desktop.id.startsWith('manual:')) byId[c.desktop.id] = c;
+    }
+    final out = <Computer>[];
+    for (final c in list) {
+      if (!c.desktop.id.startsWith('manual:')) continue;
+      final same = byId[c.info?.id ?? ''];
+      if (same == null) {
+        out.add(c);
+      } else if (same.desktop.typed.isEmpty) {
+        byId[same.desktop.id] = Computer(same.desktop.withTyped(c.desktop.typed),
+            info: same.info, error: same.error, warning: same.warning, lastSync: same.lastSync, toolsAt: same.toolsAt);
+      }
+    }
+    return [...byId.values, ...out]..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  }
+
+  ToolLibrary toolsOf(String desktopId) => settings.toolsOf(desktopId);
+
   Future<void> _discover() async {
     List<Desktop> found;
     try {
@@ -119,7 +150,7 @@ class AppState extends ChangeNotifier {
         byId['manual:$h'] = Computer(Desktop(id: 'manual:$h', host: h, address: h, typed: h));
       }
     }
-    computers = byId.values.toList()..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    computers = dedupe(byId.values.toList());
     _changed();
   }
 
@@ -132,7 +163,7 @@ class AppState extends ChangeNotifier {
     _changed();
     try {
       for (final c in targets) {
-        final withTools = t - c.toolsAt > toolsEvery || tools.isEmpty;
+        final withTools = t - c.toolsAt > toolsEvery || tools.isEmpty || settings.toolsOf(c.desktop.id).isEmpty;
         Computer next;
         try {
           final r = await syncWith(c.desktop, store, withTools: withTools, onPulled: () {
@@ -148,11 +179,19 @@ class AppState extends ChangeNotifier {
           if (lib != null && !lib.isEmpty) {
             tools = lib;
             settings.tools = lib;
+            settings.setToolsOf(c.desktop.id, lib);
+            // A typed-in computer answers under its own id too.
+            final id = r.info.id;
+            if (id.isNotEmpty && id != c.desktop.id) settings.setToolsOf(id, lib);
+          }
+          if (r.conflicts.isNotEmpty) {
+            notice = r.conflicts.join('; ');
+            noticeCount++;
           }
         } catch (e) {
           next = Computer(c.desktop, info: c.info, error: '$e', lastSync: c.lastSync, toolsAt: c.toolsAt);
         }
-        computers = [for (final x in computers) x.desktop.id == c.desktop.id ? next : x];
+        computers = dedupe([for (final x in computers) x.desktop.id == c.desktop.id ? next : x]);
         _changed();
       }
     } finally {
@@ -205,7 +244,8 @@ class AppState extends ChangeNotifier {
   Design? duplicateDesign(String id) {
     final d = store.get(id);
     if (d == null) return null;
-    final copy = store.save(d.copyWith(id: newId(), name: '${d.name} copy'));
+    // A new design: it was never exchanged with any computer.
+    final copy = store.save(d.copyWith(id: newId(), name: '${d.name} copy', base: 0));
     designs = store.live();
     _changed();
     _syncSoon();

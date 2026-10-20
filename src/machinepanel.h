@@ -219,6 +219,7 @@ private:
     void unlock();
     void cancelJob();
     QStringList riseToTop() const;
+    void continueAfterToolChange();      // with the rise to the top in front
     void forgetJogPlan() { m_jogPlanValid = false; }
     double m_jogPlan[3] = {0, 0, 0};
     bool m_jogPlanValid = false;

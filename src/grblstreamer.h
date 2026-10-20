@@ -85,7 +85,9 @@ public:
 public slots:
     bool sendCommand(const QString &line);      // jog / $X / G10 — immediate
     void startStream(const QStringList &lines); // run a whole program
-    void continueAfterToolChange();             // resume past a tool marker
+    // Resume past a tool marker; `first` runs ahead of the rest of the
+    // program, as part of it (byte-counted and acked like its own lines).
+    void continueAfterToolChange(const QStringList &first = {});
     void pauseStream();                         // '!' feed hold
     bool resumeStream();                        // '~' cycle start (false: refused)
     void stopStream();                          // abort: soft reset (ctrl-X)

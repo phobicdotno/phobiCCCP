@@ -47,6 +47,23 @@ void main() {
     expect(e['name'], 'B');
   });
 
+  test('the base and a computer\'s note travel with the design', () {
+    final d = Design.fromJson(jsonDecode('{"id":"a","name":"A","modified":20,"base":10,"desktopOnly":"shop"}') as Map<String, Object?>);
+    expect(d.base, 10);
+    expect(d.desktopOnly, 'shop');
+    final e = d.copyWith(name: 'B').toJson();
+    expect(e['base'], 10);
+    expect(e['desktopOnly'], 'shop');
+    expect(Design(id: 'n').toJson().containsKey('base'), false);
+    expect(Design.fromJson(const {'id': 'a', 'desktopOnly': true}).desktopOnly, isNotEmpty);
+  });
+
+  test('points repeated in a row are dropped', () {
+    expect(dropRepeats([[0, 0], [0, 0], [5, 0], [5, 0], [5, 5]]), [[0, 0], [5, 0], [5, 5]]);
+    expect(dropRepeats([[0, 0], [5, 0], [5, 5], [0, 0]], closed: true), [[0, 0], [5, 0], [5, 5]]);
+    expect(dropRepeats([[0, 0], [5, 0], [5, 5], [0, 0]]), hasLength(4));
+  });
+
   test('bad copies from the network are made safe', () {
     final d = Design.fromJson(jsonDecode('{"id":"a","stock":{"width":1e9,"height":0,"thickness":19},'
         '"shapes":[{"id":"p","type":"path","points":[[1],[2,3],[4,5,6]]}]}') as Map<String, Object?>);

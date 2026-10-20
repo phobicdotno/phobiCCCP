@@ -939,7 +939,7 @@ MachinePanel::MachinePanel(QWidget *parent)
             if (!shopAsk(this, a))
                 return;
         }
-        m_grbl->continueAfterToolChange();
+        continueAfterToolChange();
     });
     connect(m_pauseBtn, &QPushButton::clicked, this, [this] {
         // A refused resume (reset after an error, port gone) leaves the
@@ -1721,6 +1721,22 @@ QStringList MachinePanel::riseToTop() const
         return {QStringLiteral("G91"), QStringLiteral("G0 Z%1").arg(m_grbl->setting(132, 155) + 10, 0, 'f', 1),
                 QStringLiteral("G90")};
     return {};
+}
+
+// Resume a program parked at a tool change. Whoever pressed Continue may
+// have left the new bit just above the stock (jogged down to re-zero Z, or a
+// collet tightened low). The program lifts first after a change, but only to
+// its own safe height and only if it came from our post, so go all the way
+// up first. The rise is handed to the stream as program lines: ad-hoc
+// commands here would be one more writer on a line the stream owns.
+// Not homed, the only way up is into the Z switch, and with hard limits that
+// is an alarm that ends the job; then the program's own lift has to do.
+void MachinePanel::continueAfterToolChange()
+{
+    if (!m_homed)
+        log(QStringLiteral("not homed: no rise to the top before continuing — the program "
+                           "lifts to its safe height first"));
+    m_grbl->continueAfterToolChange(m_homed ? riseToTop() : QStringList{});
 }
 
 // Set the work offset from where the machine now stands and the corner it
@@ -2595,7 +2611,7 @@ void MachinePanel::onMacroFinished(bool ok)
             if (bs)
                 measureTool(Phase::MeasureAfterChange);
             else
-                m_grbl->continueAfterToolChange();
+                continueAfterToolChange();
         });
         return;
 
@@ -2640,7 +2656,7 @@ void MachinePanel::onMacroFinished(bool ok)
         saveSettings();
         updateOffsetLabels();
         if (phase == Phase::MeasureAfterChange)
-            whenIdle([this] { m_grbl->continueAfterToolChange(); });
+            whenIdle([this] { continueAfterToolChange(); });
         return;
     }
 }

@@ -131,7 +131,7 @@ QHash<QString, double> values(const Document &doc, const Parametric &p,
 // dimensions driven to a value they can't have (see badValue).
 QString newError(const Document &doc, const Parametric &before, const Parametric &after);
 // Why `v` can't be the value of dimension `c` (a radius, diameter or line
-// length of 0 or below), or empty. newError() checks every dimension too.
+// length of 0 or below, an angle outside 0..180 degrees), or empty. newError() checks every dimension too.
 QString badValue(const Constraint &c, double v);
 // Evaluate `expr` against the document's current parameters.
 bool evaluateIn(const Document &doc, const QString &expr, double *value,
@@ -178,9 +178,12 @@ struct SolveResult {
 // elements are only touched when the solve succeeds, unless `force`.
 SolveResult solve(Document &doc, const QSet<QString> &keep = {}, bool force = false);
 
-// Re-evaluate every toolpath field bound to an expression (`phobic_expr`).
-// Returns the uuids that changed.
-QStringList applyToolpathBindings(Document &doc);
+// Re-evaluate every toolpath field bound to an expression (`phobic_expr`),
+// clamped to the field's range when the binding carries one (min / max, a
+// depth's "abs" or "neg" ranging its size). Returns the uuids that changed.
+// *problems gets one line for each binding that can't be worked out (it
+// keeps its value) or was clamped.
+QStringList applyToolpathBindings(Document &doc, QStringList *problems = nullptr);
 
 struct Freedom {
     int dof = 0;                    // degrees of freedom the constrained part has left

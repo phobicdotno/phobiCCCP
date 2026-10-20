@@ -78,6 +78,27 @@ class _SendDialogState extends State<SendDialog> {
 
   List<Computer> _reachable() => app.computers.where((c) => c.reachable(app.now)).toList();
 
+  /// Toolpaths that computer cannot make: their tool is not in its own
+  /// library (the pad picks tools from whichever computer synced last), or
+  /// has no feeds there for the material. Empty while its library is not known.
+  List<String> _missingTools(Computer c) {
+    final lib = app.toolsOf(c.desktop.id);
+    if (lib.isEmpty) return const [];
+    final d = widget.design;
+    // As phobiCCCP builds it (src/padlink.cpp): an unknown material as soft wood.
+    final material = lib.materials.any((m) => m.id == d.material) ? d.material : 'softwood';
+    final out = <String>[];
+    for (final t in d.toolpaths.where((t) => t.shapes.isNotEmpty)) {
+      final tool = lib.tool(t.tool);
+      if (tool == null) {
+        out.add('${t.name}: T${t.tool} is not in its tool library');
+      } else if (!tool.materials.contains(material)) {
+        out.add('${t.name}: T${t.tool} has no feeds for ${lib.materialName(material)} there');
+      }
+    }
+    return out;
+  }
+
   Future<void> _go() async {
     final c = _reachable().where((c) => c.desktop.id == _computer).firstOrNull;
     if (c == null) return;
@@ -109,8 +130,12 @@ class _SendDialogState extends State<SendDialog> {
     final reach = _reachable();
     final c = reach.where((c) => c.desktop.id == _computer).firstOrNull;
     final info = c?.info;
+    final missing = c == null ? const <String>[] : _missingTools(c);
     String? warn;
-    if (_start && info != null) {
+    if (info != null && _machine != null && _machine != info.activeMachine && info.status.connected && !info.allowStart) {
+      warn = 'That machine is not the one in use, and this computer does not let a pad switch machines while one is '
+          'connected (Machine › Pads may start cutting). Disconnect it there, or send to the machine in use.';
+    } else if (_start && info != null) {
       if (!info.allowStart) {
         warn = 'This computer does not allow starting from a pad (Machine › Pads may start cutting). '
             'The design is opened there, not started.';
@@ -169,6 +194,9 @@ class _SendDialogState extends State<SendDialog> {
                     controlAffinity: ListTileControlAffinity.leading,
                     title: const Text('Start cutting right away'),
                   ),
+                  if (missing.isNotEmpty)
+                    Text('${c!.name} cannot make this as it is: ${missing.join('; ')}. Pick a tool it has, or sync with it first.',
+                        style: const TextStyle(color: C.amber, fontSize: 13)),
                   if (warn != null) Text(warn, style: const TextStyle(color: C.amber, fontSize: 13)),
                   if (_busy)
                     const Padding(
@@ -185,7 +213,7 @@ class _SendDialogState extends State<SendDialog> {
       ),
       actions: [
         TextButton(onPressed: _busy ? null : () => Navigator.pop(context), child: const Text('Cancel')),
-        FilledButton(onPressed: c == null || _busy ? null : _go, child: Text(_start ? 'Send and start…' : 'Send')),
+        FilledButton(onPressed: c == null || _busy ? null : _go, child: Text(missing.isNotEmpty ? 'Send anyway' : (_start ? 'Send and start…' : 'Send'))),
       ],
     ),
     );

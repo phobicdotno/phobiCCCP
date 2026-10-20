@@ -921,6 +921,18 @@ int main(int argc, char *argv[])
                 break;                       // a sample is enough
         }
         check(cuts > 0, "texture: the sheet actually got strokes");
+
+        // Each stroke lifts straight up where it ended, not over its start.
+        int lifts = 0;
+        bool straightUp = true;
+        for (int i = 1; i < g.ops.size(); ++i) {
+            const c2d::Op &a = g.ops.at(i - 1), &b = g.ops.at(i);
+            if (a.kind != c2d::Op::Feed || a.z > -1e-9 || b.kind != c2d::Op::Rapid || b.z <= a.z)
+                continue;
+            ++lifts;
+            straightUp = straightUp && std::fabs(a.x - b.x) < 1e-9 && std::fabs(a.y - b.y) < 1e-9;
+        }
+        check(lifts > 0 && straightUp, "texture: the retract after a stroke rises at its end");
     }
 
     // -----------------------------------------------------------------------

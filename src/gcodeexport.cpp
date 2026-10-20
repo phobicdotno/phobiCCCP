@@ -374,6 +374,22 @@ static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
 // depth. One whose floor is already reached is left out.
 static ToolGeom toolGeomOf(const QJsonObject &tool);
 
+// The tool change for one embedded tool object: its number, a key that is
+// the same only for the same bit, and the bit's shape for the simulation
+// (x diameter, y V angle, z corner radius, feed kind).
+static Op toolOp(const QJsonObject &tool)
+{
+    const ToolGeom g = toolGeomOf(tool);
+    Op o = Op::tool(g.number);
+    o.text = QStringLiteral("%1|%2|%3|%4|%5").arg(g.number).arg(int(g.kind))
+                 .arg(g.diameter, 0, 'g', 10).arg(g.angle, 0, 'g', 10).arg(g.cornerRadius, 0, 'g', 10);
+    o.x = g.diameter;
+    o.y = g.angle;
+    o.z = g.cornerRadius;
+    o.feed = int(g.kind) + 1;
+    return o;
+}
+
 struct Cleared {
     QPainterPath foot;   // material removed, as a region
     double zBot = 0;     // the floor it reached (Z, negative down)
@@ -1838,17 +1854,20 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
 
 QString toolReuseWarning(const QVector<Op> &ops)
 {
-    QList<int> seq;
-    for (const Op &o : ops)
-        if (o.kind == Op::Tool && (seq.isEmpty() || seq.last() != o.ival))
-            seq << o.ival;
-    QList<int> distinct;
+    // By bit (Op::text), so one number used for two bits is two tools.
+    QList<QPair<QString, int>> seq;
+    for (const Op &o : ops) {
+        const QPair<QString, int> t{o.text.isEmpty() ? QString::number(o.ival) : o.text, o.ival};
+        if (o.kind == Op::Tool && (seq.isEmpty() || seq.last().first != t.first))
+            seq << t;
+    }
+    QStringList distinct;
     QStringList again;
     for (int i = 0; i < seq.size(); ++i) {
-        if (distinct.contains(seq.at(i)))
-            again << QStringLiteral("T%1 after T%2").arg(seq.at(i)).arg(seq.at(i - 1));
+        if (distinct.contains(seq.at(i).first))
+            again << QStringLiteral("T%1 after T%2").arg(seq.at(i).second).arg(seq.at(i - 1).second);
         else
-            distinct << seq.at(i);
+            distinct << seq.at(i).first;
     }
     if (again.isEmpty())
         return QString();
@@ -1872,14 +1891,17 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
     const double safeZ = documentSafeZ(doc);
     QPointF lastPos(0, 0);
 
-    int lastTool = -1;
+    // Tool changes go by the bit, not just its number: two toolpaths that
+    // both say T1 but with different bits (an edited diameter, two tools
+    // numbered 0) still get the pause to swap them.
+    QString lastTool;
     int tpIndex = 0;
 
     // Ring-type toolpaths (pocket / contour / cutout) are not emitted one by
     // one: consecutive ones sharing a tool are pooled and emitted together,
     // ordered by orderDeferred(), so each site is finished before moving on.
     QList<Deferred> pending;
-    int pendingTool = -1;
+    Op pendingTool = Op::tool(-1);
     auto flush = [&]() {
         if (pending.isEmpty())
             return;
@@ -1902,16 +1924,16 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             em.runJob(d.job, d.cp);
             lastPos = em.pos();
         }
-        if (pendingTool != lastTool) {
-            ops.append(Op::tool(pendingTool));
-            lastTool = pendingTool;
+        if (pendingTool.text != lastTool) {
+            ops.append(pendingTool);
+            lastTool = pendingTool.text;
         }
         // No spindle stop here: the next toolpath with the same tool keeps it
         // running; the post stops it before a tool change and at the end.
         ops.append(body);
         res.done << names;
         pending.clear();
-        pendingTool = -1;
+        pendingTool = Op::tool(-1);
     };
 
     QList<Cleared> cleared;   // what the toolpaths so far have removed (rest depth)
@@ -1968,7 +1990,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             continue;
         }
         const QJsonObject tool = j.value("tool").toObject();
-        const int toolNo = int(numOr(tool.value("number"), 0));
+        const Op toolChange = toolOp(tool);
         const double toolR = numOr(tool.value("diameter"), 6) / 2.0;
 
         // Every depth this toolpath reads, with one flag for whether they were
@@ -2087,9 +2109,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 res.skipped << QStringLiteral("%1 (nothing to cut)").arg(name);
                 continue;
             }
-            if (toolNo != lastTool) {
-                ops.append(Op::tool(toolNo));
-                lastTool = toolNo;
+            if (toolChange.text != lastTool) {
+                ops.append(toolChange);
+                lastTool = toolChange.text;
             }
             ops.append(Op::comment(name));
             ops.append(Op::spindle(rpm));
@@ -2862,7 +2884,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         const double z = rng.in(qMin(zMin, zMax), qMax(zMin, zMax));
                         em.rapidTo(sp);
                         em.plungeTo(sp, z);
-                        body.append(Op::feedTo(ep.x(), ep.y(), z, feed));
+                        // Through the emitter, so it knows the stroke ended
+                        // at ep: appended behind its back, the retract went
+                        // up over the stroke's start instead, and the next
+                        // rapid travelled back from there.
+                        em.feedAt(ep, z, feed);
                         em.retract();
                         a += qMax(1.0, L * 0.7 + rng.in(0, L * 0.3));
                     }
@@ -3234,9 +3260,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         }
 
         if (!jobs.isEmpty()) {
-            if (pendingTool != toolNo)
+            if (pendingTool.text != toolChange.text)
                 flush();                      // different tool: close the pool
-            pendingTool = toolNo;
+            pendingTool = toolChange;
             for (const Job &job : jobs) {
                 CutParams jcp = cp;
                 if (!std::isnan(job.bandTop)) {
@@ -3255,9 +3281,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             continue;
         }
         flush();   // direct-emission toolpath: keep document order around it
-        if (toolNo != lastTool) {
-            ops.append(Op::tool(toolNo));
-            lastTool = toolNo;
+        if (toolChange.text != lastTool) {
+            ops.append(toolChange);
+            lastTool = toolChange.text;
         }
         ops.append(Op::comment(name));
         ops.append(Op::spindle(rpm));

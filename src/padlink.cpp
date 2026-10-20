@@ -5,11 +5,13 @@
 #include "toollibrary.h"
 #include "toolpathfactory.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QJsonDocument>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
@@ -154,6 +156,24 @@ QString check(const QJsonObject &d)
                 return QStringLiteral("toolpath %1: unknown shape %2").arg(name, sid.toString().left(64));
     }
     return {};
+}
+
+bool plausibleStamp(double modified, double now)
+{
+    return std::isfinite(modified) && modified <= now + kMaxAheadMs;
+}
+
+double nextStamp(double was, double now)
+{
+    if (now > was)
+        return now;
+    // Not just +1: a pad editing the same copy would pick that too, and
+    // equal times count as the same copy.
+    const double next = was + 1 + QRandomGenerator::global()->bounded(1000);
+    // A copy stamped absurdly far ahead (a clock gone wrong) is not followed
+    // there: this edit starts again from the clock, and the far one is
+    // refused or ignored everywhere (Store::put, the pad's sync).
+    return plausibleStamp(next, now) ? next : now;
 }
 
 bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *notes,
@@ -550,8 +570,25 @@ QString canonical(const QString &path)
 Links::Links(const QString &dir) : m_file(QDir(dir).filePath(QStringLiteral(".links.json")))
 {
     QFile f(m_file);
-    if (f.size() < 64 * 1024 * 1024 && f.open(QIODevice::ReadOnly))
-        m_links = QJsonDocument::fromJson(f.readAll()).object();
+    if (!f.exists() || f.size() == 0)
+        return;
+    // Links that cannot be read are kept as they are: writing what little was
+    // understood over them would unlink every file for good.
+    if (f.size() >= 64 * 1024 * 1024) {
+        m_error = QStringLiteral("%1 is too big to read").arg(m_file);
+        return;
+    }
+    if (!f.open(QIODevice::ReadOnly)) {
+        m_error = QStringLiteral("cannot read %1").arg(m_file);
+        return;
+    }
+    QJsonParseError pe;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &pe);
+    if (pe.error != QJsonParseError::NoError || !doc.isObject()) {
+        m_error = QStringLiteral("%1 is damaged").arg(m_file);
+        return;
+    }
+    m_links = doc.object();
 }
 
 QString Links::idFor(const QString &c2dPath) const
@@ -578,30 +615,51 @@ double Links::modified(const QString &c2dPath) const
     return m_links.value(canonical(c2dPath)).toObject().value(QStringLiteral("modified")).toDouble();
 }
 
-void Links::set(const QString &c2dPath, const QString &id, bool padOnly, double modified)
+bool Links::changedOutside(const QString &c2dPath) const
 {
+    const QJsonObject o = m_links.value(canonical(c2dPath)).toObject();
+    if (!o.contains(QStringLiteral("size")) || !o.contains(QStringLiteral("mtime")))
+        return false;   // linked before the file's size and time were noted
+    const QFileInfo fi(c2dPath);
+    return fi.size() != qint64(o.value(QStringLiteral("size")).toDouble())
+           || fi.lastModified().toMSecsSinceEpoch() != qint64(o.value(QStringLiteral("mtime")).toDouble());
+}
+
+bool Links::set(const QString &c2dPath, const QString &id, bool padOnly, double modified)
+{
+    if (!ok())
+        return false;
     QJsonObject o{{QStringLiteral("id"), id}, {QStringLiteral("padOnly"), padOnly}};
     if (modified > 0)
         o.insert(QStringLiteral("modified"), modified);
+    const QFileInfo fi(c2dPath);
+    if (fi.exists()) {
+        o.insert(QStringLiteral("size"), double(fi.size()));
+        o.insert(QStringLiteral("mtime"), double(fi.lastModified().toMSecsSinceEpoch()));
+    }
     m_links.insert(canonical(c2dPath), o);
-    write();
+    return write();
 }
 
-void Links::remove(const QString &c2dPath)
+bool Links::remove(const QString &c2dPath)
 {
+    if (!ok())
+        return false;
     m_links.remove(canonical(c2dPath));
     m_links.remove(c2dPath);
-    write();
+    return write();
 }
 
-void Links::write() const
+bool Links::write()
 {
     QDir().mkpath(QFileInfo(m_file).absolutePath());
     QSaveFile f(m_file);
-    if (f.open(QIODevice::WriteOnly)) {
-        f.write(QJsonDocument(m_links).toJson(QJsonDocument::Compact));
-        f.commit();
+    if (!f.open(QIODevice::WriteOnly)
+        || f.write(QJsonDocument(m_links).toJson(QJsonDocument::Compact)) < 0 || !f.commit()) {
+        m_error = QStringLiteral("cannot write %1").arg(m_file);
+        return false;
     }
+    return true;
 }
 
 QJsonObject toolsJson()
@@ -671,18 +729,9 @@ QJsonObject Store::get(const QString &id) const
     return d;
 }
 
-bool Store::put(const QJsonObject &design, QString *error)
+bool Store::write(const QJsonObject &design, QString *error)
 {
-    if (const QString e = check(design); !e.isEmpty()) {
-        if (error) *error = e;
-        return false;
-    }
     const QString id = design.value(QStringLiteral("id")).toString();
-    const QJsonObject have = get(id);
-    if (!have.isEmpty()
-        && have.value(QStringLiteral("modified")).toDouble()
-               >= design.value(QStringLiteral("modified")).toDouble())
-        return false;
     if (!QDir().mkpath(m_dir)) {
         if (error) *error = QStringLiteral("cannot create %1").arg(m_dir);
         return false;
@@ -694,6 +743,56 @@ bool Store::put(const QJsonObject &design, QString *error)
         return false;
     }
     return true;
+}
+
+bool Store::put(const QJsonObject &design, QString *error, PutOutcome *outcome, double now)
+{
+    if (const QString e = check(design); !e.isEmpty()) {
+        if (error) *error = e;
+        return false;
+    }
+    if (now <= 0)
+        now = double(QDateTime::currentMSecsSinceEpoch());
+    const double modified = design.value(QStringLiteral("modified")).toDouble();
+    if (!plausibleStamp(modified, now)) {
+        if (error)
+            *error = QStringLiteral("its time is years ahead of this computer's clock; check the "
+                                    "clock of the device it was edited on");
+        return false;
+    }
+    // What the sender's copy was made from is about this put only.
+    QJsonObject d = design;
+    const QJsonValue baseValue = d.take(QStringLiteral("base"));
+    d.remove(QStringLiteral("desktopOnly"));
+    const double base = baseValue.isDouble() && std::isfinite(baseValue.toDouble()) ? baseValue.toDouble() : 0;
+    const QString id = d.value(QStringLiteral("id")).toString();
+    const QJsonObject have = get(id);
+    if (have.isEmpty())
+        return write(d, error);
+    double haveModified = have.value(QStringLiteral("modified")).toDouble();
+    // A copy kept from before such times were refused loses to any edit, or
+    // it would win every sync until its far-off time.
+    if (!plausibleStamp(haveModified, now))
+        haveModified = 0;
+    // Changed here (or by another pad through here) since the copy the
+    // sender edited: newest-wins would throw one of the two edits away. A
+    // base newer than this copy only means this computer is behind.
+    if (base > 0 && haveModified > base && haveModified != modified) {
+        if (d.value(QStringLiteral("deleted")).toBool()) {
+            if (outcome) outcome->conflict = true;
+            return false;
+        }
+        const QString name = d.value(QStringLiteral("name")).toString();
+        d.insert(QStringLiteral("id"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+        d.insert(QStringLiteral("name"), QStringLiteral("%1 (pad)").arg(name.left(60)));
+        if (!write(d, error))
+            return false;
+        if (outcome) outcome->forked = d.value(QStringLiteral("id")).toString();
+        return true;
+    }
+    if (haveModified >= modified)
+        return false;
+    return write(d, error);
 }
 
 } // namespace c2d::padlink

@@ -168,4 +168,74 @@ void main() {
     expect(order().toSet(), before.toSet());
     await close(t);
   });
+
+  testWidgets('a scroll that stops with the finger down picks up the card under it', (t) async {
+    await open(t);
+    await t.tap(find.text('2 · Toolpaths'));
+    await t.pumpAndSettle();
+    List<String> order() => [for (final p in app.design(d.id)!.toolpaths) p.name];
+    final before = order();
+    final first = t.getCenter(find.text(before.first));
+    final second = t.getCenter(find.text(before[1]));
+
+    // Moved at once (a scroll, which cannot go further up here), onto the
+    // second card, then held still there: as on the desktop, every move
+    // starts the half-second wait again, and then the card under the finger
+    // comes loose.
+    final g = await t.startGesture(first);
+    for (var k = 1; k <= 4; k++) {
+      await g.moveTo(Offset.lerp(first, second, k / 4)!);
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    // Not yet: the last move was only just now.
+    await t.pump(const Duration(milliseconds: 300));
+    for (var k = 0; k < 4; k++) {
+      await g.moveBy(const Offset(0, 1));
+      await t.pump(const Duration(milliseconds: 100));
+    }
+    expect(order(), before);
+    await t.pump(const Duration(milliseconds: 550));
+    for (var k = 0; k < 8; k++) {
+      await g.moveBy(const Offset(0, 25));
+      await t.pump(const Duration(milliseconds: 16));
+    }
+    await g.up();
+    await t.pumpAndSettle();
+    expect(order().first, before.first);
+    expect(order()[1], isNot(before[1]));
+    expect(order().toSet(), before.toSet());
+    await close(t);
+  });
+
+  testWidgets('Document setup fits and keeps its edit', (t) async {
+    await open(t);
+    await t.tap(find.text('File'));
+    await t.pumpAndSettle();
+    await t.tap(find.text('Document setup…'));
+    await t.pumpAndSettle();
+    expect(t.takeException(), isNull);
+    await t.enterText(find.byType(TextField).first, 'Gate sign');
+    await t.tap(find.text('OK'));
+    await t.pumpAndSettle();
+    expect(app.design(d.id)!.name, 'Gate sign');
+    expect(t.takeException(), isNull);
+    await close(t);
+  });
+
+  testWidgets('the path tool makes no segment of no length', (t) async {
+    await open(t);
+    await t.tap(find.byTooltip('Path'));
+    await t.pumpAndSettle();
+    final c = t.getRect(find.byWidgetPredicate((w) => w.runtimeType.toString() == 'DesignCanvas')).center;
+    final a = c + const Offset(0, 150), b = c + const Offset(80, 150);
+    for (final p in [a, a, b, b]) {
+      await t.tapAt(p);
+      await t.pump(const Duration(milliseconds: 400));
+    }
+    await t.pumpAndSettle();
+    final path = app.design(d.id)!.shapes.last;
+    expect(path.type, Shape.path);
+    expect(path.points, hasLength(2));
+    await close(t);
+  });
 }

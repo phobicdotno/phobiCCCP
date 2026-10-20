@@ -297,6 +297,33 @@ static void testLinks(const QString &dir)
     check(!l.padOnly(file), "marked as holding more than the pad can");
     l.remove(file);
     check(padlink::Links(pad).idFor(file).isEmpty(), "and unlinked");
+
+    // The file's size and time are noted, so an edit made outside
+    // phobiCCCP (Carbide Create) is told from one made here.
+    l.set(file, "sign-1", true, 1000.0);
+    check(!padlink::Links(pad).changedOutside(file), "a file just linked is not changed outside");
+    {
+        QFile f(file);
+        f.open(QIODevice::Append);
+        f.write("edited elsewhere");
+    }
+    check(padlink::Links(pad).changedOutside(file), "a file written since is");
+    l.set(file, "sign-1", true, 1000.0);
+    check(!padlink::Links(pad).changedOutside(file), "until it is linked again");
+
+    // Links that cannot be read are never written over.
+    const QString links = QDir(pad).filePath(".links.json");
+    {
+        QFile f(links);
+        f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+        f.write("{\"/some/file.c2d\": {\"id\": \"x\"");   // cut short
+    }
+    padlink::Links broken(pad);
+    check(!broken.ok() && !broken.error().isEmpty(), "damaged links are noticed");
+    check(!broken.set(file, "sign-1", true) && !broken.remove(file), "and refuse changes");
+    QFile f(links);
+    f.open(QIODevice::ReadOnly);
+    check(f.readAll().endsWith("\"x\""), "and the file is left as it was");
 }
 
 static void testStore(const QString &dir, QJsonObject d)
@@ -321,6 +348,91 @@ static void testStore(const QString &dir, QJsonObject d)
     QString err;
     check(!store.put(QJsonObject{{"format", "x"}}, &err) && !err.isEmpty(), "junk refused with a reason");
     check(store.get("../../etc/passwd").isEmpty(), "no paths through get");
+}
+
+// A pad's put carries the time of the copy it edited ("base"): a stored copy
+// changed after that is not overwritten by the pad's edit.
+static void testConflicts(const QString &dir, QJsonObject d)
+{
+    padlink::Store store(QDir(dir).filePath("ConflictPad"));
+    const double now = 1760850000000.0;
+    d.insert("name", "Sign");
+    d.insert("modified", 1000.0);
+    check(store.put(d, nullptr, nullptr, now), "first copy stored");
+
+    // The pad edited the copy it has: an ordinary newer copy.
+    QJsonObject pad = d;
+    pad.insert("modified", 2000.0);
+    pad.insert("base", 1000.0);
+    padlink::Store::PutOutcome out;
+    check(store.put(pad, nullptr, &out, now) && out.forked.isEmpty() && !out.conflict,
+          "an edit of the stored copy replaces it");
+    check(!store.get("sign-1").contains("base"), "base is not stored");
+
+    // Changed here (3000) after the pad's copy (2000), then the pad's edit
+    // of 2000 arrives stamped newer: kept as a design of its own.
+    d.insert("modified", 3000.0);
+    d.insert("name", "Desk edit");
+    check(store.put(d, nullptr, nullptr, now), "an edit made here");
+    pad.insert("modified", 4000.0);
+    pad.insert("base", 2000.0);
+    pad.insert("name", "Pad edit");
+    out = {};
+    check(store.put(pad, nullptr, &out, now) && !out.forked.isEmpty() && padlink::validId(out.forked),
+          "a pad edit made meanwhile is forked");
+    check(store.get("sign-1").value("name").toString() == QLatin1String("Desk edit"),
+          "and the edit made here stays");
+    const QJsonObject fork = store.get(out.forked);
+    check(fork.value("name").toString() == QLatin1String("Pad edit (pad)")
+              && fork.value("modified").toDouble() == 4000.0 && !fork.contains("base"),
+          "the fork is the pad's edit, named as from the pad");
+    check(store.list().size() == 2, "both are listed");
+
+    // Even when the pad's edit is the older one, it is not lost.
+    pad.insert("modified", 2500.0);
+    out = {};
+    check(store.put(pad, nullptr, &out, now) && !out.forked.isEmpty(), "an older concurrent edit is forked too");
+
+    // A deletion of a copy changed meanwhile is refused.
+    QJsonObject gone{{"format", "phobicccp-pad"}, {"version", 1}, {"id", "sign-1"},
+                     {"modified", 5000.0}, {"deleted", true}, {"base", 2000.0}};
+    out = {};
+    check(!store.put(gone, nullptr, &out, now) && out.conflict && out.forked.isEmpty()
+              && !store.get("sign-1").value("deleted").toBool(),
+          "a deletion over a newer edit is refused");
+
+    // Another computer that is behind (its copy older than the pad's base)
+    // just takes the pad's edit; so does one without a base (an older pad).
+    pad.insert("modified", 6000.0);
+    pad.insert("base", 5500.0);
+    pad.insert("name", "From a pad that synced elsewhere");
+    out = {};
+    check(store.put(pad, nullptr, &out, now) && out.forked.isEmpty(), "a computer behind the pad's base takes it");
+    QJsonObject old = pad;
+    old.remove("base");
+    old.insert("modified", 7000.0);
+    out = {};
+    check(store.put(old, nullptr, &out, now) && out.forked.isEmpty(), "an old pad's put works as before");
+    // The same copy again: nothing to do, no conflict.
+    out = {};
+    check(!store.put(old, nullptr, &out, now) && out.forked.isEmpty() && !out.conflict,
+          "the copy it already has is not stored again");
+    QJsonObject same = old;
+    same.insert("base", 6000.0);
+    check(!store.put(same, nullptr, &out, now) && out.forked.isEmpty() && !out.conflict,
+          "nor with a base older than it");
+
+    // Times from a clock gone wrong.
+    QJsonObject far = d;
+    far.insert("modified", now + 2 * padlink::kMaxAheadMs);
+    QString err;
+    check(!store.put(far, &err, nullptr, now) && !err.isEmpty(), "a time years ahead is refused");
+    check(padlink::plausibleStamp(now + 1000, now) && !padlink::plausibleStamp(1e15, now),
+          "plausible times");
+    check(padlink::nextStamp(1000, now) == now, "an edit is stamped with the clock");
+    const double after = padlink::nextStamp(now + 10, now);
+    check(after > now + 10 && after <= now + 1011, "or just after a copy from a clock ahead");
+    check(padlink::nextStamp(1e15, now) == now, "but not after an absurd one");
 }
 
 static void testProfiles(const QString &dir)
@@ -372,6 +484,7 @@ int main(int argc, char **argv)
     testBackToPad(tmp.path());
     testLinks(tmp.path());
     testStore(tmp.path(), d);
+    testConflicts(tmp.path(), d);
     testProfiles(tmp.path());
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;

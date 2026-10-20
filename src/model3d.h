@@ -3,8 +3,10 @@
 #include "heightmodel.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QImage>
 #include <QJsonObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -193,6 +195,18 @@ private:
     bool m_lazy = false;
     friend struct ModelRegistry;
 };
+
+// Union / Subtract / Offset replace their input vectors with new elements
+// (new ids). Without this a component built from a consumed vector would
+// keep the dead id and its relief would quietly vanish. Points every
+// component of the document's attached model that used one of `removed` at
+// `added` instead, the way toolpaths are retargeted. Returns the changed
+// components' previous vectorIds, keyed by component id, for undo; empty
+// when nothing referenced the removed vectors (or no model is attached).
+using ModelVectorRefs = QHash<QString, QStringList>;
+ModelVectorRefs retargetModelVectors(const Document &doc, const QSet<QString> &removed,
+                                     const QStringList &added);
+void restoreModelVectors(const Document &doc, const ModelVectorRefs &before);
 
 // Register the heightmodel.h provider: heightModelFor(doc) returns the
 // document's composited model through ModelStore::forDocument(). Idempotent.

@@ -21,6 +21,7 @@
 #include <QJsonObject>
 #include <QTest>
 #include <QUndoStack>
+#include <QWheelEvent>
 
 #include <cmath>
 #include <cstdio>
@@ -873,6 +874,45 @@ int main(int argc, char *argv[])
         }
         check(negative == 2 && positive == 3,
               "center x/y go negative; radius, width and height have a positive minimum");
+    }
+
+    // --- properties: the wheel scrolls past an unfocused field ------------------------
+    {
+        const c2d::Element sq = c2d::Element::makeRectangle({300, 300}, 10, 10, doc.defaultLayer());
+        doc.addElement(sq);
+        c2d::PropertiesPanel panel(&canvas);
+        panel.setDocument(&doc);
+        panel.setSelection({sq.id});
+        bool allStrong = true, unchanged = true;
+        for (QDoubleSpinBox *s : panel.findChildren<QDoubleSpinBox *>()) {
+            allStrong = allStrong && s->focusPolicy() == Qt::StrongFocus;
+            const double v = s->value();
+            QWheelEvent we(QPointF(5, 5), s->mapToGlobal(QPointF(5, 5)), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(s, &we);
+            unchanged = unchanged && s->value() == v;
+        }
+        check(panel.isEnabled() && allStrong && unchanged,
+              "properties spin boxes ignore the wheel unless focused");
+        doc.removeElementById(sq.id);
+    }
+
+    // --- regen: a size of zero or less keeps the shape as it was ----------------------
+    {
+        const QJsonObject layer = doc.defaultLayer();
+        const c2d::Element sq = c2d::Element::makeRectangle({50, 50}, 10, 20, layer);
+        const c2d::Element ring = c2d::Element::makeCircle({50, 50}, 5, layer);
+        const c2d::Element hex = c2d::Element::makePolygon({50, 50}, 5, 6, layer);
+        bool kept = true;
+        for (double bad : {0.0, -3.0, qQNaN(), qInf()}) {
+            kept = kept && c2d::Element::regen(sq, {{"width", bad}}).raw == sq.raw
+                   && c2d::Element::regen(sq, {{"height", bad}}).raw == sq.raw
+                   && c2d::Element::regen(ring, {{"radius", bad}}).raw == ring.raw
+                   && c2d::Element::regen(hex, {{"radius", bad}}).raw == hex.raw;
+        }
+        check(kept, "regen ignores a zero, negative or non-finite width, height or radius");
+        check(c2d::Element::regen(sq, {{"width", 4.0}}).raw.value("width").toDouble() == 4.0,
+              "regen still takes a positive width");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

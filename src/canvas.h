@@ -120,12 +120,17 @@ public:
     // re-evaluate the toolpath fields bound to expressions. When the result
     // cannot hold, nothing changes and false comes back - unless
     // allowFailing (a parameter edit), which keeps it and marks the
-    // constraints that fail in red.
+    // constraints that fail in red. Constraints already red before the
+    // edit are left out of the solve, so they neither block it nor bend
+    // the rest to a compromise.
     // `mutate` runs on the document after the swap, before the solve (a
     // parameter rename also rewrites the toolpath bindings that use it).
     bool applyParametric(const Parametric &after, const QString &text,
                          bool allowFailing = false, const QSet<QString> &keep = {},
                          const std::function<void(Document &)> &mutate = {});
+    // What the last applyParametric's toolpath bindings reported: fields
+    // whose expression can't be worked out (kept) or that were clamped.
+    const QStringList &bindingProblems() const { return m_bindProblems; }
     void editDimension(const QString &uid);       // the inline value editor
     void deleteConstraint(const QString &uid);
     // Constraint glyphs and dimensions on the canvas: the user's toggle,
@@ -285,6 +290,7 @@ private:
     void openDimEditor(const Constraint &c, bool isNew);
     void commitDimEditor(bool keepMeasured);
     void closeDimEditor();
+    void placeDimEditor();                        // over its dimension, for the current view
     bool parametricPress(QMouseEvent *event);     // true = handled
     bool parametricMove(QMouseEvent *event);
     bool parametricRelease(QMouseEvent *event);
@@ -304,6 +310,8 @@ private:
     QLineEdit *m_dimEdit = nullptr;
     Constraint m_dimEditing;                      // what the editor edits
     bool m_dimEditingNew = false;
+    QPointF m_dimEditAt;                          // scene fallback when it has no geometry
+    QStringList m_bindProblems;                   // bindingProblems()
     QString m_dragDim;                            // dimension label being dragged
     QPointF m_dragDimFrom;
     QPointF m_dragDimLabel0;
