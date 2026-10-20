@@ -19,10 +19,15 @@ struct ShopAsk {
     bool noteDanger = false;  // red note box instead of amber
     QString okText = QStringLiteral("OK");
     QString cancelText = QStringLiteral("Cancel");   // empty: no cancel button
+    QString altText;          // optional third answer, between Cancel and OK
     bool okDanger = false;    // OK in red (destructive or risky) instead of amber
     bool defaultOk = true;    // Enter presses OK; otherwise Cancel
 };
 
+enum class ShopAnswer { Cancel, Ok, Alt };
+
+// Which button closed it; Esc is Cancel.
+ShopAnswer shopChoose(QWidget *parent, const ShopAsk &a);
 // True when OK was pressed.
 bool shopAsk(QWidget *parent, const ShopAsk &a);
 

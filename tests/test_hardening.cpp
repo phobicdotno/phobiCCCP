@@ -13,6 +13,7 @@
 #include "../src/gcodeexport.h"
 #include "../src/importers.h"
 #include "../src/model3d.h"
+#include "../src/recovery.h"
 #include "../src/tiling.h"
 #include "../src/vcarve.h"
 #include "../src/zlibutil.h"
@@ -22,6 +23,8 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QDateTime>
+#include <QLockFile>
 #include <QLineF>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -995,6 +998,63 @@ int main(int argc, char *argv[])
             c2d::exportTiled(doc, td.filePath(QStringLiteral("j")), 200.0, &never);
         check(!tiled.error.isEmpty(), "cancel: a cancelled tiled export is not a success");
         check(tiled.files.isEmpty(), "cancel: and writes no tiles");
+    }
+
+    // -----------------------------------------------------------------------
+    // Recovery locks are keyed by PID. After a crash and a reboot the new
+    // session often gets the dead one's PID back; its leftover lock then read
+    // as held by a live process (ours): the copy was never offered, and
+    // write() silently stopped saving.
+    {
+        QTemporaryDir td;
+        check(td.isValid(), "recovery: scratch directory");
+        const QString recDir = td.filePath(QStringLiteral("recovery"));
+        const QString source = td.filePath(QStringLiteral("part.c2d"));
+        QString err;
+        check(c2d::Document::createBlank(source, 100, 80, 10, &err), "recovery: blank design");
+        c2d::Document doc;
+        check(doc.load(source, &err), "recovery: design loads");
+        QFile src(source);
+        src.open(QIODevice::ReadWrite);
+        src.setFileTime(QDateTime::currentDateTime().addSecs(-3600), QFileDevice::FileModificationTime);
+        src.close();
+
+        // A crashed session with our PID: its copy, and a lock file naming us.
+        QString copy;
+        {
+            c2d::Recovery dead(recDir);
+            copy = dead.write(doc, source, false, &err);
+        }
+        check(!copy.isEmpty(), "recovery: copy written");
+        const QString lockPath = copy + QStringLiteral(".lock");
+        QByteArray lockData;
+        {
+            QLockFile mine(lockPath);
+            check(mine.tryLock(0), "recovery: lock taken to copy its contents");
+            QFile f(lockPath);
+            f.open(QIODevice::ReadOnly);
+            lockData = f.readAll();
+        }
+        QFile left(lockPath);
+        left.open(QIODevice::WriteOnly);
+        left.write(lockData);
+        left.close();
+        const QVector<c2d::Recovery::Entry> found = c2d::Recovery(recDir).pending();
+        bool offered = false;
+        for (const c2d::Recovery::Entry &e : found)
+            offered |= e.copy == copy;
+        check(offered, "recovery: a leftover lock naming our own PID does not hide the copy");
+
+        left.open(QIODevice::WriteOnly);
+        left.write(lockData);
+        left.close();
+        c2d::Recovery next(recDir);
+        check(next.write(doc, source, false, &err) == copy,
+              "recovery: and does not stop the new session's autosave");
+        // A lock this process really holds is still respected.
+        check(c2d::Recovery(recDir).write(doc, source, false, &err).isEmpty(),
+              "recovery: a copy held by a live session (this one) is not taken over");
+        next.discard();
     }
 
     std::printf("test_hardening: %d checks OK\n", g_checks);

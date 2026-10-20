@@ -1,5 +1,54 @@
 # Changelog
 
+## v1.2.6 (build 79) — 2026-10-20
+
+> Bug check 4: pockets no longer cut through islands, tool changes name the right bit, and pad sends that clash are kept as a copy
+
+- **Toolpaths:**
+  - A pocket's links between rings could feed straight across an island (or, in 3D rough, across
+    a hole in the boundary) at full depth. A link now stays down only inside the area the bit may
+    cut; otherwise it lifts. Ordinary pockets keep their links.
+  - A rest-depth contour with a lead-in could plunge the lead arc full depth into stock that was
+    never cut. The lead arcs now count when deciding where it starts.
+  - A ramp that ran out of laps on a tiny inner ring finished the drop at cutting feed; the rest
+    is now plunged at the plunge feed.
+  - Refused with a message instead of cutting wrong: spindle speed 0 (the spindle was stopped),
+    a start depth below the end depth, a tool diameter of 0 or less, and an unreadable 3D max depth.
+- **Machine:**
+  - The tool-change prompt named the first bit with that number, not the one needed, when two
+    bits share a number. It names the right one now.
+  - With the BitSetter off, the prompt can be closed to zero Z by hand; the program waits until
+    Continue (which warns if Z was not zeroed).
+  - Run is refused when the program has tool changes and there is no BitSetter reference yet.
+  - Disconnect during a job asks first, then holds, resets and closes, instead of leaving the
+    machine cutting its buffer with the spindle on.
+  - Cancel job during a dwell (spin-up) now holds the machine before asking.
+  - Zeroing is refused while a program runs (screen, gamepad and BitZero), except Z during a
+    manual tool-change pause.
+  - Jogs start from a fresh position (a quick tap after a hold could move the wrong way), a held
+    jog stops queueing far ahead, and taps can't flood the controller.
+  - Autosave waits while a job runs; a recovery copy is no longer lost when a new session gets
+    the crashed one's process id; a cancelled macro can no longer block the next one.
+- **Drawing and parametric:**
+  - Mirror and rotate keep constraints on the right corners of rectangles and polygons (they used
+    to bend the shape), and rotating by any angle keeps them instead of dropping them.
+  - Convert to path on a rectangle no longer flips distances to the other side or breaks angles.
+  - A solve that would turn a rectangle or polygon inside out is refused instead of writing it.
+  - A shape locked with Fix stays put when moved, turned or resized.
+  - The resize handle of a turned rectangle sits on its corner and sizes it along its own sides.
+  - Reopening a design clears the selection (the Properties panel showed nothing while the shape
+    stayed selected). Node menu actions check the node still exists.
+- **Files and pad link:**
+  - A pad Send that clashed with a desktop edit was forked silently, the opened file linked to the
+    wrong design, and the next sync forked again. Now one copy, the file linked to it, and the pad
+    told. A Send followed by another edit no longer makes a copy for no reason, and retries no
+    longer make extra copies.
+  - A toolpath whose shapes were deleted was added again on every desktop save.
+  - Save As and New asked nothing when "<name>.c2d" already existed; they ask now.
+  - A linked file on a drive that isn't plugged in stays linked (the status bar says so); a
+    stored design that can't be read is never written over.
+  - SVGs from Illustrator (drawing inside `<switch>`) import; DXF paper-space items are left out.
+
 ## v1.2.5 (build 78) — 2026-10-19
 
 > Bug check 3: rest cuts no longer cut into islands left standing, the Area tool keeps small islands, and parametric sketches stay put

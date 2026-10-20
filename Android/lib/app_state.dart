@@ -285,8 +285,21 @@ class AppState extends ChangeNotifier {
   /// Send [d] to open on that computer (and machine), and start it when asked.
   Future<SendResult> send(Design d, Computer c, String machineId, bool start) async {
     try {
-      return await CccpConnection.use(
-          c.desktop.address, c.desktop.port, (k) => k.send(d, machine: machineId, start: start, from: deviceName));
+      return await CccpConnection.use(c.desktop.address, c.desktop.port, (k) async {
+        final r = await k.send(d, machine: machineId, start: start, from: deviceName);
+        // It got there; what it did with the copy is for the sync to sort out
+        // if this part fails.
+        try {
+          final note = await settleSend(k, store, d, r, c.name);
+          if (note != null) {
+            notice = note;
+            noticeCount++;
+          }
+          designs = store.live();
+          _changed();
+        } catch (_) {}
+        return r;
+      });
     } finally {
       unawaited(syncNow());
     }

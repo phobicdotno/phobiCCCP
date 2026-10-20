@@ -760,7 +760,7 @@ void VectorActions::mirror(vec::Axis axis)
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
     const QString dir = axis == vec::Axis::Horizontal ? tr("horizontally") : tr("vertically");
-    pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir), true);
+    pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir), t);
     emit m_canvas->statusHint(tr("Mirrored %1 vector(s) %2").arg(before.size()).arg(dir));
 }
 
@@ -973,14 +973,14 @@ void VectorActions::patternOnPathDialog()
 // ---- modify: rotate, scale, move / copy, fillet, chamfer --------------------
 
 void VectorActions::pushReshape(const QVector<Element> &before, const QVector<Element> &after,
-                                const QString &text, bool mirrored)
+                                const QString &text, const QTransform &moved)
 {
     if (before.isEmpty())
         return;
     QStringList ids;
     for (const Element &e : after)
         ids << e.id;
-    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids, mirrored);
+    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids, moved);
 }
 
 void VectorActions::rotate(double deg)
@@ -992,7 +992,7 @@ void VectorActions::rotate(double deg)
     QVector<Element> after;
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
-    pushReshape(before, after, tr("rotate %1 vector(s) by %2°").arg(before.size()).arg(deg));
+    pushReshape(before, after, tr("rotate %1 vector(s) by %2°").arg(before.size()).arg(deg), t);
     emit m_canvas->statusHint(tr("Rotated %1 vector(s) by %2°").arg(before.size()).arg(deg));
 }
 
@@ -1006,7 +1006,7 @@ void VectorActions::scale(double sx, double sy)
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
     pushReshape(before, after,
-                tr("scale %1 vector(s) %2% × %3%").arg(before.size()).arg(sx * 100).arg(sy * 100));
+                tr("scale %1 vector(s) %2% × %3%").arg(before.size()).arg(sx * 100).arg(sy * 100), t);
     emit m_canvas->statusHint(tr("Scaled %1 vector(s) to %2% × %3%")
                                   .arg(before.size()).arg(sx * 100).arg(sy * 100));
 }

@@ -553,9 +553,19 @@ class SendResult {
   final bool started;
   final String message;
   final List<String> notes;
-  const SendResult({this.started = false, this.message = '', this.notes = const []});
+
+  /// As for a put: the id the design was kept under there, as it had changed
+  /// there since this pad's copy, and the time of the copy kept there (null
+  /// when it was not kept, or from an older phobiCCCP).
+  final String forked;
+  final int? modified;
+  const SendResult({this.started = false, this.message = '', this.notes = const [], this.forked = '', this.modified});
   factory SendResult.fromJson(Map<String, Object?> j) => SendResult(
-      started: _b(j['started']), message: _s(j['message']), notes: _l(j['notes']).whereType<String>().toList());
+      started: _b(j['started']),
+      message: _s(j['message']),
+      notes: _l(j['notes']).whereType<String>().toList(),
+      forked: _s(j['forked']),
+      modified: j['modified'] is num ? (j['modified'] as num).toInt() : null);
 }
 
 String fmt(double v) {

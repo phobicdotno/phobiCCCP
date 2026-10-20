@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.2.5 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.2.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -265,6 +265,14 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
                    src/gamepadmapdialog.cpp)
     target_link_libraries(test_gamepad PRIVATE Qt6::Widgets Qt6::Test)
     add_test(NAME gamepad COMMAND test_gamepad)
+    # The Machine panel on a fake controller: tool-change prompt, zeroing,
+    # jogging, cancelling and disconnecting around a job.
+    add_executable(test_machine tests/test_machine.cpp src/machinepanel.cpp src/shopdialog.cpp
+                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
+                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
+    target_link_libraries(test_machine PRIVATE phobicccp_core Qt6::Widgets)
+    add_test(NAME machine COMMAND test_machine)
+    set_tests_properties(machine PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 find_package(Python3 COMPONENTS Interpreter)

@@ -475,8 +475,12 @@ QJsonObject Parametric::toJson() const
         o.insert("type", int(c.type));
         o.insert("uid", c.uid);
         QJsonArray refs;
-        for (const GeoRef &r : c.refs)
-            refs.append(QJsonArray{int(r.kind), r.id, r.sub, r.index});
+        for (const GeoRef &r : c.refs) {
+            QJsonArray ra{int(r.kind), r.id, r.sub, r.index};
+            if (r.reversed)
+                ra.append(1);
+            refs.append(ra);
+        }
         o.insert("refs", refs);
         if (c.sense != 1)
             o.insert("sense", c.sense);
@@ -520,13 +524,14 @@ Parametric Parametric::fromJson(const QJsonObject &o)
         c.uid = co.value("uid").toString();
         for (const QJsonValue &rv : co.value("refs").toArray()) {
             const QJsonArray ra = rv.toArray();
-            if (ra.size() != 4)
+            if (ra.size() != 4 && ra.size() != 5)
                 continue;
             GeoRef r;
             r.kind = GeoRef::Kind(qBound(0, ra.at(0).toInt(), 2));
             r.id = ra.at(1).toString();
             r.sub = ra.at(2).toInt();
             r.index = ra.at(3).toInt();
+            r.reversed = r.kind == GeoRef::Line && ra.size() == 5 && ra.at(4).toInt() != 0;
             c.refs.append(r);
         }
         c.sense = co.value("sense").toInt(1) < 0 ? -1 : 1;
@@ -957,6 +962,8 @@ bool bodyPoint(const Body &b, const double *x, const GeoRef &r, QPointF *p)
 
 bool bodyLine(const Body &b, const double *x, const GeoRef &r, QPointF *a, QPointF *e)
 {
+    if (r.reversed)
+        std::swap(a, e);    // written end first: the line runs back
     const double *v = x + b.off;
     switch (b.t) {
     case Body::Rect:
@@ -1733,6 +1740,15 @@ QVector<RefShape> shapesOf(const Document &doc, const QString &id)
     return out;
 }
 
+QSet<QString> lockedElements(const Document &doc)
+{
+    QSet<QString> out;
+    for (const Constraint &c : doc.parametric().constraints)
+        if (c.type == Constraint::Fix && !c.refs.isEmpty() && c.refs.first().kind != GeoRef::Point)
+            out.insert(c.refs.first().id);
+    return out;
+}
+
 QVector<GeoRef> refsOf(const Document &doc, const QString &id)
 {
     QVector<GeoRef> out;
@@ -1840,6 +1856,22 @@ SolveResult solve(Document &doc, const QSet<QString> &keep, bool force)
                 res.failing << sys.constraints()[ci].uid;
                 break;
             }
+    // A rectangle or polygon driven through zero is a solution only on
+    // paper: written() can only build it the right way out, where the
+    // constraints that put it there no longer hold.
+    for (const Body &b : sys.bodies()) {
+        const double *v = x.constData() + b.off;
+        const bool insideOut = (b.t == Body::Rect && !b.rounded && (v[2] <= 0 || v[3] <= 0))
+                             || (b.t == Body::Polygon && v[2] <= 0);
+        if (!insideOut)
+            continue;
+        for (const Constraint &c : sys.constraints())
+            for (const GeoRef &r : c.refs)
+                if (r.id == b.id && !res.failing.contains(c.uid)) {
+                    res.failing << c.uid;
+                    break;
+                }
+    }
     res.ok = res.failing.isEmpty();
     if (!res.ok && !force)
         return res;
@@ -2062,8 +2094,11 @@ QString layoutOf(const Element &e)
 bool near(QPointF a, QPointF b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 1e-4; }
 
 // The reference in `doc` to the same geometry `r` was in `before`: the
-// point, line or circle at the same place. False when there is none.
-bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef *out)
+// point, line or circle at the same place - where `t` took it, for an
+// element the edit transformed. A line found running the other way is
+// taken reversed, so it keeps its direction. False when there is none.
+bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef *out,
+            const QTransform &t = QTransform())
 {
     QPointF a, b, c;
     double rad = 0;
@@ -2073,6 +2108,10 @@ bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef
         return false;
     if (r.kind == GeoRef::Circle && !circle(before, r, &c, &rad))
         return false;
+    a = t.map(a);
+    b = t.map(b);
+    c = t.map(c);
+    rad *= std::sqrt(std::fabs(t.determinant()));
     // Several can sit at the same place (a closed path's last node on its
     // first): take the one numbered closest to where it was.
     bool found = false;
@@ -2080,8 +2119,10 @@ bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef
     for (const RefShape &s : shapesOf(doc, r.id)) {
         if (s.ref.kind != r.kind)
             continue;
+        const bool ahead = r.kind == GeoRef::Line && near(s.a, a) && near(s.b, b);
+        const bool back = r.kind == GeoRef::Line && !ahead && near(s.a, b) && near(s.b, a);
         const bool same = r.kind == GeoRef::Point ? near(s.a, a)
-                        : r.kind == GeoRef::Line  ? (near(s.a, a) && near(s.b, b)) || (near(s.a, b) && near(s.b, a))
+                        : r.kind == GeoRef::Line  ? ahead || back
                                                   : near(s.a, c) && std::fabs(s.r - rad) < 1e-4;
         // A rectangle or polygon center is never one of its corners.
         if (!same || (r.kind == GeoRef::Point && (s.ref.index == -1) != (r.index == -1)))
@@ -2089,6 +2130,7 @@ bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef
         const int score = std::abs(s.ref.sub - r.sub) * 100000 + std::abs(s.ref.index - r.index);
         if (!found || score < best) {
             *out = s.ref;
+            out->reversed = back;
             best = score;
             found = true;
         }
@@ -2120,7 +2162,8 @@ int prune(Document &doc)
     return reconcile(doc, doc);   // same numbering: only what no longer resolves goes
 }
 
-int reconcile(const Document &before, Document &doc, QStringList *dropped, bool *changed)
+int reconcile(const Document &before, Document &doc, QStringList *dropped, bool *changed,
+              const QHash<QString, QTransform> &moved)
 {
     if (changed) *changed = false;
     Parametric p = doc.parametric();
@@ -2139,15 +2182,33 @@ int reconcile(const Document &before, Document &doc, QStringList *dropped, bool 
 
     QVector<Constraint> kept;
     QVector<Constraint> gone;
-    bool moved = false;
+    bool renumbered = false;
     for (Constraint c : p.constraints) {
         bool ok = true;
         for (GeoRef &r : c.refs) {
-            if (r.isOrigin() || keepsNumbers(r.id))
+            if (r.isOrigin())
                 continue;
             GeoRef to;
-            if (!follow(before, doc, r, &to)) { ok = false; break; }
-            moved = moved || !(to == r);
+            const auto t = moved.constFind(r.id);
+            if (t != moved.constEnd() && !t.value().isIdentity()) {
+                // A transformed element may keep its layout and still
+                // renumber (a rectangle flipped over keeps corner 0 at the
+                // lower left): follow the geometry through the transform.
+                // Nothing there (a transform that bent the shape) falls
+                // back to the old numbers while they still hold.
+                if (!follow(before, doc, r, &to, t.value())) {
+                    if (keepsNumbers(r.id))
+                        continue;
+                    ok = false;
+                    break;
+                }
+            } else if (keepsNumbers(r.id)) {
+                continue;
+            } else if (!follow(before, doc, r, &to)) {
+                ok = false;
+                break;
+            }
+            renumbered = renumbered || !(to == r) || to.reversed != r.reversed;
             r = to;
         }
         if (ok && resolves(doc, c))
@@ -2157,7 +2218,7 @@ int reconcile(const Document &before, Document &doc, QStringList *dropped, bool 
     }
     p.constraints = kept;
     if (gone.isEmpty()) {
-        if (moved) {
+        if (renumbered) {
             doc.setParametric(p);       // references moved to new numbers
             if (changed) *changed = true;
         }

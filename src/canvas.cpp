@@ -704,7 +704,8 @@ void Canvas::insertGenerated(const QVector<Element> &els, const Toolpath &tp)
 }
 
 // Exactly one selected, parametrically resizable element? Handle sits at the
-// east point (circle/polygon) or the top-right corner (rectangle).
+// east point (circle/polygon) or the top-right corner (rectangle; of the
+// rectangle as turned by its rotation).
 bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
 {
     if (!m_doc || m_tool != Select)
@@ -723,14 +724,32 @@ bool Canvas::resizeHandle(QString *id, QPointF *pos, QString *type) const
         || e->geometryType == QLatin1String("regular_polygon")) {
         *pos = center + QPointF(e->raw.value("radius").toDouble(), 0);
     } else if (e->geometryType == QLatin1String("rectangle")) {
-        *pos = center + QPointF(e->raw.value("width").toDouble() / 2,
-                                e->raw.value("height").toDouble() / 2);
+        QTransform turn;
+        turn.rotate(e->raw.value("rotation").toDouble());
+        *pos = center + turn.map(QPointF(e->raw.value("width").toDouble() / 2,
+                                         e->raw.value("height").toDouble() / 2));
     } else {
         return false;
     }
     *id = e->id;
     *type = e->geometryType;
     return true;
+}
+
+QHash<QString, double> Canvas::resizeTo(QPointF cur) const
+{
+    QHash<QString, double> p;
+    if (m_resizeType == QLatin1String("rectangle")) {
+        // Width and height run along the rectangle's own axes.
+        QTransform untwist;
+        untwist.rotate(-m_resizeRot);
+        const QPointF d = untwist.map(cur - m_resizeCenter);
+        p.insert("width",  qMax(0.2, 2 * qAbs(d.x())));
+        p.insert("height", qMax(0.2, 2 * qAbs(d.y())));
+    } else {
+        p.insert("radius", qMax(0.1, QLineF(m_resizeCenter, cur).length()));
+    }
+    return p;
 }
 
 void Canvas::drawForeground(QPainter *p, const QRectF &rect)
@@ -955,6 +974,9 @@ void Canvas::setDocument(Document *doc)
     m_dragDim.clear();
     m_hoverConstraint.clear();
     selectConstraint(QString());
+    // A selection carried over by id would show on the canvas while the
+    // panels, handed the new document after this, show none.
+    m_scene->clearSelection();
     rebuild();
 
     // Headless screenshot hooks (`--shot`): PHOBICCCP_SHOT_SELECT=<geometryType>
@@ -1889,6 +1911,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
                 m_resizeId = id;
                 m_resizeType = type;
                 m_resizeCenter = QPointF(c.at(0).toDouble(), c.at(1).toDouble());
+                m_resizeRot = type == QLatin1String("rectangle") ? e->raw.value("rotation").toDouble() : 0;
                 QPen pen(kSelected);
                 pen.setCosmetic(true);
                 pen.setStyle(Qt::DashLine);
@@ -2079,14 +2102,10 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
 
     if (m_resizing && m_preview && m_doc) {
         if (Element *e = m_doc->elementById(m_resizeId)) {
-            const QPointF cur = snap(cc);
-            QHash<QString, double> p;
+            const QHash<QString, double> p = resizeTo(snap(cc));
             if (m_resizeType == QLatin1String("rectangle")) {
-                p.insert("width",  qMax(0.2, 2 * qAbs(cur.x() - m_resizeCenter.x())));
-                p.insert("height", qMax(0.2, 2 * qAbs(cur.y() - m_resizeCenter.y())));
                 emit statusHint(tr("%1 × %2 mm").arg(p["width"], 0, 'f', 2).arg(p["height"], 0, 'f', 2));
             } else {
-                p.insert("radius", qMax(0.1, QLineF(m_resizeCenter, cur).length()));
                 emit statusHint(tr("r = %1 mm").arg(p["radius"], 0, 'f', 2));
             }
             m_preview->setPath(Element::regen(*e, p).painterPath);
@@ -2234,15 +2253,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_resizing && m_doc) {
         m_resizing = false;
         if (m_preview) { m_scene->removeItem(m_preview); delete m_preview; m_preview = nullptr; }
-        const QPointF cur = snap(mapToScene(event->pos()));
-        QHash<QString, double> p;
-        if (m_resizeType == QLatin1String("rectangle")) {
-            p.insert("width",  qMax(0.2, 2 * qAbs(cur.x() - m_resizeCenter.x())));
-            p.insert("height", qMax(0.2, 2 * qAbs(cur.y() - m_resizeCenter.y())));
-        } else {
-            p.insert("radius", qMax(0.1, QLineF(m_resizeCenter, cur).length()));
-        }
-        editElement(m_resizeId, p);
+        editElement(m_resizeId, resizeTo(snap(mapToScene(event->pos()))));
         event->accept();
         return;
     }
@@ -2404,11 +2415,20 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
             m_selNode = node;
             viewport()->update();
             const PathNode::Kind cur = m_model.subs.at(sub).nodes.at(node).kind;
+            // menu.exec() runs the event loop: a design replaced meanwhile
+            // (a pad sync) empties or renumbers the model under the menu.
+            const QString editing = m_editId;
+            auto stillThere = [this, editing, sub, node] {
+                return m_tool == NodeEdit && m_editId == editing && sub >= 0 && sub < m_model.subs.size()
+                       && node >= 0 && node < m_model.subs.at(sub).nodes.size();
+            };
             auto kindAct = [&](const QString &name, PathNode::Kind k) {
                 QAction *a = menu.addAction(name);
                 a->setCheckable(true);
                 a->setChecked(cur == k);
-                connect(a, &QAction::triggered, this, [this, sub, node, k] {
+                connect(a, &QAction::triggered, this, [this, sub, node, k, stillThere] {
+                    if (!stillThere())
+                        return;
                     m_model.subs[sub].setKind(node, k);
                     commitModel(tr("node kind"));
                 });
@@ -2418,12 +2438,14 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
             kindAct(tr("Symmetric"), PathNode::Symmetric);
             menu.addSeparator();
             connect(menu.addAction(tr("Straight lines (retract handles)")), &QAction::triggered,
-                    this, [this, sub, node] {
+                    this, [this, sub, node, stillThere] {
+                        if (!stillThere())
+                            return;
                         m_model.subs[sub].retract(node);
                         commitModel(tr("retract handles"));
                     });
-            connect(menu.addAction(tr("Delete node")), &QAction::triggered, this, [this, sub, node] {
-                if (m_model.subs[sub].removeNode(node)) {
+            connect(menu.addAction(tr("Delete node")), &QAction::triggered, this, [this, sub, node, stillThere] {
+                if (stillThere() && m_model.subs[sub].removeNode(node)) {
                     m_selSub = m_selNode = -1;
                     commitModel(tr("delete node"));
                 }

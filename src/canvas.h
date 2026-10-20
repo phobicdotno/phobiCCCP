@@ -113,9 +113,11 @@ public:
     Constraint::Type constraintType() const { return m_conType; }
     // Push a geometry edit. With constraints in the document the solver runs
     // right after it, in the same undo step, moving `touched` least.
-    // `mirrored`: the touched elements were mirrored, so which side each
-    // constraint among them holds on is taken afresh from the new geometry.
-    void pushEdit(QUndoCommand *cmd, const QStringList &touched, bool mirrored = false);
+    // `moved`: the transform the edit carried the touched elements through
+    // (a mirror, rotation or scale); their constraints follow the geometry
+    // through it, and after a mirror which side each holds on is taken
+    // afresh. A shape locked whole by a Fix is put back where it was.
+    void pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTransform &moved = QTransform());
     // Swap in new parameters / constraints as one undo step: re-solve, then
     // re-evaluate the toolpath fields bound to expressions. When the result
     // cannot hold, nothing changes and false comes back - unless
@@ -325,9 +327,12 @@ private:
 
     // Resize-handle drag state (single selected circle/rect/polygon).
     bool resizeHandle(QString *id, QPointF *pos, QString *type) const;
+    // The size the handle at `cur` asks for (width / height or radius).
+    QHash<QString, double> resizeTo(QPointF cur) const;
     bool m_resizing = false;
     QString m_resizeId, m_resizeType;
     QPointF m_resizeCenter;
+    double m_resizeRot = 0;     // a turned rectangle's rotation, degrees
 };
 
 } // namespace c2d

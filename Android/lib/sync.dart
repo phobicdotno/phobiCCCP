@@ -52,8 +52,17 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
       final info = await c.info();
       final tools = withTools ? await c.tools() : null;
       final now = DateTime.now().millisecondsSinceEpoch;
-      final plan = SyncPlan.of({for (final d in store.all()) d.id: d.modified}, await c.designs(), now: now);
+      final remote = await c.designs();
+      final plan = SyncPlan.of({for (final d in store.all()) d.id: d.modified}, remote, now: now);
       final host = info.host.isEmpty ? desk.host : info.host;
+      // The same time there means the same copy (sent by "send", say, whose
+      // answer this pad did not hear): the next edit here is an edit of it.
+      for (final e in remote) {
+        final mine = store.get(e.id);
+        if (mine != null && mine.modified == e.modified && mine.base != e.modified && plausibleStamp(e.modified, now)) {
+          store.put(mine.copyWith(base: e.modified));
+        }
+      }
       var pulled = 0, pushed = 0;
       final refused = <String>[], conflicts = <String>[];
 
@@ -117,3 +126,21 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store, {bool withTools = t
       }
       return SyncResult(info, tools, pulled, pushed, refused, conflicts);
     });
+
+/// After a send to [host] over [c]: the copy kept there is this pad's base
+/// from now on, or, when it had changed there since ([SendResult.forked]: the
+/// pad's version opened as a new design), its copy replaces this pad's, as
+/// after a conflict in a sync. Then what to tell the user, else null.
+Future<String?> settleSend(CccpConnection c, DesignStore store, Design d, SendResult r, String host) async {
+  final cur = store.get(d.id);
+  // Edited again here meanwhile: that edit is left for the next sync.
+  if (cur == null || cur.modified != d.modified) return null;
+  if (r.forked.isNotEmpty) {
+    final theirs = await c.get(d.id);
+    if (theirs.id != d.id || !plausibleStamp(theirs.modified, DateTime.now().millisecondsSinceEpoch)) return null;
+    store.put(theirs.copyWith(base: theirs.modified));
+    return '“${d.name}” changed on $host too: theirs is here now, and yours opened there as “${d.name} (pad)”';
+  }
+  if (r.modified == d.modified) store.put(cur.copyWith(base: d.modified));
+  return null;
+}

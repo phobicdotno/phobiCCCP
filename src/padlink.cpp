@@ -545,9 +545,24 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
     }
     // Toolpaths still waiting for their shapes were left out of the document
     // (buildDocument); keep them, or a save here would take them off every pad.
-    for (const QJsonValue &v : base.value(QStringLiteral("toolpaths")).toArray())
-        if (v.toObject().value(QStringLiteral("shapes")).toArray().isEmpty() && toolpaths.size() < kMaxToolpaths)
+    // One whose shapes were deleted here is in the document, and came out
+    // above with none: not added again, or every save would add a copy.
+    auto key = [](const QJsonObject &t) {
+        return QStringLiteral("%1\n%2\n%3\n%4")
+            .arg(t.value(QStringLiteral("name")).toString(), t.value(QStringLiteral("type")).toString())
+            .arg(t.value(QStringLiteral("tool")).toInt())
+            .arg(t.value(QStringLiteral("depth")).toDouble());
+    };
+    QSet<QString> emptyHere;
+    for (const QJsonValue &v : std::as_const(toolpaths))
+        if (v.toObject().value(QStringLiteral("shapes")).toArray().isEmpty())
+            emptyHere.insert(key(v.toObject()));
+    for (const QJsonValue &v : base.value(QStringLiteral("toolpaths")).toArray()) {
+        const QJsonObject t = v.toObject();
+        if (t.value(QStringLiteral("shapes")).toArray().isEmpty() && toolpaths.size() < kMaxToolpaths
+            && !emptyHere.contains(key(t)))
             toolpaths.append(v);
+    }
     d.insert(QStringLiteral("toolpaths"), toolpaths);
     if (lostOut)
         *lostOut = lost;
@@ -745,6 +760,13 @@ bool Store::write(const QJsonObject &design, QString *error)
     return true;
 }
 
+QString Store::forkIdFor(const QString &id, double modified, double base)
+{
+    static const QUuid ns(QStringLiteral("{6c1f4a2e-9b0d-4e57-8a3c-2f7d5e1b9c40}"));
+    const QByteArray key = QStringLiteral("%1\n%2\n%3").arg(id).arg(modified, 0, 'f', 0).arg(base, 0, 'f', 0).toUtf8();
+    return QUuid::createUuidV5(ns, key).toString(QUuid::WithoutBraces);
+}
+
 bool Store::put(const QJsonObject &design, QString *error, PutOutcome *outcome, double now)
 {
     if (const QString e = check(design); !e.isEmpty()) {
@@ -767,6 +789,17 @@ bool Store::put(const QJsonObject &design, QString *error, PutOutcome *outcome, 
     const double base = baseValue.isDouble() && std::isfinite(baseValue.toDouble()) ? baseValue.toDouble() : 0;
     const QString id = d.value(QStringLiteral("id")).toString();
     const QJsonObject have = get(id);
+    // A copy this build cannot read (made by a newer phobiCCCP, say) is not
+    // known to be older: it is left as it is rather than written over.
+    auto unreadable = [&](const QString &which) {
+        if (error)
+            *error = QStringLiteral("the copy of “%1” kept on this computer cannot be read here (made by a "
+                                    "newer phobiCCCP?), so it is left as it is")
+                         .arg(which);
+        return false;
+    };
+    if (have.isEmpty() && QFile::exists(path(id)))
+        return unreadable(d.value(QStringLiteral("name")).toString());
     if (have.isEmpty())
         return write(d, error);
     double haveModified = have.value(QStringLiteral("modified")).toDouble();
@@ -782,12 +815,21 @@ bool Store::put(const QJsonObject &design, QString *error, PutOutcome *outcome, 
             if (outcome) outcome->conflict = true;
             return false;
         }
+        // The same edit sent again (its answer was lost, or a send and a sync
+        // both carried it) lands on the same fork rather than making another.
         const QString name = d.value(QStringLiteral("name")).toString();
-        d.insert(QStringLiteral("id"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+        const QString forkId = forkIdFor(id, modified, base);
+        if (QFile::exists(path(forkId))) {
+            if (get(forkId).isEmpty())
+                return unreadable(QStringLiteral("%1 (pad)").arg(name.left(60)));
+            if (outcome) outcome->forked = forkId;
+            return true;
+        }
+        d.insert(QStringLiteral("id"), forkId);
         d.insert(QStringLiteral("name"), QStringLiteral("%1 (pad)").arg(name.left(60)));
         if (!write(d, error))
             return false;
-        if (outcome) outcome->forked = d.value(QStringLiteral("id")).toString();
+        if (outcome) outcome->forked = forkId;
         return true;
     }
     if (haveModified >= modified)

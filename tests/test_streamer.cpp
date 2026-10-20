@@ -45,6 +45,8 @@ struct FakeGrbl {
     bool resetWhileHeld = false;
     int linesAfterReset = 0;
     QList<QByteArray> seen;   // every line received, in order
+    // Lines containing HANG are never acked: a G4 still running, or a line
+    // GRBL's reset flushes before answering it.
     // For the surface-map prober: report Idle at this machine position (work
     // offset 10, 20, 0), follow absolute G0 X/Y moves, answer each G38.2 with
     // a touch at Z -7 where the head stands.
@@ -103,7 +105,8 @@ struct FakeGrbl {
                 seen << line;
                 if (positional)
                     follow(line);
-                send(line.contains("BAD") ? "error:20\r\n" : "ok\r\n");
+                if (!line.contains("HANG"))
+                    send(line.contains("BAD") ? "error:20\r\n" : "ok\r\n");
                 line.clear();
             } else if (c != '\r') {
                 line += c;
@@ -210,6 +213,62 @@ int main(int argc, char **argv)
               "tool change: then the rest of the program, all of it");
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // Two bits with the same number: the program changes tools twice at
+    // `M0 ;T1`, and each pause says which of the program's tool changes it is,
+    // so the prompt can name the bit actually wanted.
+    {
+        QList<QPair<int, int>> parks;
+        bool finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested,
+                         [&](int t, int k) { parks << qMakePair(t, k); });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("M0 ;T1"), QStringLiteral("G0Z5"),
+                       QStringLiteral("M0 ;T1"), QStringLiteral("G0Z6")});
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == qMakePair(1, 0), "ordinal: first change is #0");
+        s.continueAfterToolChange();
+        spin(2000, [&] { return parks.size() == 2; });
+        check(parks.size() == 2 && parks.at(1) == qMakePair(1, 1),
+              "ordinal: the second T1 is change #1, not the first one again");
+        s.continueAfterToolChange();
+        spin(2000, [&] { return finished; });
+        check(finished, "ordinal: the program finishes");
+        s.startStream({QStringLiteral("M0 ;T3")});
+        spin(2000, [&] { return parks.size() == 3; });
+        check(parks.size() == 3 && parks.at(2) == qMakePair(3, 0), "ordinal: counts again per program");
+        s.stopStream();
+        spin(300, [] { return false; });
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // A macro cancelled with a line in flight skips that line's ok. When a
+    // reset flushes the line instead, no ok ever comes: the skip must not
+    // outlive the reset and eat the first ok of the next macro (which then
+    // hangs) or program (which then never finishes).
+    {
+        QList<bool> done;
+        QObject::connect(&s, &c2d::GrblStreamer::macroFinished, [&](bool ok) { done << ok; });
+        s.startMacro({QStringLiteral("G38.3 Z-10 HANG")});
+        s.cancelMacro();
+        check(done.size() == 1 && !done.at(0), "skip: the cancelled macro reports failure");
+        s.stopStream();                          // reset before its ok
+        spin(400, [] { return false; });
+        s.startMacro({QStringLiteral("G0 X1"), QStringLiteral("G0 X2")});
+        spin(2000, [&] { return done.size() == 2; });
+        check(done.size() == 2 && done.at(1), "skip: the next macro runs to the end after a reset");
+
+        s.startMacro({QStringLiteral("G38.3 Z-10 HANG")});
+        s.cancelMacro();
+        s.disconnectPort();                      // or the cable goes
+        check(s.connectPort(QString::fromLatin1(name)), "skip: reconnects");
+        spin(400, [] { return false; });
+        s.startMacro({QStringLiteral("G0 X3")});
+        spin(2000, [&] { return done.size() == 4; });
+        check(done.size() == 4 && done.at(3), "skip: the next macro runs after a reconnect");
+        QObject::disconnect(&s, &c2d::GrblStreamer::macroFinished, nullptr, nullptr);
     }
 
     // Surface map: a head jogged sideways while waiting for the plate is

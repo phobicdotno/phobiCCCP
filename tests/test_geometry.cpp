@@ -6,8 +6,10 @@
 // Plain asserts, no test framework; exits 0 on success.
 
 #include "../src/c2ddocument.h"
+#include "../src/cam3d.h"
 #include "../src/element.h"
 #include "../src/gcodeexport.h"
+#include "../src/heightmodel.h"
 #include "../src/setupsheet.h"
 #include "../src/sketch.h"
 #include "../src/post_grbl.h"
@@ -149,6 +151,44 @@ struct Rig {
         doc.addToolpath(tp);
     }
 };
+
+// Closest the tool centre comes to `box` on any straight feed below Z0, and
+// the number of retracts (rapids up from below Z0) - for the link checks.
+static double closestFeedTo(const QVector<c2d::Op> &ops, const QRectF &box)
+{
+    double worst = 1e9;
+    double cx = 0, cy = 0, cz = 10;
+    for (const c2d::Op &o : ops) {
+        if (o.kind == c2d::Op::Feed && std::max(cz, o.z) < -0.01) {
+            for (int i = 0; i <= 400; ++i) {
+                const double t = i / 400.0;
+                const double x = cx + (o.x - cx) * t, y = cy + (o.y - cy) * t;
+                const double dx = std::max({box.left() - x, 0.0, x - box.right()});
+                const double dy = std::max({box.top() - y, 0.0, y - box.bottom()});
+                worst = std::min(worst, std::hypot(dx, dy));
+            }
+        }
+        if (o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) {
+            cx = o.x;
+            cy = o.y;
+            cz = o.z;
+        }
+    }
+    return worst;
+}
+
+static int retractsFromCut(const QVector<c2d::Op> &ops)
+{
+    int n = 0;
+    double cz = 10;
+    for (const c2d::Op &o : ops) {
+        if (o.kind == c2d::Op::Rapid && o.z > cz + 1e-6 && cz < 0)
+            ++n;
+        if (o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc)
+            cz = o.z;
+    }
+    return n;
+}
 
 int main(int argc, char *argv[])
 {
@@ -1586,6 +1626,190 @@ int main(int argc, char *argv[])
         const c2d::Toolpath ch = doc.toolpaths().at(2);
         check(ch.json.value("tool").toObject().value("angle").toDouble() > 0,
               "chamfer gets a V-bit from the library");
+    }
+
+    // --- stay-down links never cross an island ------------------------------
+    // A 2 mm island splits the 12.7 mm bit's pocket into two lobes 25 mm
+    // apart, under linkDist (25.4): the link fed straight across the island
+    // at every depth. It must retract instead, and an ordinary pocket must
+    // keep every link it had.
+    {
+        Rig r;
+        const c2d::Element outer = c2d::Element::makeRectangle({25, 20}, 50, 40, layer);
+        const c2d::Element island = c2d::Element::makeRectangle({30, 20}, 2, 30, layer);
+        r.doc.addElement(outer);
+        r.doc.addElement(island);
+        for (const bool helix : {false, true}) {
+            Rig h;
+            h.doc = r.doc;
+            h.addToolpath("pocket_toolpath",
+                          {{"stepover", 4.0}, {"end_depth", "6"}, {"stepdown", 3.0},
+                           {"helix_entry", helix},
+                           {"tool", QJsonObject{{"diameter", 12.7}, {"number", 1}}},
+                           {"elements", QJsonArray{QJsonObject{{"uuid", outer.id}},
+                                                   QJsonObject{{"uuid", island.id}}}}});
+            const c2d::GcodeResult g = c2d::exportGcode(h.doc);
+            check(g.done.size() == 1, "pocket round an island exports");
+            check(closestFeedTo(g.ops, QRectF(29, 5, 2, 30)) > 6.35 - 0.05,
+                  helix ? "helix pocket: no link feeds across the island"
+                        : "pocket: no link feeds across the island");
+        }
+        for (const int mode : {0, 1, 2}) {
+            Rig p;
+            p.addShape(c2d::Element::makeRectangle({30, 20}, 60, 40, layer));
+            QJsonObject extra{{"stepover", 2.5}, {"end_depth", "6"}, {"stepdown", 2.0}};
+            if (mode == 1)
+                extra.insert("enable_ramping", true);
+            if (mode == 2)
+                extra.insert("helix_entry", false);
+            p.addToolpath("pocket_toolpath", extra);
+            const c2d::GcodeResult g = c2d::exportGcode(p.doc);
+            check(g.done.size() == 1 && retractsFromCut(g.ops) == 1,
+                  "an ordinary pocket keeps its stay-down links (one retract, at the end)");
+        }
+    }
+
+    // --- 3D rough: links stay out of a hole in the boundary -----------------
+    {
+        c2d::HeightModel m;
+        m.cell = 0.5;
+        m.baseZ = -6;
+        m.resize(100, 80);   // 50 x 40 mm, no model: the floor at -6 everywhere
+        Rig r;
+        const c2d::Element outer = c2d::Element::makeRectangle({25, 20}, 50, 40, layer);
+        const c2d::Element hole = c2d::Element::makeRectangle({30, 20}, 2, 30, layer);
+        r.doc.addElement(outer);
+        r.doc.addElement(hole);
+        QJsonObject extra;
+        const QJsonObject def = c2d::defaultRoughToolpathJson();
+        for (const QString &k : def.keys())
+            if (k != "elements" && k != "uuid" && k != "name")
+                extra.insert(k, def.value(k));
+        extra.insert("tool", QJsonObject{{"number", 1}, {"diameter", 12.7}, {"type", 0}});
+        extra.insert("stepover", 4.0);
+        extra.insert("stock_to_leave", 0.0);
+        extra.insert("stepdown", 3.0);
+        extra.insert("elements", QJsonArray{QJsonObject{{"uuid", outer.id}},
+                                            QJsonObject{{"uuid", hole.id}}});
+        r.addToolpath("3d_rough_toolpath", extra);
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc, nullptr, &m);
+        check(g.done.size() == 1, "3D rough with a hole in its boundary exports");
+        check(closestFeedTo(g.ops, QRectF(29, 5, 2, 30)) > 6.35 - 0.05,
+              "3D rough: no link feeds across a hole in the boundary");
+
+        // An unreadable max depth is refused, not read as "to the floor".
+        QJsonObject e2 = extra;
+        e2.insert("max_depth", QStringLiteral("5,0"));
+        e2.insert("uuid", QStringLiteral("{tp-2}"));
+        c2d::Document d2;
+        for (const c2d::Element &e : {outer, hole})
+            d2.addElement(e);
+        Rig b2;
+        b2.doc = d2;
+        b2.addToolpath("3d_rough_toolpath", e2);
+        const c2d::GcodeResult g2 = c2d::exportGcode(b2.doc, nullptr, &m);
+        check(g2.done.isEmpty() && g2.skipped.size() == 1
+                  && g2.skipped.first().contains(QLatin1String("max depth")),
+              "3D rough: an unreadable max depth is skipped");
+        bool ok = true;
+        c2d::cam3dParams(QJsonObject{{"max_depth", QStringLiteral("5mm")}}, 3, &ok);
+        check(!ok, "cam3dParams: \"5mm\" is not a max depth");
+        const c2d::Cam3dParams p3 =
+            c2d::cam3dParams(QJsonObject{{"max_depth", QStringLiteral("2.000")}}, 3, &ok);
+        check(ok && approx(p3.maxDepth, -2.0), "cam3dParams: a readable max depth is read");
+        c2d::cam3dParams(QJsonObject{}, 3, &ok);
+        check(ok, "cam3dParams: no max depth is fine");
+    }
+
+    // --- rest depth samples the contour's lead arcs -------------------------
+    // The second contour's ring lies in what the first cleared, but its lead
+    // arcs reach out into stock never cut: it must not start lower down.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({50, 50}, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1}, {"end_depth", "10"}, {"stepdown", 2.0}});
+        QJsonObject second{{"ofset_dir", 1}, {"end_depth", "12"}, {"stepdown", 2.0},
+                           {"tool", QJsonObject{{"diameter", 3.175}, {"number", 2}}},
+                           {"rest_auto", true}, {"rest_overlap", 1.0}, {"lead_radius", 5.0},
+                           {"name", QStringLiteral("t1")}, {"uuid", QStringLiteral("{tp-2}")}};
+        r.addToolpath("contour", second);
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 2, "rest contour with leads exports");
+        bool in = false, found = false;
+        double firstZ = 0;
+        for (const c2d::Op &o : g.ops) {
+            if (o.kind == c2d::Op::Comment)
+                in = o.text == QLatin1String("t1");
+            if (in && o.kind == c2d::Op::Feed && o.z < 0) {
+                firstZ = o.z;
+                found = true;
+                break;
+            }
+        }
+        check(found && firstZ > -2.0 - 1e-6,
+              "rest contour: lead arcs in uncut stock keep the first pass at the top");
+    }
+
+    // --- spindle speed 0, a bad tool diameter, start below end: skipped -----
+    {
+        auto skippedWith = [&](const char *type, const QJsonObject &extra, const char *msg) {
+            Rig r;
+            if (QLatin1String(type) == QLatin1String("slot_toolpath"))
+                r.addShape(c2d::Element::makePath({{10, 10}, {40, 10}}, false, layer));
+            else
+                r.addShape(c2d::Element::makeCircle({20, 20}, 10, layer));
+            r.addToolpath(type, extra);
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            return g.done.isEmpty() && g.skipped.size() == 1
+                   && g.skipped.first().contains(QLatin1String(msg))
+                   && !g.gcode.contains(QLatin1String("G1"));
+        };
+        check(skippedWith("pocket_toolpath",
+                          {{"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300},
+                                                  {"rpm", 0}}}},
+                          "spindle speed must be above 0"),
+              "a toolpath at 0 rpm is skipped");
+        for (const QJsonValue &dia : {QJsonValue(0.0), QJsonValue(-6.35), QJsonValue()}) {
+            QJsonObject tool{{"number", 3}};
+            if (!dia.isUndefined())
+                tool.insert("diameter", dia);
+            check(skippedWith("pocket_toolpath", {{"tool", tool}}, "tool diameter must be above 0"),
+                  "a zero, negative or missing tool diameter is skipped");
+        }
+        for (const char *type : {"bore_toolpath", "circular_toolpath", "slot_toolpath",
+                                 "pocket_toolpath", "drilling_toolpath", "contour"})
+            check(skippedWith(type, {{"start_depth", "5"}, {"end_depth", "2"}, {"peck_distance", 1.0}},
+                              "start depth is below end depth"),
+                  "a start depth below the end depth is skipped, whatever the type");
+    }
+
+    // --- a ramp that runs out of laps plunges the rest ---------------------
+    // The innermost ring of a R5 pocket at a 1.5 stepover is ~0.3 mm round:
+    // 20 laps at 3 degrees do not reach the depth, and the remainder used to
+    // go down on the next move at the cutting feed.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({20, 20}, 5, layer));
+        r.addToolpath("pocket_toolpath", {{"stepover", 1.5}, {"enable_ramping", true},
+                                          {"ramp_angle", 3.0}, {"end_depth", "6"}, {"stepdown", 3.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1, "short-ring ramp pocket exports");
+        int steep = 0;
+        double cx = 0, cy = 0, cz = 10;
+        for (const c2d::Op &o : g.ops) {
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) {
+                const double dz = cz - o.z;
+                const double xy = std::hypot(o.x - cx, o.y - cy);
+                if (dz > 0.05 && o.z < -0.01 && o.feed > 300 + 1e-6 && dz > xy)
+                    ++steep;
+            }
+            if (o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) {
+                cx = o.x;
+                cy = o.y;
+                cz = o.z;
+            }
+        }
+        check(steep == 0, "ramp: no steep descent at the cutting feed");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

@@ -97,7 +97,7 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 | `get` | `id` | `design` |
 | `put` | `design` (with `base`) | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id the design was kept under instead, or `conflict`: a deletion refused |
 | `machine` | `id` | as `info`, after switching (refused while a machine is connected, unless pads may start cutting) |
-| `send` | `design`, `machine` (id or ""), `start`, `from` | `started`, `message`, `notes` |
+| `send` | `design`, `machine` (id or ""), `start`, `from` | `started`, `message`, `notes`; as for `put`, `modified` and `forked` (what opens is then the fork) |
 
 The design format is described in `src/padlink.h`; `tests/data/pad-design.json` is an
 example both the app's tests and the desktop's `test_padlink` check against.
@@ -105,7 +105,13 @@ example both the app's tests and the desktop's `test_padlink` check against.
 A design the pad sends carries `base`, the `modified` of the copy it last got from or gave
 to a phobiCCCP. When the computer's own copy changed after that (and is not the copy sent),
 it keeps the pad's version as a new design and answers `forked`; the pad then takes the
-computer's copy in place of its own, and the fork comes with the next sync. A base newer
+computer's copy in place of its own, and the fork comes with the next sync. The fork's id
+comes from the design's id, `modified` and `base`, so the same edit put again (its answer
+lost, or sent by both a `send` and a sync) is answered with the fork already made. A `send`
+keeps the design the same way and answers likewise; when the answer's `modified` is the
+sent copy's, or a sync finds the computer's copy at the same time as the pad's, the pad
+moves its base to that time. A computer that cannot read its own copy of a design (made
+by a newer phobiCCCP) refuses a put of it rather than write over it. A base newer
 than the computer's copy only means the computer is behind. A `get` answer may carry
 `desktopOnly`: the computer's name, when it will not rebuild its linked file from a pad
 edit. Times more than a year ahead of the receiver's clock are refused or ignored by both

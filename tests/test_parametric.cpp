@@ -605,6 +605,77 @@ int main(int argc, char **argv)
         check(approx(d.elementById(r.id)->raw.value("width").toDouble(), 20), "and is left alone");
     }
 
+    // A size driven through zero is no solution: the rectangle or polygon
+    // can only be built the right way out, where the constraints fail.
+    {
+        Document d;
+        const Element r = Element::makeRectangle({50, 50}, 40, 20, layer);
+        const Element p = Element::makePoint({60, 40}, layer);
+        d.addElement(r);
+        d.addElement(p);
+        addCon(d, Constraint::Fix, {ref(GeoRef::Point, r.id, 0)});        // lower left at 30,40
+        addCon(d, Constraint::Fix, {ref(GeoRef::Point, p.id, -1)});
+        addCon(d, Constraint::Coincident, {ref(GeoRef::Point, r.id, 1), ref(GeoRef::Point, p.id, -1)});
+        check(param::solve(d).ok, "rectangle corner on the point");
+        d.parametricRef().constraints[1].at = QPointF(10, 40);           // left of the lower left
+        const param::SolveResult res = param::solve(d);
+        check(!res.ok && !res.failing.isEmpty(), "a width through zero fails");
+        check(approx(d.elementById(r.id)->raw.value("width").toDouble(), 30), "the rectangle is left alone");
+
+        Document d2;
+        const Element poly = Element::makePolygon({50, 50}, 20, 5, layer, 0);
+        d2.addElement(poly);
+        addCon(d2, Constraint::Fix, {ref(GeoRef::Point, poly.id, 0)});    // vertex 0 at 70,50
+        Constraint c;
+        c.type = Constraint::Fix;
+        c.refs = {ref(GeoRef::Point, poly.id, -1)};
+        c.uid = d2.parametric().nextUid();
+        c.at = QPointF(90, 50);                                           // centre beyond vertex 0
+        d2.parametricRef().constraints.append(c);
+        check(!param::solve(d2).ok, "a polygon radius through zero fails");
+        check(param::unsatisfied(d2).size() == 1 && approx(d2.elementById(poly.id)->raw.value("radius").toDouble(), 20),
+              "the polygon is left alone");
+    }
+
+    // A reversed line keeps its direction: through the file, and when a
+    // rectangle becomes a path whose edges run the other way.
+    {
+        Document d;
+        const Element r = Element::makeRectangle({50, 50}, 40, 20, layer);
+        const Element ln = Element::makePath({{80, 80}, {100, 90}}, false, layer);
+        d.addElement(r);
+        d.addElement(ln);
+        addCon(d, Constraint::Fix, {ref(GeoRef::Line, r.id, 0)});
+        addCon(d, Constraint::Angle, {ref(GeoRef::Line, r.id, 0), ref(GeoRef::Line, ln.id, 0)}, "30");
+        check(param::solve(d).ok, "angle holds");
+        const Document before = d;
+        d.replaceElement(Element::withPathModel(r, Element::pathModel(r)));
+        bool changed = false;
+        check(param::reconcile(before, d, nullptr, &changed) == 0 && changed, "angle follows to the path");
+        const GeoRef moved = d.parametric().constraints.at(1).refs.first();
+        check(moved.reversed, "the path edge is taken reversed");
+        QPointF a, b;
+        check(param::line(d, moved, &a, &b) && approx(a.x(), 30) && approx(b.x(), 70) && approx(a.y(), 40),
+              "and still runs left to right");
+        check(param::unsatisfied(d).isEmpty(), "the angle still holds");
+        const Parametric back = Parametric::fromJson(d.parametric().toJson());
+        check(back.constraints.at(1).refs.first().reversed
+                  && !back.constraints.at(1).refs.at(1).reversed, "reversed survives the file");
+
+        // Through a transform: corner 0 mirrored lands on corner 1.
+        Document m;
+        const Element r2 = Element::makeRectangle({50, 50}, 40, 20, layer);
+        m.addElement(r2);
+        addCon(m, Constraint::Fix, {ref(GeoRef::Point, r2.id, 0)});
+        const Document was = m;
+        QTransform flip;
+        flip.translate(50, 0);
+        flip.scale(-1, 1);
+        flip.translate(-50, 0);       // the rectangle maps onto itself
+        check(param::reconcile(was, m, nullptr, nullptr, {{r2.id, flip}}) == 0, "nothing dropped");
+        check(m.parametric().constraints.first().refs.first().index == 1, "corner 0 follows to corner 1");
+    }
+
     std::printf("parametric: %d checks passed\n", g_checks);
     return 0;
 }

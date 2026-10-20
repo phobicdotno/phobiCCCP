@@ -55,6 +55,28 @@ void restore(Document *d, const ParamState &s)
     d->setParametric(s.par);
 }
 
+// Is `now` still where `was` lay: every anchor still there and the same
+// extent? A rectangle turned into a path or given an extra node on an
+// edge stays put; one moved, turned, resized or reshaped does not.
+bool stayedPut(const Element &was, const Element &now)
+{
+    auto close = [](QPointF a, QPointF b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 1e-6; };
+    const QRectF ra = was.painterPath.boundingRect(), rb = now.painterPath.boundingRect();
+    if (!close(ra.topLeft(), rb.topLeft()) || !close(ra.bottomRight(), rb.bottomRight()))
+        return false;
+    const PathModel mb = Element::pathModel(now);
+    for (const SubPath &sa : Element::pathModel(was).subs)
+        for (const PathNode &na : sa.nodes) {
+            bool found = false;
+            for (const SubPath &sb : mb.subs)
+                for (const PathNode &nb : sb.nodes)
+                    found = found || close(na.p, nb.p);
+            if (!found)
+                return false;
+        }
+    return true;
+}
+
 // The whole sketch before and after a parametric change: geometry the
 // solver moved, toolpath fields re-evaluated, and the constraints.
 class SnapshotCmd : public QUndoCommand
@@ -262,7 +284,7 @@ void Canvas::resetPicks()
 
 // ---- undo steps --------------------------------------------------------------------
 
-void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, bool mirrored)
+void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTransform &moved)
 {
     if (!m_doc || m_doc->parametric().constraints.isEmpty()) {
         m_undo->push(cmd);
@@ -273,21 +295,39 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, bool mirror
     m_undo->beginMacro(text);
     m_undo->push(cmd);
     const ParamState s0 = stateOf(m_doc);
+    // A shape locked whole stays where it is, as a fixed point does: the
+    // edit's move of it is put back (deleting it is still allowed).
+    QSet<QString> heldBack;
+    for (const QString &id : param::lockedElements(before)) {
+        const Element *was = nullptr;
+        for (const Element &e : before.elements())
+            if (e.id == id) { was = &e; break; }
+        const Element *now = m_doc->elementById(id);
+        if (was && now && !stayedPut(*was, *now)) {
+            m_doc->replaceElement(*was);
+            heldBack.insert(id);
+        }
+    }
     // Constraints follow their geometry through node deletes and inserts,
-    // fillets and conversions; those on geometry that is gone go too.
+    // fillets, conversions and transforms; those on geometry that is gone
+    // go too.
+    QHash<QString, QTransform> through;
+    if (!moved.isIdentity())
+        for (const QString &id : touched)
+            if (!heldBack.contains(id))
+                through.insert(id, moved);
     QStringList dropped;
     bool renumbered = false;
-    param::reconcile(before, *m_doc, &dropped, &renumbered);
-    if (mirrored) {
+    param::reconcile(before, *m_doc, &dropped, &renumbered, through);
+    if (moved.determinant() < 0) {
         // A mirror turns every angle and side round: an Angle or a distance
         // from a line kept on its old side would fold the shape inside out.
-        const QSet<QString> moved(touched.begin(), touched.end());
         Parametric p = m_doc->parametric();
         bool flipped = false;
         for (Constraint &c : p.constraints) {
             bool inside = !c.refs.isEmpty();
             for (const GeoRef &r : c.refs)
-                inside = inside && moved.contains(r.id);
+                inside = inside && through.contains(r.id);
             if (!inside)
                 continue;
             Constraint fresh = c;
@@ -305,10 +345,15 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, bool mirror
     if (!dropped.isEmpty() && dropped.contains(m_selConstraint))
         selectConstraint(QString());
     const param::SolveResult r = param::solve(*m_doc, QSet<QString>(touched.begin(), touched.end()));
-    if (!r.changed.isEmpty() || renumbered)
+    if (!r.changed.isEmpty() || renumbered || !heldBack.isEmpty())
         m_undo->push(new SnapshotCmd(this, m_doc, s0, stateOf(m_doc), text));
     m_undo->endMacro();
-    if (!r.ok) {
+    if (!heldBack.isEmpty()) {
+        rebuild();
+        emit statusHint(heldBack.size() == 1
+            ? tr("1 shape is locked with Fix and stays where it is")
+            : tr("%1 shapes are locked with Fix and stay where they are").arg(heldBack.size()));
+    } else if (!r.ok) {
         rebuild();
         emit statusHint(r.failing.size() == 1
             ? tr("1 constraint can't hold after this edit — shown in red")
@@ -428,6 +473,9 @@ bool Canvas::refShape(const GeoRef &r, RefShape *out) const
     for (const RefShape &s : it.value())
         if (s.ref == r) {
             *out = s;
+            if (r.reversed)
+                std::swap(out->a, out->b);
+            out->ref = r;
             return true;
         }
     // A circle asked for as a point is its center.

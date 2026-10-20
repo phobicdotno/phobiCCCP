@@ -915,6 +915,49 @@ int main(int argc, char *argv[])
               "regen still takes a positive width");
     }
 
+    // --- a turned rectangle's resize handle sits on its turned corner ----------------
+    // and dragging it sizes the rectangle along its own axes.
+    {
+        c2d::Document rdoc;
+        QJsonObject o = c2d::Element::makeRectangle({50, 50}, 40, 20, rdoc.defaultLayer()).raw;
+        for (const char *key : {"points", "cp1", "cp2"}) {
+            QJsonArray rows;
+            for (const QJsonValue &v : o.value(QLatin1String(key)).toArray()) {
+                const QJsonArray p = v.toArray();
+                rows.append(QJsonArray{-p.at(1).toDouble(), p.at(0).toDouble()});   // turned 90 deg
+            }
+            o.insert(QLatin1String(key), rows);
+        }
+        o.insert("rotation", 90.0);
+        const c2d::Element turned = c2d::Element::fromJson(o);
+        rdoc.addElement(turned);
+        c2d::Canvas rc;
+        rc.resize(900, 700);
+        rc.show();
+        rc.setDocument(&rdoc);
+        rc.resetTransform();
+        rc.scale(3, -3);
+        rc.centerOn(QPointF(50, 50));
+        QTest::qWait(20);
+        rc.setTool(c2d::Canvas::Select);
+        rc.selectElements({turned.id});
+        const QPointF handle(40, 70);                // (20, 10) from the center, turned 90 deg
+        QTest::mousePress(rc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&rc, handle));
+        QTest::mouseMove(rc.viewport(), vp(&rc, {38, 75}));
+        QTest::mouseRelease(rc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&rc, {35, 80}));
+        const c2d::Element *re = rdoc.elementById(turned.id);
+        check(re && std::fabs(re->raw.value("width").toDouble() - 60) < 0.5
+                  && std::fabs(re->raw.value("height").toDouble() - 30) < 0.5,
+              "turned rectangle resizes along its own width and height");
+
+        // A design handed in afresh starts with nothing selected: the panels,
+        // given it after the canvas, show no selection either.
+        rc.selectElements({turned.id});
+        check(!rc.selectedElementIds().isEmpty(), "rectangle selected");
+        rc.setDocument(&rdoc);
+        check(rc.selectedElementIds().isEmpty(), "setDocument clears the selection");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

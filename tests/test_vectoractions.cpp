@@ -9,11 +9,13 @@
 #include "../src/canvas.h"
 #include "../src/element.h"
 #include "../src/model3d.h"
+#include "../src/parametric.h"
 #include "../src/vectoractions.h"
 
 #include <QApplication>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLineF>
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QUndoStack>
@@ -296,6 +298,92 @@ int main(int argc, char *argv[])
         va.offsetBy(1, true);
         check(store.model.components.at(1).vectorIds == QStringList({c.id}),
               "offset that keeps the original leaves the component on it");
+        canvas->setDocument(&doc);
+    }
+
+    // Mirror and rotate carry constraints with the geometry: a point on a
+    // rectangle's lower left corner ends on the corner that went there,
+    // and the shape keeps its size.
+    {
+        auto ref = [](GeoRef::Kind k, const QString &rid, int index) {
+            GeoRef r;
+            r.kind = k; r.id = rid; r.index = index;
+            return r;
+        };
+        auto add = [](Document &d, Constraint::Type t, const QVector<GeoRef> &refs, const QString &expr = QString()) {
+            Constraint c;
+            c.type = t;
+            c.refs = refs;
+            c.uid = d.parametric().nextUid();
+            if (c.isDimension()) { c.name = d.parametric().nextDimensionName(); c.expr = expr; }
+            param::prime(d, c);
+            d.parametricRef().constraints.append(c);
+        };
+        auto at = [&](const Document &d, const GeoRef &r) {
+            QPointF p;
+            check(param::point(d, r, &p), "reference resolves");
+            return p;
+        };
+        auto close = [](QPointF a, QPointF b) { return QLineF(a, b).length() < 1e-4; };
+        for (int turn = 0; turn < 2; ++turn) {
+            Document cd;
+            const Element rect = Element::makeRectangle({50, 50}, 40, 20, layer);
+            const Element pt = Element::makePoint({30, 40}, layer);           // on corner 0
+            const Element far = Element::makeCircle({120, 50}, 5, layer);
+            cd.addElement(rect);
+            cd.addElement(pt);
+            cd.addElement(far);
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, pt.id, -1), ref(GeoRef::Point, rect.id, 0)});
+            canvas->setDocument(&cd);
+            canvas->selectIds({rect.id, pt.id, far.id});
+            if (turn == 0)
+                va.mirror(vec::Axis::Horizontal);
+            else
+                va.rotate(180);
+            // The selection spans x 30..125: centre 77.5.
+            const Element *re = cd.elementById(rect.id);
+            check(std::fabs(re->raw.value("width").toDouble() - 40) < 1e-6
+                      && std::fabs(re->raw.value("height").toDouble() - 20) < 1e-6,
+                  turn == 0 ? "mirrored rectangle keeps its size" : "turned rectangle keeps its size");
+            // Both moved as one: the point keeps to the corner that took the
+            // old lower left's place (lower right, or upper right turned).
+            const QPointF c = at(cd, ref(GeoRef::Point, rect.id, -1));
+            check(std::fabs(c.y() - 50) < 1 && c.x() > 100, "rectangle lands at its image");
+            check(close(at(cd, ref(GeoRef::Point, pt.id, -1)), c + (turn == 0 ? QPointF(20, -10) : QPointF(20, 10))),
+                  "the point lands at its image");
+            check(param::unsatisfied(cd).isEmpty(), "the coincidence holds on the corner now there");
+        }
+        {   // a pentagon mirrored: the vertex the point was on is renumbered
+            Document cd;
+            const Element poly = Element::makePolygon({50, 50}, 20, 5, layer, 10);
+            cd.addElement(poly);
+            const Element pt = Element::makePoint(at(cd, ref(GeoRef::Point, poly.id, 1)), layer);
+            cd.addElement(pt);
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, pt.id, -1), ref(GeoRef::Point, poly.id, 1)});
+            canvas->setDocument(&cd);
+            canvas->selectIds({poly.id, pt.id});
+            va.mirror(vec::Axis::Horizontal);
+            check(std::fabs(cd.elementById(poly.id)->raw.value("radius").toDouble() - 20) < 1e-6,
+                  "mirrored pentagon keeps its radius");
+            check(param::unsatisfied(cd).isEmpty(), "the point stays on its vertex");
+        }
+        {   // rotate by an angle that isn't a symmetry: the rectangle becomes a
+            // path and its width dimension goes with the edge
+            Document cd;
+            const Element rect = Element::makeRectangle({50, 50}, 40, 20, layer);
+            cd.addElement(rect);
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, rect.id, 0)}, "40");
+            canvas->setDocument(&cd);
+            canvas->selectIds({rect.id});
+            va.rotate(30);
+            check(cd.elementById(rect.id)->geometryType == QLatin1String("path"), "turned rectangle is a path");
+            check(cd.parametric().constraints.size() == 1 && param::unsatisfied(cd).isEmpty(),
+                  "its width dimension is kept and holds");
+            QPointF a, b;
+            check(param::line(cd, cd.parametric().constraints.first().refs.first(), &a, &b)
+                      && std::fabs(std::atan2(b.y() - a.y(), b.x() - a.x()) * 180 / M_PI - 30) < 1e-6,
+                  "on the turned bottom edge, same direction");
+        }
         canvas->setDocument(&doc);
     }
 

@@ -1914,6 +1914,24 @@ void MainWindow::updateTitle()
     }
 }
 
+// A .c2d to write. The dialog asks before replacing the name as typed, but
+// not when ".c2d" is added to it afterwards, so that is asked here.
+static QString askC2dSavePath(QWidget *parent, const QString &title, const QString &start)
+{
+    QString path = QFileDialog::getSaveFileName(parent, title, start, QStringLiteral("Carbide Create (*.c2d)"));
+    if (path.isEmpty() || path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
+        return path;
+    path += QStringLiteral(".c2d");
+    if (QFileInfo::exists(path)
+        && QMessageBox::question(parent, title,
+                                 QStringLiteral("%1 already exists.\nDo you want to replace it?")
+                                     .arg(QFileInfo(path).fileName()),
+                                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+               != QMessageBox::Yes)
+        return {};
+    return path;
+}
+
 void MainWindow::onNew()
 {
     if (!confirmDiscard(QStringLiteral("Save before starting a new file?")))
@@ -1930,13 +1948,9 @@ void MainWindow::onNew()
     const double t = QInputDialog::getDouble(this, QStringLiteral("New design"),
         QStringLiteral("Stock thickness (mm):"), appsettings::kBlankThickness, 0.1, 500, 2, &ok);
     if (!ok) return;
-    QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Save new design as"), QStringLiteral("untitled.c2d"),
-        QStringLiteral("Carbide Create (*.c2d)"));
+    const QString path = askC2dSavePath(this, QStringLiteral("Save new design as"), QStringLiteral("untitled.c2d"));
     if (path.isEmpty())
         return;
-    if (!path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
-        path += QStringLiteral(".c2d");
     QString err;
     if (!c2d::Document::createBlank(path, w, h, t, &err)) {
         QMessageBox::warning(this, QStringLiteral("New failed"), err);
@@ -2017,15 +2031,12 @@ void MainWindow::onSaveAs()
         return;
     }
     const QFileInfo from(m_untitled ? m_untitledFrom : m_doc.filePath());
-    QString path = QFileDialog::getSaveFileName(
+    const QString path = askC2dSavePath(
         this, QStringLiteral("Save Carbide Create file"),
         from.fileName().isEmpty() ? QString()
-                                  : from.absolutePath() + QLatin1Char('/') + from.completeBaseName() + QStringLiteral(".c2d"),
-        QStringLiteral("Carbide Create (*.c2d)"));
+                                  : from.absolutePath() + QLatin1Char('/') + from.completeBaseName() + QStringLiteral(".c2d"));
     if (path.isEmpty())
         return;
-    if (!path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
-        path += QStringLiteral(".c2d");
 
     QString err;
     if (!m_doc.save(path, &err)) {
@@ -2247,6 +2258,10 @@ void MainWindow::showStartupWindow()
 void MainWindow::autosave()
 {
     if (!m_dirty || m_doc.filePath().isEmpty())
+        return;
+    // Not while the machine works: the save runs on the thread that feeds
+    // GRBL, and a big model starves its ~100 ms buffer. The next tick retries.
+    if (m_machine && m_machine->isBusy())
         return;
     QString err;
     const QString copy = m_recovery.write(m_doc, m_untitled ? m_untitledPath : m_doc.filePath(),
@@ -2667,7 +2682,7 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
 QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &peer)
 {
     const QString host = QSysInfo::machineHostName();
-    const QJsonObject design = req.value(QStringLiteral("design")).toObject();
+    QJsonObject design = req.value(QStringLiteral("design")).toObject();
     if (const QString e = padlink::check(design); !e.isEmpty())
         return padError(e);
     if (design.value(QStringLiteral("deleted")).toBool())
@@ -2685,7 +2700,20 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
         return padError(QStringLiteral("no such machine on %1").arg(host));
     if (const QString no = padSwitchRefusal(machineId, m_machine->statusJson()); !no.isEmpty())
         return padError(no);
-    padlink::Store(padDir()).put(design);   // sent is also synced
+    // Sent is also synced. Changed here since the pad's copy, it is kept as a
+    // new design: that is what opens (and is linked), and the pad is told so it
+    // takes the copy here in place of its own.
+    padlink::Store store(padDir());
+    QString putError;
+    padlink::Store::PutOutcome put;
+    const bool stored = store.put(design, &putError, &put);
+    if (!put.forked.isEmpty()) {
+        const QJsonObject fork = store.get(put.forked);
+        if (!fork.isEmpty())
+            design = fork;
+    } else if (stored) {
+        padDesignChanged(design.value(QStringLiteral("id")).toString());
+    }
 
     const bool start = req.value(QStringLiteral("start")).toBool();
     const QString from = req.value(QStringLiteral("from")).toString().left(60);
@@ -2733,12 +2761,25 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     for (const QString &n : notes)
         padOnly = padOnly && !n.startsWith(QLatin1String("shape "));
     padlink::Links links(padDir());
-    if (!links.set(c2dPath, design.value(QStringLiteral("id")).toString(), padOnly,
-                   design.value(QStringLiteral("modified")).toDouble()))
+    if (!putError.isEmpty())
+        notes << QStringLiteral("not kept for the pads, so edits do not sync: %1").arg(putError);
+    else if (!links.set(c2dPath, design.value(QStringLiteral("id")).toString(), padOnly,
+                        design.value(QStringLiteral("modified")).toDouble()))
         notes << QStringLiteral("not linked to the pad design, so edits do not sync: %1").arg(links.error());
 
     QJsonObject reply{{QStringLiteral("ok"), true}, {QStringLiteral("started"), false},
                       {QStringLiteral("notes"), QJsonArray::fromStringList(notes)}};
+    // As a put answers: the copy kept here now, and the fork the pad's
+    // version became, so the pad moves its base or takes the copy here.
+    const QString sentId = req.value(QStringLiteral("design")).toObject().value(QStringLiteral("id")).toString();
+    if (putError.isEmpty())
+        reply.insert(QStringLiteral("modified"), store.get(sentId).value(QStringLiteral("modified")));
+    if (!put.forked.isEmpty()) {
+        reply.insert(QStringLiteral("forked"), put.forked);
+        notes << QStringLiteral("“%1” had changed on %2 since, so yours opened as “%3”")
+                     .arg(store.get(sentId).value(QStringLiteral("name")).toString(), host, name);
+        reply.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));
+    }
     QString message = QStringLiteral("opened %1 on %2").arg(QFileInfo(c2dPath).fileName(), host);
     if (start) {
         setMode(Mode::Machine, false);
@@ -2854,9 +2895,18 @@ void MainWindow::padDesignChanged(const QString &id)
     auto rebuildable = [&](const QString &path) {
         return links.padOnly(path) && !links.changedOutside(path);
     };
+    if (d.isEmpty())
+        return;   // not readable here: nothing to rebuild from, and its links stay
+    QStringList missing;
     for (const QString &path : paths) {
-        if (d.isEmpty() || d.value(QStringLiteral("deleted")).toBool() || !QFileInfo::exists(path)) {
+        if (d.value(QStringLiteral("deleted")).toBool()) {
             links.remove(path);   // the file stays; it is only no longer linked
+            continue;
+        }
+        // Gone for now (on a drive not plugged in, say): still linked, so it is
+        // rebuilt or shared again once it is back.
+        if (!QFileInfo::exists(path)) {
+            missing << path;
             continue;
         }
         const QString file = QFileInfo(path).fileName();
@@ -2907,6 +2957,11 @@ void MainWindow::padDesignChanged(const QString &id)
             openPath(path, false);
         statusBar()->showMessage(QStringLiteral("“%1” updated from a pad").arg(name), 10000);
     }
+    if (!missing.isEmpty())
+        statusBar()->showMessage(QStringLiteral("“%1” changed on a pad, but %2 cannot be found (a drive not "
+                                                "plugged in?); it stays linked, so the next change reaches it once it is back")
+                                     .arg(name, missing.join(QStringLiteral(", "))),
+                                 10000);
 }
 
 bool MainWindow::switchMachine(const QString &id, QString *why)

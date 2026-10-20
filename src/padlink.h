@@ -129,8 +129,13 @@ public:
     // Keep `design` unless the stored one is as new or newer. True when it
     // was written (as itself or as a fork); `error` says why not when it was
     // refused as malformed. `now` is for tests.
+    // When the copy kept here cannot be read (made by a newer phobiCCCP, say),
+    // the put is refused with `error` set rather than written over it.
+    // A fork's id comes from `forkIdFor`, so the same edit put again is
+    // answered with the fork already made.
     bool put(const QJsonObject &design, QString *error = nullptr, PutOutcome *outcome = nullptr,
              double now = 0);
+    static QString forkIdFor(const QString &id, double modified, double base);
 
 private:
     QString path(const QString &id) const;

@@ -435,6 +435,83 @@ static void testConflicts(const QString &dir, QJsonObject d)
     check(padlink::nextStamp(1e15, now) == now, "but not after an absurd one");
 }
 
+// A toolpath whose shapes were deleted here comes back once, however often
+// the file is saved (bug check 4, item 3).
+static void testDeletedShapesToolpath(const QString &dir, QJsonObject d)
+{
+    QJsonArray tps = d.value("toolpaths").toArray();
+    QJsonObject pocket = tps.at(0).toObject();
+    pocket.insert("shapes", QJsonArray{"c"});
+    tps.replace(0, pocket);
+    d.insert("toolpaths", tps);
+    const QString path = QDir(dir).filePath("deleted-shapes.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "a design with a pocket on the circle builds");
+    Document doc;
+    doc.load(path);
+    QString circle;
+    for (const Element &e : doc.elements())
+        if (e.geometryType == QLatin1String("circle"))
+            circle = e.id;
+    check(!circle.isEmpty() && doc.removeElementById(circle) && doc.save(path, &err), "the circle deleted here");
+    QJsonObject base = d;
+    int pockets = 0;
+    for (int i = 0; i < 4; ++i) {
+        QStringList lost;
+        const QJsonObject out = padlink::designFromDocument(path, base, &lost);
+        pockets = 0;
+        for (const QJsonValue &v : out.value("toolpaths").toArray())
+            pockets += v.toObject().value("name").toString() == QLatin1String("Pocket");
+        if (pockets != 1)
+            break;
+        base = out;   // what the save shares, and gets back as the base next time
+    }
+    check(pockets == 1, "a toolpath without shapes is not added again on every save");
+}
+
+// The same edit put again after its answer was lost lands on the fork already
+// made (item 6); a stored copy this build cannot read is not written over (item 8).
+static void testForkRetryAndUnreadable(const QString &dir, QJsonObject d)
+{
+    const double now = 1760850000000.0;
+    padlink::Store store(QDir(dir).filePath("RetryPad"));
+    d.insert("modified", 1000.0);
+    store.put(d, nullptr, nullptr, now);
+    QJsonObject desk = d;
+    desk.insert("modified", 2000.0);
+    desk.insert("name", "Desk edit");
+    store.put(desk, nullptr, nullptr, now);
+    QJsonObject pad = d;
+    pad.insert("modified", 3000.0);
+    pad.insert("base", 1000.0);
+    pad.insert("name", "Pad edit");
+    padlink::Store::PutOutcome o1, o2;
+    check(store.put(pad, nullptr, &o1, now) && !o1.forked.isEmpty(), "a pad edit made meanwhile is forked");
+    check(store.put(pad, nullptr, &o2, now) && o2.forked == o1.forked, "put again, it answers the same fork");
+    int forks = 0;
+    for (const QJsonValue &v : store.list())
+        forks += v.toObject().value("name").toString().endsWith(QLatin1String("(pad)"));
+    check(forks == 1, "and no second fork is made");
+
+    // Written by a newer phobiCCCP: version 2.
+    QJsonObject newer = d;
+    newer.insert("id", "newer-1");
+    newer.insert("version", 2);
+    const QString file = QDir(store.dir()).filePath("newer-1.json");
+    QFile f(file);
+    f.open(QIODevice::WriteOnly);
+    const QByteArray bytes = QJsonDocument(newer).toJson();
+    f.write(bytes);
+    f.close();
+    QJsonObject over = d;
+    over.insert("id", "newer-1");
+    over.insert("modified", 9000.0);
+    QString err;
+    check(!store.put(over, &err, nullptr, now) && !err.isEmpty(), "a put over a copy that cannot be read is refused");
+    f.open(QIODevice::ReadOnly);
+    check(f.readAll() == bytes, "and that copy is left as it is");
+}
+
 static void testProfiles(const QString &dir)
 {
     QSettings s(QDir(dir).filePath("settings.ini"), QSettings::IniFormat);
@@ -485,6 +562,8 @@ int main(int argc, char **argv)
     testLinks(tmp.path());
     testStore(tmp.path(), d);
     testConflicts(tmp.path(), d);
+    testDeletedShapesToolpath(tmp.path(), d);
+    testForkRetryAndUnreadable(tmp.path(), d);
     testProfiles(tmp.path());
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;

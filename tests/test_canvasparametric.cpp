@@ -509,6 +509,71 @@ int main(int argc, char *argv[])
     canvas.rebuild();
     check(canvas.freedomLeft() > 0 && !canvas.fullyConstrained().contains(id), "not fully constrained");
 
+    // Convert to path on a rectangle: its edges run the other way as path
+    // segments, and a distance or angle on one keeps its side and value.
+    {
+        auto ref = [](GeoRef::Kind k, const QString &rid, int index) {
+            GeoRef r;
+            r.kind = k; r.id = rid; r.index = index;
+            return r;
+        };
+        auto add = [](Document &d, Constraint::Type t, const QVector<GeoRef> &refs, const QString &expr = QString()) {
+            Constraint c;
+            c.type = t;
+            c.refs = refs;
+            c.uid = d.parametric().nextUid();
+            if (c.isDimension()) { c.name = d.parametric().nextDimensionName(); c.expr = expr; }
+            param::prime(d, c);
+            d.parametricRef().constraints.append(c);
+        };
+        Document cd;
+        const Element rect = Element::makeRectangle({50, 50}, 40, 20, cd.defaultLayer());
+        const Element pt = Element::makePoint({50, 45}, cd.defaultLayer());       // 5 above the bottom, inside
+        const Element ln = Element::makePath({{80, 80}, {100, 90}}, false, cd.defaultLayer());
+        cd.addElement(rect);
+        cd.addElement(pt);
+        cd.addElement(ln);
+        add(cd, Constraint::Distance, {ref(GeoRef::Point, pt.id, -1), ref(GeoRef::Line, rect.id, 0)}, "5");
+        add(cd, Constraint::Fix, {ref(GeoRef::Line, rect.id, 0)});
+        add(cd, Constraint::Angle, {ref(GeoRef::Line, rect.id, 0), ref(GeoRef::Line, ln.id, 0)}, "30");
+        param::solve(cd);
+        canvas.setDocument(&cd);
+        QPointF a0, b0;
+        check(param::line(cd, ref(GeoRef::Line, ln.id, 0), &a0, &b0), "free line resolves");
+        canvas.convertToPaths({rect.id});
+        check(cd.elementById(rect.id)->geometryType == QLatin1String("path"), "rectangle is a path");
+        check(cd.parametric().constraints.size() == 3 && param::unsatisfied(cd).isEmpty(), "all three still hold");
+        check(QLineF(node(cd, pt.id, -1), QPointF(50, 45)).length() < 1e-6, "the point stays inside, 5 above the bottom");
+        QPointF a1, b1;
+        check(param::line(cd, ref(GeoRef::Line, ln.id, 0), &a1, &b1)
+                  && QLineF(a0, a1).length() < 1e-6 && QLineF(b0, b1).length() < 1e-6, "the angled line stays put");
+    }
+
+    // Fix on a whole shape holds it as Fix on a point does: a move is put back.
+    {
+        Document fd;
+        const Element c1 = Element::makeCircle({50, 50}, 10, fd.defaultLayer());
+        fd.addElement(c1);
+        Constraint c;
+        c.type = Constraint::Fix;
+        GeoRef r;
+        r.kind = GeoRef::Circle;
+        r.id = c1.id;
+        c.refs = {r};
+        c.uid = fd.parametric().nextUid();
+        fd.parametricRef().constraints.append(c);
+        canvas.setDocument(&fd);
+        QString hint;
+        auto conn = QObject::connect(&canvas, &Canvas::statusHint, [&](const QString &h) { hint = h; });
+        canvas.moveElementBy(c1.id, 30, 0);
+        QObject::disconnect(conn);
+        check(QLineF(node(fd, c1.id, -1), QPointF(50, 50)).length() < 1e-9, "the locked circle stays put");
+        check(hint.contains(QStringLiteral("locked")), "and the status bar says why");
+        canvas.undoStack()->undo();
+        check(QLineF(node(fd, c1.id, -1), QPointF(50, 50)).length() < 1e-9, "undo leaves it there too");
+        canvas.setDocument(&doc);
+    }
+
     std::printf("canvasparametric: %d checks passed\n", g_checks);
     return 0;
 }
