@@ -1001,6 +1001,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         if (!m_held) {
             m_grbl->pauseStream();
             setHeld(true);
+        } else if (m_resetPending) {
+            // Cancel job / Disconnect is waiting for the hold to settle to
+            // reset: resuming would cut on, then reset in the middle of it.
+            log(QStringLiteral("resume refused: the job is being cancelled"));
         } else if (m_grbl->resumeStream()) {
             setHeld(false);
         }
@@ -1098,6 +1102,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         // defaults for the whole session.
         if (l.startsWith(QLatin1String("Grbl "))) {
             // Nothing from before the reset moves the machine after it.
+            m_onIdle = nullptr;
             m_deferredJogs.clear();
             stopHoldJog();
             QTimer::singleShot(400, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
@@ -1122,6 +1127,7 @@ MachinePanel::MachinePanel(QWidget *parent)
             m_unhomedWhy = why.value(n, QStringLiteral("homing failed (%1)").arg(l.trimmed()));
             m_homingStarted = false;
             forgetJogPlan();
+            m_onIdle = nullptr;   // a step waiting for Idle (BitZero's last) is void now
         }
         // Hard limits: the end stops stop all motion in the controller
         // itself. Shipped off on the Shapeoko; turned on here, once.
@@ -2136,6 +2142,7 @@ void MachinePanel::cancelJob()
 void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
 {
     m_grbl->pauseStream();               // again: harmless when already held
+    m_resetPending = true;
     // Wait for the hold to finish decelerating (Hold:0), at most 5 s. The
     // first 300 ms are not trusted: the last report may predate the hold.
     auto *t = new QTimer(this);
@@ -2146,6 +2153,7 @@ void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
     // lines went into the held planner, and the reset is still needed.)
     connect(t, &QTimer::timeout, this, [this, t, tries, then, evenAfterStop, seq = m_stopSeq] {
         if (seq != m_stopSeq) {
+            m_resetPending = false;
             t->stop();
             t->deleteLater();
             if (evenAfterStop && then)
@@ -2159,6 +2167,7 @@ void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
             return;
         t->stop();
         t->deleteLater();
+        m_resetPending = false;
         resetFlow();
         m_grbl->stopStream();
         if (then)
@@ -2571,6 +2580,7 @@ void MachinePanel::onStatus(const MachineStatus &st)
                 fresh += a;
         if (!homing && moving && !fresh.isEmpty()) {
             ++m_stopSeq;
+            m_onIdle = nullptr;
             m_grbl->stopStream();
             m_homed = false;
             m_unhomedWhy = QStringLiteral("an end stop fired during a move");

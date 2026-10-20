@@ -804,6 +804,7 @@ MainWindow::MainWindow(QWidget *parent)
                                      QStringLiteral("There are no toolpaths to describe yet."));
             return;
         }
+        commitEdits();
         ++m_holdDoc;
         const auto hold = qScopeGuard([this] { --m_holdDoc; });
         const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
@@ -1733,6 +1734,7 @@ void MainWindow::setMode(Mode m, bool autoRun)
 
 void MainWindow::onExportGcode()
 {
+    commitEdits();
     ++m_holdDoc;
     const auto hold = qScopeGuard([this] { --m_holdDoc; });
     if (m_doc.filePath().isEmpty()) {
@@ -1805,6 +1807,7 @@ void MainWindow::onExportGcode()
 
 void MainWindow::onExportGcodeTiled()
 {
+    commitEdits();
     ++m_holdDoc;
     const auto hold = qScopeGuard([this] { --m_holdDoc; });
     if (m_doc.filePath().isEmpty()) {
@@ -2176,6 +2179,7 @@ void MainWindow::onOpen()
 
 void MainWindow::onSave()
 {
+    commitEdits();
     if (m_untitled || m_doc.filePath().isEmpty()) {
         onSaveAs();
         return;
@@ -2219,6 +2223,7 @@ void MainWindow::saveExtras(const QString &path)
 
 void MainWindow::onSaveAs()
 {
+    commitEdits();
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Nothing to save"),
                                  QStringLiteral("Open a .c2d file first."));
@@ -2257,8 +2262,25 @@ void MainWindow::onSaveAs()
 // m_dirty was tracked and shown in the title bar but never acted on: opening
 // another document, picking one from Open Recent, dropping a file on the
 // window or closing it all discarded an afternoon of edits without a word.
+// A number typed into a field takes effect on Enter or when the field loses
+// focus, and reaches the design through a queued call: a shortcut (Ctrl+S,
+// Ctrl+G) or closing the window would otherwise work on the design without
+// it, and it would land afterwards. Commit it first.
+void MainWindow::commitEdits()
+{
+    const QPointer<QWidget> f = QApplication::focusWidget();
+    if (f && isAncestorOf(f)) {
+        f->clearFocus();
+        for (int i = 0; i < 3; ++i)
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+        if (f)
+            f->setFocus();
+    }
+}
+
 bool MainWindow::confirmDiscard(const QString &what)
 {
+    commitEdits();
     if (!m_dirty)
         return true;
     const QString name = m_untitled ? QStringLiteral("The untitled design")
@@ -2281,6 +2303,7 @@ bool MainWindow::confirmDiscard(const QString &what)
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
+    commitEdits();
     // Never close in the middle of a cut, a probe or a homing cycle: the
     // serial link goes with the window, and the machine is left mid-move.
     // Quietly: a popup over a running job is exactly what the operator must
@@ -2852,7 +2875,12 @@ bool MainWindow::docHeld() const
 {
     // Any modal step (a dialog, the export's progress) may be working on the
     // open design; so may an export not yet showing its dialog.
-    return m_holdDoc > 0 || QApplication::activeModalWidget() != nullptr || exportRunning();
+    // Send to pad / Send to phobiCCCP stay open after a send, waiting for the
+    // design to come back; they read the open file only when Send is pressed.
+    QWidget *modal = QApplication::activeModalWidget();
+    if (qobject_cast<SendToPadDialog *>(modal) || qobject_cast<SendToDialog *>(modal))
+        modal = nullptr;
+    return m_holdDoc > 0 || modal != nullptr || exportRunning();
 }
 
 void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &peer)

@@ -10,6 +10,8 @@
 #include "../src/mainwindow.h"
 #include "../src/canvas.h"
 #include "../src/simpanel.h"
+#include "../src/toolpathform.h"
+#include "../src/toolpathpanel.h"
 #undef private
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
@@ -18,11 +20,13 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDoubleSpinBox>
 #include <QJsonObject>
 #include <QMap>
 #include <QStandardPaths>
 #include <QTest>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUndoStack>
 
 #include <cstdio>
@@ -215,6 +219,26 @@ int main(int argc, char *argv[])
         check(snap->toolTip().contains(snap->shortcut().toString(QKeySequence::NativeText)),
               "shortcuts: Snap's tooltip names its key");
         snap->setChecked(snapOn);
+    }
+
+    // A number typed in a toolpath field but not yet committed (no Enter, no
+    // focus change) reaches the document before save, export or close read it.
+    {
+        w.setMode(c2d::MainWindow::Mode::Toolpaths, false);
+        w.m_tp->m_list->setCurrentItem(w.m_tp->m_list->topLevelItem(0));
+        QApplication::processEvents();
+        auto *spin = qobject_cast<QDoubleSpinBox *>(w.m_tp->m_form->m_editors.value("end_depth"));
+        check(spin, "typed field: end depth editor");
+        w.activateWindow();
+        spin->setFocus();
+        QApplication::processEvents();
+        QTest::keyClick(spin, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClicks(spin, "12");
+        w.commitEdits();
+        const double depth = qAbs(d.toolpathByUuid(p.uuid)->json.value("end_depth").toVariant().toDouble());
+        std::fprintf(stderr, "typed field: end depth %g\n", depth);
+        check(qAbs(depth - 12) < 1e-6, "typed field: committed before the file action");
+        check(spin->hasFocus() || !w.isActiveWindow(), "typed field: focus given back");
     }
 
     // The window stays open while an update step's process runs.

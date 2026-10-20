@@ -176,6 +176,7 @@ private:
     // (Export G-code, the setup sheet): a pad or computer must not replace it.
     int m_holdDoc = 0;
     bool docHeld() const;
+    void commitEdits();
     QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
     // refreshIso runs the event loop behind its progress dialog. An edit made

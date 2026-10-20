@@ -10,23 +10,32 @@
     pocket's depth and ends at it: the gap of glue below, the plug the gap proud.
   - The inlay male no longer carves construction guides and points into the male as real
     vectors (the female leaves them out).
-  - Site order ran a straight horizontal or vertical line toolpath (a dado, a groove) out of
-    list order, before a cutout or a pocket at the same place.
+  - Site order ran a toolpath out of list order before one it depends on: a straight
+    horizontal or vertical line (a dado, a groove) before a cutout or pocket at the same
+    place, or a rest-depth groove along the seam of two earlier pockets between them.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
   - HPGL import read text as commands (the "Pr" of "Project" switched to relative moves);
     labels, display texts, quoted comments and names, and encoded polylines are skipped.
+    HPGL inside a printer-driver wrapper (PCL/PJL) keeps its first command too.
+  - Text in PDF, AI and EPS files (and SVG clones) was dropped on import; it comes in now.
+  - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
     are answered still resets the held controller (and adds no end-of-job moves).
+  - Resume pressed while Cancel job waited for the hold restarted the job, which was then
+    reset mid-cut; it is refused now.
+  - An end stop or controller reset during BitZero's last move left its final step waiting,
+    and it ran by itself (zeroing and probing) after the next Initialize.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
   - A design sent from a pad or another computer no longer replaces the open one under a
     dialog or an export (Export G-code wrote the old design's program under the new name);
-    the sender is told to try again shortly.
+    the sender is told to try again shortly. An open Send to pad window does not count, so
+    a design sent back from the pad still opens.
 - **Pad link:**
   - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
     identity, and the pad's id on the computer is its own id in the versions.

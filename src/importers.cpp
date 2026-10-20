@@ -834,6 +834,60 @@ QPainterPath svgShape(QStringView name, const QXmlStreamAttributes &at, bool *kn
 
 } // namespace
 
+namespace {
+
+QString svgHref(const QXmlStreamAttributes &at)
+{
+    QString h = at.value(QLatin1String("href")).toString();
+    if (h.isEmpty())
+        h = at.value(QLatin1String("http://www.w3.org/1999/xlink"), QLatin1String("href")).toString();
+    if (h.isEmpty())
+        h = at.value(QLatin1String("xlink:href")).toString();
+    return h.startsWith(QLatin1Char('#')) ? h.mid(1) : QString();
+}
+
+// What each element with an id draws, in its parent's user units (its own
+// transform applied), for <use> to place: PDF / AI / EPS (through
+// pdftocairo) draw every glyph of their text as a <use> of one defined once,
+// and Inkscape's clones are <use> too. A <use> inside counts as what it
+// refers to, when that was defined before it.
+QHash<QString, QPainterPath> svgDefinitions(const QByteArray &data)
+{
+    QHash<QString, QPainterPath> defs;
+    struct Frame { QString id; QTransform own; QPainterPath path; };
+    QVector<Frame> stack;
+    QXmlStreamReader xml(data);
+    while (!xml.atEnd()) {
+        const auto tok = xml.readNext();
+        if (tok == QXmlStreamReader::StartElement) {
+            const QXmlStreamAttributes at = xml.attributes();
+            Frame f{at.value(QLatin1String("id")).toString(),
+                    parseSvgTransform(at.value(QLatin1String("transform")).toString()), {}};
+            if (xml.name() == QLatin1String("use")) {
+                const QPainterPath ref = defs.value(svgHref(at));
+                f.path = QTransform::fromTranslate(at.value(QLatin1String("x")).toDouble(),
+                                                   at.value(QLatin1String("y")).toDouble()).map(ref);
+            } else if (xml.name() != QLatin1String("svg")) {
+                bool known = false, bad = false;
+                f.path = svgShape(xml.name(), at, &known, &bad, 0, 0);
+            }
+            stack.append(f);
+        } else if (tok == QXmlStreamReader::EndElement && !stack.isEmpty()) {
+            const Frame f = stack.takeLast();
+            const QPainterPath mapped = f.own.map(f.path);
+            if (!f.id.isEmpty() && !mapped.isEmpty())
+                defs.insert(f.id, mapped);
+            if (!stack.isEmpty() && !mapped.isEmpty())
+                stack.last().path.addPath(mapped);
+            if (defs.size() > 100000)
+                break;
+        }
+    }
+    return defs;
+}
+
+} // namespace
+
 ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                            const QString &sourceName)
 {
@@ -860,8 +914,10 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
         QStringLiteral("radialGradient"), QStringLiteral("filter"), QStringLiteral("script"),
         QStringLiteral("foreignObject")};
     static const QStringList reportedSkips = {
-        QStringLiteral("text"), QStringLiteral("image"), QStringLiteral("use"),
+        QStringLiteral("text"), QStringLiteral("image"),
         QStringLiteral("linearGradient"), QStringLiteral("radialGradient")};
+    QHash<QString, QPainterPath> defs;   // made on the first <use>
+    bool defsMade = false;
 
     while (!xml.atEnd()) {
         const auto tok = xml.readNext();
@@ -949,6 +1005,21 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 if (bad) ++malformed;
                 if (!local.isEmpty())
                     user.addPath(ctx.xf.map(local));
+            } else if (name == QLatin1String("use")) {
+                if (!defsMade) {
+                    defs = svgDefinitions(data);
+                    defsMade = true;
+                }
+                // Placed at x,y inside its own transform.
+                const auto ref = defs.constFind(svgHref(at));
+                if (ref == defs.constEnd()) {
+                    addSkipped(res, skippedCounts, name);
+                } else {
+                    double x = 0, y = 0;
+                    svgUserLength(at.value(QLatin1String("x")), ctx.vpW, &x);
+                    svgUserLength(at.value(QLatin1String("y")), ctx.vpH, &y);
+                    user.addPath((QTransform::fromTranslate(x, y) * ctx.xf).map(*ref));
+                }
             } else if (name == QLatin1String("g") || name == QLatin1String("svg")
                        || name == QLatin1String("a") || name == QLatin1String("switch")) {
                 // containers: nothing to draw
@@ -1450,7 +1521,8 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
     QVector<Pair> pairs;
     {
         // Any line ending: LF, CRLF, or the bare CR of old Mac exports.
-        QString text = QString::fromLatin1(data);
+        // A UTF-8 byte-order mark (some exporters write one) is not a group code.
+        QString text = QString::fromLatin1(data.startsWith("\xEF\xBB\xBF") ? data.mid(3) : data);
         text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
         text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
         const QStringList lines = text.split(QLatin1Char('\n'));
@@ -1620,6 +1692,31 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
             || (c >= QLatin1Char('a') && c <= QLatin1Char('z'));
     };
     while (at < len) {
+        // A PCL / PJL wrapper (Windows plotter drivers): an escape sequence
+        // is skipped whole, up to its closing capital (or ':' for "ESC."),
+        // so its last letter does not pair with the next command's first.
+        if (text.at(at) == QChar(0x1b)) {
+            ++at;
+            const bool dot = at < len && text.at(at) == QLatin1Char('.');
+            if (at < len && (dot || text.at(at) == QLatin1Char('%') || text.at(at) == QLatin1Char('&')
+                             || text.at(at) == QLatin1Char('*') || text.at(at) == QLatin1Char('(')
+                             || text.at(at) == QLatin1Char(')'))) {
+                ++at;
+                while (at < len) {
+                    const QChar c = text.at(at++);
+                    if (dot ? c == QLatin1Char(':') : (c >= QLatin1Char('A') && c <= QLatin1Char('Z')) || c == QLatin1Char('@'))
+                        break;
+                }
+            } else if (at < len) {
+                ++at;                     // a two-character escape (ESC E)
+            }
+            continue;
+        }
+        if (text.at(at) == QLatin1Char('@') && text.mid(at, 4) == QLatin1String("@PJL")) {
+            const int end = int(text.indexOf(QLatin1Char('\n'), at));
+            at = end < 0 ? len : end + 1;
+            continue;
+        }
         if (at + 1 >= len || !isLetter(text.at(at)) || !isLetter(text.at(at + 1))) {
             ++at;
             continue;
@@ -1708,6 +1805,7 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
             penDown = false;
             relative = false;
             open = false;
+            labelEnd = QChar(0x03);
         } else if (cmd == QLatin1String("SP")
                    || cmd == QLatin1String("LT") || cmd == QLatin1String("VS")
                    || cmd == QLatin1String("IP") || cmd == QLatin1String("SC")) {

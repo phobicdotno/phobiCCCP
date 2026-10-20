@@ -2085,14 +2085,18 @@ QList<Job> orderJobs(QList<Job> jobs, QPointF from)
     return out;
 }
 
-static QRectF jobBounds(const Job &j)
+// The tool centres' box grown by `pad`. Rest depth counts a later cut as in
+// cut air anywhere the earlier cuts cleared (their centres plus the tool
+// radius), even across the seam where two of them meet, so a job depends on
+// every earlier one whose centres come within a tool radius of its own. The
+// pad also gives a straight horizontal or vertical line an area, which
+// QRectF needs to count it as overlapping.
+static QRectF jobBounds(const Job &j, double pad)
 {
     QRectF r;
     for (const QPolygonF &p : j.rings)
         r |= p.boundingRect();
-    // A straight horizontal or vertical line has no area, and QRectF never
-    // counts such a box as overlapping: grown a little it does.
-    return r.isNull() ? r : r.adjusted(-0.01, -0.01, 0.01, 0.01);
+    return r.isNull() ? r : r.adjusted(-pad, -pad, pad, pad);
 }
 
 // A ring job held back so it can be interleaved with the jobs of neighbouring
@@ -2104,6 +2108,7 @@ struct Deferred {
     QString name;
     double feed = 0, plunge = 0;
     int rpm = 0;
+    double reach = 0.01;   // the tool radius (+0.01): how far its cut reaches past the centres
 };
 
 // Nearest-neighbor over all deferred jobs, with one rule: a job may not run
@@ -2126,14 +2131,14 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
         }
         for (bool again = true; again;) {
             again = false;
-            const QRectF b = jobBounds(jobs.at(best).job);
+            const QRectF b = jobBounds(jobs.at(best).job, jobs.at(best).reach);
             int pick = -1;
             double pickD = 0;
             for (int i = 0; i < jobs.size(); ++i) {
                 const Deferred &a = jobs.at(i), &o = jobs.at(best);
                 const bool earlier = a.tp < o.tp || (a.tp == o.tp && a.job.band < o.job.band);
                 if (!earlier
-                    || !jobBounds(jobs.at(i).job).intersects(b))
+                    || !jobBounds(jobs.at(i).job, jobs.at(i).reach).intersects(b))
                     continue;
                 const double d = QLineF(from, jobs.at(i).job.start()).length();
                 if (pick < 0 || d < pickD) {
@@ -3715,7 +3720,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     if (job.band >= 0 && job.band < bandLinks.size())
                         jcp.linkOk = bandLinks.at(job.band);
                 }
-                pending.append({job, jcp, myIndex, name, feed, plunge, rpm});
+                pending.append({job, jcp, myIndex, name, feed, plunge, rpm, toolR + 0.01});
             }
             if (!siteOrder)
                 flush();                      // list order: this toolpath, then the next

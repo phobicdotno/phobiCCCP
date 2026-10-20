@@ -340,7 +340,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)
-    foreach(mode cancelstop cancelend disconnend)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

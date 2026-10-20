@@ -1,7 +1,8 @@
 // The Machine panel against a scripted controller on a pseudo-terminal:
 // Cancel job and Disconnect while the hold settles - a Stop in that wait,
 // and the job's last lines answered in it (as GRBL acks lines into its
-// planner while held). Popups (shopAsk) are answered by a timer that
+// planner while held), Resume pressed in it; and a BitZero step left
+// waiting when an end stop resets the controller. Popups (shopAsk) are answered by a timer that
 // reads them and presses a button by its text.
 //
 // Skips (exit 77) where no pty can be opened as a serial port.
@@ -103,6 +104,8 @@ struct FakeGrbl {
     bool locked = false;      // after ALARM:1: deaf until ctrl-X
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
+    bool running = false;
+    QByteArray pins;
     double mx = -100, my = -100, mz = -30;
     // A jog reports Jog for `jogMs` after its line (it does not move the
     // position: tests set that), or until a jog cancel.
@@ -136,9 +139,9 @@ struct FakeGrbl {
                                   && (homeClock.elapsed() < 300 || homeReports > 0);
                 if (home && homeReports > 0)
                     --homeReports;
-                send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : "Idle")
+                send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : running ? "Run" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n");
+                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:0.000,0.000,0.000>\r\n");
             } else if (c == '!') {
                 if (!held) holdClock.start();
                 held = true;
@@ -150,6 +153,10 @@ struct FakeGrbl {
                 jogClock.invalidate();
                 events << "JOGCANCEL";
             } else if (c == 0x18) {
+                const bool moving = (running && !held) || jogging()
+                                    || (held && holdClock.isValid() && holdClock.elapsed() < holdSettleMs);
+                running = false;
+                if (moving) { send("ALARM:3\r\n"); alarm = true; events << "ALARM3"; }
                 held = false;
                 jogClock.invalidate();
                 homeReports = 0;
@@ -474,6 +481,64 @@ int main(int argc, char **argv)
             check(!s->isConnected(), "disconnect at the job's end: the port closes");
         else
             check(panel.m_pauseBtn->text().contains(QLatin1String("Hold")), "cancel at the job's end: not left on Resume");
+    }
+
+    auto runUntilDialogGone = [&](std::function<void()> after) {
+        QTimer *t = new QTimer;
+        t->setInterval(5);
+        QObject::connect(t, &QTimer::timeout, [&, t, after] {
+            if (QApplication::activeModalWidget() || grbl.count("!") < 1)
+                return;
+            t->stop();
+            t->deleteLater();
+            after();
+        });
+        t->start();
+    };
+
+    if (mode == "bzstale") {
+        // BitZero (corner, X Y Z, BitSetter on): the last macro (rise to the
+        // top, back over the corner) is acked, bitZeroApply waits for Idle;
+        // on the way an end stop fires (watchdog + ALARM:3). Then Initialize.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_bzWantX = panel.m_bzWantY = panel.m_bzWantZ = true;
+        panel.m_bzCx = -50; panel.m_bzCy = -60; panel.m_bzStockZ = -70;
+        grbl.running = true;
+        panel.bitZeroApply();
+        wait(300);
+        grbl.pins = "Z";
+        wait(600);
+        grbl.pins.clear();
+        check(grbl.count("^X") >= 1, "bzstale: the end stop reset the controller");
+        grbl.events.clear();
+        panel.initializeMachine();
+        wait(5000);
+        check(grbl.count("G10 L20") == 0 && grbl.count("G38.2") == 0,
+              "bzstale: nothing of the failed BitZero runs after Initialize");
+    }
+
+    if (mode == "cancelresume") {
+        // Cancel job confirmed; the hold is still decelerating when the
+        // operator presses Resume (the button still says Resume).
+        grbl.hangDwell = true;
+        grbl.holdSettleMs = 1500;
+        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G4P30.00"), QStringLiteral("G0X1")});
+        wait(400);
+        grbl.running = true;
+        wait(300);
+        grbl.events.clear();
+        answer = [&](const Seen &) { return QStringLiteral("Cancel job"); };
+        bool closed = false;
+        QTimer::singleShot(0, [&] {
+            runUntilDialogGone([&] {
+                closed = true;
+                QTimer::singleShot(100, [&] { panel.m_pauseBtn->click(); });
+            });
+        });
+        button(QStringLiteral("✕ Cancel job"))->click();
+        spin(3000, [&] { return closed; });
+        wait(7000);
+        check(grbl.count("ALARM3") == 0, "cancelresume: no reset while moving");
     }
 
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");

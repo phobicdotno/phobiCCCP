@@ -240,6 +240,7 @@ private:
     bool m_parkAfterHome = false;
     bool m_sawHoming = false;
     quint64 m_flowSeq = 0;       // counts resetFlow(): a Stop since calls off what was planned
+    bool m_resetPending = false; // Cancel job / Disconnect waits for the hold to reset
     quint64 m_stopSeq = 0;       // counts real Stops (button, tool prompt, end stop, cable) only
     // Jog limits. Jogs go to absolute machine positions kept inside the
     // travel GRBL reports ($130-$132), because this machine runs with soft

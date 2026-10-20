@@ -409,6 +409,25 @@ int main(int argc, char **argv)
                   "dxf: the joined square is closed with four sides");
             check(!isClosed(sq.elements.at(1)), "dxf: the loose line stays open");
         }
+        {
+            const QByteArray dxf = QByteArray("\xEF\xBB\xBF") +
+                "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\n10\n21\n0\n0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult b = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("bom"));
+            check(b.ok && b.elements.size() == 1, "dxf: a UTF-8 byte-order mark is skipped");
+        }
+        {
+            // <use> places what it refers to (pdftocairo's text, clones).
+            const c2d::ImportResult u = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "
+                "width='100mm' height='100mm' viewBox='0 0 100 100'>"
+                "<defs><symbol id='g1' overflow='visible'><path d='M0 0 L10 0 L10 10 Z'/></symbol></defs>"
+                "<rect x='0' y='0' width='5' height='5'/>"
+                "<use xlink:href='#g1' x='50' y='50'/><use href='#g1' x='70' y='50' transform='translate(0 20)'/>"
+                "</svg>", opts(0, 0), QStringLiteral("use"));
+            check(u.ok && u.elements.size() == 3, "svg: each <use> draws what it refers to");
+            check(std::abs(u.bounds.width() - 80.0) < 0.1 && std::abs(u.bounds.height() - 80.0) < 0.1,
+                  "svg: placed at its x,y inside its transform");
+        }
         // Extrusion 0,0,-1 mirrors OCS entities only: a LINE is stored in
         // world coordinates and must stay at +X.
         {
@@ -716,6 +735,19 @@ int main(int argc, char **argv)
             QByteArray("IN;WDPress any key\x03;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "wd.plt");
         check(w.ok && std::abs(w.bounds.width() - 100.0) < 0.1 && std::abs(w.bounds.height() - 100.0) < 0.1,
               "HPGL WD: display text is skipped like a label");
+        // A PCL wrapper (Windows drivers): ESC%1B's B is not the start of BP.
+        const c2d::ImportResult e = c2d::importHpglData(
+            QByteArray("\x1b%-12345X@PJL ENTER LANGUAGE=HPGL2\r\n\x1b%1BBP1,\"Project\";IN;"
+                       "PU8000,0;PD12000,0,12000,4000,8000,4000,8000,0;PU;\x1b%0A"),
+            opts(0, 0), "pcl.plt");
+        check(e.ok && std::abs(e.bounds.width() - 100.0) < 0.1 && std::abs(e.bounds.height() - 100.0) < 0.1,
+              "HPGL in PCL: escape sequences are skipped whole");
+        const c2d::ImportResult e2 = c2d::importHpglData(
+            QByteArray("\x1b%1BPU8000,0;PD12000,0,12000,4000;PU;"), opts(0, 0), "pcl2.plt");
+        check(e2.ok && std::abs(e2.bounds.width() - 100.0) < 0.1, "HPGL in PCL: the first PU is kept");
+        const c2d::ImportResult in = c2d::importHpglData(
+            QByteArray("IN;DT@;LBa@;IN;LBNext\x03;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "in3.plt");
+        check(in.ok && in.elements.size() == 1, "HPGL IN: the label terminator is back to ETX");
     }
 
     std::printf("test_import: %d checks OK\n", g_checks);
