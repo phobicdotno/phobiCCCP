@@ -598,8 +598,17 @@ Element transformElement(const Element &e, const QTransform &t)
             }
             o.insert("rendered", rendered);
         }
-        o.insert("transform", QJsonArray{n.m11(), n.m12(), 0, n.m21(), n.m22(), 0,
-                                         n.dx(), n.dy(), 1});
+        // The fold leaves (1/k)*k rounding noise (0.9999999999999999) and
+        // a turn there and back leaves ~1e-17 off-diagonals: snap them, so a
+        // plain text reads as plain again.
+        auto snap = [](double v) {
+            for (double to : {0.0, 1.0, -1.0})
+                if (std::fabs(v - to) < 1e-12)
+                    return to;
+            return v;
+        };
+        o.insert("transform", QJsonArray{snap(n.m11()), snap(n.m12()), 0, snap(n.m21()),
+                                         snap(n.m22()), 0, n.dx(), n.dy(), 1});
         return Element::fromJson(o);
     }
 

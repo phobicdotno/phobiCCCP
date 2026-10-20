@@ -1780,19 +1780,19 @@ SolveResult solve(Document &doc, const QSet<QString> &keep, bool force)
         return res;
     QVector<double> &x = sys.x();
     const QVector<double> x0 = x;
-    const QVector<bool> isFree = freeMask(sys);
-    Problem pb;
-    pb.setup(sys, isFree);
-    const int m = pb.rows, n = pb.freeVar.size();
 
-    QVector<double> w(n, 1.0);
-    for (const Body &b : sys.bodies())
-        if (keep.contains(b.id))
-            for (int j = 0; j < n; ++j)
-                if (pb.freeVar[j] >= b.off && pb.freeVar[j] < b.off + b.n)
-                    w[j] = 1e4;
-
-    QVector<double> r(m), rTry(m), J, A, g, xTry;
+    // The size variables of rectangles, polygons and circles: weighted so
+    // the minimum-norm step moves a shape before it resizes it, and held
+    // outright when a free solve would turn one inside out.
+    auto isSize = [&](int var) {
+        for (const Body &b : sys.bodies())
+            if (var >= b.off && var < b.off + b.n) {
+                const int k = var - b.off;
+                return (b.t == Body::Rect && (k == 2 || k == 3))
+                    || ((b.t == Body::Polygon || b.t == Body::Circle) && k == 2);
+            }
+        return false;
+    };
     auto cost = [&](const QVector<double> &rv) {
         double s = 0;
         for (double v : rv) s += v * v;
@@ -1803,79 +1803,162 @@ SolveResult solve(Document &doc, const QSet<QString> &keep, bool force)
         for (double v : rv) s = qMax(s, std::fabs(v));
         return s;
     };
-    pb.evalAll(x.data(), r.data());
-    double c = cost(r);
-    double mu = 1e-3;
-    int it = 0;
-    if (n > 0) {
-        for (; it < 300 && worst(r) > 1e-10; ++it) {
-            pb.jacobian(x, J);
-            A.fill(0, n * n);
-            g.fill(0, n);
-            for (int i = 0; i < n; ++i) {
-                const double *ci = J.constData() + i * m;
-                for (int k = 0; k < m; ++k)
-                    g[i] += ci[k] * r[k];
-                for (int j = i; j < n; ++j) {
-                    const double *cj = J.constData() + j * m;
-                    double s = 0;
-                    for (int k = 0; k < m; ++k)
-                        s += ci[k] * cj[k];
-                    A[i * n + j] = A[j * n + i] = s;
-                }
-            }
-            bool stepped = false;
-            while (mu < 1e12) {
-                QVector<double> Ad = A, d(n);
+
+    struct Run { QVector<double> x, r; int it = 0; QSet<QString> failing; bool insideOut = false; };
+    auto isKept = [&](int var) {
+        for (const Body &b : sys.bodies())
+            if (var >= b.off && var < b.off + b.n)
+                return keep.contains(b.id);
+        return false;
+    };
+    auto run = [&](bool holdSizes, bool holdKept) {
+        Run out;
+        out.x = x0;
+        QVector<bool> isFree = freeMask(sys);
+        for (int k = 0; k < isFree.size(); ++k)
+            if (isFree[k] && ((holdSizes && isSize(k)) || (holdKept && isKept(k))))
+                isFree[k] = false;
+        Problem pb;
+        pb.setup(sys, isFree);
+        const int m = pb.rows, n = pb.freeVar.size();
+
+        // Damping weights: the minimum-norm step changes cheap variables
+        // first. Sizes cost 1e2, so shapes move before they resize; what
+        // the edit touched costs 1e4.
+        QVector<double> w(n, 1.0);
+        for (int j = 0; j < n; ++j)
+            if (isSize(pb.freeVar[j]))
+                w[j] = 1e2;
+        for (const Body &b : sys.bodies())
+            if (keep.contains(b.id))
+                for (int j = 0; j < n; ++j)
+                    if (pb.freeVar[j] >= b.off && pb.freeVar[j] < b.off + b.n)
+                        w[j] = 1e4;
+
+        QVector<double> &xr = out.x;
+        QVector<double> &r = out.r;
+        r.resize(m);
+        QVector<double> rTry(m), J, A, g, xTry;
+        pb.evalAll(xr.data(), r.data());
+        double c = cost(r);
+        double mu = 1e-3;
+        int it = 0;
+        if (n > 0) {
+            for (; it < 300 && worst(r) > 1e-10; ++it) {
+                pb.jacobian(xr, J);
+                A.fill(0, n * n);
+                g.fill(0, n);
                 for (int i = 0; i < n; ++i) {
-                    Ad[i * n + i] += mu * w[i];
-                    d[i] = -g[i];
-                }
-                if (gauss(Ad, d, n)) {
-                    xTry = x;
-                    for (int i = 0; i < n; ++i)
-                        xTry[pb.freeVar[i]] += d[i];
-                    pb.evalAll(xTry.data(), rTry.data());
-                    const double cTry = cost(rTry);
-                    if (cTry < c) {
-                        x = xTry;
-                        r = rTry;
-                        c = cTry;
-                        mu = qMax(mu / 4, 1e-9);
-                        stepped = true;
-                        break;
+                    const double *ci = J.constData() + i * m;
+                    for (int k = 0; k < m; ++k)
+                        g[i] += ci[k] * r[k];
+                    for (int j = i; j < n; ++j) {
+                        const double *cj = J.constData() + j * m;
+                        double s = 0;
+                        for (int k = 0; k < m; ++k)
+                            s += ci[k] * cj[k];
+                        A[i * n + j] = A[j * n + i] = s;
                     }
                 }
-                mu *= 5;
+                bool stepped = false;
+                while (mu < 1e12) {
+                    QVector<double> Ad = A, d(n);
+                    for (int i = 0; i < n; ++i) {
+                        Ad[i * n + i] += mu * w[i];
+                        d[i] = -g[i];
+                    }
+                    if (gauss(Ad, d, n)) {
+                        xTry = xr;
+                        for (int i = 0; i < n; ++i)
+                            xTry[pb.freeVar[i]] += d[i];
+                        pb.evalAll(xTry.data(), rTry.data());
+                        const double cTry = cost(rTry);
+                        if (cTry < c) {
+                            xr = xTry;
+                            r = rTry;
+                            c = cTry;
+                            mu = qMax(mu / 4, 1e-9);
+                            stepped = true;
+                            break;
+                        }
+                    }
+                    mu *= 5;
+                }
+                if (!stepped)
+                    break;
             }
-            if (!stepped)
-                break;
         }
-    }
-    res.iterations = it;
-    res.residual = worst(r);
-    for (int ci = 0; ci < sys.constraints().size(); ++ci)
-        for (int k = 0; k < pb.rowCount[ci]; ++k)
-            if (std::fabs(r[pb.rowStart[ci] + k]) > 1e-6) {
-                res.failing << sys.constraints()[ci].uid;
-                break;
-            }
-    // A rectangle or polygon driven through zero is a solution only on
-    // paper: written() can only build it the right way out, where the
-    // constraints that put it there no longer hold.
-    for (const Body &b : sys.bodies()) {
-        const double *v = x.constData() + b.off;
-        const bool insideOut = (b.t == Body::Rect && !b.rounded && (v[2] <= 0 || v[3] <= 0))
-                             || (b.t == Body::Polygon && v[2] <= 0);
-        if (!insideOut)
-            continue;
-        for (const Constraint &c : sys.constraints())
-            for (const GeoRef &r : c.refs)
-                if (r.id == b.id && !res.failing.contains(c.uid)) {
-                    res.failing << c.uid;
+        out.it = it;
+        for (int ci = 0; ci < sys.constraints().size(); ++ci)
+            for (int k = 0; k < pb.rowCount[ci]; ++k)
+                if (std::fabs(r[pb.rowStart[ci] + k]) > 1e-6) {
+                    out.failing << sys.constraints()[ci].uid;
                     break;
                 }
+        // A rectangle or polygon driven through zero is a solution only on
+        // paper: written() can only build it the right way out, where the
+        // constraints that put it there no longer hold.
+        for (const Body &b : sys.bodies()) {
+            const double *v = xr.constData() + b.off;
+            const bool insideOut = (b.t == Body::Rect && !b.rounded && (v[2] <= 0 || v[3] <= 0))
+                                 || (b.t == Body::Polygon && v[2] <= 0);
+            if (!insideOut)
+                continue;
+            out.insideOut = true;
+            for (const Constraint &c : sys.constraints())
+                for (const GeoRef &r : c.refs)
+                    if (r.id == b.id) {
+                        out.failing << c.uid;
+                        break;
+                    }
+        }
+        return out;
+    };
+
+    // How far a run moved what the edit asked to keep where it put it.
+    auto keptShift = [&](const Run &rr) {
+        double s = 0;
+        for (const Body &b : sys.bodies())
+            if (keep.contains(b.id))
+                for (int k = 0; k < b.n; ++k)
+                    s += std::fabs(rr.x[b.off + k] - x0[b.off + k]);
+        return s;
+    };
+    // The weights make resizing and moving what was edited dear, not
+    // impossible: a free shape on the end of something dragged still gives
+    // a little (and goes through zero size when dragged far enough), and
+    // the dragged thing lags a little behind a shape that has to stretch.
+    // When the constraints can hold with those kept exactly as they are,
+    // that is the answer: the shapes follow by moving, the dragged thing
+    // stays where it was put.
+    Run best = run(false, false);
+    bool resized = false;
+    for (int k = 0; k < x0.size() && !resized; ++k)
+        resized = isSize(k) && std::fabs(best.x[k] - x0[k]) > 1e-9;
+    bool exact = false;
+    if (resized) {
+        Run held = run(true, !keep.isEmpty());
+        if (held.failing.isEmpty()) {
+            best = held;
+            exact = true;
+        } else if (!keep.isEmpty()) {
+            held = run(true, false);
+            if (held.failing.isEmpty() && (best.insideOut || keptShift(held) <= 2 * keptShift(best) + 1e-6))
+                best = held;
+        }
     }
+    if (!exact && !keep.isEmpty() && keptShift(best) > 1e-9) {
+        Run held = run(false, true);
+        if (held.failing.isEmpty())
+            best = held;
+    }
+    x = best.x;
+    res.iterations = best.it;
+    res.residual = worst(best.r);
+    // Keep the constraint order of the system for the failing list.
+    for (const Constraint &c : sys.constraints())
+        if (best.failing.contains(c.uid))
+            res.failing << c.uid;
     // A line the constraints can only meet by shrinking it to nothing
     // (Horizontal and Vertical on the same line) is a conflict, not a
     // solution: the constraints on it fail rather than the line vanishing.

@@ -286,6 +286,7 @@ void Canvas::resetPicks()
 
 void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTransform &moved)
 {
+    m_editWarning.clear();
     if (!m_doc || m_doc->parametric().constraints.isEmpty()) {
         m_undo->push(cmd);
         return;
@@ -350,18 +351,21 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
     m_undo->endMacro();
     if (!heldBack.isEmpty()) {
         rebuild();
-        emit statusHint(heldBack.size() == 1
+        m_editWarning = heldBack.size() == 1
             ? tr("1 shape is locked with Fix and stays where it is")
-            : tr("%1 shapes are locked with Fix and stay where they are").arg(heldBack.size()));
+            : tr("%1 shapes are locked with Fix and stay where they are").arg(heldBack.size());
+        emit statusHint(m_editWarning);
     } else if (!r.ok) {
         rebuild();
-        emit statusHint(r.failing.size() == 1
+        m_editWarning = r.failing.size() == 1
             ? tr("1 constraint can't hold after this edit — shown in red")
-            : tr("%1 constraints can't hold after this edit — shown in red").arg(r.failing.size()));
+            : tr("%1 constraints can't hold after this edit — shown in red").arg(r.failing.size());
+        emit statusHint(m_editWarning);
     } else if (!dropped.isEmpty()) {
-        emit statusHint(dropped.size() == 1
+        m_editWarning = dropped.size() == 1
             ? tr("1 constraint went with the geometry it was on")
-            : tr("%1 constraints went with the geometry they were on").arg(dropped.size()));
+            : tr("%1 constraints went with the geometry they were on").arg(dropped.size());
+        emit statusHint(m_editWarning);
     }
 }
 
@@ -1384,9 +1388,14 @@ bool Canvas::parametricPress(QMouseEvent *event)
             selectConstraint(QString());
         return false;
     }
-    selectConstraint(uid);
     const int i = m_doc->parametric().indexOfUid(uid);
-    if (i >= 0 && m_doc->parametric().constraints.at(i).isDimension() && m_tool == Select) {
+    if (i < 0) {
+        // A hit left over from the last paint: that constraint is gone.
+        selectConstraint(QString());
+        return false;
+    }
+    selectConstraint(uid);
+    if (m_doc->parametric().constraints.at(i).isDimension() && m_tool == Select) {
         m_dragDim = uid;
         m_dragDimFrom = pos;
         m_dragDimLabel0 = m_doc->parametric().constraints.at(i).label;

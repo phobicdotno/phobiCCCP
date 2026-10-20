@@ -715,8 +715,13 @@ void ToolpathPanel::createInlayMale()
     // Mirror every subpath about the design's vertical centerline, then shift
     // beside the original. Border + mirrored design under even-odd fill = the
     // inverse region: the male carves the field, leaving the design standing.
+    // Flattened in a 100x space, as the female's region is (Qt's 0.5 unit
+    // threshold made a 20 mm circle a 17-gon, the plug 0.2 mm undersize).
     for (const QPainterPath &e : els) {
-        const QList<QPolygonF> polys = e.toSubpathPolygons();
+        QList<QPolygonF> polys = e.toSubpathPolygons(QTransform::fromScale(100, 100));
+        for (QPolygonF &p : polys)
+            for (QPointF &pt : p)
+                pt /= 100;
         for (const QPolygonF &p : polys) {
             const bool closed = p.size() > 3 && p.first() == p.last();
             const int n = closed ? int(p.size()) - 1 : int(p.size());

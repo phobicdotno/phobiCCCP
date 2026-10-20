@@ -76,6 +76,21 @@ static bool penClosable(const QVector<PathNode> &nodes)
         || off(nodes.last().in) || off(nodes.last().out);
 }
 
+// Delete a node in the node editor. A closed subpath left with two nodes
+// that cannot close (straight there and back) opens into a line, as the pen
+// would have drawn it.
+static bool removePathNode(SubPath &sp, int node)
+{
+    if (!sp.removeNode(node))
+        return false;
+    if (sp.closed && !penClosable(sp.nodes)) {
+        sp.closed = false;
+        sp.nodes.first().in = sp.nodes.first().p;
+        sp.nodes.last().out = sp.nodes.last().p;
+    }
+    return true;
+}
+
 // Element item with CAD-style state rendering: closed shapes get a faint fill
 // (which also makes their interior clickable), hover brightens the outline,
 // selection turns it amber — no dashed Qt selection rectangle.
@@ -2506,7 +2521,7 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
                         commitModel(tr("retract handles"));
                     });
             connect(menu.addAction(tr("Delete node")), &QAction::triggered, this, [this, sub, node, stillThere] {
-                if (stillThere() && m_model.subs[sub].removeNode(node)) {
+                if (stillThere() && removePathNode(m_model.subs[sub], node)) {
                     m_selSub = m_selNode = -1;
                     commitModel(tr("delete node"));
                 }
@@ -2555,7 +2570,7 @@ void Canvas::keyPressEvent(QKeyEvent *event)
         return;
     if (m_tool == NodeEdit && m_selSub >= 0 && m_doc
         && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
-        if (m_model.subs[m_selSub].removeNode(m_selNode)) {
+        if (removePathNode(m_model.subs[m_selSub], m_selNode)) {
             m_selSub = m_selNode = -1;
             commitModel(tr("delete node"));
         } else {

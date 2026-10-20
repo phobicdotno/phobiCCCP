@@ -1,13 +1,15 @@
 // The main window's Preview: edits schedule the export on a worker instead of
 // running it on the interface thread, a result for an older edit is dropped,
 // and a synchronous rebuild (Simulate) serves what is pending. Also: the
-// window does not close while an update step runs.
+// window does not close while an update step runs. Simulate with Preview off
+// rebuilds after an edit, never inside it, and no key is bound twice.
 //
 // Plain asserts, no framework; exits 0 on success.
 
 #define private public      // the preview's state is private to the window
 #include "../src/mainwindow.h"
 #include "../src/canvas.h"
+#include "../src/simpanel.h"
 #undef private
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
@@ -17,9 +19,11 @@
 #include <QAction>
 #include <QApplication>
 #include <QJsonObject>
+#include <QMap>
 #include <QStandardPaths>
 #include <QTest>
 #include <QTimer>
+#include <QUndoStack>
 
 #include <cstdio>
 #include <cstdlib>
@@ -132,6 +136,85 @@ int main(int argc, char *argv[])
         check(settled(w) && w.m_isoStale, "preview off: pending export dropped, 3D stale");
         QTest::qWait(400);
         check(w.m_isoStale && !w.m_canvas->hasToolpathPreview(), "preview off: nothing lands later");
+    }
+
+    // Simulate with Preview off: an undo step announces the change from
+    // inside QUndoCommand::undo(). The 3D rebuild runs an event loop behind
+    // its progress dialog; run there, a second Ctrl+Z (here: a zero timer)
+    // undid the same command again, because QUndoStack moves its index only
+    // after undo() returns.
+    {
+        check(!w.m_previewAct->isChecked(), "simulate undo: Preview is off");
+        w.setMode(c2d::MainWindow::Mode::Simulate, false);
+        QUndoStack *undo = w.m_canvas->undoStack();
+        const double x0 = d.elementById(c.id)->painterPath.boundingRect().center().x();
+        w.m_canvas->moveElementBy(c.id, 10, 0);
+        w.m_canvas->moveElementBy(c.id, 10, 0);
+        check(QTest::qWaitFor([&] { return !w.m_isoStale && !w.m_isoQueued; }, 30000),
+              "simulate undo: the moves are rebuilt");
+        const int idx = undo->index();
+        bool second = false;
+        QTimer::singleShot(0, &w, [&] { second = true; undo->undo(); });
+        undo->undo();
+        check(!second, "simulate undo: no event loop runs inside undo()");
+        check(undo->index() == idx - 1, "simulate undo: one step back");
+        check(QTest::qWaitFor([&] { return second; }, 5000), "simulate undo: the second press runs");
+        check(undo->index() == idx - 2, "simulate undo: each press undoes its own step");
+        const double x = d.elementById(c.id)->painterPath.boundingRect().center().x();
+        check(qAbs(x - x0) < 1e-6, "simulate undo: both moves undone once each");
+        check(QTest::qWaitFor([&] { return !w.m_isoStale && !w.m_isoQueued; }, 30000),
+              "simulate undo: the program is rebuilt afterwards");
+    }
+
+    // An edit while the 3D rebuild's event loop runs: that program is for
+    // neither state, so the rebuild runs again rather than nesting a second
+    // one whose newer result the outer call then overwrote.
+    {
+        QJsonObject j = d.toolpathByUuid(p.uuid)->json;
+        j.insert("name", "During");
+        QTimer::singleShot(0, &w, [&] { w.m_canvas->editToolpath(p.uuid, j); });
+        w.refreshIso(true);
+        check(!w.m_isoBusy && !w.m_isoStale, "rebuild re-entry: settled, not stale");
+        check(names(w.m_sim->m_ops).contains("During"), "rebuild re-entry: Simulate has the edit");
+        check(QTest::qWaitFor([&] { return !w.m_isoQueued; }, 5000), "rebuild re-entry: queue drained");
+        check(names(w.m_sim->m_ops).contains("During") && !w.m_isoStale,
+              "rebuild re-entry: and keeps it");
+    }
+
+    // Every shortcut is bound once: a key on two actions in one window is
+    // ambiguous and Qt fires neither (G was Constrain and Snap).
+    {
+        w.setMode(c2d::MainWindow::Mode::Design, false);
+        QMap<QString, QStringList> byKey;
+        for (QAction *a : w.findChildren<QAction *>())
+            for (const QKeySequence &key : a->shortcuts())
+                if (!key.isEmpty())
+                    byKey[key.toString()] << a->text();
+        for (auto it = byKey.cbegin(); it != byKey.cend(); ++it)
+            if (it.value().size() > 1)
+                std::fprintf(stderr, "duplicate shortcut %s: %s\n", qPrintable(it.key()),
+                             qPrintable(it.value().join(QStringLiteral(", "))));
+        bool unique = true;
+        for (const QStringList &acts : byKey)
+            unique = unique && acts.size() == 1;
+        check(unique, "shortcuts: no key on two actions");
+        QAction *snap = nullptr;
+        for (QAction *a : w.findChildren<QAction *>())
+            if (a->text() == QLatin1String("Snap"))
+                snap = a;
+        check(snap, "shortcuts: Snap action");
+        w.activateWindow();
+        w.m_canvas->setFocus();
+        QApplication::processEvents();
+        const bool snapOn = snap->isChecked();
+        QTest::keyClick(w.m_canvas, Qt::Key_G);
+        check(w.m_canvas->m_tool == c2d::Canvas::Constrain && snap->isChecked() == snapOn,
+              "shortcuts: G picks Constrain");
+        QTest::keyClick(w.m_canvas, Qt::Key_G, Qt::ShiftModifier);
+        check(snap->isChecked() != snapOn, "shortcuts: Shift+G toggles Snap");
+        check(snap->toolTip().contains(snap->shortcut().toString(QKeySequence::NativeText)),
+              "shortcuts: Snap's tooltip names its key");
+        snap->setChecked(snapOn);
     }
 
     // The window stays open while an update step's process runs.

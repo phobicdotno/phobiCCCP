@@ -70,6 +70,7 @@ private:
     QToolButton *m_trash;
     QLabel *m_broken;
     void updateStock();
+    static QString itemLabel(const LibraryTool &t);   // the list row's text
     static int stockHave(const LibraryTool &t);
     static int stockBroken(const LibraryTool &t);
 };

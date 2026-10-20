@@ -8,6 +8,7 @@
 #include "../src/vectorops.h"
 
 #include <QFont>
+#include <QFontMetricsF>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -16,6 +17,7 @@
 #include <QSet>
 #include <QTransform>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -404,6 +406,65 @@ int main(int argc, char **argv)
                     ++expect;
             check(expect > 0 && t1.raw["rendered"].toArray().size() == expect,
                   "a character outside the BMP renders as its glyph, not two boxes");
+        }
+
+        // The string is shaped as a whole: right-to-left letters in reading
+        // order, Arabic joined, a combining mark on its base, kerning kept.
+        // Each glyph sits where Qt's own shaped layout of the string puts it.
+        {
+            auto centres = [](const QPainterPath &p) {
+                QVector<QPointF> c;
+                for (const QPolygonF &poly : p.toSubpathPolygons())
+                    if (poly.size() >= 3)
+                        c << poly.boundingRect().center();
+                std::sort(c.begin(), c.end(), [](const QPointF &a, const QPointF &b) {
+                    return a.x() != b.x() ? a.x() < b.x() : a.y() < b.y();
+                });
+                return c;
+            };
+            const QString samples[] = {QString::fromUtf8("\u05d0\u05d1"),      // alef bet
+                                       QString::fromUtf8("\u0628\u0628"),      // beh beh
+                                       QString::fromUtf8("e\u0301"),           // e + combining acute
+                                       QStringLiteral("AVAVAVAV")};
+            for (const QString &str : samples) {
+                const Element t = Element::makeText(str, {0, 0}, 10, "DejaVu Sans", layer);
+                QFont f = Element::textFont(t.raw);
+                f.setPixelSize(256);
+                f.setStyleStrategy(QFont::PreferOutline);
+                const QFontMetricsF fm(f);
+                QPainterPath ref;
+                ref.addText(0, 0, f, str);
+                const double k = 10 / fm.ascent();
+                const QVector<QPointF> want = centres(QTransform::fromScale(k, -k).map(ref));
+                const QVector<QPointF> got = centres(t.painterPath);
+                bool same = !want.isEmpty() && want.size() == got.size();
+                for (int i = 0; same && i < want.size(); ++i)
+                    same = nearPt(got.at(i), want.at(i), 0.05);
+                check(same, "text glyphs sit where the shaped layout puts them");
+            }
+            // Arc text still bends the shaped glyphs round its circle.
+            QJsonObject arcO = Element::makeText(QString::fromUtf8("\u05d0\u05d1\u05d2"), {0, 0}, 10,
+                                                 "DejaVu Sans", layer).raw;
+            const Element straight = Element::fromJson(arcO);
+            const Element arcd = Element::regenText(straight, QJsonObject{{"arc_enabled", true}});
+            check(!arcd.painterPath.isEmpty()
+                      && arcd.raw["rendered"].toArray().size() == straight.raw["rendered"].toArray().size()
+                      && !nearRect(arcd.painterPath.boundingRect(), straight.painterPath.boundingRect(), 0.1),
+                  "shaped right-to-left text still follows the arc");
+        }
+
+        // The uniform-scale fold leaves no 0.9999999999999999 behind: a plain
+        // text's transform is exactly 1 / 0 after most percentages.
+        {
+            bool exact = true;
+            for (int pct = 1; pct <= 999 && exact; ++pct) {
+                const double k = pct / 100.0;
+                const Element sc = vec::transformElement(txt, vec::scaleTransform({3, 7}, k, k));
+                const QJsonArray a = sc.raw["transform"].toArray();
+                exact = a[0].toDouble() == 1 && a[1].toDouble() == 0 && a[3].toDouble() == 0
+                     && a[4].toDouble() == 1;
+            }
+            check(exact, "uniform scale of text leaves an exact identity rotation part");
         }
 
         // Pure translation goes through translate().

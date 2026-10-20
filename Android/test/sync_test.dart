@@ -77,10 +77,19 @@ void main() {
     expect(orderOf(edited.vv, edited.modified, {'desk': 50, me: 100}, 100), Order.after);
     store.delete('d1', now: 300);
     expect(store.get('d1')!.vv, {'desk': 50, me: 300});
-    // Stamped again by an older pad that kept the vv: not believed, and not carried on.
+    // Stamped again by an older pad that kept the vv: not believed, but an
+    // edit of it keeps it and notes the older pad's edit, so it counts as
+    // made from that copy (and not from one edited apart from it).
     expect(believedVv({'a': 10}, 20), isEmpty);
     store.put(Design(id: 'd2', modified: 20, vv: {'a': 10}));
-    expect(store.save(store.get('d2')!, now: 400).vv, {me: 400});
+    final older = olderEditId({'a': 10}, 20);
+    final onOlder = store.save(store.get('d2')!, now: 400);
+    expect(onOlder.vv, {'a': 10, older: 20, me: 400});
+    expect(orderOf(onOlder.vv, 400, {'a': 10}, 20), Order.after);
+    expect(orderOf(onOlder.vv, 400, {'a': 10}, 25), Order.concurrent, reason: 'another edit of the same copy');
+    // An older pad's design, with no vv at all, is noted the same way.
+    store.put(Design(id: 'd3', modified: 30));
+    expect(store.save(store.get('d3')!, now: 500).vv, {olderEditId(const {}, 30): 30, me: 500});
     dir.deleteSync(recursive: true);
   });
 
@@ -89,8 +98,19 @@ void main() {
     expect(orderOf({'a': 1, 'b': 2}, 2, {'a': 1}, 1), Order.after);
     expect(orderOf({'a': 1}, 1, {'a': 1, 'b': 2}, 2), Order.before);
     expect(orderOf({'a': 3}, 3, {'a': 1, 'b': 2}, 2), Order.concurrent);
-    expect(orderOf(const {}, 3, {'a': 1}, 1), Order.unknown);
+    // An older pad's copy: by the vv it kept (none: an older pad's design,
+    // with nothing of the newer ones in it).
+    expect(orderOf(const {}, 3, {'a': 1}, 1), Order.concurrent);
+    expect(orderOf({'a': 1}, 3, {'a': 1}, 1), Order.after);
+    expect(orderOf({'a': 1}, 3, {'a': 2}, 2), Order.concurrent, reason: 'an entry above the vv it kept');
+    expect(orderOf({'a': 2}, 3, {'a': 1}, 1), Order.after);
+    // Two older copies, or an older pad's deletion (it keeps no vv), tell nothing.
+    expect(orderOf({'a': 1}, 3, {'a': 1}, 4), Order.unknown);
+    expect(orderOf(const {}, 3, {'a': 1}, 1, aDeleted: true), Order.unknown);
     expect(orderOf(const {}, 3, const {}, 3), Order.same);
+    // As phobiCCCP names them (tests/test_padlink.cpp).
+    expect(olderEditId({'pad1': 1000, 'pad2': 2000}, 2600), 'e-e625dcdd1333364a');
+    expect(forkIdFor(Design(id: 'sign-1', modified: 3000, vv: {'pad1': 3000})), '2b4050ca-c995-58c3-b7c9-374462673dd3');
     // Made from theirs: pushed; theirs made from ours: pulled; apart: pushed, for the computer to keep both.
     final plan = SyncPlan.versions({
       'a': (2, {'p': 2, 'd': 1}),

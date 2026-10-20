@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 and later: as backup_rules.xml, for cloud backups and for
+     moving to a new tablet. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="designs/.replica" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="designs/.replica" />
+    </device-transfer>
+</data-extraction-rules>

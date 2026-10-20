@@ -239,6 +239,7 @@ private:
     void park();                 // safe Z, then the tool-change XY
     bool m_parkAfterHome = false;
     bool m_sawHoming = false;
+    quint64 m_flowSeq = 0;       // counts resetFlow(): a Stop since calls off what was planned
     // Jog limits. Jogs go to absolute machine positions kept inside the
     // travel GRBL reports ($130-$132), because this machine runs with soft
     // and hard limits off ($20=0, $21=0): a jog past the end grinds the

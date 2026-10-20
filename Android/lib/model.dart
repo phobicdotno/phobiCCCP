@@ -2,7 +2,10 @@
 // and writes (src/padlink.h and src/projectreceiver.h in phobiCCCP).
 // Millimetres, X right, Y up, X0 Y0 at the stock's front-left corner.
 
+import 'dart:convert';
 import 'dart:math' as math;
+
+import 'package:crypto/crypto.dart';
 
 const padFormat = 'phobicccp-pad';
 
@@ -50,11 +53,70 @@ Map<String, int> believedVv(Map<String, int> vv, int modified) {
   return newest == modified ? vv : const {};
 }
 
+/// [vv] as it is, believed or not (empty for a copy with none); null when
+/// malformed, as nothing can be told from it then.
+Map<String, int>? _rawVv(Map<String, int> vv) =>
+    vv.length <= maxReplicas && vv.entries.every((e) => _replicaId.hasMatch(e.key) && e.value >= 1) ? vv : null;
+
+/// What an older pad's or phobiCCCP's copy tells of the copy it was edited
+/// from: its vv, or for one with none (a design an older pad made), that
+/// nothing of the newer ones went into it. A deletion from an older pad keeps
+/// no vv, so it tells nothing (null).
+Map<String, int>? _olderVv(Map<String, int> vv, bool deleted) {
+  final raw = _rawVv(vv);
+  return raw == null || (raw.isEmpty && deleted) ? null : raw;
+}
+
+/// The id in version vectors that stands for an older pad's or phobiCCCP's
+/// edit (stamped [modified], keeping [vv]); as olderEditId() in
+/// src/padlink.cpp, so every pad and computer names it the same.
+String olderEditId(Map<String, int> vv, int modified) {
+  final raw = _rawVv(vv) ?? const {};
+  final key = '$modified\n${(raw.keys.toList()..sort()).map((k) => '$k=${raw[k]};').join()}';
+  var h1 = 2166136261, h2 = 0x811c9dc5 ^ 0x5bd1e995;
+  for (final c in utf8.encode(key)) {
+    h1 = ((h1 ^ c) * 16777619) & 0xffffffff;
+    h2 = ((h2 ^ c) * 16777619) & 0xffffffff;
+  }
+  return 'e-${h1.toRadixString(16).padLeft(8, '0')}${h2.toRadixString(16).padLeft(8, '0')}';
+}
+
+/// The version vector an edit of the copy with [vv] and [modified] builds on:
+/// its own when believed, else (from an older pad or phobiCCCP) the one it
+/// kept with that edit noted under [olderEditId], so the new edit counts as
+/// made from it. As ancestry() in src/padlink.cpp.
+Map<String, int> ancestryOf(Map<String, int> vv, int modified, {bool deleted = false}) {
+  final b = believedVv(vv, modified);
+  if (b.isNotEmpty) return b;
+  final older = _olderVv(vv, deleted);
+  return older == null || modified < 1 ? const {} : {...older, olderEditId(older, modified): modified};
+}
+
+/// How a copy with the believed [vx] stands to one with [vy] stamped [my]
+/// that is not believed: an older pad's or phobiCCCP's edit of the copy [vy]
+/// names.
+Order _relate(Map<String, int> vx, Map<String, int> vy, int my, bool yDeleted) {
+  final ry = _olderVv(vy, yDeleted);
+  if (ry == null) return Order.unknown;
+  if ((vx[olderEditId(ry, my)] ?? 0) >= my) return Order.after;
+  if (vx.entries.every((e) => e.value <= (ry[e.key] ?? 0))) return Order.before;
+  return Order.concurrent;
+}
+
 /// How the copy with [va] and [ma] stands to the one with [vb] and [mb]; as
-/// phobiCCCP's order() in src/padlink.cpp.
-Order orderOf(Map<String, int> va, int ma, Map<String, int> vb, int mb) {
+/// phobiCCCP's order() in src/padlink.cpp. Whether either is a deletion
+/// matters only for a copy from an older pad.
+Order orderOf(Map<String, int> va, int ma, Map<String, int> vb, int mb, {bool aDeleted = false, bool bDeleted = false}) {
   final a = believedVv(va, ma), b = believedVv(vb, mb);
-  if (a.isEmpty || b.isEmpty) return ma == mb ? Order.same : Order.unknown;
+  if (a.isEmpty || b.isEmpty) {
+    if (ma == mb) return Order.same;
+    if (a.isNotEmpty) return _relate(a, vb, mb, bDeleted);
+    if (b.isNotEmpty) {
+      final o = _relate(b, va, ma, aDeleted);
+      return o == Order.after ? Order.before : (o == Order.before ? Order.after : o);
+    }
+    return Order.unknown;
+  }
   var aAhead = false, bAhead = false;
   for (final e in a.entries) {
     final o = b[e.key] ?? 0;
@@ -65,6 +127,27 @@ Order orderOf(Map<String, int> va, int ma, Map<String, int> vb, int mb) {
     bAhead = bAhead || (!a.containsKey(e.key) && e.value > 0);
   }
   return aAhead ? (bAhead ? Order.concurrent : Order.after) : (bAhead ? Order.before : Order.same);
+}
+
+/// The same text for the same vv on every pad and computer (src/padlink.cpp vvKey).
+String vvKey(Map<String, int> vv) => (vv.keys.toList()..sort()).map((k) => '$k=${vv[k]};').join();
+
+/// Of two copies edited apart, [a] is the one every phobiCCCP keeps under the
+/// design's id (src/padlink.cpp wins): the later edit.
+bool winsOver(Design a, Design b) => a.modified != b.modified
+    ? a.modified > b.modified
+    : vvKey(believedVv(a.vv, a.modified)).compareTo(vvKey(believedVv(b.vv, b.modified))) > 0;
+
+/// The id every phobiCCCP gives [copy] when it keeps it beside the one that
+/// won (src/padlink.cpp Store::forkIdFor): a name-based (version 5) UUID.
+String forkIdFor(Design copy) {
+  const ns = [0x3e, 0x0b, 0x7c, 0x52, 0x61, 0xa4, 0x4f, 0x0e, 0x9d, 0x27, 0x8b, 0x5c, 0x1a, 0x6e, 0x4f, 0x93];
+  final name = utf8.encode('${copy.id}\n${copy.modified}\n${vvKey(believedVv(copy.vv, copy.modified))}');
+  final h = sha1.convert([...ns, ...name]).bytes.sublist(0, 16);
+  h[6] = (h[6] & 0x0f) | 0x50;
+  h[8] = (h[8] & 0x3f) | 0x80;
+  final hex = h.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  return '${hex.substring(0, 8)}-${hex.substring(8, 12)}-${hex.substring(12, 16)}-${hex.substring(16, 20)}-${hex.substring(20)}';
 }
 
 /// [points] without a point equal to the one before it (and, closed, without
@@ -432,7 +515,17 @@ class Design {
     return j;
   }
 
-  Order orderTo(Map<String, int> otherVv, int otherModified) => orderOf(vv, modified, otherVv, otherModified);
+  Order orderTo(Map<String, int> otherVv, int otherModified, {bool otherDeleted = false}) =>
+      orderOf(vv, modified, otherVv, otherModified, aDeleted: deleted, bDeleted: otherDeleted);
+
+  /// [other] is this very copy (its bases aside). The time alone is not
+  /// enough: two copies edited apart can carry the same time, and a computer
+  /// that settled them may have kept the other one.
+  bool isSameCopy(Design other) =>
+      modified == other.modified &&
+      deleted == other.deleted &&
+      vv.length == other.vv.length &&
+      vv.entries.every((e) => other.vv[e.key] == e.value);
 
   /// The computer that will not rebuild its linked file from a pad edit (it
   /// holds curves, tabs, parameters, ... the pad cannot), as that computer
@@ -533,6 +626,19 @@ class DesktopInfo {
   final List<MachineInfo> machines;
   final MachineStatus status;
   final bool allowStart;
+
+  /// It keeps two copies edited apart itself, by their version vectors
+  /// (phobiCCCP 1.2.9 and later). An older one lists no versions and keeps
+  /// the later copy or forks by the base alone; the pad then settles such
+  /// pairs for it (sync.dart).
+  bool get keepsBoth {
+    final v = [for (final p in version.split('.')) int.tryParse(p.split(RegExp(r'[^0-9]')).first) ?? 0];
+    while (v.length < 3) {
+      v.add(0);
+    }
+    return v[0] != 1 ? v[0] > 1 : (v[1] != 2 ? v[1] > 2 : v[2] >= 9);
+  }
+
   const DesktopInfo({
     this.host = '',
     this.version = '',

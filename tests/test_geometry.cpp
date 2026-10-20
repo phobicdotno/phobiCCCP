@@ -1454,6 +1454,45 @@ int main(int argc, char *argv[])
             check(external ? (!rising && !ccw) : (rising && ccw), "right-hand climb direction");
             check(minZ >= -6 - 1e-9 && approx(maxZ - minZ, 5.25, 1e-9) && (external ? approx(minZ, -6) : approx(maxZ, 0)), "thread covers the length, never deeper");
         }
+        // Started below the top (the lower part of a boss, a hole under a
+        // counterbore): whole turns carried the helix up to a pitch above
+        // the start, into stock. It ends at the start on a part turn and
+        // leaves the wall radially.
+        for (const bool external : {false, true}) {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({30, 30}, 8, layer));
+            r.addToolpath("thread_toolpath",
+                          {{"start_depth", "2.000"}, {"end_depth", "6.000"}, {"pitch", 1.5},
+                           {"side", external ? "external" : "internal"}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(g.done.size() == 1, "thread below the top exports");
+            double minZ = 0, maxZ = -100, pz = 50;
+            QPointF prev;
+            bool arcBefore = false, radialOut = true;
+            int exits = 0;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind == c2d::Op::Arc) {
+                    // An arc runs from where the tool was to its end.
+                    minZ = std::min({minZ, op.z, pz});
+                    maxZ = std::max({maxZ, op.z, pz});
+                } else if (op.kind == c2d::Op::Feed && arcBefore) {
+                    // The move off the wall keeps the angle it ended at.
+                    const QPointF a = prev - QPointF(30, 30), b = QPointF(op.x, op.y) - QPointF(30, 30);
+                    const double cross = a.x() * b.y() - a.y() * b.x();
+                    radialOut = radialOut && std::fabs(cross) < 1e-6 * (1 + std::hypot(b.x(), b.y()))
+                                && approx(op.z, pz, 1e-9);
+                    ++exits;
+                }
+                arcBefore = op.kind == c2d::Op::Arc;
+                if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Arc) {
+                    prev = QPointF(op.x, op.y);
+                    pz = op.z;
+                }
+            }
+            check(approx(minZ, -6, 1e-9) && approx(maxZ, -2, 1e-9),
+                  "thread below the top: the helix runs from the end depth to the start, no higher");
+            check(exits >= 1 && radialOut, "thread below the top: it leaves the wall radially");
+        }
         Rig small;
         small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
         small.addToolpath("thread_toolpath", {{"end_depth", "5.000"}, {"pitch", 1.0}});
@@ -1773,6 +1812,32 @@ int main(int argc, char *argv[])
             else
                 check(approx(rMax, 12 - R, 1e-6) && rMin <= 2.5 + 1e-6 && ccwAll,
                       "circular pocket: counter-clockwise laps out to the wall");
+        }
+        // A boss is entered on a helix round its outermost lap: a plunge
+        // beside it went straight down into stock nothing had cut.
+        {
+            Rig r;
+            r.addShape(c2d::Element::makeCircle({40, 40}, 12, layer));
+            r.addToolpath("circular_toolpath", {{"end_depth", "3.000"}, {"stepdown", 1.0},
+                                                {"side", "outside"}, {"stepover", 2.5},
+                                                {"boss_clearance", 5.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            double px = 0, py = 0, pz = 50, rOut = 0;
+            int plunges = 0;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind == c2d::Op::Arc)
+                    rOut = std::max(rOut, std::hypot(op.x - 40, op.y - 40));
+                if (op.kind == c2d::Op::Feed && op.z < pz - 1e-9 && op.z < -1e-9
+                    && approx(op.x, px, 1e-9) && approx(op.y, py, 1e-9))
+                    ++plunges;
+                if (op.kind == c2d::Op::Rapid || op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc) {
+                    px = op.x;
+                    py = op.y;
+                    pz = op.z;
+                }
+            }
+            check(g.done.size() == 1 && plunges == 0, "circular boss: no plunge into the stock");
+            check(approx(rOut, 12 + R + 5, 1e-6), "circular boss: the helix stays on the outermost lap");
         }
         Rig small;
         small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
@@ -2183,6 +2248,68 @@ int main(int argc, char *argv[])
         check(ops[1] > ops[0], "the R's outline gets its finishing pass");
         check(notes[1].contains("finishing passes skipped on 1 loop(s)"),
               "finishing passes skipped are reported");
+    }
+
+    // A hole with a narrow arm, finished inside: the corner reading walked
+    // round the arm's tip and back down its other side, read the two sides
+    // as a corner of almost no angle and let a rough ring that had lost the
+    // arm stand 20 mm off it. The arm was then cut by the finishing rings
+    // alone, at full depth in one pass. It must be cut at every stepdown.
+    {
+        for (const double w : {7.5, 8.5}) {
+            c2d::Document doc;
+            const double x0 = 20 - w / 2, x1 = 20 + w / 2;
+            const c2d::Element e = c2d::Element::makePath(
+                {{0, 0}, {40, 0}, {40, 40}, {x1, 40}, {x1, 60}, {x0, 60}, {x0, 40}, {0, 40}}, true, layer);
+            doc.addElement(e);
+            c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("contour"), {e.id});
+            tp.json["ofset_dir"] = -1;
+            tp.json["start_depth"] = "0.000";
+            tp.json["end_depth"] = "10.000";
+            tp.json["stepdown"] = 2.0;
+            QJsonObject tool = tp.json["tool"].toObject();
+            tool["diameter"] = 6.0;
+            tool["type"] = 0;
+            tp.json["tool"] = tool;
+            tp.json["finish_passes"] = 2;
+            tp.json["finish_stepover"] = 0.5;
+            tp.json["spring_pass"] = false;
+            tp.json["ignore_tabs"] = true;
+            tp.json["lead_radius"] = 0.0;
+            doc.addToolpath(tp);
+            const c2d::GcodeResult g = c2d::exportGcode(doc);
+            QSet<int> armDepths;
+            for (const c2d::Op &op : g.ops)
+                if (op.kind == c2d::Op::Feed && op.z < -1e-6 && op.y > 45)
+                    armDepths.insert(int(std::lround(-op.z)));
+            check(g.done.size() == 1 && armDepths == QSet<int>({2, 4, 6, 8, 10}),
+                  "finishing a hole with a narrow arm: the arm is cut at every stepdown");
+        }
+    }
+
+    // Texture fills an area: an open vector closed by its end points
+    // textured a triangle that was never drawn.
+    {
+        c2d::Document doc;
+        const c2d::Element v = c2d::Element::makePath({{10, 10}, {60, 60}, {110, 10}}, false, layer);
+        doc.addElement(v);
+        c2d::Toolpath tp = c2d::makeToolpath(doc, QStringLiteral("texture_toolpath"), {v.id});
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        check(g.done.isEmpty() && g.skipped.size() == 1 && g.skipped.first().contains("needs closed vectors"),
+              "texture: an open vector is not taken as an area");
+        const c2d::Element box = c2d::Element::makeRectangle({60, 80}, 20, 20, layer);
+        doc.addElement(box);
+        tp.json["elements"] = QJsonArray{QJsonObject{{"uuid", v.id}}, QJsonObject{{"uuid", box.id}}};
+        doc.removeToolpath(tp.uuid);
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g2 = c2d::exportGcode(doc);
+        bool inBox = true;
+        for (const c2d::Op &op : g2.ops)
+            if (op.kind == c2d::Op::Feed && op.z < -1e-6)
+                inBox = inBox && op.x > 49.9 && op.x < 70.1 && op.y > 69.9 && op.y < 90.1;
+        check(g2.done.size() == 1 && g2.notes.join(' ').contains("1 open vector(s) ignored") && inBox,
+              "texture: the open vector is left out with a note, the closed one textured");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

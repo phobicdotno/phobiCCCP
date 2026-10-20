@@ -180,6 +180,23 @@ int main(int argc, char *argv[])
         accept.stop();
         check(d.toolpaths().size() == 2, "a male toolpath was added");
         const QString male = d.toolpaths().at(1).uuid;
+        // The mirrored outline follows the circle: Qt's default flattening
+        // made it a coarse polygon, the plug ~0.2 mm undersize mid-chord.
+        bool sawOutline = false;
+        for (const QJsonValue &v : d.toolpathByUuid(male)->json.value("elements").toArray()) {
+            const c2d::Element *e = d.elementById(v.toObject().value("uuid").toString());
+            if (!e || e->painterPath.boundingRect().width() > 31)
+                continue;   // the border
+            sawOutline = true;
+            const QPointF c = e->painterPath.boundingRect().center();
+            double worst = 0;
+            for (const QPolygonF &p : e->painterPath.toSubpathPolygons(QTransform::fromScale(100, 100)))
+                for (int i = 0; i + 1 < p.size(); ++i)
+                    for (int k = 0; k < 4; ++k)
+                        worst = std::max(worst, std::fabs(15 - QLineF((p[i] + (p[i + 1] - p[i]) * (k / 4.0)) / 100, c).length()));
+            check(worst < 0.02, "the male outline follows the circle within 0.02 mm");
+        }
+        check(sawOutline, "the male has the mirrored outline");
         check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 3.5) < 1e-9,
               "male end depth is carve + 0.5 gap");
         c2d::param::applyToolpathBindings(d, nullptr);

@@ -71,6 +71,14 @@ public:
     // controller: it answers no line, not even $H or $X, until a soft reset.
     // Cleared by the "Grbl" banner that follows the reset.
     bool needsReset() const { return m_needsReset; }
+    // Alarm on a connection that has not answered a line yet: maybe a
+    // controller still locked by a limit from before the port was opened
+    // (it does not reboot on open). A reset first costs nothing in Alarm.
+    bool maybeLocked() const
+    {
+        return m_needsReset
+               || (!m_heard && m_status.state.startsWith(QLatin1String("Alarm")));
+    }
     // Number of lines of the running (or last) macro answered with ok.
     int macroLinesDone() const { return m_macroDone; }
 
@@ -197,6 +205,7 @@ private:
     bool m_tloPending = false;                  // G43.1 not yet on the controller
     bool m_needsReset = false;                  // critical alarm: lines go unanswered
     bool m_resetNagged = false;                 // said so once for this alarm
+    bool m_heard = false;                       // a line answered on this connection
     int m_macroDone = 0;                        // macro lines answered ok
     QString m_afterReset;                       // resetThen()'s line, sent on the banner
     QElapsedTimer m_afterResetClock;            // ...if the banner comes soon enough

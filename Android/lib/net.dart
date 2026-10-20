@@ -190,7 +190,7 @@ class CccpConnection {
   /// [put], with all phobiCCCP said about it. [desktop] is that computer's
   /// id, for the base the design carries ([Design.toWire]).
   Future<PutResult> push(Design d, {String desktop = ''}) async =>
-      PutResult.fromJson(await request({'op': 'put', 'design': d.toWire(desktop)}));
+      PutResult.fromJson(await request({'op': 'put', 'design': d.toWire(desktop), 'versions': 1}));
 
   Future<DesktopInfo> selectMachine(String id) async => DesktopInfo.fromJson(await request({'op': 'machine', 'id': id}));
 
@@ -200,7 +200,7 @@ class CccpConnection {
       {required String machine, required bool start, required String from, String desktop = ''}) async {
     try {
       return SendResult.fromJson(await request(
-          {'op': 'send', 'design': d.toWire(desktop), 'machine': machine, 'start': start, 'from': from},
+          {'op': 'send', 'design': d.toWire(desktop), 'machine': machine, 'start': start, 'from': from, 'versions': 1},
           timeout: sendTimeout));
     } on CccpException catch (e) {
       if (e.refused) rethrow;

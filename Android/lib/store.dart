@@ -10,7 +10,12 @@ import 'model.dart';
 /// the removal reaches every phobiCCCP too.
 class DesignStore {
   final Directory dir;
-  DesignStore(this.dir) {
+
+  /// Somewhere on this pad that is neither backed up nor copied with [dir]
+  /// (Android's no_backup folder, iOS's Caches): it holds the token that
+  /// ties [replicaId] to this pad. Null: [dir]'s own path does.
+  final Directory? device;
+  DesignStore(this.dir, {this.device}) {
     dir.createSync(recursive: true);
   }
 
@@ -67,25 +72,51 @@ class DesignStore {
   String? _replica;
 
   /// This pad's own id in version vectors ([Design.vv]), made once and kept
-  /// beside the designs.
+  /// beside the designs with the token of the pad it was made on. Designs
+  /// restored from a backup onto another tablet, or copied there, come
+  /// without that token, so the id is made again there: two pads with one id
+  /// would each take the other's edit as made from its own, and one of the
+  /// two would be lost without a word.
   String get replicaId {
     final known = _replica;
     if (known != null) return known;
     final f = File('${dir.path}/.replica');
+    final token = _deviceToken();
     try {
-      final id = f.readAsStringSync().trim();
-      if (validId.hasMatch(id)) return _replica = id;
+      final lines = f.readAsStringSync().split('\n');
+      final id = lines.first.trim();
+      if (validId.hasMatch(id) && lines.length > 1 && lines[1].trim() == token) return _replica = id;
     } catch (_) {}
     final id = newId();
     final tmp = File('${f.path}.tmp');
-    tmp.writeAsStringSync(id, flush: true);
+    tmp.writeAsStringSync('$id\n$token', flush: true);
     tmp.renameSync(f.path);
     return _replica = id;
   }
 
+  String _deviceToken() {
+    final d = device;
+    if (d != null) {
+      final f = File('${d.path}/replica-token');
+      try {
+        final t = f.readAsStringSync().trim();
+        if (validId.hasMatch(t)) return t;
+      } catch (_) {}
+      try {
+        d.createSync(recursive: true);
+        final t = newId();
+        final tmp = File('${f.path}.tmp');
+        tmp.writeAsStringSync(t, flush: true);
+        tmp.renameSync(f.path);
+        return t;
+      } catch (_) {}
+    }
+    return dir.absolute.path;
+  }
+
   /// [vv] (the stored copy's) with this pad's edit at [modified] noted.
-  Map<String, int> _edited(Map<String, int> vv, int was, int modified) =>
-      {...believedVv(vv, was), replicaId: modified};
+  Map<String, int> _edited(Design have, int modified) =>
+      {...ancestryOf(have.vv, have.modified, deleted: have.deleted), replicaId: modified};
 
   /// An edit made here: stamped with the time, so it wins the next sync. Its
   /// bases and versions are the stored copy's (the last one exchanged with a
@@ -98,7 +129,7 @@ class DesignStore {
     final m = stamp(was, now ?? DateTime.now().millisecondsSinceEpoch);
     final s = have == null
         ? d.copyWith(modified: m, base: 0, bases: const {}, vv: {replicaId: m})
-        : d.copyWith(modified: m, base: have.base, bases: have.bases, vv: _edited(have.vv, have.modified, m));
+        : d.copyWith(modified: m, base: have.base, bases: have.bases, vv: _edited(have, m));
     put(s);
     return s;
   }
@@ -109,7 +140,7 @@ class DesignStore {
     final m = stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch);
     // With its bases and versions, so a computer that changed it since can refuse.
     put(Design(
-        id: d.id, name: d.name, deleted: true, base: d.base, bases: d.bases, vv: _edited(d.vv, d.modified, m), modified: m));
+        id: d.id, name: d.name, deleted: true, base: d.base, bases: d.bases, vv: _edited(d, m), modified: m));
   }
 
   File? _file(String id) => validId.hasMatch(id) ? File('${dir.path}/$id.json') : null;

@@ -427,6 +427,30 @@ int main(int argc, char *argv[])
                       && std::fabs(std::atan2(b.y() - a.y(), b.x() - a.x()) * 180 / M_PI - 30) < 1e-6,
                   "on the turned bottom edge, same direction");
         }
+        {   // the edit's own warning stays in the status bar after the
+            // action's "Rotated ..." / "Mirrored ..." report
+            Document cd;
+            const Element rect = Element::makeRectangle({50, 50}, 40, 20, layer);
+            const Element loose = Element::makeCircle({100, 50}, 5, layer);
+            cd.addElement(rect);
+            cd.addElement(loose);
+            add(cd, Constraint::Fix, {ref(GeoRef::Line, rect.id, 0)});
+            canvas->setDocument(&cd);
+            QString hint;
+            auto conn = QObject::connect(canvas, &Canvas::statusHint, [&](const QString &h) { hint = h; });
+            canvas->selectIds({rect.id, loose.id});
+            va.rotate(90);
+            check(hint.startsWith(QStringLiteral("Rotated")) && hint.contains(QStringLiteral("locked with Fix")),
+                  "rotate keeps the Fix warning after its own report");
+            va.mirror(vec::Axis::Vertical);
+            check(hint.startsWith(QStringLiteral("Mirrored")) && hint.contains(QStringLiteral("locked with Fix")),
+                  "mirror keeps the Fix warning after its own report");
+            canvas->selectIds({loose.id});
+            va.scale(2, 2);
+            check(hint.startsWith(QStringLiteral("Scaled")) && !hint.contains(QStringLiteral("Fix")),
+                  "no stale warning on an edit that raised none");
+            QObject::disconnect(conn);
+        }
         canvas->setDocument(&doc);
     }
 

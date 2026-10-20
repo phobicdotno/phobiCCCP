@@ -571,6 +571,14 @@ void VectorActions::pushReplace(const QVector<Element> &inputs, const QVector<El
         new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text), ids);
 }
 
+// The action's own result, with any warning its edit raised (constraints
+// that can't hold, shapes held by Fix) kept after it rather than replaced.
+void VectorActions::reportDone(const QString &msg)
+{
+    const QString warn = m_canvas->editWarning();
+    emit m_canvas->statusHint(warn.isEmpty() ? msg : msg + QStringLiteral("; ") + warn);
+}
+
 void VectorActions::pushMoves(const QStringList &ids, const QVector<QPointF> &deltas,
                               const QString &text)
 {
@@ -632,8 +640,8 @@ void VectorActions::boolean(vec::BoolOp op)
     }
     pushReplace(closedInputs, results, false,
                 tr("%1 %2 vectors").arg(name).arg(closedInputs.size()));
-    emit m_canvas->statusHint(tr("%1: %2 vector(s) → %3 closed path(s)")
-                                  .arg(name).arg(closedInputs.size()).arg(results.size()));
+    reportDone(tr("%1: %2 vector(s) → %3 closed path(s)")
+                   .arg(name).arg(closedInputs.size()).arg(results.size()));
 }
 
 void VectorActions::offset()
@@ -687,7 +695,7 @@ void VectorActions::offsetBy(double delta, bool keepInputs)
     }
     pushReplace(inputs, results, keepInputs,
                 tr("offset %1 vector(s) by %2 mm").arg(inputs.size()).arg(delta));
-    emit m_canvas->statusHint(tr("Offset by %1 mm: %2 closed path(s)").arg(delta).arg(results.size()));
+    reportDone(tr("Offset by %1 mm: %2 closed path(s)").arg(delta).arg(results.size()));
 }
 
 static QVector<QRectF> boxesOf(const QVector<Element> &els)
@@ -761,7 +769,7 @@ void VectorActions::mirror(vec::Axis axis)
         after.append(vec::transformElement(e, t));
     const QString dir = axis == vec::Axis::Horizontal ? tr("horizontally") : tr("vertically");
     pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir), t);
-    emit m_canvas->statusHint(tr("Mirrored %1 vector(s) %2").arg(before.size()).arg(dir));
+    reportDone(tr("Mirrored %1 vector(s) %2").arg(before.size()).arg(dir));
 }
 
 void VectorActions::pushCopies(const QVector<Element> &originals,
@@ -993,7 +1001,7 @@ void VectorActions::rotate(double deg)
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
     pushReshape(before, after, tr("rotate %1 vector(s) by %2°").arg(before.size()).arg(deg), t);
-    emit m_canvas->statusHint(tr("Rotated %1 vector(s) by %2°").arg(before.size()).arg(deg));
+    reportDone(tr("Rotated %1 vector(s) by %2°").arg(before.size()).arg(deg));
 }
 
 void VectorActions::scale(double sx, double sy)
@@ -1007,8 +1015,8 @@ void VectorActions::scale(double sx, double sy)
         after.append(vec::transformElement(e, t));
     pushReshape(before, after,
                 tr("scale %1 vector(s) %2% × %3%").arg(before.size()).arg(sx * 100).arg(sy * 100), t);
-    emit m_canvas->statusHint(tr("Scaled %1 vector(s) to %2% × %3%")
-                                  .arg(before.size()).arg(sx * 100).arg(sy * 100));
+    reportDone(tr("Scaled %1 vector(s) to %2% × %3%")
+                   .arg(before.size()).arg(sx * 100).arg(sy * 100));
 }
 
 void VectorActions::moveCopy(double dx, double dy, int copies, bool joinToolpaths)
@@ -1050,9 +1058,9 @@ void VectorActions::corners(vec::CornerStyle style, double size)
     }
     pushReshape(before, after, (fillet ? tr("fillet %1 corner(s)") : tr("chamfer %1 corner(s)"))
                                    .arg(total));
-    emit m_canvas->statusHint((fillet ? tr("Filleted %1 corner(s) at %2 mm")
-                                      : tr("Chamfered %1 corner(s) at %2 mm"))
-                                  .arg(total).arg(size));
+    reportDone((fillet ? tr("Filleted %1 corner(s) at %2 mm")
+                       : tr("Chamfered %1 corner(s) at %2 mm"))
+                   .arg(total).arg(size));
 }
 
 static QDialogButtonBox *okCancel(QDialog &dlg, QFormLayout *form)

@@ -85,7 +85,7 @@ class _MainWindowState extends State<MainWindow> {
       return;
     }
     final d = app.design(cur.id);
-    if (d == null || d.modified == cur.modified) {
+    if (d == null || d.isSameCopy(cur)) {
       setState(() {});
       return;
     }
@@ -139,7 +139,7 @@ class _MainWindowState extends State<MainWindow> {
   bool _stale() {
     final cur = _d;
     final stored = cur == null ? null : app.design(cur.id);
-    if (cur == null || stored == null || stored.modified == cur.modified) return false;
+    if (cur == null || stored == null || stored.isSameCopy(cur)) return false;
     _synced();
     _say('“${stored.name}” changed on another pad or computer; your last change was not kept');
     return true;
@@ -150,7 +150,7 @@ class _MainWindowState extends State<MainWindow> {
   /// dropped, as saving it would put the old copy back everywhere.
   bool _replacedSince(Design d) {
     final cur = _d;
-    if (cur != null && cur.id == d.id && cur.modified == d.modified && !_stale()) return false;
+    if (cur != null && cur.id == d.id && cur.isSameCopy(d) && !_stale()) return false;
     _say('“${d.name}” changed while the dialog was open; that change was not kept');
     return true;
   }

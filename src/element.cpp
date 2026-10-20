@@ -6,9 +6,13 @@
 #include <QJsonDocument>
 #include <QPointF>
 #include <QPolygonF>
+#include <QGlyphRun>
+#include <QRawFont>
+#include <QTextLayout>
 #include <QTransform>
 #include <QUuid>
 #include <QtMath>
+#include <algorithm>
 
 namespace c2d {
 
@@ -352,21 +356,58 @@ void Element::renderText(QJsonObject &o)
     QTransform toMm;
     toMm.scale(scale, -scale);            // Qt text is Y-down; CC is Y-up
 
-    // Per-glyph outlines and advances (mm, Y-up, pen at the origin).
-    struct Glyph { QPainterPath path; double advance; };
+    // Shape the whole string once: kerning, bidi order, joining forms and
+    // mark placement all come from the layout engine. Each glyph is kept
+    // with the straight-baseline cluster it belongs to (a base glyph plus
+    // its zero-advance marks), so letter spacing and arc placement move a
+    // cluster as one piece and the marks stay on their base.
+    struct Glyph { QPainterPath path; double cluster; double advance; };
     QVector<Glyph> glyphs;
     double width = 0;
-    // One glyph per code point: a character outside the BMP is a surrogate
-    // pair in UTF-16, and laying out each half on its own draws two
-    // missing-glyph boxes.
-    const QList<uint> ucs = text.toUcs4();
-    for (uint cp : ucs) {
-        const QString ch = QString::fromUcs4(reinterpret_cast<const char32_t *>(&cp), 1);
-        QPainterPath gp;
-        gp.addText(0, 0, font, ch);
-        const double adv = fm.horizontalAdvance(ch) * scale * spacing;
-        glyphs.append({toMm.map(gp), adv});
-        width += adv;
+    if (!text.isEmpty()) {
+        QTextLayout layout(text, font);
+        QTextOption opt;
+        opt.setAlignment(Qt::AlignLeft | Qt::AlignAbsolute);
+        opt.setWrapMode(QTextOption::NoWrap);
+        opt.setUseDesignMetrics(true);
+        layout.setTextOption(opt);
+        layout.beginLayout();
+        QTextLine line = layout.createLine();
+        if (line.isValid()) {
+            line.setLineWidth(1e7);
+            line.setPosition(QPointF(0, 0));
+        }
+        layout.endLayout();
+        if (line.isValid()) {
+            const double baseline = line.ascent();
+            const double x0 = line.naturalTextRect().left();
+            struct Raw { QPainterPath path; double x, y, adv; };
+            QVector<Raw> raws;
+            const auto runs = layout.glyphRuns();
+            for (const QGlyphRun &run : runs) {
+                const QRawFont rf = run.rawFont();
+                const QList<quint32> idx = run.glyphIndexes();
+                const QList<QPointF> pos = run.positions();
+                const QList<QPointF> advs = rf.advancesForGlyphIndexes(idx);
+                for (int i = 0; i < idx.size() && i < pos.size(); ++i) {
+                    QPainterPath gp = rf.pathForGlyph(idx.at(i));
+                    raws.append({gp, pos.at(i).x() - x0, pos.at(i).y() - baseline,
+                                 i < advs.size() ? advs.at(i).x() : 0.0});
+                }
+            }
+            // Visual order, left to right.
+            std::stable_sort(raws.begin(), raws.end(),
+                             [](const Raw &a, const Raw &b) { return a.x < b.x; });
+            double baseX = 0, baseNew = 0, baseAdv = 0;
+            for (const Raw &r : raws) {
+                if (r.adv > 1e-9) { baseX = r.x; baseNew = r.x * spacing; baseAdv = r.adv; }
+                const double nx = r.adv > 1e-9 ? baseNew : baseNew + (r.x - baseX);
+                QTransform t;
+                t.translate(nx, r.y);
+                glyphs.append({toMm.map(t.map(r.path)), baseNew * scale, baseAdv * scale * spacing});
+            }
+            width = line.horizontalAdvance() * scale * spacing;
+        }
     }
     o.insert("straight_width", width);
 
@@ -374,22 +415,16 @@ void Element::renderText(QJsonObject &o)
     const bool arc = o.value("arc_enabled").toBool();
     const double R = o.value("arc_radius").toDouble();
     if (!arc || R <= 1e-6) {
-        double x = 0;
-        for (const Glyph &g : glyphs) {
-            QTransform t;
-            t.translate(x, 0);
-            out.addPath(t.map(g.path));
-            x += g.advance;
-        }
+        for (const Glyph &g : glyphs)
+            out.addPath(g.path);
     } else {
         const QJsonArray ca = o.value("arc_center").toArray();
         const QPointF C = ca.size() == 2 ? pt(ca) : QPointF(width / 2, -R);
         const bool bottom = o.value("arc_text_on_bottom").toBool();
         const double offset = qDegreesToRadians(o.value("arc_angle_offset").toDouble());
         const double mid = (bottom ? 1.5 * M_PI : 0.5 * M_PI) + offset;
-        double x = 0;
         for (const Glyph &g : glyphs) {
-            const double c = x + g.advance / 2;        // glyph midpoint on the baseline
+            const double c = g.cluster + g.advance / 2;   // cluster midpoint on the baseline
             // Top text reads clockwise (angle decreases with x); bottom text
             // reads counter-clockwise so it stays upright for the reader.
             const double theta = bottom ? mid - (width / 2 - c) / R
@@ -397,9 +432,8 @@ void Element::renderText(QJsonObject &o)
             QTransform t;
             t.translate(C.x() + R * qCos(theta), C.y() + R * qSin(theta));
             t.rotateRadians(bottom ? theta + 0.5 * M_PI : theta - 0.5 * M_PI);
-            t.translate(-g.advance / 2, 0);   // glyph outlines start at their own origin
+            t.translate(-c, 0);               // glyphs sit at their straight position
             out.addPath(t.map(g.path));
-            x += g.advance;
         }
     }
     o.insert("rendered", contoursOf(out));

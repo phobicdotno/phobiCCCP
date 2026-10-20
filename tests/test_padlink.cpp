@@ -258,6 +258,40 @@ static void testBackToPad(const QString &dir)
         check(wBack.value("material").toString() == QLatin1String("unobtainium"), "and so does the material");
     }
 
+    // A text scaled evenly here keeps a transform of 1 only within rounding
+    // (0.9999999999999999): still plain text, not "turned or curved".
+    {
+        Document sd;
+        sd.load(path, &err);
+        for (Element &e : sd.elementsRef()) {
+            if (e.geometryType != QLatin1String("text"))
+                continue;
+            QJsonArray t = e.raw.value("transform").toArray();
+            t[0] = 0.9999999999999999;
+            t[4] = 1.0000000000000002;
+            t[1] = 1e-17;
+            e.raw.insert("transform", t);
+        }
+        const QString sPath = QDir(dir).filePath("scaled-text.c2d");
+        sd.save(sPath, &err);
+        padlink::designFromDocument(sPath, d, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("a text transform of 1 within rounding is plain (%1)")
+                                             .arg(lost.join(", "))));
+        Document td;
+        td.load(sPath, &err);
+        for (Element &e : td.elementsRef()) {
+            if (e.geometryType != QLatin1String("text"))
+                continue;
+            QJsonArray t = e.raw.value("transform").toArray();
+            t[0] = 0.98;
+            e.raw.insert("transform", t);
+        }
+        const QString tPath = QDir(dir).filePath("squeezed-text.c2d");
+        td.save(tPath, &err);
+        padlink::designFromDocument(tPath, d, &lost, &err);
+        check(lost.contains(QStringLiteral("turned or curved text")), "a text really squeezed is still named");
+    }
+
     // Edits only phobiCCCP can hold.
     Document doc;
     doc.load(path, &err);
@@ -574,12 +608,21 @@ static void testVersions(const QString &dir, QJsonObject d)
           "versions: same, made from, what it was made from, edited apart");
     QJsonObject stale = b;
     stale.insert("modified", 2600.0);   // an older phobiCCCP stamped it again, vv as it was
-    check(padlink::versionVector(stale).isEmpty() && padlink::order(stale, b) == Order::Unknown,
-          "a vv whose newest time is not the copy's is not believed");
+    check(padlink::versionVector(stale).isEmpty(), "a vv whose newest time is not the copy's is not believed");
+    // But it is the vv of the copy the older one edited: made from B, and
+    // apart from C (an entry above it), so C does not simply replace it.
+    check(padlink::order(stale, b) == Order::After && padlink::order(b, stale) == Order::Before
+              && padlink::order(stale, c) == Order::Concurrent && padlink::order(c, stale) == Order::Concurrent,
+          "an older pad's edit stands to a copy with a vv by the vv it kept");
     QJsonObject none = a;
     none.remove("vv");
-    check(padlink::order(none, a) == Order::Same && padlink::order(none, b) == Order::Unknown,
-          "nor is a copy without one compared by it");
+    check(padlink::order(none, a) == Order::Same && padlink::order(none, b) == Order::Concurrent,
+          "a copy with none (an older pad's design) has nothing of the newer ones in it");
+    QJsonObject noneGone = none;
+    noneGone.insert("deleted", true);
+    noneGone.insert("modified", 1500.0);
+    check(padlink::order(noneGone, b) == Order::Unknown && padlink::order(none, stale) == Order::Unknown,
+          "an older pad's deletion, or two older copies, tell nothing: base and newer time");
 
     // Made from the copy kept: replaces it, whatever its base says.
     padlink::Store s1(QDir(dir).filePath("VersionsPad1"));
@@ -641,12 +684,76 @@ static void testVersions(const QString &dir, QJsonObject d)
     padlink::Store s4(QDir(dir).filePath("VersionsPad4"));
     const QString me = s4.replicaId();
     check(padlink::validId(me) && padlink::Store(s4.dir()).replicaId() == me, "a computer keeps its own id");
+    {
+        // Its designs copied elsewhere (Documents copied to another computer
+        // or synced there): the copy gets an id of its own, or the two would
+        // take each other's edits as made from their own.
+        const QString copied = QDir(dir).filePath("VersionsPad4Copy");
+        QDir().mkpath(copied);
+        QFile::copy(QDir(s4.dir()).filePath(".replica"), QDir(copied).filePath(".replica"));
+        const QString other = padlink::Store(copied).replicaId();
+        check(padlink::validId(other) && other != me && padlink::Store(copied).replicaId() == other
+                  && padlink::Store(s4.dir()).replicaId() == me,
+              "a copied id is made again where it was copied to, and kept there");
+        // Kept apart from the designs: an id an older phobiCCCP left beside
+        // them is not taken over (it may be such a copy), and goes.
+        const QString designs = QDir(dir).filePath("VersionsDocs"), local = QDir(dir).filePath("VersionsLocal");
+        QDir().mkpath(designs);
+        QFile legacy(QDir(designs).filePath(".replica"));
+        legacy.open(QIODevice::WriteOnly);
+        legacy.write("older-id");
+        legacy.close();
+        const QString fresh = padlink::Store(designs, local).replicaId();
+        check(fresh != QLatin1String("older-id") && padlink::validId(fresh) && !legacy.exists()
+                  && QFile::exists(QDir(local).filePath(".replica"))
+                  && padlink::Store(designs, local).replicaId() == fresh,
+              "an id kept beside the designs moves apart from them, made again");
+    }
     const QJsonObject mine = s4.edited(b, 5000);
     check(mine.value("vv").toObject() == QJsonObject({{"pad1", 1000}, {"pad2", 2000}, {me, 5000}})
               && padlink::order(mine, b) == Order::After,
           "an edit here is made from the copy it edits");
-    check(s4.edited(stale, 5000).value("vv").toObject() == QJsonObject({{me, 5000}}),
-          "and starts its versions over when the copy's cannot be believed");
+    const QJsonObject onStale = s4.edited(stale, 5000);
+    const QString olderEdit = padlink::olderEditId(stale);
+    check(onStale.value("vv").toObject()
+                  == QJsonObject({{"pad1", 1000}, {"pad2", 2000}, {olderEdit, 2600}, {me, 5000}})
+              && padlink::order(onStale, stale) == Order::After && padlink::order(onStale, b) == Order::After,
+          "an edit here of an older pad's copy keeps its vv and notes that edit, so it is made from it");
+    QJsonObject staleToo = stale;
+    staleToo.insert("modified", 2700.0);   // the older pad edited the same copy again, apart
+    check(padlink::order(onStale, staleToo) == Order::Concurrent, "and is apart from another edit of it");
+    QJsonObject fresh = a;
+    fresh.remove("vv");
+    fresh.insert("modified", 0);   // a design of its own made here (padShareSaved)
+    check(s4.edited(fresh, 5000).value("vv").toObject() == QJsonObject({{me, 5000}}),
+          "a design new here starts its own versions");
+    // The same on the pad (Android/lib/model.dart olderEditId, forkIdFor).
+    check(olderEdit == QLatin1String("e-e625dcdd1333364a"), "the older edit's id is the pad's");
+    check(padlink::Store::forkIdFor(c) == QLatin1String("2b4050ca-c995-58c3-b7c9-374462673dd3"), "a fork's id is the pad's");
+    padlink::Store s5(QDir(dir).filePath("VersionsOld"));
+    s5.put(b, nullptr, nullptr, now);
+    out = {};
+    check(s5.put(c, nullptr, &out, now) && out.moved, "set up: C took the id");
+    out = {};
+    check(s5.put(stale, nullptr, &out, now) && !out.forked.isEmpty() && !out.moved
+              && s5.get(out.forked).value("modified").toDouble() == 2600,
+          "an older pad's edit made apart from the copy kept is kept beside it, not dropped");
+    // That design of its own deleted since, the same copy sent again: the
+    // put answers the fork, now a deletion. padSend then opens the pad's copy
+    // on its own (not the deletion, which cannot be built) and does not bring
+    // the fork back for every pad.
+    const QString staleFork = out.forked;
+    QJsonObject forkGone = s5.get(staleFork);
+    forkGone = s5.edited(QJsonObject{{"format", "phobicccp-pad"}, {"version", 1}, {"id", staleFork},
+                                      {"name", forkGone.value("name")}, {"modified", 2600.0}, {"deleted", true},
+                                      {"vv", forkGone.value("vv")}},
+                         4000);
+    check(s5.put(forkGone, nullptr, nullptr, now) && s5.get(staleFork).value("deleted").toBool(), "set up: fork deleted");
+    out = {};
+    check(s5.put(stale, nullptr, &out, now) && out.forked == staleFork && !out.moved
+              && s5.get(staleFork).value("deleted").toBool() && !padlink::buildDocument(s5.get(staleFork), QDir(dir).filePath("gone.c2d"), nullptr, nullptr)
+              && padlink::buildDocument(stale, QDir(dir).filePath("sent-again.c2d"), nullptr, nullptr),
+          "sent again after its fork was deleted: the fork is a deletion, the pad's copy still builds");
 
     // The files holding a copy that moved to a fork follow it.
     const QString pad = QDir(dir).filePath("VersionsLinks");

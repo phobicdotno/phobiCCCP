@@ -1094,8 +1094,12 @@ MachinePanel::MachinePanel(QWidget *parent)
         // the port opens and was still booting when the first $$ went out.
         // Ask again, or the jog limits, park spot and $21 fall back to
         // defaults for the whole session.
-        if (l.startsWith(QLatin1String("Grbl ")))
+        if (l.startsWith(QLatin1String("Grbl "))) {
+            // Nothing from before the reset moves the machine after it.
+            m_deferredJogs.clear();
+            stopHoldJog();
             QTimer::singleShot(400, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
+        }
         if (l.startsWith(QLatin1String("ALARM:4")) || l.startsWith(QLatin1String("ALARM:5"))) {
             log(QStringLiteral("!! the probe did not touch anything within its travel. "
                                "Position is kept — unlocking ($X); no need to Initialize. "
@@ -1383,8 +1387,9 @@ bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
                                "Initialize (home) to turn the limits on."));
             m_limitWarned = true;
         }
-        m_grbl->sendCommand(QStringLiteral("$J=G91 %1%2 F%3")
-                                .arg(QChar::fromLatin1(axis)).arg(delta, 0, 'f', 3).arg(feed));
+        if (!m_grbl->sendCommand(QStringLiteral("$J=G91 %1%2 F%3")
+                                     .arg(QChar::fromLatin1(axis)).arg(delta, 0, 'f', 3).arg(feed)))
+            return false;
         m_moveFreshAfter = m_statusSeq + 2;
         return true;
     }
@@ -1425,11 +1430,15 @@ bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
             log(QStringLiteral("%1 is at the end of its travel").arg(QChar::fromLatin1(axis)));
         return false;
     }
+    // Refused (a macro owns the line): the plan stays where the machine is.
+    if (!m_grbl->sendCommand(QStringLiteral("$J=G53 G90 %1%2 F%3")
+                                 .arg(QChar::fromLatin1(axis)).arg(to, 0, 'f', 3).arg(feed))) {
+        forgetJogPlan();
+        return false;
+    }
     m_jogPlan[i] = to;
     m_jogSeedOk = false;
     m_moveFreshAfter = m_statusSeq + 2;
-    m_grbl->sendCommand(QStringLiteral("$J=G53 G90 %1%2 F%3")
-                            .arg(QChar::fromLatin1(axis)).arg(to, 0, 'f', 3).arg(feed));
     return true;
 }
 
@@ -2110,7 +2119,10 @@ void MachinePanel::cancelJob()
     }
     holdResetThen([this] {
         log(QStringLiteral("job cancelled: spindle off, Z up to the top"));
-        QTimer::singleShot(800, this, [this] {
+        // Not after a Stop in the meantime: nothing moves after Stop.
+        QTimer::singleShot(800, this, [this, seq = m_flowSeq] {
+            if (seq != m_flowSeq)
+                return;
             const QStringList up = riseToTop();
             if (!up.isEmpty() && m_grbl->canSendCommand())
                 m_grbl->startMacro(up);
@@ -2144,6 +2156,7 @@ void MachinePanel::holdResetThen(std::function<void()> then)
 
 void MachinePanel::resetFlow()
 {
+    ++m_flowSeq;
     m_phase = Phase::Idle;
     m_hits.clear();
     if (m_bzPanel)
@@ -2157,6 +2170,11 @@ void MachinePanel::resetFlow()
     m_toolPromptAnswered = false;
     m_rehearsal = false;
     m_onIdle = nullptr;
+    // Taps held back for a fresh report would go out on the first Idle
+    // report after the reset: a jog after Stop.
+    m_deferredJogs.clear();
+    stopHoldJog();
+    m_parkAfterHome = false;             // ...and so would the park after a homing
     setHeld(false);
     m_runBtn->setText(QStringLiteral("▶ Run"));
 }
@@ -2658,8 +2676,9 @@ void MachinePanel::unlock()
         forgetJogPlan();
     }
     // After an end stop or a soft limit GRBL listens to nothing until it is
-    // reset: $X now would only wait for ever for its answer.
-    if (m_grbl->needsReset()) {
+    // reset: $X now would only wait for ever for its answer. So does one that
+    // was locked before this connection opened.
+    if (m_grbl->maybeLocked()) {
         log(QStringLiteral("resetting the controller (it stopped on a limit), then unlocking ($X)"));
         m_grbl->resetThen(QStringLiteral("$X"));
         return;
@@ -2690,7 +2709,7 @@ void MachinePanel::initializeMachine()
         return;
     }
     stopHoldJog();
-    if (m_grbl->needsReset()) {
+    if (m_grbl->maybeLocked()) {
         // An end stop or soft limit: GRBL ignores $H until a soft reset.
         log(QStringLiteral("initializing: resetting the controller (it stopped on a limit), "
                            "then homing cycle ($H), then park"));
@@ -2912,6 +2931,9 @@ void MachinePanel::parkForTool()
 
 void MachinePanel::onMacroFinished(bool ok)
 {
+    // The macro moved the machine: the next absolute jog starts from a
+    // report taken after it, never from a plan made before it.
+    forgetJogPlan();
     const Phase phase = m_phase;
     m_phase = Phase::Idle;
     switch (phase) {
@@ -3109,7 +3131,13 @@ void MachinePanel::rehearseToolChange()
                                 "first, then rehearse."));
         return;
     }
-    if (m_grbl->isStreaming() || !m_grbl->canSendCommand()) {
+    // Held (Hold:0 with nothing moving) counts as busy: the rehearsal would
+    // park behind the hold and never get to the prompt.
+    auto busy = [this] {
+        return isBusy() || m_held || m_grbl->isStreaming() || !m_grbl->canSendCommand()
+               || m_machineState != QLatin1String("Idle") || !m_homed;
+    };
+    if (busy()) {
         log(QStringLiteral("!! busy — cannot rehearse a tool change now"));
         return;
     }
@@ -3131,6 +3159,11 @@ void MachinePanel::rehearseToolChange()
     ask.defaultOk = false;
     if (!shopAsk(this, ask))
         return;
+    // The dialog ran the event loop: a hold, an alarm or a pad may have come.
+    if (busy()) {
+        log(QStringLiteral("!! busy — cannot rehearse a tool change now"));
+        return;
+    }
     log(QStringLiteral("== tool-change rehearsal (spindle off, no cut) =="));
     setHeld(false);
     m_rehearsal = true;
@@ -3303,7 +3336,6 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         log(QStringLiteral("surface map applied: %1").arg(m_map.summary()));
     if (air)
         log(QStringLiteral("air cut: spindle off, Z lifted %1 mm").arg(m_airLift->value(), 0, 'f', 1));
-    setHeld(false);
     // The post ends with M05 M02, and GRBL's M2 stops the spindle too. Take
     // those off so the ending is ours: up to the top first, then spindle off
     // (see streamFinished). Only the trailing lines go; a tool-change M05
@@ -3319,8 +3351,20 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     }
     // Preparing and asking ran the event loop: a pad may have started a job
     // or opened another design meanwhile.
-    if (isBusy() || m_grbl->isParkedForTool() || !m_grbl->isConnected())
+    if (isBusy() || m_held || m_grbl->isParkedForTool() || !m_grbl->isConnected())
         return refuse(QStringLiteral("The machine is busy."));
+    // An end stop may have fired meanwhile: the controller is locked and
+    // would answer none of the program.
+    if (m_grbl->needsReset() || m_machineState != QLatin1String("Idle"))
+        return refuse(QStringLiteral("The machine is not idle (%1).")
+                          .arg(m_grbl->needsReset() ? QStringLiteral("stopped on a limit")
+                               : m_machineState.isEmpty() ? QStringLiteral("no status yet")
+                                                          : m_machineState),
+                      QStringLiteral("In Alarm, press Initialize first."));
+    if (!m_homed)
+        return refuse(QStringLiteral("The machine needs Initialize (homing) first: %1.").arg(m_unhomedWhy));
+    // Only now: a refusal above leaves a hold (and its Resume button) as it was.
+    setHeld(false);
     if (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart)
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;

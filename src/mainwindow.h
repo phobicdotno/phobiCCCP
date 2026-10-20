@@ -162,6 +162,15 @@ private:
     bool m_linkBusy = false;
     QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
+    // refreshIso runs the event loop behind its progress dialog. An edit made
+    // meanwhile (Ctrl+Z held down) only marks the program stale and asks for
+    // another pass, which the running call makes once it returns; it never
+    // starts a second export inside the first.
+    bool m_isoBusy = false, m_isoRerun = false;
+    // markIsoStale is called from change notifications - inside
+    // QUndoCommand::undo() among them - so it queues the rebuild rather than
+    // running that event loop there.
+    bool m_isoQueued = false;
     // The background preview export (refreshPreview). Every request bumps
     // m_previewGen; a run's result is shown only if no request came after
     // it. m_previewServed is the generation last shown (or rebuilt by

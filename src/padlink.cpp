@@ -15,6 +15,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QSysInfo>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QUuid>
@@ -476,8 +477,9 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         }
         if (gt == QLatin1String("text")) {
             const QJsonArray t = r.value(QStringLiteral("transform")).toArray();
-            const bool plain = t.size() == 9 && t.at(0).toDouble() == 1 && t.at(1).toDouble() == 0
-                               && t.at(3).toDouble() == 0 && t.at(4).toDouble() == 1;
+            // Within rounding: a uniform scale leaves 0.9999999999999999 behind.
+            auto near = [&](int i, double v) { return std::abs(t.at(i).toDouble() - v) < 1e-9; };
+            const bool plain = t.size() == 9 && near(0, 1) && near(1, 0) && near(3, 0) && near(4, 1);
             if (!plain || r.value(QStringLiteral("arc_enabled")).toBool())
                 lose(QStringLiteral("turned or curved text"));
             if (r.value(QStringLiteral("font")).toString() != QLatin1String("Helvetica-Regular")
@@ -837,20 +839,110 @@ QString Store::forkIdFor(const QString &id, double modified, double base)
     return QUuid::createUuidV5(ns, key).toString(QUuid::WithoutBraces);
 }
 
+namespace {
+
+// The vv as it is, believed or not, in `vv` (empty for a copy with none).
+// False when it is malformed: then nothing can be told from it.
+bool rawVv(const QJsonObject &design, QJsonObject *vv)
+{
+    const QJsonValue v = design.value(QStringLiteral("vv"));
+    *vv = v.toObject();
+    if (!v.isUndefined() && !v.isNull() && !v.isObject())
+        return false;
+    if (vv->size() > kMaxReplicas)
+        return false;
+    for (auto it = vv->constBegin(); it != vv->constEnd(); ++it)
+        if (!validId(it.key()) || !finite(it.value(), 1, 1e15))
+            return false;
+    return true;
+}
+
+// What an older pad's or phobiCCCP's copy tells of the copy it was edited
+// from: its vv, or for one with none (a design an older pad made), that
+// nothing of the newer ones went into it. A deletion from an older pad
+// keeps no vv, so it tells nothing.
+bool olderVv(const QJsonObject &design, QJsonObject *vv)
+{
+    return rawVv(design, vv) && !(vv->isEmpty() && design.value(QStringLiteral("deleted")).toBool());
+}
+
+// The same text for the same vv on every computer (a QJsonObject's keys are sorted).
+QString vvKey(const QJsonObject &vv)
+{
+    QString out;
+    for (auto it = vv.constBegin(); it != vv.constEnd(); ++it)
+        out += QStringLiteral("%1=%2;").arg(it.key()).arg(it.value().toDouble(), 0, 'f', 0);
+    return out;
+}
+
+// No entry of `v` is later than `by`'s.
+bool covered(const QJsonObject &v, const QJsonObject &by)
+{
+    for (auto it = v.constBegin(); it != v.constEnd(); ++it)
+        if (it.value().toDouble() > by.value(it.key()).toDouble())
+            return false;
+    return true;
+}
+
+// How copy `x`, with a believed vv, stands to `y`, an older pad's or
+// phobiCCCP's edit of the copy its vv names.
+Order relate(const QJsonObject &vx, const QJsonObject &y)
+{
+    QJsonObject ry;
+    if (!olderVv(y, &ry))
+        return Order::Unknown;
+    // Edited here (by a newer one) from y itself.
+    if (vx.value(olderEditId(y)).toDouble() >= y.value(QStringLiteral("modified")).toDouble())
+        return Order::After;
+    // y was edited from x, or from a copy made from x.
+    if (covered(vx, ry))
+        return Order::Before;
+    return Order::Concurrent;
+}
+
+} // namespace
+
+QString olderEditId(const QJsonObject &design)
+{
+    // FNV-1a, twice (32 bits each), as the pad computes it (model.dart).
+    QJsonObject vv;
+    rawVv(design, &vv);
+    const QByteArray key = QStringLiteral("%1\n%2")
+                               .arg(design.value(QStringLiteral("modified")).toDouble(), 0, 'f', 0)
+                               .arg(vvKey(vv))
+                               .toUtf8();
+    quint32 h1 = 2166136261u, h2 = 0x811c9dc5u ^ 0x5bd1e995u;
+    for (const char c : key) {
+        h1 = (h1 ^ quint8(c)) * 16777619u;
+        h2 = (h2 ^ quint8(c)) * 16777619u;
+    }
+    return QStringLiteral("e-%1%2").arg(h1, 8, 16, QLatin1Char('0')).arg(h2, 8, 16, QLatin1Char('0'));
+}
+
 QJsonObject versionVector(const QJsonObject &design)
 {
-    const QJsonObject vv = design.value(QStringLiteral("vv")).toObject();
-    if (vv.isEmpty() || vv.size() > kMaxReplicas)
+    QJsonObject vv;
+    if (!rawVv(design, &vv) || vv.isEmpty())
         return {};
     double newest = 0;
-    for (auto it = vv.constBegin(); it != vv.constEnd(); ++it) {
-        if (!validId(it.key()) || !finite(it.value(), 1, 1e15))
-            return {};
+    for (auto it = vv.constBegin(); it != vv.constEnd(); ++it)
         newest = std::max(newest, it.value().toDouble());
-    }
     // Stamped again by an older pad or phobiCCCP that kept the vv it got.
     if (newest != design.value(QStringLiteral("modified")).toDouble())
         return {};
+    return vv;
+}
+
+QJsonObject ancestry(const QJsonObject &design)
+{
+    if (const QJsonObject vv = versionVector(design); !vv.isEmpty())
+        return vv;
+    QJsonObject vv;
+    const double modified = design.value(QStringLiteral("modified")).toDouble();
+    // A design new here (no time yet) has nothing to note.
+    if (!olderVv(design, &vv) || !(modified >= 1))
+        return {};
+    vv.insert(olderEditId(design), modified);
     return vv;
 }
 
@@ -858,8 +950,17 @@ Order order(const QJsonObject &a, const QJsonObject &b)
 {
     const QJsonObject va = versionVector(a), vb = versionVector(b);
     if (va.isEmpty() || vb.isEmpty()) {
-        const double ma = a.value(QStringLiteral("modified")).toDouble();
-        return ma == b.value(QStringLiteral("modified")).toDouble() ? Order::Same : Order::Unknown;
+        if (a.value(QStringLiteral("modified")).toDouble() == b.value(QStringLiteral("modified")).toDouble())
+            return Order::Same;
+        // One from an older pad or phobiCCCP: it kept the vv of the copy it
+        // edited, which tells whether that edit was made from the other.
+        if (!va.isEmpty())
+            return relate(va, b);
+        if (!vb.isEmpty()) {
+            const Order o = relate(vb, a);
+            return o == Order::After ? Order::Before : o == Order::Before ? Order::After : o;
+        }
+        return Order::Unknown;
     }
     bool aAhead = false, bAhead = false;
     auto entry = [](const QJsonObject &v, const QString &k) { return v.value(k).toDouble(); };
@@ -873,15 +974,6 @@ Order order(const QJsonObject &a, const QJsonObject &b)
 }
 
 namespace {
-
-// The same text for the same vv on every computer (a QJsonObject's keys are sorted).
-QString vvKey(const QJsonObject &vv)
-{
-    QString out;
-    for (auto it = vv.constBegin(); it != vv.constEnd(); ++it)
-        out += QStringLiteral("%1=%2;").arg(it.key()).arg(it.value().toDouble(), 0, 'f', 0);
-    return out;
-}
 
 // Of two copies edited apart, the one kept under the design's id: the later
 // edit, so every computer settles the same pair the same way. A copy made
@@ -910,19 +1002,30 @@ QString Store::forkIdFor(const QJsonObject &copy)
 
 QString Store::replicaId() const
 {
-    const QString file = QDir(m_dir).filePath(QStringLiteral(".replica"));
-    QFile f(file);
-    if (f.open(QIODevice::ReadOnly)) {
-        const QString id = QString::fromUtf8(f.read(128)).trimmed();
-        if (validId(id))
-            return id;
-        f.close();
-    }
+    const QString file = QDir(m_idDir).filePath(QStringLiteral(".replica"));
+    // This computer, and the id's place on it.
+    QString machine = QString::fromLatin1(QSysInfo::machineUniqueId().toHex());
+    if (machine.isEmpty())
+        machine = QSysInfo::machineHostName();
+    const QString binding = QStringLiteral("%1 %2").arg(machine, QFileInfo(file).absoluteFilePath());
+    QStringList here;
+    if (QFile f(file); f.open(QIODevice::ReadOnly))
+        here = QString::fromUtf8(f.read(4096)).split(QLatin1Char('\n'));
+    if (here.size() > 1 && validId(here.first().trimmed()) && here.at(1) == binding)
+        return here.first().trimmed();
+    // Anything else is made again: an id tied to another computer or place
+    // is a copy, and one from before ids were tied (kept in Documents by an
+    // older phobiCCCP) may be one too, as nothing tells the computer it was
+    // made on from one Documents was copied or synced to. A new id only adds
+    // an entry to the versions of the designs edited here from now on.
+    const QString legacy = QDir(m_dir).filePath(QStringLiteral(".replica"));
+    if (QFileInfo(legacy) != QFileInfo(file))
+        QFile::remove(legacy);
     const QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    QDir().mkpath(m_dir);
+    QDir().mkpath(m_idDir);
     QSaveFile out(file);
     if (out.open(QIODevice::WriteOnly)) {
-        out.write(id.toUtf8());
+        out.write(QStringLiteral("%1\n%2\n").arg(id, binding).toUtf8());
         out.commit();
     }
     return id;
@@ -930,7 +1033,9 @@ QString Store::replicaId() const
 
 QJsonObject Store::edited(QJsonObject design, double modified) const
 {
-    QJsonObject vv = versionVector(design);
+    // An older pad's or phobiCCCP's edit keeps its place in the versions, so
+    // the edit made here is known to be made from it.
+    QJsonObject vv = ancestry(design);
     vv.insert(replicaId(), modified);
     design.insert(QStringLiteral("modified"), modified);
     design.insert(QStringLiteral("vv"), vv);

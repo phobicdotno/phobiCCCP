@@ -72,6 +72,7 @@ private:
     void scaleDialog();
     void moveCopyDialog();
     void cornersDialog(vec::CornerStyle style);
+    void reportDone(const QString &msg);
     void pushReshape(const QVector<Element> &before, const QVector<Element> &after,
                      const QString &text, const QTransform &moved = QTransform());
     void pushCopies(const QVector<Element> &originals, const QVector<QTransform> &placements,

@@ -135,15 +135,28 @@ QJsonObject toolsJson();
 // every entry was made from it, and replaces it; two copies neither of which
 // was made from the other are both kept (Store::put). A vv is only believed
 // when its largest time is the copy's `modified`: an older pad or phobiCCCP
-// keeps the vv it got but stamps a new time, and then the older rules apply
-// (`base`, newer wins).
+// (before 1.2.9) keeps the vv it got but stamps a new time. Its vv still
+// names the copy it edited, so against a believed vv it tells whether the
+// older one's edit was made from that copy (an entry above its vv says not:
+// both are kept). An edit here of such a copy keeps its vv and notes the
+// older one's edit under olderEditId(), so it counts as made from it. A copy
+// with no vv at all (a design an older pad made, or one from before vvs) is
+// such an edit made from nothing the newer ones did. Two copies neither of
+// which has a believable vv, or a deletion from an older pad (which keeps no
+// vv), follow the older rules (`base`, newer wins).
 enum class Order { Same, After, Before, Concurrent, Unknown };
 // How copy `a` stands to copy `b` of the same design: the same copy, made
-// from it (After), what it was made from (Before), neither, or Unknown (one
-// has no believable vv).
+// from it (After), what it was made from (Before), neither, or Unknown (no
+// versions to tell by).
 Order order(const QJsonObject &a, const QJsonObject &b);
 // The design's vv, or empty when it has none that can be believed.
 QJsonObject versionVector(const QJsonObject &design);
+// The vv an edit of `design` builds on: its believed vv, or, from an older pad
+// or phobiCCCP, the vv it kept with that edit noted under olderEditId().
+QJsonObject ancestry(const QJsonObject &design);
+// The id in vvs that stands for an older pad's or phobiCCCP's edit `design`
+// (the same on every computer and pad, from its time and the vv it kept).
+QString olderEditId(const QJsonObject &design);
 constexpr int kMaxReplicas = 64;
 
 // Designs kept on this computer so every pad (and every phobiCCCP a pad
@@ -153,7 +166,10 @@ constexpr int kMaxReplicas = 64;
 class Store
 {
 public:
-    explicit Store(const QString &dir) : m_dir(dir) {}
+    // `idDir`: where replicaId() is kept, when not in `dir` (which may be
+    // synced or copied to another computer with Documents).
+    explicit Store(const QString &dir, const QString &idDir = {})
+        : m_dir(dir), m_idDir(idDir.isEmpty() ? dir : idDir) {}
     QString dir() const { return m_dir; }
     // [{id, name, modified, deleted, vv}] for every design kept.
     QJsonArray list() const;
@@ -186,13 +202,20 @@ public:
     // `design` as edited here at `modified`: its vv notes this computer's edit
     // (a design new here, with no id of its own yet in the store, starts a vv).
     QJsonObject edited(QJsonObject design, double modified) const;
-    // This computer's own id in vvs, made once and kept in `dir`.
+    // This computer's own id in vvs, made once and kept in `idDir` with what
+    // ties it to this computer and that place. Found anywhere else (Documents
+    // copied to a new computer, a synced folder, a restored backup), a new id
+    // is made: two computers with one id would take each other's edits as
+    // made from their own, and one would be lost without a word. An id kept
+    // in `dir` by an older phobiCCCP is not taken over (it may be such a
+    // copy): it is removed, and a new one made in `idDir`.
     QString replicaId() const;
 
 private:
     QString path(const QString &id) const;
     bool write(const QJsonObject &design, QString *error);
     QString m_dir;
+    QString m_idDir;
 };
 
 bool validId(const QString &id);

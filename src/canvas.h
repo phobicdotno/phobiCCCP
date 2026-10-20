@@ -118,6 +118,10 @@ public:
     // through it, and after a mirror which side each holds on is taken
     // afresh. A shape locked whole by a Fix is put back where it was.
     void pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTransform &moved = QTransform());
+    // The warning the last pushEdit put in the status bar (constraints that
+    // can't hold, shapes held back by Fix, constraints dropped), or empty. An
+    // action that reports its own result appends it so it stays visible.
+    QString editWarning() const { return m_editWarning; }
     // Swap in new parameters / constraints as one undo step: re-solve, then
     // re-evaluate the toolpath fields bound to expressions. When the result
     // cannot hold, nothing changes and false comes back - unless
@@ -307,6 +311,7 @@ private:
     bool m_hasHover = false;
     QString m_hoverConstraint;                    // glyph / label under the cursor
     QString m_selConstraint;
+    QString m_editWarning;                        // see editWarning()
     bool m_dimPlacing = false;                    // a new dimension follows the mouse
     Constraint m_dimDraft;
     QLineEdit *m_dimEdit = nullptr;

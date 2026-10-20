@@ -97,9 +97,9 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 | `tools` | | `materials` [{id, name}], `tools` [{number, name, kind, diameter, angle, flutes, materials}] |
 | `designs` | | `designs` [{id, name, modified, deleted, vv}] |
 | `get` | `id` | `design` |
-| `put` | `design` (with `base` and `vv`) | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id of the design one of two copies edited apart was kept as, with `moved` when that was the computer's copy (the one put took its place); or `conflict`: a deletion refused |
+| `put` | `design` (with `base` and `vv`), `versions` | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id of the design one of two copies edited apart was kept as, with `moved` when that was the computer's copy (the one put took its place); or `conflict`: a deletion refused |
 | `machine` | `id` | as `info`, after switching (refused while a machine is connected, unless pads may start cutting) |
-| `send` | `design`, `machine` (id or ""), `start`, `from` | `started`, `message`, `notes`; as for `put`, `modified`, `forked` and `moved` (what opens is the pad's version: the fork unless `moved`; the computer's later copy when it already had one made from the pad's) |
+| `send` | `design`, `machine` (id or ""), `start`, `from`, `versions` | `started`, `message`, `notes`; as for `put`, `modified`, `forked` and `moved` (what opens is the pad's version: the fork unless `moved`, or the pad's copy on its own, unlinked, when that fork was deleted since; the computer's later copy when it already had one made from the pad's) |
 
 The design format is described in `src/padlink.h`; `tests/data/pad-design.json` is an
 example both the app's tests and the desktop's `test_padlink` check against.
@@ -109,8 +109,16 @@ example both the app's tests and the desktop's `test_padlink` check against.
 Pads carry designs between computers that never talk to each other, so "the newer time
 wins" alone could let one edit replace another made meanwhile elsewhere. Every design
 therefore carries `vv`, a version vector: `{"<id>": <modified>, ...}`, the time of the
-latest edit each pad or phobiCCCP (by a random id of its own, kept in `.replica` beside
-its designs) made to it. An edit sets its own entry to its new `modified`, so the newest
+latest edit each pad or phobiCCCP (by a random id of its own) made to it. Two devices
+with one id would each take the other's edit as made from its own, so the id stays on the
+device it was made on: the pad keeps it in `.replica` beside its designs with a token from
+a folder that is not backed up or moved to a new tablet (Android's `no_backup`, iOS's
+`Caches`; Android backups also leave `.replica` out), and phobiCCCP keeps it in its local
+app data (not in Documents, which may be synced or copied) tied to the computer and that
+place. Designs restored from a backup, copied or synced elsewhere come without a matching
+token there, so that device makes an id of its own (an id phobiCCCP kept in Documents
+before 1.2.9 is dropped for a new one too, as a copy of Documents cannot be told from the
+original). A new id only adds an entry to the vvs of the designs edited from then on. An edit sets its own entry to its new `modified`, so the newest
 entry is always the copy's `modified`. A copy whose entries are all at least another's
 was made from it and replaces it; equal vvs are the same copy. Two copies neither of
 which was made from the other were edited apart: the computer keeps both, the later edit
@@ -125,13 +133,29 @@ computer's or edited apart from it, pulls one made from its own, and after a con
 takes the computer's copy under the id and the fork.
 
 Compatibility: a vv is believed only when its newest entry is the copy's `modified`. A pad
-or phobiCCCP from before vvs keeps the vv it got (as an unknown key) but stamps a new time,
-so its edit is not believed to be made from anything, and the rules below (`base`, newer
-time wins) apply to that pair, as they do to designs without a vv. An older phobiCCCP
-ignores `vv` and uses the pad's `base`, which is now the one for that computer. An older
+or phobiCCCP from before vvs (before 1.2.9) keeps the vv it got (as an unknown key) but
+stamps a new time. That vv still names the copy it edited: against a copy with a believed
+vv, one with an entry above it was not made from it, so the two were edited apart and both
+are kept as above; otherwise the older one's edit was made from it and replaces it. A copy
+with no vv at all (a design an older pad made, or one from before vvs) is likewise an edit
+made from nothing a newer pad or phobiCCCP did. An edit of such a copy by a newer one keeps
+its vv and notes the older edit under an id made from the copy's time and vv
+(`olderEditId`, `e-` and 16 hex digits), so it counts as made from it. Two copies neither of
+which has a believed vv, or a deletion from an older pad (which keeps no vv), follow the
+rules below (`base`, newer time wins).
+
+An older phobiCCCP lists no vvs and keeps the later copy or forks by the base alone. A pad
+asks it for the whole copy of each design that differs from its own, and settles two
+copies edited apart there itself, the way every newer phobiCCCP does: the copy that loses
+becomes a design of its own on the pad, under the id the others would give it, and the
+winner goes to that computer with its copy as the base, so it replaces it. A copy made
+from the computer's goes with that copy as its base too, so it is not forked. An older
 pad sees `forked` with or without `moved` as before and takes the computer's copy, which
 is then its own version when `moved`. Pads from before this keep one base for all
-computers, so with several computers they can still lose edits as before.
+computers, so an older pad that syncs with more than one computer can still lose edits
+as before: update every pad. phobiCCCP says so in its status bar the first time a pad
+from before 1.2.9 puts or sends a design (newer pads add `"versions": 1` to `put` and
+`send`).
 
 A design the pad sends carries `base`, the `modified` of the copy it last got from or gave
 to that phobiCCCP (the pad keeps one per computer, by its id, in `bases`, which is never

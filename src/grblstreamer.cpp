@@ -97,6 +97,7 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     m_adhocLines.clear();
     m_needsReset = false;
     m_resetNagged = false;
+    m_heard = false;
     m_afterReset.clear();
     // The last connection's $$ and WCO belong to whatever answered then: a
     // reconnect may be another machine (machine profiles) or a controller
@@ -407,6 +408,13 @@ void GrblStreamer::resetThen(const QString &line)
 
 void GrblStreamer::pump()
 {
+    // Locked by a limit (an ALARM:1 taken as the answer of a command, say):
+    // nothing written now is answered, and the program would wait for ever.
+    if (m_needsReset && m_streaming) {
+        abortStream(QStringLiteral("the controller stopped on a limit (reset the controller "
+                                   "to continue)"), false);
+        return;
+    }
     while (m_streaming && m_waitingTool < 0 && m_adhocPending == 0
            && m_nextIndex < m_queue.size()) {
         const QString &line = m_queue.at(m_nextIndex);
@@ -488,6 +496,16 @@ void GrblStreamer::cancelMacro()
 
 void GrblStreamer::pumpMacro()
 {
+    // The same for a macro: its line in flight and the rest are never
+    // answered once the controller is locked.
+    if (m_macroActive && m_needsReset) {
+        m_macroQueue.clear();
+        m_macroActive = false;
+        m_macroInflight = false;
+        m_macroError = true;
+        emit macroFinished(false);
+        return;
+    }
     if (!m_macroActive || m_macroInflight || m_adhocPending > 0)
         return;
     if (m_macroQueue.isEmpty()) {
@@ -650,6 +668,27 @@ void GrblStreamer::handleLine(const QByteArray &line)
         if (m_adhocPending > 0 && st.state == QLatin1String("Idle")
             && m_adhocClock.isValid() && m_adhocClock.elapsed() > 3000)
             resyncAdhoc(QStringLiteral("no ack while Idle"));
+        // GRBL answers every line at once in Alarm (error:9 at worst). One
+        // left unanswered there means a controller locked by a limit: one
+        // that was locked before this connection opened, which never said
+        // ALARM:1 to us. Without this $H and $X wait for ever.
+        if (m_adhocPending > 0 && !m_needsReset && st.state.startsWith(QLatin1String("Alarm"))
+            && m_adhocClock.isValid() && m_adhocClock.elapsed() > 2000) {
+            m_needsReset = true;
+            emit errorOccurred(QStringLiteral("the controller does not answer in Alarm: it "
+                                              "stopped on a limit and listens only after a "
+                                              "reset (Initialize or Unlock does it)"));
+            m_resetNagged = true;
+            // A $H or $X among them was the operator asking out of the alarm:
+            // do it the way that works, reset first.
+            QString retry;
+            for (const QString &l : std::as_const(m_adhocLines))
+                if (l == QLatin1String("$H") || l == QLatin1String("$X"))
+                    retry = l;
+            resyncAdhoc(QStringLiteral("controller locked"));
+            if (!retry.isEmpty())
+                resetThen(retry);
+        }
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
         // Waiting to reset after an error: do it on the report that shows
@@ -678,6 +717,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
     // will be answered). Put the offset back once the controller is ready;
     // if it boots into Alarm the $X / $H ack re-tries it.
     if (line.startsWith("Grbl ")) {
+        m_heard = true;
         m_adhocPending = 0;
         m_adhocLines.clear();
         m_macroSkipAck = false;             // nothing from before is answered now
@@ -710,6 +750,8 @@ void GrblStreamer::handleLine(const QByteArray &line)
     const bool ok = (line == "ok");
     const bool alarm = line.startsWith("ALARM:");
     const bool err = line.startsWith("error:") || alarm;
+    if (ok || line.startsWith("error:"))
+        m_heard = true;
     // Hard limit (1) or soft limit (2): GRBL locks up until a soft reset and
     // says "Reset to continue". Remember it, or $H and $X go unanswered.
     if (alarm) {

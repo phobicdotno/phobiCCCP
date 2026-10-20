@@ -1095,6 +1095,36 @@ int main(int argc, char *argv[])
               "three nodes still close on the start");
     }
 
+    // --- node editor: deleting a closed triangle's node opens it --------------------
+    // Two straight nodes, closed, are a there-and-back with no area (what
+    // the pen refuses to make); the delete leaves an open line instead.
+    {
+        c2d::Document ndoc;
+        const c2d::Element tri = c2d::Element::makePath({{20, 20}, {80, 20}, {50, 70}}, true,
+                                                       ndoc.defaultLayer());
+        ndoc.addElement(tri);
+        c2d::Canvas nc;
+        nc.resize(900, 700);
+        nc.show();
+        nc.setDocument(&ndoc);
+        nc.resetTransform();
+        nc.scale(3, -3);
+        nc.centerOn(QPointF(50, 50));
+        QTest::qWait(20);
+        nc.setTool(c2d::Canvas::NodeEdit);
+        nc.selectElements({tri.id});
+        click(&nc, {50, 70});
+        QTest::keyClick(&nc, Qt::Key_Delete);
+        const c2d::PathModel m = c2d::Element::pathModel(*ndoc.elementById(tri.id));
+        check(m.subs.size() == 1 && m.subs.first().nodes.size() == 2 && !m.subs.first().closed,
+              "deleting a node of a closed triangle leaves an open line");
+        check(!m.subs.first().nodes.first().hasIn() && !m.subs.first().nodes.last().hasOut(),
+              "the opened line has no handles off its ends");
+        nc.undoStack()->undo();
+        const c2d::PathModel back = c2d::Element::pathModel(*ndoc.elementById(tri.id));
+        check(back.subs.first().nodes.size() == 3 && back.subs.first().closed, "the node delete undoes");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

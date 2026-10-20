@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older. The pad's own id in version vectors stays on this
+     tablet: restored on another, both would share it and one's edits would
+     silently replace the other's (lib/store.dart, DesignStore.replicaId). -->
+<full-backup-content>
+    <exclude domain="file" path="designs/.replica" />
+</full-backup-content>

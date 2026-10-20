@@ -17,14 +17,18 @@ import 'package:phobicccp/sync.dart';
 /// made from the kept one replaces it; two edited apart are both kept, the
 /// later under the id and the other as a fork whose id depends only on it; a
 /// deletion that loses is dropped. Without vvs, the base rules.
+///
+/// [older]: a phobiCCCP from before vvs (1.2.6): it keeps them but lists none,
+/// says no version, and goes by the base and the newer time alone.
 class VvDesk {
   final String name;
+  final bool older;
   final kept = <String, Map<String, Object?>>{};
   late ServerSocket server;
-  VvDesk(this.name);
+  VvDesk(this.name, {this.older = false});
 
-  static Future<VvDesk> start(String name) async {
-    final f = VvDesk(name);
+  static Future<VvDesk> start(String name, {bool older = false}) async {
+    final f = VvDesk(name, older: older);
     f.server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     f.server.listen((s) {
       var hello = false;
@@ -58,7 +62,8 @@ class VvDesk {
       kept[id] = d;
       return {'stored': true};
     }
-    switch (orderOf(_vv(d), _m(d), _vv(have), _m(have))) {
+    final o = orderOf(_vv(d), _m(d), _vv(have), _m(have), aDeleted: d['deleted'] == true, bDeleted: have['deleted'] == true);
+    switch (older ? Order.unknown : o) {
       case Order.same:
       case Order.before:
         return {'stored': false};
@@ -72,7 +77,7 @@ class VvDesk {
           if (moved) kept[id] = d;
           return moved ? {'stored': true} : {'stored': false, 'conflict': true};
         }
-        final fork = 'f-${_m(loser)}-${_key(loser).hashCode.toUnsigned(32)}';
+        final fork = forkIdFor(Design.fromJson(loser));
         kept.putIfAbsent(fork, () => {...loser, 'id': fork, 'name': '${loser['name']} (conflict)'});
         if (moved) kept[id] = d;
         return {'stored': true, 'forked': fork, if (moved) 'moved': true};
@@ -92,12 +97,13 @@ class VvDesk {
   Map<String, Object?> _answer(Map<String, Object?> req) {
     switch (req['op']) {
       case 'info':
-        return {'ok': true, 'host': name, 'id': '$name-id'};
+        return {'ok': true, 'host': name, 'id': '$name-id', if (!older) 'version': '1.2.9'};
       case 'designs':
         return {
           'ok': true,
           'designs': [
-            for (final d in kept.values) {'id': d['id'], 'modified': d['modified'], 'deleted': d['deleted'] == true, 'vv': d['vv']}
+            for (final d in kept.values)
+              {'id': d['id'], 'modified': d['modified'], 'deleted': d['deleted'] == true, if (!older) 'vv': d['vv']}
           ]
         };
       case 'get':
@@ -153,11 +159,76 @@ void main() {
     await b.server.close();
   });
 
+  test('a pad restored onto a second tablet gets an id of its own, so neither loses an edit', () async {
+    final a = await VvDesk.start('deskA');
+    final pad1 = DesignStore(Directory('${root.path}/pad1'), device: Directory('${root.path}/dev1'));
+    final x = pad1.save(Design(name: 'Sign', shapes: [mark(1)]), now: 1000);
+    await syncWith(a.desktop, pad1, withTools: false);
+    // The second tablet: the same designs (and .replica) at the same place,
+    // but not the first one's no_backup folder.
+    final copy = Directory('${root.path}/pad2');
+    copy.createSync();
+    for (final f in Directory('${root.path}/pad1').listSync().whereType<File>()) {
+      f.copySync('${copy.path}/${f.uri.pathSegments.last}');
+    }
+    final pad2 = DesignStore(copy, device: Directory('${root.path}/dev2'));
+    expect(pad2.replicaId, isNot(pad1.replicaId));
+    expect(DesignStore(Directory('${root.path}/pad1'), device: Directory('${root.path}/dev1')).replicaId, pad1.replicaId,
+        reason: 'the first tablet keeps its own');
+    // Without a token where the designs live, their own place stands in.
+    expect(DesignStore(Directory('${root.path}/pad3')).replicaId, isNot(pad1.replicaId));
+    pad1.save(pad1.get(x.id)!.copyWith(shapes: [...pad1.get(x.id)!.shapes, mark(2)]), now: 2000);
+    await syncWith(a.desktop, pad1, withTools: false);
+    pad2.save(pad2.get(x.id)!.copyWith(shapes: [...pad2.get(x.id)!.shapes, mark(3)]), now: 3000);
+    final r = await syncWith(a.desktop, pad2, withTools: false);
+    expect(r.conflicts.single, contains('yours is kept'));
+    await syncWith(a.desktop, pad1, withTools: false);
+    for (final p in [pad1, pad2]) {
+      expect({for (final d in p.live()) ...marks(d)}, {1, 2, 3}, reason: 'both edits kept');
+    }
+    await a.server.close();
+  });
+
+  test("an older pad's edit of a copy another pad changed meanwhile is kept beside it", () async {
+    final d1 = await VvDesk.start('desk1'), d2 = await VvDesk.start('desk2');
+    final a = DesignStore(Directory('${root.path}/A')), b = DesignStore(Directory('${root.path}/B'));
+    final x = a.save(Design(name: 'Sign', shapes: [mark(1)]), now: 1000);
+    await syncWith(d1.desktop, a, withTools: false);
+    await syncWith(d1.desktop, b, withTools: false);
+    await syncWith(d2.desktop, b, withTools: false);
+    // A edits and syncs desk 1 only.
+    a.save(a.get(x.id)!.copyWith(shapes: [...a.get(x.id)!.shapes, mark(2)]), now: 2000);
+    await syncWith(d1.desktop, a, withTools: false);
+    // An older pad edits desk 2's copy: a new time, the vv it got.
+    final old = Map<String, Object?>.from(d2.kept[x.id]!);
+    old['modified'] = 3000;
+    old['shapes'] = [...(old['shapes'] as List), mark(3).toJson()];
+    expect(d2.put(old)['stored'], true);
+    // A takes it to desk 1 and back: neither edit is lost.
+    for (var i = 0; i < 2; i++) {
+      for (final p in [a, b]) {
+        for (final d in [d2, d1]) {
+          await syncWith(d.desktop, p, withTools: false);
+        }
+      }
+    }
+    expect({for (final d in a.live()) ...marks(d)}, {1, 2, 3});
+    expect(a.live().length, 2, reason: 'kept beside it, as a design of its own');
+    // An edit here of the older pad's copy is made from it, not apart.
+    final theirs = a.live().firstWhere((d) => marks(d).contains(3));
+    final edited = a.save(theirs.copyWith(shapes: [...theirs.shapes, mark(4)]), now: 4000);
+    expect(edited.orderTo(theirs.vv, theirs.modified), Order.after);
+    await d1.server.close();
+    await d2.server.close();
+  });
+
   test('pads and computers, edited and synced at random, lose nothing and end up the same', () async {
     for (var seed = 1; seed <= 8; seed++) {
       final rnd = Random(seed);
       final dir = Directory('${root.path}/s$seed');
-      final desks = [await VvDesk.start('deskA'), await VvDesk.start('deskB')];
+      // One of them from before vvs: the pads settle two copies edited apart
+      // for it as the others do.
+      final desks = [await VvDesk.start('deskA'), await VvDesk.start('deskB', older: seed.isEven)];
       final pads = [DesignStore(Directory('${dir.path}/p0')), DesignStore(Directory('${dir.path}/p1'))];
       var clock = 1000, token = 0;
       final made = <int>{}, gone = <int>{};
