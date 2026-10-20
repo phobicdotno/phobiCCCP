@@ -697,6 +697,18 @@ int main(int argc, char **argv)
         check(a.ok && std::abs(a.bounds.width() - 10.0) < 0.1, "HPGL IN: back to absolute coordinates");
     }
 
+    // HPGL label text and PE data are not commands: "Project" is not PR.
+    {
+        const c2d::ImportResult r = c2d::importHpglData(
+            QByteArray("IN;PU;LBProject 7\x03;PU8000,0;PD12000,0,12000,4000,8000,4000,8000,0;PU;"),
+            opts(0, 0), "lb.plt");
+        check(r.ok && std::abs(r.bounds.width() - 100.0) < 0.1 && std::abs(r.bounds.height() - 100.0) < 0.1,
+              "HPGL LB: label text is skipped, the square stays absolute");
+        const c2d::ImportResult t = c2d::importHpglData(
+            QByteArray("IN;DT@;LBPrinted@;PU0,0;PD400,0;PU;"), opts(0, 0), "dt.plt");
+        check(t.ok && std::abs(t.bounds.width() - 10.0) < 0.1, "HPGL DT: the label ends at its own terminator");
+    }
+
     std::printf("test_import: %d checks OK\n", g_checks);
     return 0;
 }

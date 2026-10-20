@@ -3059,7 +3059,8 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     openPath(c2dPath, false);
     if (QFileInfo(m_doc.filePath()) != QFileInfo(c2dPath))
         return padError(QStringLiteral("%1 did not open on %2").arg(QFileInfo(c2dPath).fileName(), host));
-    if (const QString older = olderPadWarning(req, peer); !older.isEmpty())
+    // A whole file sent by a computer carries no versions to warn about.
+    if (const QString older = whole ? QString() : olderPadWarning(req, peer); !older.isEmpty())
         statusBar()->showMessage(QStringLiteral("“%1” from %2. %3").arg(name, sender, older), 15000);
     else
         statusBar()->showMessage(QStringLiteral("“%1” from %2").arg(name, sender), 10000);

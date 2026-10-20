@@ -727,6 +727,21 @@ static void testVersions(const QString &dir, QJsonObject d)
     fresh.insert("modified", 0);   // a design of its own made here (padShareSaved)
     check(s4.edited(fresh, 5000).value("vv").toObject() == QJsonObject({{me, 5000}}),
           "a design new here starts its own versions");
+    {
+        // At the limit: the oldest older-edit entry makes room, the vv stays believed.
+        QJsonObject full = a;
+        QJsonObject vv;
+        for (int i = 1; i <= 64; ++i)
+            vv.insert(QStringLiteral("e-%1").arg(i, 16, 16, QLatin1Char('0')), 1000.0 + i);
+        full.insert("vv", vv);
+        full.insert("modified", 1064.0);
+        const QJsonObject capped = s4.edited(full, 5000);
+        const QJsonObject cv = capped.value("vv").toObject();
+        check(cv.size() == 64 && cv.value(me).toDouble() == 5000
+                  && !cv.contains(QStringLiteral("e-%1").arg(1, 16, 16, QLatin1Char('0')))
+                  && !padlink::versionVector(capped).isEmpty(),
+              "64 versions at most: the oldest older-edit entry goes");
+    }
     // The same on the pad (Android/lib/model.dart olderEditId, forkIdFor).
     check(olderEdit == QLatin1String("e-e625dcdd1333364a"), "the older edit's id is the pad's");
     check(padlink::Store::forkIdFor(c) == QLatin1String("2b4050ca-c995-58c3-b7c9-374462673dd3"), "a fork's id is the pad's");

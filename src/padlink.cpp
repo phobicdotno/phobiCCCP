@@ -1038,6 +1038,18 @@ QJsonObject Store::edited(QJsonObject design, double modified) const
     // the edit made here is known to be made from it.
     QJsonObject vv = ancestry(design);
     vv.insert(replicaId(), modified);
+    // Each older client's edit adds an entry; past the limit the versions
+    // would not be believed and start over, so the oldest of those go first.
+    while (vv.size() > kMaxReplicas) {
+        QString oldest;
+        for (auto it = vv.constBegin(); it != vv.constEnd(); ++it)
+            if (it.key().startsWith(QLatin1String("e-"))
+                && (oldest.isEmpty() || it.value().toDouble() < vv.value(oldest).toDouble()))
+                oldest = it.key();
+        if (oldest.isEmpty())
+            break;
+        vv.remove(oldest);
+    }
     design.insert(QStringLiteral("modified"), modified);
     design.insert(QStringLiteral("vv"), vv);
     return design;

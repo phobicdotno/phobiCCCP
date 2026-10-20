@@ -9,6 +9,8 @@
 #include <QGlyphRun>
 #include <QRawFont>
 #include <QTextLayout>
+#include <QSet>
+#include <QTextBoundaryFinder>
 #include <QTransform>
 #include <QUuid>
 #include <QtMath>
@@ -358,9 +360,9 @@ void Element::renderText(QJsonObject &o)
 
     // Shape the whole string once: kerning, bidi order, joining forms and
     // mark placement all come from the layout engine. Each glyph is kept
-    // with the straight-baseline cluster it belongs to (a base glyph plus
-    // its zero-advance marks), so letter spacing and arc placement move a
-    // cluster as one piece and the marks stay on their base.
+    // with the straight-baseline grapheme cluster it belongs to, so letter
+    // spacing and arc placement move a cluster as one piece and the marks
+    // stay on their letter.
     struct Glyph { QPainterPath path; double cluster; double advance; };
     QVector<Glyph> glyphs;
     double width = 0;
@@ -381,30 +383,66 @@ void Element::renderText(QJsonObject &o)
         if (line.isValid()) {
             const double baseline = line.ascent();
             const double x0 = line.naturalTextRect().left();
+            // One grapheme cluster (a letter with its marks, a consonant with
+            // its vowel signs) at a time, so its glyphs move as one piece
+            // whichever side of the letter right-to-left shaping put them.
             struct Raw { QPainterPath path; double x, y, adv; };
-            QVector<Raw> raws;
-            const auto runs = layout.glyphRuns();
-            for (const QGlyphRun &run : runs) {
-                const QRawFont rf = run.rawFont();
-                const QList<quint32> idx = run.glyphIndexes();
-                const QList<QPointF> pos = run.positions();
-                const QList<QPointF> advs = rf.advancesForGlyphIndexes(idx);
-                for (int i = 0; i < idx.size() && i < pos.size(); ++i) {
-                    QPainterPath gp = rf.pathForGlyph(idx.at(i));
-                    raws.append({gp, pos.at(i).x() - x0, pos.at(i).y() - baseline,
-                                 i < advs.size() ? advs.at(i).x() : 0.0});
+            struct Cluster { QVector<Raw> glyphs; double left = 0, right = 0; };
+            QVector<Cluster> clusters;
+            QSet<QString> seen;   // a ligature spans clusters: draw it once
+            QTextBoundaryFinder bf(QTextBoundaryFinder::Grapheme, text);
+            int from = 0;
+            while (from < text.size()) {
+                int to = int(bf.toNextBoundary());
+                if (to <= from)
+                    to = int(text.size());
+                Cluster c;
+                for (const QGlyphRun &run : layout.glyphRuns(from, to - from)) {
+                    const QRawFont rf = run.rawFont();
+                    const QList<quint32> idx = run.glyphIndexes();
+                    const QList<QPointF> pos = run.positions();
+                    const QList<QPointF> advs = rf.advancesForGlyphIndexes(idx);
+                    for (int i = 0; i < idx.size() && i < pos.size(); ++i) {
+                        const QString key = QStringLiteral("%1/%2/%3/%4").arg(rf.familyName())
+                                                .arg(idx.at(i)).arg(pos.at(i).x()).arg(pos.at(i).y());
+                        if (seen.contains(key))
+                            continue;
+                        seen.insert(key);
+                        c.glyphs.append({rf.pathForGlyph(idx.at(i)), pos.at(i).x() - x0,
+                                         pos.at(i).y() - baseline,
+                                         i < advs.size() ? advs.at(i).x() : 0.0});
+                    }
                 }
+                from = to;
+                if (c.glyphs.isEmpty())
+                    continue;
+                // The cluster's span from its spacing glyphs (marks have none).
+                bool any = false;
+                for (const Raw &r : c.glyphs) {
+                    if (r.adv <= 1e-9)
+                        continue;
+                    c.left = any ? std::min(c.left, r.x) : r.x;
+                    c.right = any ? std::max(c.right, r.x + r.adv) : r.x + r.adv;
+                    any = true;
+                }
+                if (!any) {
+                    c.left = c.right = c.glyphs.first().x;
+                    for (const Raw &r : c.glyphs)
+                        c.left = std::min(c.left, r.x);
+                }
+                clusters.append(c);
             }
             // Visual order, left to right.
-            std::stable_sort(raws.begin(), raws.end(),
-                             [](const Raw &a, const Raw &b) { return a.x < b.x; });
-            double baseX = 0, baseNew = 0, baseAdv = 0;
-            for (const Raw &r : raws) {
-                if (r.adv > 1e-9) { baseX = r.x; baseNew = r.x * spacing; baseAdv = r.adv; }
-                const double nx = r.adv > 1e-9 ? baseNew : baseNew + (r.x - baseX);
-                QTransform t;
-                t.translate(nx, r.y);
-                glyphs.append({toMm.map(t.map(r.path)), baseNew * scale, baseAdv * scale * spacing});
+            std::stable_sort(clusters.begin(), clusters.end(),
+                             [](const Cluster &a, const Cluster &b) { return a.left < b.left; });
+            for (const Cluster &c : clusters) {
+                const double newLeft = c.left * spacing;
+                for (const Raw &r : c.glyphs) {
+                    QTransform t;
+                    t.translate(newLeft + (r.x - c.left), r.y);
+                    glyphs.append({toMm.map(t.map(r.path)), newLeft * scale,
+                                   (c.right - c.left) * scale * spacing});
+                }
             }
             width = line.horizontalAdvance() * scale * spacing;
         }

@@ -145,7 +145,7 @@ int main(int argc, char *argv[])
     }
 
     // Inlay male from a v-carve whose end depth is bound to a parameter:
-    // the male's binding carries the glue gap, so re-evaluating keeps it.
+    // the male's start binding follows it less the glue gap, so re-evaluating keeps it.
     {
         c2d::Document d;
         check(d.load(blank, &err), "load");
@@ -197,17 +197,21 @@ int main(int argc, char *argv[])
             check(worst < 0.02, "the male outline follows the circle within 0.02 mm");
         }
         check(sawOutline, "the male has the mirrored outline");
-        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 3.5) < 1e-9,
-              "male end depth is carve + 0.5 gap");
+        // The plug wedges in at the male's start depth: 0.5 short of the
+        // pocket leaves 0.5 of glue under it; the male floor stands it 0.5 proud.
+        auto depths = [&](double start, double end) {
+            const c2d::Toolpath *m = d.toolpathByUuid(male);
+            return std::fabs(num(m->json.value("start_depth")) + start) < 1e-9
+                && std::fabs(num(m->json.value("end_depth")) + end) < 1e-9;
+        };
+        check(depths(2.5, 3.0), "male starts at carve - 0.5 gap and ends at carve");
         c2d::param::applyToolpathBindings(d, nullptr);
-        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 3.5) < 1e-9,
-              "re-evaluating the bindings keeps the gap");
+        check(depths(2.5, 3.0), "re-evaluating the bindings keeps the gap");
         check(std::fabs(num(d.toolpathByUuid(t.uuid)->json.value("end_depth")) + 3.0) < 1e-9,
               "the female stays at carve");
         d.parametricRef().params[0].expr = QStringLiteral("4");
         c2d::param::applyToolpathBindings(d, nullptr);
-        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 4.5) < 1e-9,
-              "a parameter edit moves the male with the gap");
+        check(depths(3.5, 4.0), "a parameter edit moves the male with the gap");
     }
 
     std::printf("test_uifixes: %d checks OK\n", g_checks);

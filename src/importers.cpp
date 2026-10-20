@@ -1609,13 +1609,50 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
     bool penDown = false, relative = false, open = false;
     QHash<QString, int> skipped;
     const QString text = QString::fromLatin1(data);
-    static const QRegularExpression cmdRe(QStringLiteral("([A-Za-z]{2})([^A-Za-z;]*)"));
-    auto it = cmdRe.globalMatch(text);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch m = it.next();
-        const QString cmd = m.captured(1).toUpper();
+    // Read commands in order: a label's text (LB, up to the terminator DT
+    // sets) and encoded polyline data (PE) are not commands, and scanning
+    // them as such read the "Pr" of "Project" as relative mode.
+    QChar labelEnd(0x03);
+    int at = 0;
+    const int len = int(text.size());
+    auto isLetter = [](QChar c) {
+        return (c >= QLatin1Char('A') && c <= QLatin1Char('Z'))
+            || (c >= QLatin1Char('a') && c <= QLatin1Char('z'));
+    };
+    while (at < len) {
+        if (at + 1 >= len || !isLetter(text.at(at)) || !isLetter(text.at(at + 1))) {
+            ++at;
+            continue;
+        }
+        const QString cmd = text.mid(at, 2).toUpper();
+        at += 2;
+        if (cmd == QLatin1String("LB")) {
+            const int end = int(text.indexOf(labelEnd, at));
+            at = end < 0 ? len : end + 1;
+            addSkipped(res, skipped, cmd);
+            continue;
+        }
+        if (cmd == QLatin1String("DT")) {
+            // The label terminator: the next character, or ETX by default.
+            if (at < len && text.at(at) != QLatin1Char(';'))
+                labelEnd = text.at(at++);
+            else
+                labelEnd = QChar(0x03);
+            continue;
+        }
+        if (cmd == QLatin1String("PE")) {
+            const int end = int(text.indexOf(QLatin1Char(';'), at));
+            at = end < 0 ? len : end + 1;
+            addSkipped(res, skipped, cmd);
+            continue;
+        }
+        int argEnd = at;
+        while (argEnd < len && !isLetter(text.at(argEnd)) && text.at(argEnd) != QLatin1Char(';'))
+            ++argEnd;
+        const QString args = text.mid(at, argEnd - at);
+        at = argEnd;
         QVector<double> nums;
-        for (const QString &n : m.captured(2).split(QRegularExpression(QStringLiteral("[,\\s]+")),
+        for (const QString &n : args.split(QRegularExpression(QStringLiteral("[,\\s]+")),
                                                     Qt::SkipEmptyParts)) {
             bool ok = false;
             const double v = n.toDouble(&ok);

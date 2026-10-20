@@ -685,9 +685,9 @@ void ToolpathPanel::createInlayMale()
     bool ok = false;
     const double gap = QInputDialog::getDouble(
         this, QStringLiteral("Inlay male"),
-        QStringLiteral("Glue gap (mm): both male depths are shifted down by\n"
-                       "this much, so the assembled male sits proud by the gap\n"
-                       "(glue space below, planed flush after glue-up)"),
+        QStringLiteral("Glue gap (mm): the male starts this much short of the\n"
+                       "pocket's depth, so the plug leaves this much glue space\n"
+                       "below and sits this much proud (planed flush after glue-up)"),
         0.5, 0.0, 5.0, 2, &ok);
     if (!ok)
         return;
@@ -755,29 +755,36 @@ void ToolpathPanel::createInlayMale()
         else
             j.insert(QLatin1String(key), sign * absVal);
     };
-    setDepth("start_depth", qAbs(num(j.value("start_depth"))) + gap);
-    setDepth("end_depth", qAbs(num(j.value("end_depth"))) + gap);
-    // A depth bound to a parameter keeps the gap when the parameter is
-    // re-evaluated: the male's binding is the female's plus the gap.
+    // The plug's walls have the pocket's slope, so the flipped plug wedges in
+    // as deep as the male's start depth (counted from the pocket's start):
+    // starting it the gap short of the pocket's floor leaves the gap of glue
+    // space under the plug, and the male's floor at the pocket's depth stands
+    // it the gap proud.
+    const double fStart = qAbs(num(j.value("start_depth")));
+    const double fEnd = qAbs(num(j.value("end_depth")));
+    setDepth("start_depth", qMax(0.0, fEnd - fStart - gap));
+    setDepth("end_depth", fEnd);
+    // A depth bound to a parameter keeps the rule when the parameter is
+    // re-evaluated: the male's start follows the female's depths.
     QJsonObject binds = j.value(QStringLiteral("phobic_expr")).toObject();
-    for (const char *key : {"start_depth", "end_depth"}) {
-        QJsonObject b = binds.value(QLatin1String(key)).toObject();
-        const QString expr = b.value(QStringLiteral("expr")).toString();
-        if (expr.isEmpty())
-            continue;
-        const QString g = QString::number(gap, 'g', 10);
-        // A size binding (neg/abs) is worked out as |expr| and signed
-        // afterwards; a plain one is the signed depth itself.
-        if (b.value(QStringLiteral("neg")).toBool() || b.value(QStringLiteral("abs")).toBool()) {
-            b.insert(QStringLiteral("expr"), QStringLiteral("abs(%1) + %2").arg(expr, g));
-            // The female's range was for the female: the male goes gap deeper.
-            if (b.contains(QStringLiteral("max")))
-                b.insert(QStringLiteral("max"), b.value(QStringLiteral("max")).toDouble() + gap);
-        } else {
-            b.insert(QStringLiteral("expr"), QStringLiteral("(%1) %2 %3")
-                         .arg(expr, sign < 0 ? QStringLiteral("-") : QStringLiteral("+"), g));
-        }
-        binds.insert(QLatin1String(key), b);
+    const QJsonObject sb = binds.value(QStringLiteral("start_depth")).toObject();
+    const QJsonObject eb = binds.value(QStringLiteral("end_depth")).toObject();
+    const QString se = sb.value(QStringLiteral("expr")).toString();
+    const QString ee = eb.value(QStringLiteral("expr")).toString();
+    if (!se.isEmpty() || !ee.isEmpty()) {
+        auto sizeOf = [](const QString &expr, double val) {
+            return expr.isEmpty() ? QString::number(val, 'g', 10)
+                                  : QStringLiteral("abs(%1)").arg(expr);
+        };
+        QJsonObject b;
+        b.insert(QStringLiteral("expr"), QStringLiteral("max(0, %1 - %2 - %3)")
+                     .arg(sizeOf(ee, fEnd), sizeOf(se, fStart), QString::number(gap, 'g', 10)));
+        b.insert(sign < 0 ? QStringLiteral("neg") : QStringLiteral("abs"), true);
+        if (j.value(QStringLiteral("start_depth")).isString())
+            b.insert(QStringLiteral("str"), true);
+        binds.insert(QStringLiteral("start_depth"), b);
+    } else {
+        binds.remove(QStringLiteral("start_depth"));
     }
     if (!binds.isEmpty())
         j.insert(QStringLiteral("phobic_expr"), binds);
@@ -786,7 +793,7 @@ void ToolpathPanel::createInlayMale()
     m_canvas->insertGenerated(newEls, male);
     QMessageBox::information(this, QStringLiteral("Inlay male"),
         QStringLiteral("Generated \"%1\": mirrored design in a %2 mm border, "
-                       "depths shifted %3 mm.\n\nCarve it in the second piece, "
+                       "start depth %3 mm short of the pocket's depth.\n\nCarve it in the second piece, "
                        "flip that piece face-down into the female, glue, then "
                        "plane the ~%3 mm proud surface flush.")
             .arg(j.value("name").toString())

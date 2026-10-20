@@ -82,8 +82,16 @@ void runBehindDialog(QWidget *parent, const QString &title, Shared &sh,
     tick.start(100);
 
     t->start();
-    while (!done)
-        loop.exec();      // the window stays alive; only Cancel is reachable
+    while (!done) {
+        // The window stays alive; only Cancel is reachable. Once the
+        // application is quitting (its window closed before this dialog
+        // showed), exec() returns -1 at once and no event is delivered any
+        // more, so the finish could never arrive: cancel and wait instead.
+        if (loop.exec() < 0) {
+            sh.cancel.store(true);
+            break;
+        }
+    }
     t->wait();
     // ThreadSanitizer reports a race here on QThread's own wait condition
     // (the finishing thread broadcasts on it; this destroys it). Deferring

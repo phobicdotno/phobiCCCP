@@ -106,7 +106,7 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 | `opened` | `seq`, `pad` (its id) | (nothing more) |
 
 **Sent from the computer** (File › Send to pad…): the pad never listens, so a design for it
-waits on the computer. Each sync round's `info` names the pad (`pad`: its own id, made once,
+waits on the computer. Each sync round's `info` names the pad (`pad`: its own id, the one in its vvs,
 and its name); the computer lists the pads heard in the last 20 seconds, and when a design
 waits for that pad, the answer carries `open` {seq, design, name, from}. The design is an
 ordinary synced one, so the same round pulls it; then the pad opens it and answers `opened`
@@ -152,7 +152,9 @@ are kept as above; otherwise the older one's edit was made from it and replaces 
 with no vv at all (a design an older pad made, or one from before vvs) is likewise an edit
 made from nothing a newer pad or phobiCCCP did. An edit of such a copy by a newer one keeps
 its vv and notes the older edit under an id made from the copy's time and vv
-(`olderEditId`, `e-` and 16 hex digits), so it counts as made from it. Two copies neither of
+(`olderEditId`, `e-` and 16 hex digits), so it counts as made from it. At most 64 entries
+are kept: past that the oldest `e-` entries are dropped, so a design edited in turn by an
+older and a newer client keeps a vv that is believed. Two copies neither of
 which has a believed vv, or a deletion from an older pad (which keeps no vv), follow the
 rules below (`base`, newer time wins).
 
@@ -167,7 +169,8 @@ is then its own version when `moved`. Pads from before this keep one base for al
 computers, so an older pad that syncs with more than one computer can still lose edits
 as before: update every pad. phobiCCCP says so in its status bar the first time a pad
 from before 1.3.1 puts or sends a design (newer pads add `"versions": 1` to `put` and
-`send`).
+`send`). A 1.3.0 phobiCCCP with newer pads can still leave a design twice
+(the same copy, once as "(pad)"): update every computer too.
 
 A design the pad sends carries `base`, the `modified` of the copy it last got from or gave
 to that phobiCCCP (the pad keeps one per computer, by its id, in `bases`, which is never

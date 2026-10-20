@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.3.2 (build 92) — 2026-10-20
+
+> Recursive bug hunt, round 4: inlays seat at their depth, marks stay on their letters, and closing during an export no longer hangs
+
+- **Toolpaths:**
+  - The inlay male started the glue gap below the top, so the plug seated only that deep
+    and left a void of most of the pocket under it. It now starts the gap short of the
+    pocket's depth and ends at it: the gap of glue below, the plug the gap proud.
+- **Drawing:**
+  - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
+    letter spacing or on an arc; each letter moves with its marks now.
+  - HPGL import read label text as commands (the "Pr" of "Project" switched to relative
+    moves); labels and encoded polylines are skipped.
+- **Panels:**
+  - Closing the window just as an export started (Simulate, Export, Run) left the program
+    running forever in the background.
+- **Pad link:**
+  - phobiCCCP on a tablet is no longer backed up, so a restored tablet cannot share another's
+    identity, and the pad's id on the computer is its own id in the versions.
+  - A design edited in turn by an older and a newer client no longer outgrows its versions.
+  - A design sent by another computer no longer warns that the pad is old.
+  - The pad shows its real version (it said 1.2.3).
+
 ## v1.3.1 (build 91) — 2026-10-20
 
 > Recursive bug hunt, rounds 1 to 3: about 70 bugs fixed in toolpaths, the machine, drawing, panels and the pad link
