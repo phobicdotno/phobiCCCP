@@ -17,6 +17,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <memory>
 
 #ifdef HAVE_CLIPPER2
 #include <clipper2/clipper.h>
@@ -307,6 +308,53 @@ static QPainterPath regionFromRings(const QList<QPolygonF> &rings)
     return r;
 }
 
+// How far a stay-down link may stray past the tool-centre region it is
+// checked against: the rings themselves lie on its boundary, and a link
+// between two of them must not fail on rounding.
+static const double kLinkLeeway = 0.02;
+
+// A stay-down link check for CutParams::linkOk: the straight feed from a to
+// b is kept only when it stays inside `centres` (a tool-centre region, grown
+// by kLinkLeeway here). Exact, not sampled: both ends inside and no edge
+// crossed. Without it a pocket that splits around an island into lobes less
+// than linkDist apart fed straight across the island at every depth.
+static std::function<bool(const QPointF &, const QPointF &)> linkInside(const QPainterPath &centres)
+{
+    struct Area {
+        QList<QPolygonF> polys;
+        QList<QRectF> boxes;
+    };
+    auto area = std::make_shared<Area>();
+    for (const QPolygonF &p : outsetRings(centres, kLinkLeeway)) {
+        area->polys << p;
+        area->boxes << p.boundingRect();
+    }
+    return [area](const QPointF &a, const QPointF &b) {
+        // Even-odd over the ring polygons (see restAdjust).
+        auto inside = [&](const QPointF &p) {
+            int crossings = 0;
+            for (const QPolygonF &poly : area->polys)
+                if (poly.containsPoint(p, Qt::OddEvenFill))
+                    ++crossings;
+            return (crossings & 1) != 0;
+        };
+        if (!inside(a) || !inside(b))
+            return false;
+        const QLineF ab(a, b);
+        const QRectF box = QRectF(a, b).normalized();
+        for (int k = 0; k < area->polys.size(); ++k) {
+            if (!area->boxes.at(k).intersects(box.adjusted(-1e-6, -1e-6, 1e-6, 1e-6)))
+                continue;
+            const QPolygonF &poly = area->polys.at(k);
+            for (int i = 0; i + 1 < poly.size(); ++i)
+                if (ab.intersects(QLineF(poly.at(i), poly.at(i + 1)), nullptr)
+                    == QLineF::BoundedIntersection)
+                    return false;
+        }
+        return true;
+    };
+}
+
 #ifdef HAVE_CLIPPER2
 static QPainterPath subtractRegion(const QPainterPath &a, const QPainterPath &b)
 {
@@ -372,6 +420,24 @@ static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
 // pocket or adaptive only partly inside cuts just what is left, in depth
 // bands (restBands); a contour or cutout only partly inside keeps its full
 // depth. One whose floor is already reached is left out.
+static ToolGeom toolGeomOf(const QJsonObject &tool);
+
+// The tool change for one embedded tool object: its number, a key that is
+// the same only for the same bit, and the bit's shape for the simulation
+// (x diameter, y V angle, z corner radius, feed kind).
+static Op toolOp(const QJsonObject &tool)
+{
+    const ToolGeom g = toolGeomOf(tool);
+    Op o = Op::tool(g.number);
+    o.text = QStringLiteral("%1|%2|%3|%4|%5").arg(g.number).arg(int(g.kind))
+                 .arg(g.diameter, 0, 'g', 10).arg(g.angle, 0, 'g', 10).arg(g.cornerRadius, 0, 'g', 10);
+    o.x = g.diameter;
+    o.y = g.angle;
+    o.z = g.cornerRadius;
+    o.feed = int(g.kind) + 1;
+    return o;
+}
+
 struct Cleared {
     QPainterPath foot;   // material removed, as a region
     double zBot = 0;     // the floor it reached (Z, negative down)
@@ -436,6 +502,23 @@ static QPainterPath unionRegions(const QList<QPainterPath> &regions)
 #endif
 
 enum class RestVerdict { Untouched, Raised, Done, Partial };
+
+// Points along a tool-centre line no more than `step` apart: the rest test
+// needs the whole line, not just its corners - a long straight pass between
+// two corners in cut air can still run through an island left standing.
+static void addAlong(QVector<QPointF> &pts, const QPolygonF &line, double step, bool closed)
+{
+    const int n = line.size();
+    for (int i = 0; i < n; ++i) {
+        pts << line.at(i);
+        if (i + 1 == n && !closed)
+            break;
+        const QPointF a = line.at(i), b = line.at((i + 1) % n);
+        const int k = int(std::ceil(QLineF(a, b).length() / step));
+        for (int m = 1; m < k; ++m)
+            pts << a + (b - a) * (double(m) / k);
+    }
+}
 
 // Deepest floor among `cleared` under which every point of `pts` (tool
 // centres of radius toolR) is in cut air; `*zTop` is lowered to that floor
@@ -1161,6 +1244,31 @@ static int parallelRing(const QList<QPolygonF> &level, const QPointF &p, double 
     return best;
 }
 
+static Job::Helix helixIn(const QList<QPolygonF> &rings, double want, double angle);
+
+// Give `job` a helical entry inside the tool-centre region bounded by
+// `rings`, and start its rings there. Leave the helix for the ring nearest
+// it, at its nearest point: no ring lies across that short move, so it
+// never runs over an island.
+static void addHelix(Job &job, const QList<QPolygonF> &rings, double want, double angle)
+{
+    job.helix = helixIn(rings, want, angle);
+    if (!job.helix.on || job.rings.isEmpty())
+        return;
+    const QPointF from = job.helix.c + QPointF(job.helix.r, 0);
+    int near = 0;
+    double nd = std::numeric_limits<double>::max();
+    for (int i = 0; i < job.rings.size(); ++i) {
+        const double d = distToPoly(from, job.rings.at(i));
+        if (d < nd) {
+            nd = d;
+            near = i;
+        }
+    }
+    const QPolygonF first = startNearest(job.rings.takeAt(near), from);
+    job.rings.prepend(first);
+}
+
 // A helix that fits in the tool-centre region bounded by `rings` (even-odd,
 // so islands are holes in it): about the point farthest inside it (sampled
 // on a grid, then refined around the best), radius `want` or less. Off
@@ -1340,6 +1448,12 @@ public:
             m_y = ring.at(next).y();
             at = next;
         }
+        // A ring too short for the drop runs out of laps above zTo (a
+        // pocket's innermost ring can be well under a millimetre round):
+        // the rest goes straight down at the plunge rate, not as a steep
+        // dive at the cutting feed on the next move.
+        if (z > zTo + 1e-9)
+            plungeTo(pos(), zTo);
         // Carry on around the loop at depth. Going straight back to ring[0]
         // from wherever the ramp ended is a chord across the ring: on an
         // outside contour that cuts into the finished part, by the sagitta of
@@ -1592,9 +1706,9 @@ public:
                 if (QLineF(pos(), rs).length() > 1e-6) {
                     // The first ring was chosen as the one nearest the helix
                     // (pocket branch): straight across to it, whatever the
-                    // distance.
-                    if (i == 0 || (QLineF(pos(), rs).length() <= cp.linkDist
-                        && (!cp.linkOk || cp.linkOk(pos(), rs)))) {
+                    // distance, unless that crosses an island.
+                    if ((i == 0 || QLineF(pos(), rs).length() <= cp.linkDist)
+                        && (!cp.linkOk || cp.linkOk(pos(), rs))) {
                         feedAt(rs, z, m_feed);
                     } else {
                         retract();
@@ -1794,17 +1908,20 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
 
 QString toolReuseWarning(const QVector<Op> &ops)
 {
-    QList<int> seq;
-    for (const Op &o : ops)
-        if (o.kind == Op::Tool && (seq.isEmpty() || seq.last() != o.ival))
-            seq << o.ival;
-    QList<int> distinct;
+    // By bit (Op::text), so one number used for two bits is two tools.
+    QList<QPair<QString, int>> seq;
+    for (const Op &o : ops) {
+        const QPair<QString, int> t{o.text.isEmpty() ? QString::number(o.ival) : o.text, o.ival};
+        if (o.kind == Op::Tool && (seq.isEmpty() || seq.last().first != t.first))
+            seq << t;
+    }
+    QStringList distinct;
     QStringList again;
     for (int i = 0; i < seq.size(); ++i) {
-        if (distinct.contains(seq.at(i)))
-            again << QStringLiteral("T%1 after T%2").arg(seq.at(i)).arg(seq.at(i - 1));
+        if (distinct.contains(seq.at(i).first))
+            again << QStringLiteral("T%1 after T%2").arg(seq.at(i).second).arg(seq.at(i - 1).second);
         else
-            distinct << seq.at(i);
+            distinct << seq.at(i).first;
     }
     if (again.isEmpty())
         return QString();
@@ -1828,14 +1945,17 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
     const double safeZ = documentSafeZ(doc);
     QPointF lastPos(0, 0);
 
-    int lastTool = -1;
+    // Tool changes go by the bit, not just its number: two toolpaths that
+    // both say T1 but with different bits (an edited diameter, two tools
+    // numbered 0) still get the pause to swap them.
+    QString lastTool;
     int tpIndex = 0;
 
     // Ring-type toolpaths (pocket / contour / cutout) are not emitted one by
     // one: consecutive ones sharing a tool are pooled and emitted together,
     // ordered by orderDeferred(), so each site is finished before moving on.
     QList<Deferred> pending;
-    int pendingTool = -1;
+    Op pendingTool = Op::tool(-1);
     auto flush = [&]() {
         if (pending.isEmpty())
             return;
@@ -1858,16 +1978,16 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             em.runJob(d.job, d.cp);
             lastPos = em.pos();
         }
-        if (pendingTool != lastTool) {
-            ops.append(Op::tool(pendingTool));
-            lastTool = pendingTool;
+        if (pendingTool.text != lastTool) {
+            ops.append(pendingTool);
+            lastTool = pendingTool.text;
         }
         // No spindle stop here: the next toolpath with the same tool keeps it
         // running; the post stops it before a tool change and at the end.
         ops.append(body);
         res.done << names;
         pending.clear();
-        pendingTool = -1;
+        pendingTool = Op::tool(-1);
     };
 
     QList<Cleared> cleared;   // what the toolpaths so far have removed (rest depth)
@@ -1923,9 +2043,25 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             res.skipped << QStringLiteral("%1 (feed and plunge rate must be above 0)").arg(name);
             continue;
         }
+        if (!(rpm > 0)) {
+            // Op::spindle(0) is M05: the toolpath would cut with the spindle
+            // stopped (form minimum 0, or a toolpath with no rpm of its own).
+            res.skipped << QStringLiteral("%1 (spindle speed must be above 0)").arg(name);
+            continue;
+        }
         const QJsonObject tool = j.value("tool").toObject();
-        const int toolNo = int(numOr(tool.value("number"), 0));
-        const double toolR = numOr(tool.value("diameter"), 6) / 2.0;
+        const Op toolChange = toolOp(tool);
+        // The bit's size, read once and the same way as toolGeomOf() reads it
+        // for the tool change and the simulation. A missing, zero or negative
+        // diameter is refused: toolGeomOf() stands in 3.175 for it, and the
+        // offsets here used to take 6 (missing) or the bad value itself (0
+        // ran the tool centre on the vector line), so the cut, the tool key
+        // and the simulation each assumed a different bit.
+        if (!(numOr(tool.value("diameter"), 0) > 0)) {
+            res.skipped << QStringLiteral("%1 (tool diameter must be above 0)").arg(name);
+            continue;
+        }
+        const double toolR = toolGeomOf(tool).radius();
 
         // Every depth this toolpath reads, with one flag for whether they were
         // all readable. A toolpath whose depth we cannot read is refused, not
@@ -1973,6 +2109,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             res.skipped << QStringLiteral("%1 (cut depth is not a number)").arg(name);
             continue;
         }
+        // A start below the end is no cut either, and each type made
+        // something different of it: bore, circular and slot plunged to the
+        // start (deeper than the end asked for), a pocket cut at the end,
+        // drilling emitted nothing and still reported done. (3D toolpaths
+        // go by the relief and max_depth, not these two.)
+        if (cp.zTop < cp.zBot - 1e-9 && !rough3d && !finish3d) {
+            res.skipped << QStringLiteral("%1 (start depth is below end depth)").arg(name);
+            continue;
+        }
         // A readable but absurd depth is still not machinable, and the pass
         // loop below steps down by `stepdown` until it reaches the bottom: a
         // depth of 1e15 mm is an export that never returns. No real job is
@@ -1991,7 +2136,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 res.skipped << QStringLiteral("%1 (no 3D model)").arg(name);
                 continue;
             }
-            const Cam3dParams p3 = cam3dParams(j, safeZ);
+            bool maxDepthOk = true;
+            const Cam3dParams p3 = cam3dParams(j, safeZ, &maxDepthOk);
+            if (!maxDepthOk) {
+                res.skipped << QStringLiteral("%1 (max depth is not a number)").arg(name);
+                continue;
+            }
             const QVector<const Element *> belems = referenced(doc, j);
             const QPainterPath boundary =
                 cam3dBoundary(*hm, belems.isEmpty() ? QPainterPath() : regionOf(belems),
@@ -2015,8 +2165,13 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     lcp.zBot = lv.z;
                     lcp.stepdown = p3.stepdown;
                     lcp.linkDist = qMax(2.5 * p3.stepover, 4 * r);
-                    lcp.linkOk = [&, z = lv.z](const QPointF &a, const QPointF &b) {
-                        return roughLinkClear(*hm, p3, a, b, z);
+                    // Clear of the relief is not enough: a hole in the
+                    // boundary is a keep-out the relief knows nothing of, so
+                    // the link must also stay where the tool centre may go.
+                    const auto inLevel = linkInside(
+                        regionFromRings(insetRings(lv.region, qMax(0.0, r - kLinkLeeway))));
+                    lcp.linkOk = [&, inLevel, z = lv.z](const QPointF &a, const QPointF &b) {
+                        return inLevel(a, b) && roughLinkClear(*hm, p3, a, b, z);
                     };
                     for (const Job &job : orderJobs(jobs, em.pos()))
                         em.runJob(job, lcp);
@@ -2043,9 +2198,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 res.skipped << QStringLiteral("%1 (nothing to cut)").arg(name);
                 continue;
             }
-            if (toolNo != lastTool) {
-                ops.append(Op::tool(toolNo));
-                lastTool = toolNo;
+            if (toolChange.text != lastTool) {
+                ops.append(toolChange);
+                lastTool = toolChange.text;
             }
             ops.append(Op::comment(name));
             ops.append(Op::spindle(rpm));
@@ -2067,6 +2222,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
 
         QList<Job> jobs;
         QList<QPainterPath> pocketMine;   // pockets: tool-centre regions, for rest bands
+        QList<std::function<bool(const QPointF &, const QPointF &)>> bandLinks;   // per rest band
         double pocketStep = 1.0;
         if (face) {
             // FACE (phobiCCCP type, Fusion's Face): zig-zag passes along X
@@ -2519,8 +2675,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             {
                 QList<QPolygonF> centres = planCentres(plan);
                 QVector<QPointF> pts;
+                const double along = qBound(0.1, toolR / 4, 0.5);
                 for (const QPolygonF &c : centres)
-                    pts += c;
+                    addAlong(pts, c, along, false);
                 bool skipIt = false;
                 if (j.value("rest_auto").toBool(false)) {
                     const double overlap = qBound(0.0, numOr(j.value("rest_overlap"), 1.0), 50.0);
@@ -2573,7 +2730,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         break;
                     }
                 }
-                if (!centres.isEmpty())
+                // Only a flat end mill leaves a flat floor at zBot everywhere it went.
+                if (!centres.isEmpty() && toolGeomOf(tool).kind == ToolGeom::Flat)
                     cleared.append({sweptRegion(centres, toolR), cp.zBot});
                 if (skipIt)
                     continue;
@@ -2816,7 +2974,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         const double z = rng.in(qMin(zMin, zMax), qMax(zMin, zMax));
                         em.rapidTo(sp);
                         em.plungeTo(sp, z);
-                        body.append(Op::feedTo(ep.x(), ep.y(), z, feed));
+                        // Through the emitter, so it knows the stroke ended
+                        // at ep: appended behind its back, the retract went
+                        // up over the stroke's start instead, and the next
+                        // rapid travelled back from there.
+                        em.feedAt(ep, z, feed);
                         em.retract();
                         a += qMax(1.0, L * 0.7 + rng.in(0, L * 0.3));
                     }
@@ -3101,41 +3263,50 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     const int before = jobs.size();
                     capped |= !ringFillJob(comp, toolR + leave, stepover, jobs);
                     pocketMine << regionFromRings(insetRings(comp, toolR + leave));
-                    if (helix && jobs.size() > before) {
-                        Job &job = jobs.last();
-                        job.helix = helixIn(insetRings(comp, toolR + leave), helixWant, helixAngle);
-                        if (job.helix.on) {
-                            // Leave the helix for the ring nearest it, at its
-                            // nearest point: no ring lies across that short
-                            // move, so it never runs over an island.
-                            const QPointF from = job.helix.c + QPointF(job.helix.r, 0);
-                            int near = 0;
-                            double nd = std::numeric_limits<double>::max();
-                            for (int i = 0; i < job.rings.size(); ++i) {
-                                const double d = distToPoly(from, job.rings.at(i));
-                                if (d < nd) {
-                                    nd = d;
-                                    near = i;
-                                }
-                            }
-                            const QPolygonF first = startNearest(job.rings.takeAt(near), from);
-                            job.rings.prepend(first);
-                        }
-                    }
+                    if (helix && jobs.size() > before)
+                        addHelix(jobs.last(), insetRings(comp, toolR + leave), helixWant, helixAngle);
                 }
             }
             if (capped)
                 res.notes << QStringLiteral("%1: too many rings for the stepover, "
                                             "the middle of the pocket is left uncut").arg(name);
+            // Links (ring to ring, helix to ring) stay down only inside the
+            // tool-centre region: rings either side of an island are often
+            // closer than linkDist.
+            cp.linkOk = linkInside(unionRegions(pocketMine));
         }
 
         if (!jobs.isEmpty() && (pocket || contour || cutout)) {
             // Rest depth: start where the toolpaths above left off.
             QList<QPolygonF> centres;
             QVector<QPointF> pts;
+            const double along = qBound(0.1, toolR / 4, 0.5);
+            // A lead's half circle from a through the ring's start to b, and
+            // the step back across it between passes: the first pass drops
+            // in at a, so it must be in cut air as much as the ring is.
+            auto addLead = [&](const Job::Lead &l, const QPointF &s) {
+                if (!l.on)
+                    return;
+                const double r = QLineF(l.c, s).length();
+                if (r < 1e-9)
+                    return;
+                const QPointF u0 = (l.a - l.c) / r, u1 = (s - l.c) / r;
+                const int n = qMax(8, int(std::ceil(M_PI * r / along)));
+                QPolygonF arc;
+                for (int k = 0; k <= n; ++k) {
+                    const double th = M_PI * k / n;
+                    arc << l.c + r * (u0 * qCos(th) + u1 * qSin(th));
+                }
+                addAlong(pts, arc, along, false);
+                addAlong(pts, QPolygonF() << l.b << l.a, along, false);
+            };
             for (const Job &job : jobs) {
-                for (const QPolygonF &r : job.rings) { centres << r; pts += r; }
-                for (const QPolygonF &r : job.finish) { centres << r; pts += r; }
+                for (const QPolygonF &r : job.rings) { centres << r; addAlong(pts, r, along, pocket); }
+                for (const QPolygonF &r : job.finish) { centres << r; addAlong(pts, r, along, pocket); }
+                if (!job.rings.isEmpty())
+                    addLead(job.lead, job.rings.first().first());
+                for (int k = 0; k < job.finishLeads.size() && k < job.finish.size(); ++k)
+                    addLead(job.finishLeads.at(k), job.finish.at(k).first());
                 if (job.helix.on)
                     for (int k = 0; k < 8; ++k) {
                         const double a = k * M_PI / 4;
@@ -3161,16 +3332,27 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         QList<Job> banded;
                         const QList<RestBand> bands =
                             restBands(cleared, unionRegions(pocketMine), toolR, cp.zTop, cp.zBot, cp.stepdown);
-                        for (int b = 0; b < bands.size(); ++b)
+                        // Each band's entry keeps the pocket's helix, if it has one.
+                        const bool helix = j.value("helix_entry").toBool(false)
+                                           && !(j.value("enable_rest").toBool(false)
+                                                && numOr(j.value("rest_diameter"), 0) / 2.0 > toolR + 1e-6);
+                        const double helixWant = qMax(0.0, numOr(j.value("helix_diameter"), 2 * toolR)) / 2;
+                        const double helixAngle = numOr(j.value("helix_angle"), 2);
+                        for (int b = 0; b < bands.size(); ++b) {
+                            // A band's links stay inside that band's region.
+                            bandLinks << linkInside(bands.at(b).centres);
                             for (const QPainterPath &rc : components(bands.at(b).centres)) {
                                 const int before = banded.size();
                                 ringFillJob(rc, 0.0, pocketStep, banded);
+                                if (helix && banded.size() > before)
+                                    addHelix(banded.last(), insetRings(rc, 0.0), helixWant, helixAngle);
                                 for (int k = before; k < banded.size(); ++k) {
                                     banded[k].band = b;
                                     banded[k].bandTop = bands.at(b).zTop;
                                     banded[k].bandBot = bands.at(b).zBot;
                                 }
                             }
+                        }
                         jobs = banded;
                         centres.clear();
                         for (const Job &job : jobs)
@@ -3186,8 +3368,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     break;
                 }
             }
-            if (!centres.isEmpty())
-                cleared.append({sweptRegion(centres, toolR), cp.zBot});
+            // Only a flat end mill leaves a flat floor at zBot everywhere it
+            // went: a V-bit or ball leaves a groove, and tabs stand up to
+            // tabTop, so those floors are recorded no deeper than is sure.
+            if (!centres.isEmpty() && toolGeomOf(tool).kind == ToolGeom::Flat)
+                cleared.append({sweptRegion(centres, toolR), qMax(cp.zBot, cp.tabTop)});
             if (jobs.isEmpty()) {
                 res.skipped << QStringLiteral("%1 (already cut by the toolpaths above)").arg(name);
                 continue;
@@ -3195,14 +3380,16 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         }
 
         if (!jobs.isEmpty()) {
-            if (pendingTool != toolNo)
+            if (pendingTool.text != toolChange.text)
                 flush();                      // different tool: close the pool
-            pendingTool = toolNo;
+            pendingTool = toolChange;
             for (const Job &job : jobs) {
                 CutParams jcp = cp;
                 if (!std::isnan(job.bandTop)) {
                     jcp.zTop = job.bandTop;
                     jcp.zBot = job.bandBot;
+                    if (job.band >= 0 && job.band < bandLinks.size())
+                        jcp.linkOk = bandLinks.at(job.band);
                 }
                 pending.append({job, jcp, myIndex, name, feed, plunge, rpm});
             }
@@ -3216,9 +3403,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             continue;
         }
         flush();   // direct-emission toolpath: keep document order around it
-        if (toolNo != lastTool) {
-            ops.append(Op::tool(toolNo));
-            lastTool = toolNo;
+        if (toolChange.text != lastTool) {
+            ops.append(toolChange);
+            lastTool = toolChange.text;
         }
         ops.append(Op::comment(name));
         ops.append(Op::spindle(rpm));

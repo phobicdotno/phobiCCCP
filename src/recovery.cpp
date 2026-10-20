@@ -7,7 +7,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLockFile>
+#include <QMutex>
+#include <QSet>
 #include <QStandardPaths>
+#include <QSysInfo>
+#include <QUuid>
 
 #include <algorithm>
 
@@ -15,6 +19,59 @@ namespace c2d {
 
 static QString sidecar(const QString &copy) { return copy + QStringLiteral(".source"); }
 static QString lockName(const QString &copy) { return copy + QStringLiteral(".lock"); }
+
+// Locks this process holds right now, by path. QLockFile tells a live owner
+// from a dead one by its PID, and after a crash and a reboot the new session
+// often gets the dead one's PID back: its leftover lock then reads as "held
+// by a running process" (ours) for ever, so the copy is never offered and
+// write() silently stops saving. A lock that names this process but that
+// this process did not take is such a leftover.
+static QMutex g_heldMutex;
+static QSet<QString> &heldHere()
+{
+    static QSet<QString> held;
+    return held;
+}
+
+static std::unique_ptr<QLockFile> takeLock(const QString &copy)
+{
+    const QString path = lockName(copy);
+    auto lock = std::make_unique<QLockFile>(path);
+    lock->setStaleLockTime(0);   // stale only when its process is gone
+    if (!lock->tryLock(0)) {
+        qint64 pid = 0;
+        QString host, app;
+        QMutexLocker guard(&g_heldMutex);
+        if (lock->error() != QLockFile::LockFailedError || heldHere().contains(path)
+            || !lock->getLockInfo(&pid, &host, &app)
+            || pid != QCoreApplication::applicationPid()
+            || host != QSysInfo::machineHostName()
+            || !lock->removeStaleLockFile() || !lock->tryLock(0))
+            return nullptr;
+    }
+    QMutexLocker guard(&g_heldMutex);
+    heldHere().insert(path);
+    return lock;
+}
+
+static void releaseLock(std::unique_ptr<QLockFile> &lock)
+{
+    if (!lock)
+        return;
+    {
+        QMutexLocker guard(&g_heldMutex);
+        heldHere().remove(lock->fileName());
+    }
+    lock.reset();
+}
+
+// Tells this process's untitled copies from those of an earlier process that
+// had the same PID.
+static QString sessionTag()
+{
+    static const QString tag = QUuid::createUuid().toString(QUuid::Id128).left(12);
+    return tag;
+}
 
 Recovery::Recovery(const QString &dir)
     : m_dir(dir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
@@ -25,7 +82,10 @@ Recovery::Recovery(const QString &dir)
     m_instance = instances++;
 }
 
-Recovery::~Recovery() = default;
+Recovery::~Recovery()
+{
+    releaseLock(m_lock);
+}
 
 QString Recovery::pathFor(const QString &source, bool untitled) const
 {
@@ -33,7 +93,8 @@ QString Recovery::pathFor(const QString &source, bool untitled) const
     // way its path was spelled.
     QString name;
     if (untitled) {
-        name = QStringLiteral("untitled-%1").arg(QCoreApplication::applicationPid());
+        name = QStringLiteral("untitled-%1-%2").arg(QCoreApplication::applicationPid())
+                   .arg(sessionTag());
         if (m_instance > 0)                     // a second window in this process
             name += QStringLiteral("-%1").arg(m_instance);
     } else {
@@ -57,9 +118,8 @@ QString Recovery::write(const Document &doc, const QString &source, bool untitle
             if (error) *error = QStringLiteral("Cannot create %1").arg(m_dir);
             return {};
         }
-        newLock = std::make_unique<QLockFile>(lockName(copy));
-        newLock->setStaleLockTime(0);   // stale only when its process is gone
-        if (!newLock->tryLock(0))
+        newLock = takeLock(copy);
+        if (!newLock)
             return {};                  // another window has this file open
     }
     QFile side(sidecar(copy));
@@ -81,13 +141,16 @@ QString Recovery::write(const Document &doc, const QString &source, bool untitle
             d.setFilePath(m_current);
     }
     if (!d.save(copy, error)) {
-        if (newLock)
+        if (newLock) {
             QFile::remove(sidecar(copy));
+            releaseLock(newLock);
+        }
         return {};
     }
     if (newLock) {
         if (!m_current.isEmpty())
             remove(m_current);
+        releaseLock(m_lock);
         m_lock = std::move(newLock);
         m_current = copy;
     }
@@ -98,17 +161,14 @@ void Recovery::discard()
 {
     if (!m_current.isEmpty())
         remove(m_current);
-    m_lock.reset();
+    releaseLock(m_lock);
     m_current.clear();
 }
 
 void Recovery::adopt(const QString &copy)
 {
     discard();
-    auto lock = std::make_unique<QLockFile>(lockName(copy));
-    lock->setStaleLockTime(0);
-    if (lock->tryLock(0))
-        m_lock = std::move(lock);
+    m_lock = takeLock(copy);
     m_current = copy;
 }
 
@@ -126,10 +186,10 @@ QVector<Recovery::Entry> Recovery::pending() const
         const QString copy = fi.absoluteFilePath();
         if (copy == m_current)
             continue;
-        QLockFile lock(lockName(copy));
-        lock.setStaleLockTime(0);
-        if (!lock.tryLock(0))
+        std::unique_ptr<QLockFile> lock = takeLock(copy);
+        if (!lock)
             continue;                // its session is still running
+        releaseLock(lock);
         QFile side(sidecar(copy));
         if (!side.open(QIODevice::ReadOnly)) {
             remove(copy);            // no record of what it belongs to

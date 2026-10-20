@@ -54,8 +54,9 @@ struct Cam3dParams {
 };
 
 // Read the toolpath JSON (both kinds share the parser; finish-only keys are
-// simply left at their defaults for a rough toolpath).
-Cam3dParams cam3dParams(const QJsonObject &toolpath, double safeZ);
+// simply left at their defaults for a rough toolpath). `ok`, when given, is
+// false for a max_depth that is present but not a number.
+Cam3dParams cam3dParams(const QJsonObject &toolpath, double safeZ, bool *ok = nullptr);
 
 // The area the toolpath may work in: `vectors` (already a filled region, may
 // be empty = the model's bounds) grown/shrunk by `offset`.

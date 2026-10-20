@@ -85,7 +85,9 @@ public:
 public slots:
     bool sendCommand(const QString &line);      // jog / $X / G10 — immediate
     void startStream(const QStringList &lines); // run a whole program
-    void continueAfterToolChange();             // resume past a tool marker
+    // Resume past a tool marker; `first` runs ahead of the rest of the
+    // program, as part of it (byte-counted and acked like its own lines).
+    void continueAfterToolChange(const QStringList &first = {});
     void pauseStream();                         // '!' feed hold
     bool resumeStream();                        // '~' cycle start (false: refused)
     void stopStream();                          // abort: soft reset (ctrl-X)
@@ -125,7 +127,10 @@ signals:
     void statusChanged(const c2d::MachineStatus &st);
     void progressChanged(int acked, int total);
     void streamFinished(bool ok);
-    void toolChangeRequested(int tool);         // program parked at `M0 ;T<n>`
+    // Program parked at `M0 ;T<n>`. `ordinal` counts the program's tool
+    // changes from 0: two bits can share a number, so the number alone does
+    // not say which bit the program wants next.
+    void toolChangeRequested(int tool, int ordinal);
     void probeResult(double mx, double my, double mz, bool ok);
     void macroFinished(bool ok);
     void consoleLine(const QString &line);      // raw traffic for the log
@@ -165,6 +170,7 @@ private:
     bool m_hadError = false;
     bool m_conservative = false;
     int m_waitingTool = -1;                     // >=0: parked at a tool marker
+    int m_toolChanges = 0;                      // markers parked at in this program
     QElapsedTimer m_ackClock;                   // restarted on stream start + acks
 
     QStringList m_macroQueue;

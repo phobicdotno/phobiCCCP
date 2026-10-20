@@ -34,7 +34,9 @@ String sendWords(SendResult r, bool start, String computer) =>
     (r.notes.isEmpty ? '' : ' ${r.notes.join('; ')}');
 
 Future<String?> showSendDialog(BuildContext context, AppState app, Design d) =>
-    showDialog<String>(context: context, builder: (_) => SendDialog(app, d));
+    // Not closable by tapping outside or Back while a send is on its way: the
+    // answer (started, or why not) must reach the user, or they send twice.
+    showDialog<String>(context: context, barrierDismissible: false, builder: (_) => SendDialog(app, d));
 
 class SendDialog extends StatefulWidget {
   final AppState app;
@@ -54,6 +56,8 @@ class _SendDialogState extends State<SendDialog> {
   @override
   void initState() {
     super.initState();
+    // Computers come and go while the dialog is open.
+    app.addListener(_changed);
     final last = app.lastTarget.split('/');
     final reach = _reachable();
     final c = reach.where((c) => c.desktop.id == last.first).firstOrNull ?? reach.firstOrNull;
@@ -62,7 +66,38 @@ class _SendDialogState extends State<SendDialog> {
     _machine = machines.any((m) => last.length > 1 && m.id == last[1]) ? last[1] : c?.info?.activeMachine;
   }
 
+  @override
+  void dispose() {
+    app.removeListener(_changed);
+    super.dispose();
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
   List<Computer> _reachable() => app.computers.where((c) => c.reachable(app.now)).toList();
+
+  /// Toolpaths that computer cannot make: their tool is not in its own
+  /// library (the pad picks tools from whichever computer synced last), or
+  /// has no feeds there for the material. Empty while its library is not known.
+  List<String> _missingTools(Computer c) {
+    final lib = app.toolsOf(c.desktop.id);
+    if (lib.isEmpty) return const [];
+    final d = widget.design;
+    // As phobiCCCP builds it (src/padlink.cpp): an unknown material as soft wood.
+    final material = lib.materials.any((m) => m.id == d.material) ? d.material : 'softwood';
+    final out = <String>[];
+    for (final t in d.toolpaths.where((t) => t.shapes.isNotEmpty)) {
+      final tool = lib.tool(t.tool);
+      if (tool == null) {
+        out.add('${t.name}: T${t.tool} is not in its tool library');
+      } else if (!tool.materials.contains(material)) {
+        out.add('${t.name}: T${t.tool} has no feeds for ${lib.materialName(material)} there');
+      }
+    }
+    return out;
+  }
 
   Future<void> _go() async {
     final c = _reachable().where((c) => c.desktop.id == _computer).firstOrNull;
@@ -95,8 +130,12 @@ class _SendDialogState extends State<SendDialog> {
     final reach = _reachable();
     final c = reach.where((c) => c.desktop.id == _computer).firstOrNull;
     final info = c?.info;
+    final missing = c == null ? const <String>[] : _missingTools(c);
     String? warn;
-    if (_start && info != null) {
+    if (info != null && _machine != null && _machine != info.activeMachine && info.status.connected && !info.allowStart) {
+      warn = 'That machine is not the one in use, and this computer does not let a pad switch machines while one is '
+          'connected (Machine › Pads may start cutting). Disconnect it there, or send to the machine in use.';
+    } else if (_start && info != null) {
       if (!info.allowStart) {
         warn = 'This computer does not allow starting from a pad (Machine › Pads may start cutting). '
             'The design is opened there, not started.';
@@ -109,7 +148,9 @@ class _SendDialogState extends State<SendDialog> {
         warn = 'This design has no toolpaths, so there is nothing to cut.';
       }
     }
-    return AlertDialog(
+    return PopScope(
+      canPop: !_busy,
+      child: AlertDialog(
       title: Text('Send “${widget.design.name}”'),
       content: SizedBox(
         width: 480,
@@ -153,6 +194,9 @@ class _SendDialogState extends State<SendDialog> {
                     controlAffinity: ListTileControlAffinity.leading,
                     title: const Text('Start cutting right away'),
                   ),
+                  if (missing.isNotEmpty)
+                    Text('${c!.name} cannot make this as it is: ${missing.join('; ')}. Pick a tool it has, or sync with it first.',
+                        style: const TextStyle(color: C.amber, fontSize: 13)),
                   if (warn != null) Text(warn, style: const TextStyle(color: C.amber, fontSize: 13)),
                   if (_busy)
                     const Padding(
@@ -169,8 +213,9 @@ class _SendDialogState extends State<SendDialog> {
       ),
       actions: [
         TextButton(onPressed: _busy ? null : () => Navigator.pop(context), child: const Text('Cancel')),
-        FilledButton(onPressed: c == null || _busy ? null : _go, child: Text(_start ? 'Send and start…' : 'Send')),
+        FilledButton(onPressed: c == null || _busy ? null : _go, child: Text(missing.isNotEmpty ? 'Send anyway' : (_start ? 'Send and start…' : 'Send'))),
       ],
+    ),
     );
   }
 }

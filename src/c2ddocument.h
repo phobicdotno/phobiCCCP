@@ -53,6 +53,9 @@ private:
 public:
 
     QString filePath() const { return m_path; }
+    // Counts loads, so a caller that ran the event loop can tell the file was
+    // reopened under it (a pad rebuilds and reloads the same path).
+    quint64 loadCount() const { return m_loads; }
     // The container save() starts from (and then writes to). Only for a
     // copy that must be written from another container than its own file.
     void setFilePath(const QString &path) { m_path = path; }
@@ -177,6 +180,7 @@ public:
 
 private:
     QString m_path;
+    quint64 m_loads = 0;
     QHash<QString, QString> m_params;
     QSet<QString> m_unreadableToolpaths;
     // The undecodable toolpath rows themselves, as read, with how many

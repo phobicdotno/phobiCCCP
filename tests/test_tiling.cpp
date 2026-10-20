@@ -372,6 +372,51 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A 6 mm deep cut split at a tile line comes back in on a ramp that
+    // starts at the stock top, going back and forth, never a plunge.
+    {
+        QVector<c2d::Op> j;
+        j.append(c2d::Op::tool(201));
+        j.append(c2d::Op::spindle(10000));
+        j.append(c2d::Op::rapid(10, 90, 5));
+        j.append(c2d::Op::feedTo(10, 90, -6, 300));
+        j.append(c2d::Op::feedTo(10, 115, -6, 1000));   // crosses Y = 100
+        const QVector<QVector<c2d::Op>> t = c2d::tileOps(j, 100.0, 5.0);
+        check(t.size() == 2, "deep cut: two tiles");
+        double x = 0, y = 0, z = 5, worst = 0, firstZ = -100;
+        for (const c2d::Op &o : t.at(1)) {
+            if (o.kind == c2d::Op::Feed) {
+                if (std::hypot(o.x - x, o.y - y) < 1e-9 && o.z < z && o.z < 0)
+                    worst = qMax(worst, qMin(z, 0.0) - o.z);
+                if (firstZ < -99)
+                    firstZ = o.z;
+            }
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Rapid) {
+                x = o.x; y = o.y; z = o.z;
+            }
+        }
+        check(worst < 1e-6, "deep re-entry: no straight plunge into stock");
+        check(firstZ >= -1e-6, "deep re-entry: the ramp starts at the stock top");
+    }
+
+    // A chip-break lift between pecks stays a short lift in its tile.
+    {
+        QVector<c2d::Op> j;
+        j.append(c2d::Op::tool(201));
+        j.append(c2d::Op::spindle(10000));
+        j.append(c2d::Op::rapid(20, 150, 5));
+        j.append(c2d::Op::feedTo(20, 150, -2, 300));
+        j.append(c2d::Op::rapid(20, 150, -1.5));          // chip break
+        j.append(c2d::Op::feedTo(20, 150, -4, 300));
+        j.append(c2d::Op::rapid(20, 150, 5));
+        const QVector<QVector<c2d::Op>> t = c2d::tileOps(j, 100.0, 5.0);
+        int toSafe = 0;
+        for (const c2d::Op &o : t.at(1))
+            if (o.kind == c2d::Op::Rapid && o.z >= 5 - 1e-9)
+                ++toSafe;
+        check(toSafe <= 2, "chip break: no full retract between pecks");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

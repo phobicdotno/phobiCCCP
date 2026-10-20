@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:phobicccp/app_state.dart';
 import 'package:phobicccp/model.dart';
 import 'package:phobicccp/store.dart';
 import 'package:phobicccp/sync.dart';
@@ -12,6 +13,31 @@ void main() {
     expect(plan.pull, ['a', 'only-there']);
     expect(plan.push, ['b', 'only-here']);
     expect(SyncPlan.of({'a': 1}, const [DesignEntry('a', modified: 1)]).isEmpty, true);
+  });
+
+  test('a time from a clock gone wrong never wins', () {
+    const now = 1760850000000;
+    final plan = SyncPlan.of({'a': now, 'b': 1e15.toInt()}, const [DesignEntry('a', modified: 1000000000000000), DesignEntry('b', modified: now)],
+        now: now);
+    expect(plan.pull, ['b']);
+    expect(plan.push, ['a']);
+    // Edits of such a copy start again from the clock instead of freezing at the limit.
+    expect(DesignStore.stamp(1e15.toInt(), now), now);
+    final soon = DesignStore.stamp(now + 10, now);
+    expect(soon > now + 10 && soon <= now + 1011, true);
+  });
+
+  test('edits keep the base of the stored copy, deletions too', () {
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final store = DesignStore(dir)..put(Design(id: 'd1', name: 'One', modified: 50, base: 50));
+    final edited = store.save(store.get('d1')!.copyWith(name: 'Two'), now: 60);
+    expect(edited.base, 50);
+    // Undo saves an older copy, made before the last exchange: still the stored base.
+    final undone = store.save(Design(id: 'd1', name: 'One', modified: 40, base: 30), now: 70);
+    expect(undone.base, 50);
+    store.delete('d1', now: 80);
+    expect(store.get('d1')!.base, 50);
+    dir.deleteSync(recursive: true);
   });
 
   test('the store stamps edits and keeps deletions', () {
@@ -44,5 +70,31 @@ void main() {
     final again = Settings(f);
     expect(again.manualHosts, {'shop.tail'});
     expect(again.tools.tool(201)?.name, 'End mill');
+  });
+
+  test('each computer keeps its own tool library', () {
+    final f = File('${Directory.systemTemp.createTempSync('pad').path}/s.json');
+    Settings(f)
+      ..setToolsOf('shop', const ToolLibrary(tools: [Tool(number: 201, name: 'End mill')]))
+      ..setToolsOf('garage', const ToolLibrary(tools: [Tool(number: 501, name: 'Engraver')]));
+    final again = Settings(f);
+    expect(again.toolsOf('shop').tool(201)?.name, 'End mill');
+    expect(again.toolsOf('shop').tool(501), isNull);
+    expect(again.toolsOf('garage').tool(501)?.name, 'Engraver');
+    expect(again.toolsOf('nobody').isEmpty, true);
+  });
+
+  test('a computer typed in and heard on the LAN shows once', () {
+    const lan = Computer(Desktop(id: 'i1', host: 'shop', address: '192.168.1.5'));
+    const typed = Computer(Desktop(id: 'manual:shop.tail', host: 'shop.tail', address: 'shop.tail', typed: 'shop.tail'),
+        info: DesktopInfo(id: 'i1', host: 'shop'));
+    for (final order in [[typed, lan], [lan, typed]]) {
+      final list = AppState.dedupe(order);
+      expect(list, hasLength(1));
+      expect(list.single.desktop.id, 'i1');
+      expect(list.single.desktop.typed, 'shop.tail');
+    }
+    const offline = Computer(Desktop(id: 'manual:other', host: 'other', address: 'other', typed: 'other'));
+    expect(AppState.dedupe([offline, lan]), hasLength(2));
   });
 }

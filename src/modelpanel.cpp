@@ -1091,11 +1091,25 @@ void ModelPanel::updateStatus()
     int enabled = 0;
     for (const ModelComponent &c : m_store.model.components)
         if (c.enabled) ++enabled;
+    // A component whose vector was deleted (or replaced by an edit that does
+    // not carry components along) loses that part of its relief without any
+    // other sign; say so rather than let it vanish.
+    int lost = 0;
+    for (const ModelComponent &c : m_store.model.components) {
+        if (!c.enabled || (c.kind != ModelComponent::FromVectors && c.kind != ModelComponent::Texture))
+            continue;
+        for (const QString &id : c.vectorIds)
+            if (!m_doc->elementById(id)) { ++lost; break; }
+    }
+    const QString lostNote = lost == 0 ? QString()
+        : QStringLiteral(" · %1 component(s) lost a vector they were built from").arg(lost);
+    m_status->setStyleSheet(lost == 0 ? QString() : QStringLiteral("color: #e0a030;"));
     if (!hm.valid()) {
-        m_status->setText(m_store.model.components.isEmpty()
+        m_status->setText((m_store.model.components.isEmpty()
                               ? QStringLiteral("No components — select vectors and use From vectors, or load an image / STL")
                               : (enabled == 0 ? QStringLiteral("%1 component(s), none enabled").arg(m_store.model.components.size())
-                                              : QStringLiteral("%1 component(s) — rebuilding…").arg(m_store.model.components.size())));
+                                              : QStringLiteral("%1 component(s) — rebuilding…").arg(m_store.model.components.size())))
+                          + lostNote);
         return;
     }
     QString s = QStringLiteral("%1 component(s) · %2×%3 cells @ %4 mm · relief height %5 mm")
@@ -1103,7 +1117,7 @@ void ModelPanel::updateStatus()
                     .arg(-hm.baseZ, 0, 'f', 2);
     if (m_stale)
         s += QStringLiteral(" · edited — rebuilding");
-    m_status->setText(s);
+    m_status->setText(s + lostNote);
 }
 
 } // namespace c2d

@@ -108,6 +108,10 @@ void GrblStreamer::disconnectPort()
     m_statusTimer->stop();
     m_errorResetTimer->stop();
     if (m_port) {
+        // A soft reset or feed hold written just before (a disconnect in the
+        // middle of a job) must reach the controller, not die in our buffer.
+        if (m_port->isOpen() && m_port->bytesToWrite() > 0)
+            m_port->waitForBytesWritten(200);
         m_port->close();
         m_port->deleteLater();
         m_port = nullptr;
@@ -115,6 +119,8 @@ void GrblStreamer::disconnectPort()
         m_streaming = false;
         m_waitingTool = -1;
         m_macroActive = false;
+        m_macroInflight = false;
+        m_macroSkipAck = false;
         m_macroQueue.clear();
         m_adhocPending = 0;
         m_adhocLines.clear();
@@ -207,13 +213,14 @@ void GrblStreamer::startStream(const QStringList &lines)
     m_inflightBytes = 0;
     m_hadError = false;
     m_waitingTool = -1;
+    m_toolChanges = 0;
     m_streaming = !m_queue.isEmpty();
     m_ackClock.start();
     emit progressChanged(0, m_queue.size());
     pump();
 }
 
-void GrblStreamer::continueAfterToolChange()
+void GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
         return;
@@ -228,9 +235,20 @@ void GrblStreamer::continueAfterToolChange()
                                         "measurement to finish =="));
         return;
     }
+    // Lines to run before the program resumes (the rise to the top) go into
+    // the program itself, so they are sent and acknowledged like any other
+    // program line instead of as commands on the side.
+    int at = m_nextIndex;
+    for (const QString &l : first) {
+        const QString t = l.trimmed();
+        if (!t.isEmpty() && !t.startsWith(QChar('(')))
+            m_queue.insert(at++, t);
+    }
     m_waitingTool = -1;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
+    if (at != m_nextIndex)
+        emit progressChanged(m_ackedCount, m_queue.size());
     pump();
 }
 
@@ -247,6 +265,7 @@ void GrblStreamer::abortAfterReset()
     m_inflightBytes = 0;
     m_macroActive = false;
     m_macroInflight = false;
+    m_macroSkipAck = false;                     // its ack died with the reset
     m_macroQueue.clear();
     m_tloPending = (m_tlo != 0.0);
     emit errorOccurred(QStringLiteral("controller reset: %1 stopped")
@@ -344,6 +363,10 @@ void GrblStreamer::stopStream()
     const bool wasMacro = m_macroActive;
     m_macroActive = false;
     m_macroInflight = false;
+    // A cancelled macro's line still waiting for its ok is flushed by the
+    // reset and never answered: left set, the flag would eat the first ok of
+    // the next macro or program, which then waits for ever.
+    m_macroSkipAck = false;
     m_macroQueue.clear();
     m_adhocPending = 0;                         // reset flushes GRBL's buffer
     m_adhocLines.clear();
@@ -370,7 +393,7 @@ void GrblStreamer::pump()
             ++m_ackedCount;                      // the marker counts as done
             emit progressChanged(m_ackedCount, m_queue.size());
             emit consoleLine(QStringLiteral("== tool change: T%1 ==").arg(m_waitingTool));
-            emit toolChangeRequested(m_waitingTool);
+            emit toolChangeRequested(m_waitingTool, m_toolChanges++);
             break;
         }
         if (m_conservative && !m_inflightSizes.isEmpty())
@@ -625,6 +648,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
     if (line.startsWith("Grbl ")) {
         m_adhocPending = 0;
         m_adhocLines.clear();
+        m_macroSkipAck = false;             // nothing from before is answered now
         // The controller rebooted under us - reset button, brown-out, a USB
         // stall. Its RX buffer, modal state and G43.1 are gone and every line
         // in flight will never be answered. Pushing the rest of the program at

@@ -21,6 +21,7 @@
 #include <QJsonObject>
 #include <QTest>
 #include <QUndoStack>
+#include <QWheelEvent>
 
 #include <cmath>
 #include <cstdio>
@@ -620,6 +621,19 @@ int main(int argc, char *argv[])
         click(&ac, {300, 300});                     // a plain shape: no new path
         check(ac.selectedElementIds() == QStringList{other.id} && int(adoc.elements().size()) == before + 2,
               "area click on a lone shape selects that shape");
+        // A small boss in a big pocket: the boss is an island, never dropped
+        // as a "sliver" of the outline around it.
+        const c2d::Element pk = c2d::Element::makeRectangle({100, 300}, 100, 100, adoc.defaultLayer());
+        const c2d::Element boss = c2d::Element::makeCircle({100, 300}, 2.5, adoc.defaultLayer());
+        adoc.addElement(pk);
+        adoc.addElement(boss);
+        ac.rebuild();
+        click(&ac, {70, 300});
+        got = ac.selectedElementIds();
+        got.sort();
+        want = {pk.id, boss.id};
+        want.sort();
+        check(got == want, "area click keeps a small boss as an island");
     }
 
     // --- a CC rectangle's corner style survives a resize --------------------------------
@@ -860,6 +874,88 @@ int main(int argc, char *argv[])
         }
         check(negative == 2 && positive == 3,
               "center x/y go negative; radius, width and height have a positive minimum");
+    }
+
+    // --- properties: the wheel scrolls past an unfocused field ------------------------
+    {
+        const c2d::Element sq = c2d::Element::makeRectangle({300, 300}, 10, 10, doc.defaultLayer());
+        doc.addElement(sq);
+        c2d::PropertiesPanel panel(&canvas);
+        panel.setDocument(&doc);
+        panel.setSelection({sq.id});
+        bool allStrong = true, unchanged = true;
+        for (QDoubleSpinBox *s : panel.findChildren<QDoubleSpinBox *>()) {
+            allStrong = allStrong && s->focusPolicy() == Qt::StrongFocus;
+            const double v = s->value();
+            QWheelEvent we(QPointF(5, 5), s->mapToGlobal(QPointF(5, 5)), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(s, &we);
+            unchanged = unchanged && s->value() == v;
+        }
+        check(panel.isEnabled() && allStrong && unchanged,
+              "properties spin boxes ignore the wheel unless focused");
+        doc.removeElementById(sq.id);
+    }
+
+    // --- regen: a size of zero or less keeps the shape as it was ----------------------
+    {
+        const QJsonObject layer = doc.defaultLayer();
+        const c2d::Element sq = c2d::Element::makeRectangle({50, 50}, 10, 20, layer);
+        const c2d::Element ring = c2d::Element::makeCircle({50, 50}, 5, layer);
+        const c2d::Element hex = c2d::Element::makePolygon({50, 50}, 5, 6, layer);
+        bool kept = true;
+        for (double bad : {0.0, -3.0, qQNaN(), qInf()}) {
+            kept = kept && c2d::Element::regen(sq, {{"width", bad}}).raw == sq.raw
+                   && c2d::Element::regen(sq, {{"height", bad}}).raw == sq.raw
+                   && c2d::Element::regen(ring, {{"radius", bad}}).raw == ring.raw
+                   && c2d::Element::regen(hex, {{"radius", bad}}).raw == hex.raw;
+        }
+        check(kept, "regen ignores a zero, negative or non-finite width, height or radius");
+        check(c2d::Element::regen(sq, {{"width", 4.0}}).raw.value("width").toDouble() == 4.0,
+              "regen still takes a positive width");
+    }
+
+    // --- a turned rectangle's resize handle sits on its turned corner ----------------
+    // and dragging it sizes the rectangle along its own axes.
+    {
+        c2d::Document rdoc;
+        QJsonObject o = c2d::Element::makeRectangle({50, 50}, 40, 20, rdoc.defaultLayer()).raw;
+        for (const char *key : {"points", "cp1", "cp2"}) {
+            QJsonArray rows;
+            for (const QJsonValue &v : o.value(QLatin1String(key)).toArray()) {
+                const QJsonArray p = v.toArray();
+                rows.append(QJsonArray{-p.at(1).toDouble(), p.at(0).toDouble()});   // turned 90 deg
+            }
+            o.insert(QLatin1String(key), rows);
+        }
+        o.insert("rotation", 90.0);
+        const c2d::Element turned = c2d::Element::fromJson(o);
+        rdoc.addElement(turned);
+        c2d::Canvas rc;
+        rc.resize(900, 700);
+        rc.show();
+        rc.setDocument(&rdoc);
+        rc.resetTransform();
+        rc.scale(3, -3);
+        rc.centerOn(QPointF(50, 50));
+        QTest::qWait(20);
+        rc.setTool(c2d::Canvas::Select);
+        rc.selectElements({turned.id});
+        const QPointF handle(40, 70);                // (20, 10) from the center, turned 90 deg
+        QTest::mousePress(rc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&rc, handle));
+        QTest::mouseMove(rc.viewport(), vp(&rc, {38, 75}));
+        QTest::mouseRelease(rc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&rc, {35, 80}));
+        const c2d::Element *re = rdoc.elementById(turned.id);
+        check(re && std::fabs(re->raw.value("width").toDouble() - 60) < 0.5
+                  && std::fabs(re->raw.value("height").toDouble() - 30) < 0.5,
+              "turned rectangle resizes along its own width and height");
+
+        // A design handed in afresh starts with nothing selected: the panels,
+        // given it after the canvas, show no selection either.
+        rc.selectElements({turned.id});
+        check(!rc.selectedElementIds().isEmpty(), "rectangle selected");
+        rc.setDocument(&rdoc);
+        check(rc.selectedElementIds().isEmpty(), "setDocument clears the selection");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

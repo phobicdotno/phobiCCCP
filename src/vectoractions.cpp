@@ -1,5 +1,6 @@
 #include "vectoractions.h"
 #include "canvas.h"
+#include "model3d.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -93,6 +94,7 @@ public:
             std::sort(m_removed.begin(), m_removed.end(),
                       [](const auto &a, const auto &b) { return a.first < b.first; });
             m_tps = retargetToolpaths(d, removed, results);
+            m_removedIds = removed;
         }
         for (const Element &e : results)
             m_resultIds << e.id;
@@ -115,6 +117,8 @@ public:
             els.insert(at + i, m_results.at(i));
         for (const auto &p : m_tps)
             m_d->replaceToolpath(p.second);
+        // 3D components follow their vectors like toolpaths do.
+        m_model = retargetModelVectors(*m_d, m_removedIds, m_resultIds);
         refresh(m_c, m_resultIds);
     }
     void undo() override
@@ -129,6 +133,7 @@ public:
         }
         for (const auto &p : m_tps)
             m_d->replaceToolpath(p.first);
+        restoreModelVectors(*m_d, m_model);
         refresh(m_c, inputIds);
     }
 private:
@@ -137,6 +142,8 @@ private:
     QVector<QPair<int, Element>> m_removed;
     QVector<QPair<Toolpath, Toolpath>> m_tps;
     QStringList m_resultIds;
+    QSet<QString> m_removedIds;
+    ModelVectorRefs m_model;
 };
 
 class MoveManyCmd : public QUndoCommand
@@ -753,7 +760,7 @@ void VectorActions::mirror(vec::Axis axis)
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
     const QString dir = axis == vec::Axis::Horizontal ? tr("horizontally") : tr("vertically");
-    pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir));
+    pushReshape(before, after, tr("mirror %1 vector(s) %2").arg(before.size()).arg(dir), t);
     emit m_canvas->statusHint(tr("Mirrored %1 vector(s) %2").arg(before.size()).arg(dir));
 }
 
@@ -966,14 +973,14 @@ void VectorActions::patternOnPathDialog()
 // ---- modify: rotate, scale, move / copy, fillet, chamfer --------------------
 
 void VectorActions::pushReshape(const QVector<Element> &before, const QVector<Element> &after,
-                                const QString &text)
+                                const QString &text, const QTransform &moved)
 {
     if (before.isEmpty())
         return;
     QStringList ids;
     for (const Element &e : after)
         ids << e.id;
-    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids);
+    m_canvas->pushEdit(new ReshapeCmd(m_canvas, m_canvas->document(), before, after, text), ids, moved);
 }
 
 void VectorActions::rotate(double deg)
@@ -985,7 +992,7 @@ void VectorActions::rotate(double deg)
     QVector<Element> after;
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
-    pushReshape(before, after, tr("rotate %1 vector(s) by %2°").arg(before.size()).arg(deg));
+    pushReshape(before, after, tr("rotate %1 vector(s) by %2°").arg(before.size()).arg(deg), t);
     emit m_canvas->statusHint(tr("Rotated %1 vector(s) by %2°").arg(before.size()).arg(deg));
 }
 
@@ -999,7 +1006,7 @@ void VectorActions::scale(double sx, double sy)
     for (const Element &e : before)
         after.append(vec::transformElement(e, t));
     pushReshape(before, after,
-                tr("scale %1 vector(s) %2% × %3%").arg(before.size()).arg(sx * 100).arg(sy * 100));
+                tr("scale %1 vector(s) %2% × %3%").arg(before.size()).arg(sx * 100).arg(sy * 100), t);
     emit m_canvas->statusHint(tr("Scaled %1 vector(s) to %2% × %3%")
                                   .arg(before.size()).arg(sx * 100).arg(sy * 100));
 }

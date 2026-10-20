@@ -466,6 +466,25 @@ int main(int argc, char **argv)
                                "viewBox='0 0 100 100'><sodipodi:namedview id='n'/>"
                                "<rect x='1' y='1' width='5' height='5'/></svg>", opts(100, 100));
         check(r.ok && r.elements.size() == 1 && r.skipped == 0, "svg: editor metadata is not 'skipped'");
+        // Illustrator's layout: a <switch> whose first child needs an extension
+        // nobody has, then the drawing. Only the first child that passes is drawn.
+        r = c2d::importSvgData("<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><switch>"
+                               "<foreignObject requiredExtensions='http://ns.adobe.com/AdobeIllustrator/10.0/' "
+                               "x='0' y='0' width='1' height='1'/>"
+                               "<g><rect x='10' y='10' width='50' height='30'/><circle cx='70' cy='70' r='10'/></g>"
+                               "<rect x='80' y='5' width='5' height='5'/></switch></svg>", opts(100, 100));
+        check(r.ok && r.elements.size() == 2, "svg: a <switch> draws its first child whose conditions pass");
+        // Paper space (67 = 1): a layout's frame, not part of the drawing.
+        {
+            const QByteArray dxf =
+                "0\nSECTION\n2\nENTITIES\n"
+                "0\nLINE\n8\n0\n10\n0\n20\n0\n11\n10\n21\n0\n"
+                "0\nLINE\n67\n1\n8\n0\n10\n0\n20\n50\n11\n400\n21\n50\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult ps = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("paper"));
+            check(ps.ok && ps.elements.size() == 1, "dxf: paper-space entities are left out");
+        }
     }
 
     // ---- optional: write a .c2d with everything for a --shot -------------

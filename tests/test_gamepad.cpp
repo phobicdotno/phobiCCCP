@@ -211,8 +211,15 @@ int main(int argc, char *argv[])
     // buttons -- and jogging a machine from that would be memorable.
     {
         c2d::Gamepad strict;
-        check(!strict.openPath(fifo, true), "a device with no buttons is turned down");
+        bool notAPad = false;
+        check(!strict.openPath(fifo, true, &notAPad), "a device with no buttons is turned down");
+        check(notAPad, "and is marked as no pad, so the scan sets it aside");
         check(!strict.isConnected(), "and is not left open");
+        // A node that does not open (no access yet right after plugging in)
+        // is not judged, so the next scan tries it again.
+        notAPad = true;
+        check(!strict.openPath(fifo + QStringLiteral(".missing"), true, &notAPad) && !notAPad,
+              "a node that will not open is not marked as no pad");
     }
 
     std::printf("test_gamepad: %d checks OK\n", g_checks);

@@ -1,5 +1,6 @@
 #include "toolstrip.h"
 #include "c2ddocument.h"
+#include "gcodeexport.h"
 #include "post_grbl.h"
 #include "tooldiagram.h"
 #include "toollibrary.h"
@@ -10,7 +11,26 @@
 #include <QPainter>
 #include <QVBoxLayout>
 
+#include <cmath>
+
 namespace c2d {
+
+// The sizes and kind of one embedded tool object (CC keys).
+static void fillFromJson(LibraryTool &lt, const QJsonObject &tool)
+{
+    lt.diameter = tool.value(QStringLiteral("diameter")).toDouble();
+    lt.angle = tool.value(QStringLiteral("angle")).toDouble();
+    lt.flutes = int(tool.value(QStringLiteral("flutes")).toDouble(2));
+    lt.cornerRadius = tool.value(QStringLiteral("corner_radius")).toDouble();
+    lt.length = tool.value(QStringLiteral("length")).toDouble();
+    lt.shank = lt.diameter;      // CC's tool object has no shank size
+    const int type = int(tool.value(QStringLiteral("type")).toDouble());
+    lt.kind = type == 1 ? QStringLiteral("ball")
+            : (type == 2 || lt.angle > 0) ? QStringLiteral("vbit")
+                                          : QStringLiteral("endmill");
+    lt.name = tool.value(QStringLiteral("name")).toString();
+    lt.model = tool.value(QStringLiteral("model")).toString();
+}
 
 LibraryTool toolFromToolpaths(const Document &doc, int number, QStringList *users)
 {
@@ -26,22 +46,70 @@ LibraryTool toolFromToolpaths(const Document &doc, int number, QStringList *user
             *users << t.json.value(QStringLiteral("name")).toString();
         if (lt.diameter > 0)
             continue;
-        lt.diameter = tool.value(QStringLiteral("diameter")).toDouble();
-        lt.angle = tool.value(QStringLiteral("angle")).toDouble();
-        lt.flutes = int(tool.value(QStringLiteral("flutes")).toDouble(2));
-        lt.cornerRadius = tool.value(QStringLiteral("corner_radius")).toDouble();
-        lt.length = tool.value(QStringLiteral("length")).toDouble();
-        lt.shank = lt.diameter;      // CC's tool object has no shank size
-        const int type = int(tool.value(QStringLiteral("type")).toDouble());
-        lt.kind = type == 1 ? QStringLiteral("ball")
-                : (type == 2 || lt.angle > 0) ? QStringLiteral("vbit")
-                                              : QStringLiteral("endmill");
-        lt.name = tool.value(QStringLiteral("name")).toString();
-        lt.model = tool.value(QStringLiteral("model")).toString();
+        fillFromJson(lt, tool);
     }
     if (lt.kind.isEmpty())
         lt.kind = QStringLiteral("endmill");
     return lt;
+}
+
+LibraryTool toolForChange(const Document &doc, const Op &change, QStringList *users)
+{
+    // The exporter's tool op carries the bit's shape: x diameter, y V angle,
+    // z corner radius, feed kind + 1 (gcodeexport.cpp, toolOp).
+    auto same = [](double a, double b) { return std::abs(a - b) < 1e-9; };
+    LibraryTool lt;
+    lt.number = change.ival;
+    bool found = false;
+    for (const Toolpath &t : doc.toolpaths()) {
+        if (!t.json.value(QStringLiteral("enabled")).toBool(true))
+            continue;
+        for (const char *key : {"tool", "tool_pocket"}) {
+            const QJsonObject tool = t.json.value(QLatin1String(key)).toObject();
+            if (tool.isEmpty())
+                continue;
+            const ToolGeom g = toolGeomFromJson(tool);
+            if (g.number != change.ival || int(g.kind) + 1 != int(change.feed)
+                || !same(g.diameter, change.x) || !same(g.angle, change.y)
+                || !same(g.cornerRadius, change.z))
+                continue;
+            if (users && !users->contains(t.json.value(QStringLiteral("name")).toString()))
+                *users << t.json.value(QStringLiteral("name")).toString();
+            if (!found)
+                fillFromJson(lt, tool);
+            found = true;
+        }
+    }
+    if (!found) {
+        lt.diameter = change.x;
+        lt.angle = change.y;
+        lt.cornerRadius = change.z;
+        lt.shank = lt.diameter;
+        const int kind = int(change.feed) - 1;
+        lt.kind = kind == int(ToolGeom::Ball) ? QStringLiteral("ball")
+                : kind == int(ToolGeom::VBit) ? QStringLiteral("vbit")
+                                              : QStringLiteral("endmill");
+    }
+    if (lt.kind.isEmpty())
+        lt.kind = QStringLiteral("endmill");
+    return lt;
+}
+
+QVector<Op> toolChanges(const QVector<Op> &ops)
+{
+    // The post's rule (post_grbl.cpp, Op::Tool): another number, or the same
+    // number with another bit.
+    QVector<Op> out;
+    int lastTool = -1;
+    QString lastKey;
+    for (const Op &op : ops) {
+        if (op.kind != Op::Tool || (op.ival == lastTool && op.text == lastKey))
+            continue;
+        lastTool = op.ival;
+        lastKey = op.text;
+        out << op;
+    }
+    return out;
 }
 
 QPixmap toolPicture(const LibraryTool &t, int w, int h, double devicePixelRatio)
@@ -79,13 +147,18 @@ ToolStrip::ToolStrip(QWidget *parent)
 void ToolStrip::setJob(const Document &doc, const QVector<Op> &ops)
 {
     m_list->clear();
-    QList<int> order;
-    for (const Op &op : ops)
-        if (op.kind == Op::Tool && !order.contains(op.ival))
-            order << op.ival;
-    for (int n : order) {
+    // One entry per bit, not per number: two bits may share a number.
+    QVector<Op> order;
+    QStringList keys;
+    for (const Op &op : toolChanges(ops))
+        if (!keys.contains(op.text)) {
+            keys << op.text;
+            order << op;
+        }
+    for (const Op &op : order) {
+        const int n = op.ival;
         QStringList users;
-        const LibraryTool lt = toolFromToolpaths(doc, n, &users);
+        const LibraryTool lt = toolForChange(doc, op, &users);
         QString label = QStringLiteral("#%1\n\u00d8 %2").arg(n).arg(lt.diameter, 0, 'g', 4);
         if (lt.angle > 0)
             label += QStringLiteral(" %1\u00b0").arg(lt.angle);

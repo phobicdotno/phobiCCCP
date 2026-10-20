@@ -31,6 +31,39 @@ static QList<QPolygonF> finePolygons(const QPainterPath &path, double tol)
     return out;
 }
 
+// Clipper returns pieces that only touch at a corner (a circle inscribed in
+// a square leaves four corner pieces) as one ring that visits that corner
+// twice. Split such a ring into its simple loops.
+static QVector<QPolygonF> splitAtTouches(QPolygonF ring)
+{
+    if (ring.size() > 1 && ring.first() == ring.last())
+        ring.removeLast();
+    auto same = [](const QPointF &a, const QPointF &b) {
+        return std::fabs(a.x() - b.x()) < 1e-4 && std::fabs(a.y() - b.y()) < 1e-4;
+    };
+    QVector<QPolygonF> out;
+    QPolygonF cur;
+    for (const QPointF &p : ring) {
+        int k = -1;
+        for (int i = 0; i + 1 < cur.size(); ++i)   // not the point just before
+            if (same(cur.at(i), p)) {
+                k = i;
+                break;
+            }
+        if (k >= 0) {
+            QPolygonF loop = cur.mid(k);
+            if (loop.size() >= 3)
+                out << loop;
+            cur.resize(k + 1);
+        } else {
+            cur << p;
+        }
+    }
+    if (cur.size() >= 3)
+        out << cur;
+    return out;
+}
+
 QVector<QPolygonF> fillFace(const QVector<QPainterPath> &closed, const QPointF &at, double tol)
 {
     QVector<QPainterPath> in, out;
@@ -54,6 +87,23 @@ QVector<QPolygonF> fillFace(const QVector<QPainterPath> &closed, const QPointF &
                                              : booleanRings(in, {}, BoolOp::Intersect, tol);
     if (!out.isEmpty() && !face.isEmpty())
         face = booleanRings({pathOf(face)}, out, BoolOp::Subtract, tol);
+    {
+        QVector<QPolygonF> loops;
+        for (const QPolygonF &r : face)
+            loops += splitAtTouches(r);
+        face = loops;
+    }
+    // Flattened, a circle inscribed in a square no longer touches it: the
+    // corner pieces hang together by slits a few microns wide. Shrinking and
+    // regrowing by twice the flattening tolerance cuts those (corners come
+    // back rounded by that much, far below anything a bit can cut).
+    if (!face.isEmpty()) {
+        const double d = 2 * (tol > 1e-9 ? tol : 0.005);
+        const QVector<QPolygonF> shrunk = offsetRings({pathOf(face)}, {}, -d, tol);
+        const QVector<QPolygonF> opened = shrunk.isEmpty() ? shrunk : offsetRings({pathOf(shrunk)}, {}, d, tol);
+        if (!opened.isEmpty())
+            face = opened;
+    }
     // The piece holding `at`: the smallest ring around it is its outline;
     // its holes are the rings inside that outline not inside another of them.
     int outer = -1;

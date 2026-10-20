@@ -55,12 +55,22 @@ class DesignStore {
 
   /// After [base], for an edit made now. With a clock behind the copy's, two
   /// devices editing the same copy must not both pick base+1: equal times
-  /// mean "the same copy", and the two would never sync again.
-  static int stamp(int base, int now) => now > base ? now : base + 1 + _rand.nextInt(1000);
+  /// mean "the same copy", and the two would never sync again. A copy from a
+  /// clock gone absurdly far ahead is not followed there (every phobiCCCP
+  /// would refuse the edit): the edit starts again from the clock.
+  static int stamp(int base, int now) {
+    if (now > base) return now;
+    final next = base + 1 + _rand.nextInt(1000);
+    return plausibleStamp(next, now) ? next : now;
+  }
 
-  /// An edit made here: stamped with the time, so it wins the next sync.
+  /// An edit made here: stamped with the time, so it wins the next sync. Its
+  /// base is the stored copy's (the last one exchanged with a phobiCCCP),
+  /// whatever older copy the edit was made from (an undo, say).
   Design save(Design d, {int? now}) {
-    final s = d.copyWith(modified: stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch));
+    final have = get(d.id);
+    final was = have != null && have.modified > d.modified ? have.modified : d.modified;
+    final s = d.copyWith(modified: stamp(was, now ?? DateTime.now().millisecondsSinceEpoch), base: have?.base ?? d.base);
     put(s);
     return s;
   }
@@ -68,13 +78,19 @@ class DesignStore {
   void delete(String id, {int? now}) {
     final d = get(id);
     if (d == null) return;
-    put(Design(id: d.id, name: d.name, deleted: true, modified: stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch)));
+    // With its base, so a computer that changed it since can refuse.
+    put(Design(
+        id: d.id,
+        name: d.name,
+        deleted: true,
+        base: d.base,
+        modified: stamp(d.modified, now ?? DateTime.now().millisecondsSinceEpoch)));
   }
 
   File? _file(String id) => validId.hasMatch(id) ? File('${dir.path}/$id.json') : null;
 }
 
-/// Computers added by hand, the tool library as last received, the last target.
+/// Computers added by hand, the tool libraries as last received, the last target.
 class Settings {
   final File file;
   Map<String, Object?> _v = {};
@@ -107,6 +123,20 @@ class Settings {
     _v['tools'] = t.toJson();
     _save();
   }
+
+  /// Each computer's own library (by its id): two computers may not have the
+  /// same bits, and a send needs the tools to be in the receiving one's.
+  ToolLibrary toolsOf(String desktopId) {
+    final t = _m(_v['toolsByDesktop'])[desktopId];
+    return t is Map ? ToolLibrary.fromJson(t.cast<String, Object?>()) : const ToolLibrary();
+  }
+
+  void setToolsOf(String desktopId, ToolLibrary t) {
+    _v['toolsByDesktop'] = {..._m(_v['toolsByDesktop']), desktopId: t.toJson()};
+    _save();
+  }
+
+  static Map<String, Object?> _m(Object? v) => v is Map ? v.cast<String, Object?>() : const {};
 
   String get lastDesign => _v['lastDesign'] is String ? _v['lastDesign'] as String : '';
   set lastDesign(String v) {

@@ -2,6 +2,8 @@
 // Document tab in Design, the Toolpaths list and form in Toolpaths
 // (propertiespanel.cpp, toolpathpanel.cpp, toolpathform.cpp).
 
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -389,7 +391,7 @@ class ToolpathsPanel extends StatelessWidget {
           // be moved only after a still hold of kHoldToMove (see _Hold).
           child: ScrollConfiguration(
             behavior: ScrollConfiguration.of(context).copyWith(dragDevices: PointerDeviceKind.values.toSet()),
-            child: CustomScrollView(
+            child: _HoldArea(child: CustomScrollView(
               slivers: [
                 SliverPadding(
                   padding: const EdgeInsets.symmetric(horizontal: 6),
@@ -419,7 +421,7 @@ class ToolpathsPanel extends StatelessWidget {
                   ),
                 ),
               ],
-            ),
+            )),
           ),
         ),
       ],
@@ -585,15 +587,177 @@ class ToolpathsPanel extends StatelessWidget {
 }
 
 /// How long a toolpath card must be held still before it can be dragged to a
-/// new place. The hold is dropped as soon as the finger moves, so time spent
-/// scrolling never counts towards it.
+/// new place. Every move starts the wait again, as on the desktop
+/// (toolpathpanel.cpp CardList): time spent scrolling never counts towards it,
+/// but a scroll that stops with the finger still down picks up the card under
+/// the finger once it has been still for this long.
 const kHoldToMove = Duration(milliseconds: 500);
 
-class _Hold extends ReorderableDragStartListener {
-  const _Hold({super.key, required super.child, required super.index});
+/// One card. Held still from the touch on, its own recognizer takes the touch
+/// from the list and the card comes loose; once the touch moves, the list
+/// scrolls and _HoldArea follows it from there.
+class _Hold extends StatefulWidget {
+  final int index;
+  final Widget child;
+  const _Hold({super.key, required this.index, required this.child});
+  @override
+  State<_Hold> createState() => _HoldState();
+}
+
+class _HoldState extends State<_Hold> {
+  _HoldAreaState? _area;
 
   @override
-  MultiDragGestureRecognizer createRecognizer() => DelayedMultiDragGestureRecognizer(delay: kHoldToMove, debugOwner: this);
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _area?._cards.remove(this);
+    _area = context.findAncestorStateOfType<_HoldAreaState>()?.._cards.add(this);
+  }
+
+  @override
+  void dispose() {
+    _area?._cards.remove(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Listener(
+        onPointerDown: (e) {
+          final list = SliverReorderableList.maybeOf(context);
+          if (list == null) return;
+          _area?._down(e);
+          list.startItemDragReorder(index: widget.index, event: e, recognizer: _StillHold(_area, debugOwner: this));
+        },
+        child: widget.child,
+      );
+}
+
+/// Takes the touch after it has been still for kHoldToMove from the start;
+/// when it moves first (or the list takes it to scroll), _HoldArea is told to
+/// follow it instead.
+class _StillHold extends DelayedMultiDragGestureRecognizer {
+  final _HoldAreaState? area;
+  _StillHold(this.area, {super.debugOwner}) : super(delay: kHoldToMove);
+
+  @override
+  void acceptGesture(int pointer) {
+    area?._forget(pointer);
+    super.acceptGesture(pointer);
+  }
+
+  @override
+  void rejectGesture(int pointer) {
+    area?._follow(pointer);
+    super.rejectGesture(pointer);
+  }
+}
+
+/// Around the toolpath list: follows a touch that began on a card while it
+/// scrolls the list, starting the wait again at every move, and when the
+/// finger has then been still for kHoldToMove, stops the scroll and starts
+/// moving the card under it, as the desktop does.
+class _HoldArea extends StatefulWidget {
+  final Widget child;
+  const _HoldArea({required this.child});
+  @override
+  State<_HoldArea> createState() => _HoldAreaState();
+}
+
+class _HoldAreaState extends State<_HoldArea> {
+  // A drag started here has no touch of its own in the gesture arena (the
+  // list's scroll won that one), so it gets a made-up pointer, and the real
+  // touch's moves are passed on to it under that number.
+  static var _nextPointer = 1 << 30;
+
+  final _cards = <_HoldState>{};
+  int? _pointer, _carried;
+  bool _following = false;
+  PointerEvent? _last;
+  Timer? _timer;
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  void _down(PointerDownEvent e) {
+    if (_pointer != null) return;
+    _pointer = e.pointer;
+    _last = e;
+    _following = false;
+    _carried = null;
+  }
+
+  void _forget(int pointer) {
+    if (pointer != _pointer) return;
+    _timer?.cancel();
+    _pointer = null;
+    _following = false;
+  }
+
+  void _follow(int pointer) {
+    // Also told after the touch is lifted (a tap): then there is nothing to follow.
+    if (pointer != _pointer || _carried != null) return;
+    _following = true;
+    _restart();
+  }
+
+  void _restart() {
+    _timer?.cancel();
+    _timer = Timer(kHoldToMove, _pickUp);
+  }
+
+  void _move(PointerMoveEvent e) {
+    if (e.pointer != _pointer) return;
+    _last = e;
+    final carried = _carried;
+    if (carried != null) {
+      GestureBinding.instance.pointerRouter.route(e.copyWith(pointer: carried));
+    } else if (_following) {
+      _restart();
+    }
+  }
+
+  void _end(PointerEvent e) {
+    if (e.pointer != _pointer) return;
+    _timer?.cancel();
+    final carried = _carried;
+    if (carried != null) {
+      GestureBinding.instance.pointerRouter.route(
+          e is PointerUpEvent ? e.copyWith(pointer: carried) : (e as PointerCancelEvent).copyWith(pointer: carried));
+    }
+    _pointer = null;
+    _carried = null;
+    _following = false;
+  }
+
+  void _pickUp() {
+    final e = _last;
+    if (!mounted || e == null || _pointer == null || _carried != null) return;
+    for (final card in _cards) {
+      final box = card.context.findRenderObject();
+      if (box is! RenderBox || !box.attached || !(Offset.zero & box.size).contains(box.globalToLocal(e.position))) continue;
+      final list = SliverReorderableList.maybeOf(card.context);
+      if (list == null) return;
+      // The scroll this touch was driving stops here, so the card moves, not the list.
+      final position = Scrollable.maybeOf(card.context)?.position;
+      if (position != null && position.hasPixels) position.jumpTo(position.pixels);
+      final pointer = _nextPointer++;
+      _carried = pointer;
+      list.startItemDragReorder(
+          index: card.widget.index,
+          event: PointerDownEvent(pointer: pointer, position: e.position, kind: e.kind, device: e.device, buttons: kPrimaryButton),
+          recognizer: ImmediateMultiDragGestureRecognizer(debugOwner: this));
+      // Alone in its arena, it wins it straight away.
+      GestureBinding.instance.gestureArena.close(pointer);
+      return;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      Listener(onPointerMove: _move, onPointerUp: _end, onPointerCancel: _end, child: widget.child);
 }
 
 class _NameBox extends StatefulWidget {

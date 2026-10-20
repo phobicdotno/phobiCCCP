@@ -1,6 +1,7 @@
 #pragma once
 #include "bitzeropanel.h"
 #include "grblstreamer.h"
+#include "post_grbl.h"
 #include "surfacemap.h"
 #include <QVector>
 #include <QHash>
@@ -105,7 +106,15 @@ private:
     void goToXY0();
     void measureTool(Phase why);
     void onMacroFinished(bool ok);
-    void onToolChange(int tool);
+    void onToolChange(int tool, int ordinal);
+    void askForTool();                   // the tool-change prompt, once parked
+    // Zeroing is refused while a program runs: a bumped pad button would
+    // shift the rest of the job. The one exception is Z during a tool-change
+    // pause the operator kept open to zero the new bit by hand.
+    bool zeroAllowed(bool xy);
+    // Feed hold, wait for it to settle (Hold:0 or Idle, at most 5 s), soft
+    // reset, then `then`. Used to cancel a job and to disconnect during one.
+    void holdResetThen(std::function<void()> then);
     void rehearseToolChange();
     void finishRehearsal(bool ok, bool measured);
     void onStatus(const MachineStatus &st);
@@ -193,6 +202,14 @@ private:
     double m_refZ = 0;                   // machine Z where the reference tool tripped
     Phase m_phase = Phase::Idle;
     int m_pendingTool = -1;
+    // The running program's tool changes, in order (toolChanges()), and the
+    // index of the one parked at: names the bit when two share a number.
+    QVector<Op> m_jobTools;
+    int m_pendingOrdinal = -1;
+    // BitSetter off: the operator closed the prompt to jog and zero Z by hand
+    // and will press Continue; m_zeroedForTool once Z was zeroed meanwhile.
+    bool m_manualZero = false;
+    bool m_zeroedForTool = false;
     // Whether m_pendingTool has actually been measured on the BitSetter. A
     // failed measurement leaves the *previous* tool's G43.1 in force, so
     // resuming without one cuts as deep as the two tools differ in length.
@@ -215,13 +232,30 @@ private:
     // and hard limits off ($20=0, $21=0): a jog past the end grinds the
     // stepper against the stop. m_jogPlan is where the queued jogs end up,
     // ahead of the lagging status reports.
-    bool jogBy(char axis, double delta, double feed);
+    // `defer`: with no fresh report to seed the plan from, queue the jog
+    // until one arrives (a tap) instead of dropping it (a hold-jog tick).
+    bool jogBy(char axis, double delta, double feed, bool defer = true);
     void unlock();
     void cancelJob();
     QStringList riseToTop() const;
-    void forgetJogPlan() { m_jogPlanValid = false; }
+    void continueAfterToolChange();      // with the rise to the top in front
+    void forgetJogPlan();
     double m_jogPlan[3] = {0, 0, 0};
     bool m_jogPlanValid = false;
+    // The plan is seeded from a status report only when that report is
+    // fresh: Idle, nothing unanswered, and at least the second report after
+    // the plan was last forgotten (the first may have been asked for before
+    // the jog was cancelled and still show it moving). A tap with no fresh
+    // report yet waits here for one, a few at most.
+    quint64 m_statusSeq = 0;
+    quint64 m_jogFreshAfter = 0;
+    bool m_jogSeedOk = false;
+    struct PendingJog { char axis; double delta, feed; };
+    QVector<PendingJog> m_deferredJogs;
+    // Hold-jog lookahead when not homed (relative jogs): where the hold began
+    // and how far it has been sent since.
+    double m_holdOrigin = 0, m_holdSent = 0;
+    bool m_holdOriginValid = false;
     // Machine coordinates (G53, the jog limits, the BitSetter and tool-change
     // spots) mean something only after a homing cycle on this connection.
     // False on connect, after Unlock out of an alarm, and after any alarm

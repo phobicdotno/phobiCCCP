@@ -193,7 +193,9 @@ protected:
             return;
         }
         m_press.reset(static_cast<QMouseEvent *>(e->clone()));
-        m_origin = m_last = e->position().toPoint();
+        // Screen positions: scrolling the panel around the list moves the list
+        // itself under the finger, which list positions would count as a move.
+        m_origin = m_last = e->globalPosition().toPoint();
         m_scrolling = false;
         m_hold.start(kHoldToMoveMs);
         e->accept();
@@ -201,11 +203,13 @@ protected:
 
     void mouseMoveEvent(QMouseEvent *e) override
     {
+        if (m_press && !(e->buttons() & Qt::LeftButton))
+            forgetPress();   // the release went to a dialog that popped up
         if (!m_press) {
             QTreeWidget::mouseMoveEvent(e);
             return;
         }
-        const QPoint p = e->position().toPoint();
+        const QPoint p = e->globalPosition().toPoint();
         if (!m_scrolling && (p - m_origin).manhattanLength() < QApplication::startDragDistance())
             return;
         m_scrolling = true;
@@ -228,10 +232,23 @@ protected:
         QTreeWidget::mouseReleaseEvent(e);
     }
 
+    void hideEvent(QHideEvent *e) override
+    {
+        forgetPress();
+        QTreeWidget::hideEvent(e);
+    }
+
     void dropEvent(QDropEvent *e) override
     {
         QTreeWidgetItem *dragged = currentItem();
         const QString uuid = dragged ? dragged->data(0, UuidRole).toString() : QString();
+        // The list was rebuilt while the card was carried (a pad update, a
+        // queued edit): the current row is now another toolpath.
+        if (uuid.isEmpty() || uuid != m_carried) {
+            e->ignore();
+            return;
+        }
+        m_carried.clear();
         QTreeWidget::dropEvent(e);
         if (uuid.isEmpty() || !moved)
             return;
@@ -246,18 +263,32 @@ private:
     // Held long enough over a card: pick it up and drag it.
     void pickUp()
     {
-        QTreeWidgetItem *it = m_press ? itemAt(m_last) : nullptr;
+        if (!m_press || !isVisible() || !(QGuiApplication::mouseButtons() & Qt::LeftButton)) {
+            forgetPress();
+            return;
+        }
+        QTreeWidgetItem *it = itemAt(viewport()->mapFromGlobal(m_last));
         if (!it)
             return;
         m_press.reset();
         setCurrentItem(it);
+        m_carried = it->data(0, UuidRole).toString();
         startDrag(Qt::MoveAction);
+        m_carried.clear();
+    }
+
+    void forgetPress()
+    {
+        m_hold.stop();
+        m_press.reset();
+        m_scrolling = false;
     }
 
     QTimer m_hold;
     std::unique_ptr<QMouseEvent> m_press;
-    QPoint m_origin, m_last;
+    QPoint m_origin, m_last;   // screen positions
     bool m_scrolling = false;
+    QString m_carried;          // the card being dragged, by uuid
 };
 
 } // namespace

@@ -113,17 +113,26 @@ public:
     Constraint::Type constraintType() const { return m_conType; }
     // Push a geometry edit. With constraints in the document the solver runs
     // right after it, in the same undo step, moving `touched` least.
-    void pushEdit(QUndoCommand *cmd, const QStringList &touched);
+    // `moved`: the transform the edit carried the touched elements through
+    // (a mirror, rotation or scale); their constraints follow the geometry
+    // through it, and after a mirror which side each holds on is taken
+    // afresh. A shape locked whole by a Fix is put back where it was.
+    void pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTransform &moved = QTransform());
     // Swap in new parameters / constraints as one undo step: re-solve, then
     // re-evaluate the toolpath fields bound to expressions. When the result
     // cannot hold, nothing changes and false comes back - unless
     // allowFailing (a parameter edit), which keeps it and marks the
-    // constraints that fail in red.
+    // constraints that fail in red. Constraints already red before the
+    // edit are left out of the solve, so they neither block it nor bend
+    // the rest to a compromise.
     // `mutate` runs on the document after the swap, before the solve (a
     // parameter rename also rewrites the toolpath bindings that use it).
     bool applyParametric(const Parametric &after, const QString &text,
                          bool allowFailing = false, const QSet<QString> &keep = {},
                          const std::function<void(Document &)> &mutate = {});
+    // What the last applyParametric's toolpath bindings reported: fields
+    // whose expression can't be worked out (kept) or that were clamped.
+    const QStringList &bindingProblems() const { return m_bindProblems; }
     void editDimension(const QString &uid);       // the inline value editor
     void deleteConstraint(const QString &uid);
     // Constraint glyphs and dimensions on the canvas: the user's toggle,
@@ -284,6 +293,7 @@ private:
     void openDimEditor(const Constraint &c, bool isNew);
     void commitDimEditor(bool keepMeasured);
     void closeDimEditor();
+    void placeDimEditor();                        // over its dimension, for the current view
     bool parametricPress(QMouseEvent *event);     // true = handled
     bool parametricMove(QMouseEvent *event);
     bool parametricRelease(QMouseEvent *event);
@@ -303,6 +313,8 @@ private:
     QLineEdit *m_dimEdit = nullptr;
     Constraint m_dimEditing;                      // what the editor edits
     bool m_dimEditingNew = false;
+    QPointF m_dimEditAt;                          // scene fallback when it has no geometry
+    QStringList m_bindProblems;                   // bindingProblems()
     QString m_dragDim;                            // dimension label being dragged
     QPointF m_dragDimFrom;
     QPointF m_dragDimLabel0;
@@ -316,9 +328,12 @@ private:
 
     // Resize-handle drag state (single selected circle/rect/polygon).
     bool resizeHandle(QString *id, QPointF *pos, QString *type) const;
+    // The size the handle at `cur` asks for (width / height or radius).
+    QHash<QString, double> resizeTo(QPointF cur) const;
     bool m_resizing = false;
     QString m_resizeId, m_resizeType;
     QPointF m_resizeCenter;
+    double m_resizeRot = 0;     // a turned rectangle's rotation, degrees
 };
 
 } // namespace c2d

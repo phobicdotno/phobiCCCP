@@ -1919,6 +1919,24 @@ void MainWindow::updateTitle()
     }
 }
 
+// A .c2d to write. The dialog asks before replacing the name as typed, but
+// not when ".c2d" is added to it afterwards, so that is asked here.
+static QString askC2dSavePath(QWidget *parent, const QString &title, const QString &start)
+{
+    QString path = QFileDialog::getSaveFileName(parent, title, start, QStringLiteral("Carbide Create (*.c2d)"));
+    if (path.isEmpty() || path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
+        return path;
+    path += QStringLiteral(".c2d");
+    if (QFileInfo::exists(path)
+        && QMessageBox::question(parent, title,
+                                 QStringLiteral("%1 already exists.\nDo you want to replace it?")
+                                     .arg(QFileInfo(path).fileName()),
+                                 QMessageBox::Yes | QMessageBox::No, QMessageBox::No)
+               != QMessageBox::Yes)
+        return {};
+    return path;
+}
+
 void MainWindow::onNew()
 {
     if (!confirmDiscard(QStringLiteral("Save before starting a new file?")))
@@ -1935,13 +1953,9 @@ void MainWindow::onNew()
     const double t = QInputDialog::getDouble(this, QStringLiteral("New design"),
         QStringLiteral("Stock thickness (mm):"), appsettings::kBlankThickness, 0.1, 500, 2, &ok);
     if (!ok) return;
-    QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Save new design as"), QStringLiteral("untitled.c2d"),
-        QStringLiteral("Carbide Create (*.c2d)"));
+    const QString path = askC2dSavePath(this, QStringLiteral("Save new design as"), QStringLiteral("untitled.c2d"));
     if (path.isEmpty())
         return;
-    if (!path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
-        path += QStringLiteral(".c2d");
     QString err;
     if (!c2d::Document::createBlank(path, w, h, t, &err)) {
         QMessageBox::warning(this, QStringLiteral("New failed"), err);
@@ -2035,13 +2049,9 @@ void MainWindow::onSaveAs()
                   + (from.fileName().isEmpty() ? QStringLiteral("Design") : from.completeBaseName())
                   + QStringLiteral(".c2d");
 #endif
-    QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Save Carbide Create file"), startAt,
-        QStringLiteral("Carbide Create (*.c2d)"));
+    const QString path = askC2dSavePath(this, QStringLiteral("Save Carbide Create file"), startAt);
     if (path.isEmpty())
         return;
-    if (!path.endsWith(QStringLiteral(".c2d"), Qt::CaseInsensitive))
-        path += QStringLiteral(".c2d");
 
     QString err;
     if (!m_doc.save(path, &err)) {
@@ -2138,7 +2148,10 @@ void MainWindow::openFile(const QString &path)
             QFile f(svg);
             if (tmp.isValid() && f.open(QIODevice::WriteOnly) && f.write(p.svg) == p.svg.size()) {
                 f.close();
-                importVectorFile(this, m_canvas, &m_doc, svg);
+                // Not auto-placed: the drawing lines up with the part, which
+                // is put at (kMargin, kMargin) below, even when it is bigger
+                // than the stock.
+                importVectorFile(this, m_canvas, &m_doc, svg, {}, false);
             } else {
                 QMessageBox::warning(this, QStringLiteral("Open"),
                                      QStringLiteral("The drawing in %1 could not be imported.")
@@ -2260,6 +2273,10 @@ void MainWindow::showStartupWindow()
 void MainWindow::autosave()
 {
     if (!m_dirty || m_doc.filePath().isEmpty())
+        return;
+    // Not while the machine works: the save runs on the thread that feeds
+    // GRBL, and a big model starves its ~100 ms buffer. The next tick retries.
+    if (m_machine && m_machine->isBusy())
         return;
     QString err;
     const QString copy = m_recovery.write(m_doc, m_untitled ? m_untitledPath : m_doc.filePath(),
@@ -2496,6 +2513,69 @@ QJsonObject padError(const QString &why)
     return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), why}};
 }
 
+// Switching machines drops the connection and the homing here, so any pad on
+// the network may only do it while nothing is connected, unless pads are
+// trusted to start cutting anyway. Empty when the switch may go ahead.
+QString padSwitchRefusal(const QString &machineId, const QJsonObject &status)
+{
+    QSettings st;
+    if (machineId.isEmpty() || machineId == machineprofiles::activeId(st) || padsMayStart()
+        || !status.value(QStringLiteral("connected")).toBool())
+        return {};
+    return QStringLiteral("the machine on %1 is connected; switching it from a pad is off there "
+                          "(Machine > Pads may start cutting), or disconnect it first")
+        .arg(QSysInfo::machineHostName());
+}
+
+// A new file beside `path` for a pad's version that must not go over it.
+QString padCopyPath(const QString &path)
+{
+    const QFileInfo fi(path);
+    const QDir dir = fi.absoluteDir();
+    for (int n = 1; n < 100; ++n) {
+        const QString name = n == 1 ? QStringLiteral("%1 (pad).c2d").arg(fi.completeBaseName())
+                                    : QStringLiteral("%1 (pad %2).c2d").arg(fi.completeBaseName()).arg(n);
+        if (!QFileInfo::exists(dir.filePath(name)))
+            return dir.filePath(name);
+    }
+    return {};
+}
+
+// Write the pad design `d` to `path`, built beside it and swapped in, so a
+// failure leaves what is there alone.
+bool buildPadFile(const QJsonObject &d, const QString &path, QString *err)
+{
+    const QString tmp = path + QStringLiteral(".pad-new");
+    QStringList notes;
+    if (!padlink::buildDocument(d, tmp, &notes, err)) {
+        QFile::remove(tmp);
+        return false;
+    }
+    if (!QFileInfo::exists(path)) {
+        if (QFile::rename(tmp, path))
+            return true;
+        QFile::remove(tmp);
+        *err = QStringLiteral("could not write %1").arg(path);
+        return false;
+    }
+    // The old file is moved aside, not deleted, until the new one is in.
+    const QString old = path + QStringLiteral(".pad-old");
+    QFile::remove(old);
+    if (!QFile::rename(path, old)) {
+        QFile::remove(tmp);
+        *err = QStringLiteral("could not replace %1").arg(path);
+        return false;
+    }
+    if (!QFile::rename(tmp, path)) {
+        QFile::rename(old, path);
+        QFile::remove(tmp);
+        *err = QStringLiteral("could not replace %1").arg(path);
+        return false;
+    }
+    QFile::remove(old);
+    return true;
+}
+
 } // namespace
 
 void MainWindow::onSendTo()
@@ -2581,20 +2661,50 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
     } else if (op == QLatin1String("designs")) {
         reply = QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("designs"), store.list()}};
     } else if (op == QLatin1String("get")) {
-        const QJsonObject d = store.get(req.value(QStringLiteral("id")).toString());
+        const QString designId = req.value(QStringLiteral("id")).toString();
+        QJsonObject d = store.get(designId);
+        // A linked file a pad edit will not be rebuilt into (it holds what
+        // the pad cannot, or was changed outside phobiCCCP): the pad says so
+        // when the design is edited there, as the edit then lands in a copy.
+        const padlink::Links links(padDir());
+        for (const QString &path : links.pathsFor(designId))
+            if (!d.isEmpty() && (!links.padOnly(path) || links.changedOutside(path)))
+                d.insert(QStringLiteral("desktopOnly"), QSysInfo::machineHostName());
         reply = d.isEmpty() ? padError(QStringLiteral("no such design"))
                             : QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("design"), d}};
     } else if (op == QLatin1String("put")) {
         QString err;
-        const bool stored = store.put(req.value(QStringLiteral("design")).toObject(), &err);
+        padlink::Store::PutOutcome out;
+        const QJsonObject design = req.value(QStringLiteral("design")).toObject();
+        const QString designId = design.value(QStringLiteral("id")).toString();
+        const bool stored = store.put(design, &err, &out);
         reply = err.isEmpty() ? QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("stored"), stored}}
                               : padError(err);
-        if (stored)
-            padDesignChanged(req.value(QStringLiteral("design")).toObject().value(QStringLiteral("id")).toString());
+        if (err.isEmpty()) {
+            // The copy kept here now, so the pad knows whether it has it.
+            reply.insert(QStringLiteral("modified"), store.get(designId).value(QStringLiteral("modified")));
+        }
+        const QString name = store.get(designId).value(QStringLiteral("name")).toString();
+        if (!out.forked.isEmpty()) {
+            // Not rebuilt into the linked file: that holds the change made
+            // here, which the pad's edit never saw.
+            reply.insert(QStringLiteral("forked"), out.forked);
+            statusBar()->showMessage(QStringLiteral("“%1” changed both here and on a pad; the pad's "
+                                                    "version is kept as “%2”")
+                                         .arg(name, store.get(out.forked).value(QStringLiteral("name")).toString()),
+                                     10000);
+        } else if (out.conflict) {
+            reply.insert(QStringLiteral("conflict"), true);
+            statusBar()->showMessage(QStringLiteral("A pad deleted “%1”, which has changed here since; "
+                                                    "it is kept").arg(name), 10000);
+        } else if (stored) {
+            padDesignChanged(designId);
+        }
     } else if (op == QLatin1String("machine")) {
         QString why;
-        reply = switchMachine(req.value(QStringLiteral("id")).toString(), &why) ? padInfo()
-                                                                              : padError(why);
+        const QString machineId = req.value(QStringLiteral("id")).toString();
+        why = padSwitchRefusal(machineId, m_machine->statusJson());
+        reply = why.isEmpty() && switchMachine(machineId, &why) ? padInfo() : padError(why);
     } else if (op == QLatin1String("send") || op == QLatin1String("open")) {
         m_linkBusy = true;
         reply = padSend(id, req, peer);
@@ -2612,7 +2722,7 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     // "send" carries a pad design (JSON), "open" a whole .c2d file, as
     // phobiCCCP itself sends it from File > Send to phobiCCCP.
     const bool whole = req.value(QStringLiteral("op")).toString() == QLatin1String("open");
-    const QJsonObject design = req.value(QStringLiteral("design")).toObject();
+    QJsonObject design = req.value(QStringLiteral("design")).toObject();
     QByteArray c2dBytes;
     if (whole) {
         const auto decoded = QByteArray::fromBase64Encoding(req.value(QStringLiteral("c2d")).toString().toLatin1(),
@@ -2639,8 +2749,24 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
         knownMachine = knownMachine || p.id == machineId;
     if (!knownMachine)
         return padError(QStringLiteral("no such machine on %1").arg(host));
-    if (!whole)
-        padlink::Store(padDir()).put(design);   // sent is also synced
+    if (const QString no = padSwitchRefusal(machineId, m_machine->statusJson()); !no.isEmpty())
+        return padError(no);
+    // Sent is also synced. Changed here since the pad's copy, it is kept as a
+    // new design: that is what opens (and is linked), and the pad is told so it
+    // takes the copy here in place of its own. A whole file is not synced.
+    padlink::Store store(padDir());
+    QString putError;
+    padlink::Store::PutOutcome put;
+    if (!whole) {
+        const bool stored = store.put(design, &putError, &put);
+        if (!put.forked.isEmpty()) {
+            const QJsonObject fork = store.get(put.forked);
+            if (!fork.isEmpty())
+                design = fork;
+        } else if (stored) {
+            padDesignChanged(design.value(QStringLiteral("id")).toString());
+        }
+    }
 
     const bool start = req.value(QStringLiteral("start")).toBool();
     const QString from = req.value(QStringLiteral("from")).toString().left(60);
@@ -2663,7 +2789,8 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
         return padError(QStringLiteral("%1 is busy with the machine; try again when it is done").arg(host));
     // Switched only now it is certain to be opened (switching resets the
     // machine's connection and homing).
-    if (!machineId.isEmpty() && !switchMachine(machineId, &why))
+    why = padSwitchRefusal(machineId, m_machine->statusJson());
+    if (!why.isEmpty() || (!machineId.isEmpty() && !switchMachine(machineId, &why)))
         return padError(why);
 
     ReceivedProject folder;   // no files: only the folder, named like a received project
@@ -2694,12 +2821,27 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
         bool padOnly = true;
         for (const QString &n : notes)
             padOnly = padOnly && !n.startsWith(QLatin1String("shape "));
-        padlink::Links(padDir()).set(c2dPath, design.value(QStringLiteral("id")).toString(), padOnly,
-                                     design.value(QStringLiteral("modified")).toDouble());
+        padlink::Links links(padDir());
+        if (!putError.isEmpty())
+            notes << QStringLiteral("not kept for the pads, so edits do not sync: %1").arg(putError);
+        else if (!links.set(c2dPath, design.value(QStringLiteral("id")).toString(), padOnly,
+                            design.value(QStringLiteral("modified")).toDouble()))
+            notes << QStringLiteral("not linked to the pad design, so edits do not sync: %1").arg(links.error());
     }
 
     QJsonObject reply{{QStringLiteral("ok"), true}, {QStringLiteral("started"), false},
                       {QStringLiteral("notes"), QJsonArray::fromStringList(notes)}};
+    // As a put answers: the copy kept here now, and the fork the pad's
+    // version became, so the pad moves its base or takes the copy here.
+    const QString sentId = req.value(QStringLiteral("design")).toObject().value(QStringLiteral("id")).toString();
+    if (!whole && putError.isEmpty())
+        reply.insert(QStringLiteral("modified"), store.get(sentId).value(QStringLiteral("modified")));
+    if (!put.forked.isEmpty()) {
+        reply.insert(QStringLiteral("forked"), put.forked);
+        notes << QStringLiteral("“%1” had changed on %2 since, so yours opened as “%3”")
+                     .arg(store.get(sentId).value(QStringLiteral("name")).toString(), host, name);
+        reply.insert(QStringLiteral("notes"), QJsonArray::fromStringList(notes));
+    }
     QString message = QStringLiteral("opened %1 on %2").arg(QFileInfo(c2dPath).fileName(), host);
     if (start) {
         setMode(Mode::Machine, false);
@@ -2727,6 +2869,11 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
 void MainWindow::padShareSaved(const QString &c2dPath)
 {
     padlink::Links links(padDir());
+    if (!links.ok()) {
+        statusBar()->showMessage(QStringLiteral("Saved %1, but not to the pads: %2").arg(c2dPath, links.error()),
+                                 10000);
+        return;
+    }
     const QString id = links.idFor(c2dPath);
     if (id.isEmpty())
         return;
@@ -2734,6 +2881,12 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     QJsonObject base = store.get(id);
     if (base.isEmpty() || base.value(QStringLiteral("deleted")).toBool())
         return;
+    // Saved here but not shared: the file now holds what the pads do not, so
+    // a pad edit must not be rebuilt over it.
+    auto notShared = [&](const QString &why) {
+        links.set(c2dPath, id, false, links.modified(c2dPath));
+        statusBar()->showMessage(QStringLiteral("Not sent to the pads: %1").arg(why), 10000);
+    };
     // A pad changed the design after this file was made from it (and it was
     // not rebuilt, as it was open with changes or holds what a pad cannot).
     // Sharing this file over it would silently undo that edit everywhere, so
@@ -2750,10 +2903,8 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     QStringList lost;
     QString err;
     QJsonObject d = padlink::designFromDocument(c2dPath, base, &lost, &err);
-    if (d.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral("Not sent to the pads: %1").arg(err), 10000);
-        return;
-    }
+    if (d.isEmpty())
+        return notShared(err);
     if (!m_model->model().components.isEmpty())
         lost << QStringLiteral("the 3D model");
     if (!m_bg.isNull())
@@ -2763,18 +2914,17 @@ void MainWindow::padShareSaved(const QString &c2dPath)
     // bound to them), so such a design is not rebuilt from a pad.
     if (!m_doc.parametric().isEmpty())
         lost << QStringLiteral("the constraints and parameters");
-    // Newer than what the pads have, even with this computer's clock behind;
-    // then not just +1, as a pad editing the same copy would pick that too,
-    // and equal times count as the same copy.
-    const double now = double(QDateTime::currentMSecsSinceEpoch());
-    const double was = base.value(QStringLiteral("modified")).toDouble();
-    const double modified = now > was ? now : was + 1 + QRandomGenerator::global()->bounded(1000);
+    // Newer than what the pads have, even with this computer's clock behind.
+    const double modified = padlink::nextStamp(base.value(QStringLiteral("modified")).toDouble(),
+                                               double(QDateTime::currentMSecsSinceEpoch()));
     d.insert(QStringLiteral("modified"), modified);
-    if (!store.put(d, &err)) {
-        statusBar()->showMessage(QStringLiteral("Not sent to the pads: %1").arg(err), 10000);
+    if (!store.put(d, &err))
+        return notShared(err.isEmpty() ? QStringLiteral("a newer copy is kept here") : err);
+    if (!links.set(c2dPath, d.value(QStringLiteral("id")).toString(), lost.isEmpty(), modified)) {
+        statusBar()->showMessage(QStringLiteral("Saved %1 and sent to the pads, but its link could not be "
+                                                "kept: %2").arg(c2dPath, links.error()), 10000);
         return;
     }
-    links.set(c2dPath, d.value(QStringLiteral("id")).toString(), lost.isEmpty(), modified);
     if (!forkedFrom.isEmpty()) {
         statusBar()->showMessage(QStringLiteral("Saved %1. “%2” had changed on a pad since, so the "
                                                 "pads get this as “%3” and keep their own")
@@ -2793,21 +2943,63 @@ void MainWindow::padShareSaved(const QString &c2dPath)
 void MainWindow::padDesignChanged(const QString &id)
 {
     padlink::Links links(padDir());
-    const QStringList paths = links.pathsFor(id);
-    if (paths.isEmpty())
-        return;
     const QJsonObject d = padlink::Store(padDir()).get(id);
     const QString name = d.value(QStringLiteral("name")).toString();
+    if (!links.ok()) {
+        statusBar()->showMessage(QStringLiteral("“%1” changed on a pad, but which files it is linked to "
+                                                "is not known: %2").arg(name, links.error()), 10000);
+        return;
+    }
+    const QStringList paths = links.pathsFor(id);
+    const double modified = d.value(QStringLiteral("modified")).toDouble();
+    // A linked file the pad's version may replace: it holds only what the
+    // pad can, and nothing (Carbide Create, say) changed it since.
+    auto rebuildable = [&](const QString &path) {
+        return links.padOnly(path) && !links.changedOutside(path);
+    };
+    if (d.isEmpty())
+        return;   // not readable here: nothing to rebuild from, and its links stay
+    QStringList missing;
     for (const QString &path : paths) {
-        if (d.isEmpty() || d.value(QStringLiteral("deleted")).toBool() || !QFileInfo::exists(path)) {
+        if (d.value(QStringLiteral("deleted")).toBool()) {
             links.remove(path);   // the file stays; it is only no longer linked
             continue;
         }
+        // Gone for now (on a drive not plugged in, say): still linked, so it is
+        // rebuilt or shared again once it is back.
+        if (!QFileInfo::exists(path)) {
+            missing << path;
+            continue;
+        }
         const QString file = QFileInfo(path).fileName();
-        if (!links.padOnly(path)) {
-            statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; %2 has things the pad "
-                                                    "cannot hold, so it was left as it is")
-                                         .arg(name, file), 10000);
+        QString err;
+        if (!rebuildable(path)) {
+            const bool outside = links.changedOutside(path);
+            const QString why = outside ? QStringLiteral("was changed outside phobiCCCP")
+                                        : QStringLiteral("has things the pad cannot hold");
+            // Its own edits stay; it no longer counts as the pad's to replace.
+            if (outside)
+                links.set(path, id, false, links.modified(path));
+            // The pad's version goes into a file of its own beside it, linked
+            // too, so later pad edits rebuild that one instead of piling up copies.
+            bool hasCopy = false;
+            for (const QString &other : paths)
+                hasCopy = hasCopy || (other != path && QFileInfo::exists(other) && rebuildable(other));
+            if (hasCopy) {
+                statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; %2 %3, so it was left as it is")
+                                             .arg(name, file, why), 10000);
+                continue;
+            }
+            const QString copy = padCopyPath(path);
+            if (copy.isEmpty() || !buildPadFile(d, copy, &err)) {
+                statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; %2 %3, and the pad's version "
+                                                        "could not be made beside it: %4")
+                                             .arg(name, file, why, err), 10000);
+                continue;
+            }
+            links.set(copy, id, true, modified);
+            statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; %2 %3, so the pad's version is in %4")
+                                         .arg(name, file, why, QFileInfo(copy).fileName()), 10000);
             continue;
         }
         const bool open = !m_untitled && QFileInfo(m_doc.filePath()) == QFileInfo(path);
@@ -2817,36 +3009,21 @@ void MainWindow::padDesignChanged(const QString &id)
                                          .arg(name, file), 10000);
             continue;
         }
-        // Built beside it and swapped in, so a failure leaves the file alone.
-        const QString tmp = path + QStringLiteral(".pad-new");
-        QStringList notes;
-        QString err;
-        if (!padlink::buildDocument(d, tmp, &notes, &err)) {
-            QFile::remove(tmp);
+        if (!buildPadFile(d, path, &err)) {
             statusBar()->showMessage(QStringLiteral("“%1” changed on a pad but could not be made: %2")
                                          .arg(name, err), 10000);
             continue;
         }
-        // The old file is moved aside, not deleted, until the new one is in.
-        const QString old = path + QStringLiteral(".pad-old");
-        QFile::remove(old);
-        if (!QFile::rename(path, old)) {
-            QFile::remove(tmp);
-            statusBar()->showMessage(QStringLiteral("Could not replace %1").arg(path), 10000);
-            continue;
-        }
-        if (!QFile::rename(tmp, path)) {
-            QFile::rename(old, path);
-            QFile::remove(tmp);
-            statusBar()->showMessage(QStringLiteral("Could not replace %1").arg(path), 10000);
-            continue;
-        }
-        QFile::remove(old);
-        links.set(path, id, true, d.value(QStringLiteral("modified")).toDouble());
+        links.set(path, id, true, modified);
         if (open)
             openPath(path, false);
         statusBar()->showMessage(QStringLiteral("“%1” updated from a pad").arg(name), 10000);
     }
+    if (!missing.isEmpty())
+        statusBar()->showMessage(QStringLiteral("“%1” changed on a pad, but %2 cannot be found (a drive not "
+                                                "plugged in?); it stays linked, so the next change reaches it once it is back")
+                                     .arg(name, missing.join(QStringLiteral(", "))),
+                                 10000);
 }
 
 bool MainWindow::switchMachine(const QString &id, QString *why)

@@ -7,6 +7,7 @@
 #include <QTemporaryDir>
 #include <QHash>
 #include <QJsonArray>
+#include <QLocale>
 #include <QRegularExpression>
 #include <QTransform>
 #include <QUuid>
@@ -645,6 +646,30 @@ bool svgHidden(const QXmlStreamAttributes &at)
     return re.match(style).hasMatch();
 }
 
+// The conditional attributes a <switch> chooses its child by. Extensions
+// are none known here; requiredFeatures is always true (as SVG 2 has it).
+bool svgConditionsPass(const QXmlStreamAttributes &at)
+{
+    if (at.hasAttribute(QLatin1String("requiredExtensions")))
+        return false;
+    if (!at.hasAttribute(QLatin1String("systemLanguage")))
+        return true;
+    QStringList mine;
+    for (const QString &l : QLocale::system().uiLanguages()) {
+        const QString primary = l.section(QLatin1Char('-'), 0, 0).section(QLatin1Char('_'), 0, 0).toLower();
+        if (primary.size() >= 2 && primary.size() <= 3 && primary != QLatin1String("c"))
+            mine << primary;
+    }
+    if (mine.isEmpty())
+        mine << QStringLiteral("en");
+    for (const QString &l : at.value(QLatin1String("systemLanguage")).toString().split(QLatin1Char(','))) {
+        const QString primary = l.trimmed().section(QLatin1Char('-'), 0, 0).toLower();
+        if (mine.contains(primary))
+            return true;
+    }
+    return false;
+}
+
 double attrD(const QXmlStreamAttributes &at, const char *name, double def = 0)
 {
     const QStringView v = at.value(QLatin1String(name));
@@ -726,7 +751,8 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     QXmlStreamReader xml(data);
     QHash<QString, int> skippedCounts;
     QPainterPath user;        // Y-down user units, all shapes mapped by their CTM
-    struct Ctx { QTransform xf; bool hidden; };
+    // A <switch> draws only its first child whose conditions pass.
+    struct Ctx { QTransform xf; bool hidden; bool isSwitch = false; bool switchChosen = false; };
     QVector<Ctx> stack;
     bool rootSeen = false;
     double vx = 0, vy = 0, vw = 0, vh = 0;   // viewBox
@@ -740,7 +766,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
         QStringLiteral("metadata"), QStringLiteral("title"), QStringLiteral("desc"),
         QStringLiteral("style"), QStringLiteral("linearGradient"),
         QStringLiteral("radialGradient"), QStringLiteral("filter"), QStringLiteral("script"),
-        QStringLiteral("foreignObject"), QStringLiteral("switch")};
+        QStringLiteral("foreignObject")};
     static const QStringList reportedSkips = {
         QStringLiteral("text"), QStringLiteral("image"), QStringLiteral("use"),
         QStringLiteral("linearGradient"), QStringLiteral("radialGradient")};
@@ -771,6 +797,14 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 continue;
             }
 
+            if (stack.last().isSwitch) {
+                if (stack.last().switchChosen || !svgConditionsPass(at)) {
+                    xml.skipCurrentElement();   // not the one drawn: not counted either
+                    continue;
+                }
+                stack.last().switchChosen = true;
+            }
+
             if (reportedSkips.contains(name)) {
                 addSkipped(res, skippedCounts, name);
                 xml.skipCurrentElement();   // consumes through the matching end tag
@@ -786,6 +820,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
             const bool foreign = !ns.isEmpty() && ns != QLatin1String("http://www.w3.org/2000/svg");
             Ctx ctx{parseSvgTransform(at.value(QLatin1String("transform")).toString()) * parent.xf,
                     parent.hidden || foreign || svgHidden(at) || skipContainers.contains(name)};
+            ctx.isSwitch = name == QLatin1String("switch");
             stack.append(ctx);
             if (ctx.hidden)
                 continue;
@@ -797,7 +832,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 if (!local.isEmpty())
                     user.addPath(ctx.xf.map(local));
             } else if (name == QLatin1String("g") || name == QLatin1String("svg")
-                       || name == QLatin1String("a")) {
+                       || name == QLatin1String("a") || name == QLatin1String("switch")) {
                 // containers: nothing to draw
             } else {
                 addSkipped(res, skippedCounts, name);
@@ -1409,8 +1444,12 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
         }
     }
 
-    for (const Entity &e : entities)
+    for (const Entity &e : entities) {
+        // Paper space (67 = 1): a layout's frame and title block, not the part.
+        if (pairI(e.pairs, 67) == 1)
+            continue;
         emitEntity(ctx, e, QTransform(), 0);
+    }
 
     flushSkipped(res, skippedCounts);
     if (ctx.unit != 1.0)

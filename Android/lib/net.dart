@@ -14,6 +14,28 @@ class Protocol {
   static const apiHello = 'PHOBICCCP-API 1\n';
 }
 
+/// The answer to "put".
+class PutResult {
+  /// Kept, as itself or (with [forked]) as a new design.
+  final bool stored;
+
+  /// It had changed on the computer since this pad's copy ("base"), so the
+  /// pad's version was kept there as a new design with this id.
+  final String forked;
+
+  /// The same for a deletion, which the computer refused.
+  final bool conflict;
+
+  /// The computer's copy's time after the put; null from an older phobiCCCP.
+  final int? modified;
+  const PutResult({this.stored = false, this.forked = '', this.conflict = false, this.modified});
+  factory PutResult.fromJson(Map<String, Object?> j) => PutResult(
+      stored: j['stored'] == true,
+      forked: j['forked'] is String ? j['forked'] as String : '',
+      conflict: j['conflict'] == true,
+      modified: j['modified'] is num ? (j['modified'] as num).toInt() : null);
+}
+
 class CccpException implements Exception {
   final String message;
 
@@ -75,6 +97,7 @@ class CccpConnection {
     if (start < data.length) _buf.add(data.sublist(start));
     if (_buf.length > maxReply) {
       _buf.clear();
+      close();
       _onDone();
     }
   }
@@ -84,8 +107,13 @@ class CccpConnection {
     if (w != null && !w.isCompleted) {
       _waiting = null;
       w.complete(line);
-    } else {
+    } else if (_lines.isEmpty) {
+      // Only an answer sent before it was asked for ("ERR busy" right on
+      // connect) waits here; more than one unasked line is not phobiCCCP.
       _lines.add(line);
+    } else {
+      close();
+      _onDone();
     }
   }
 
@@ -152,7 +180,10 @@ class CccpConnection {
   }
 
   /// True when phobiCCCP kept it (it had no copy, or an older one).
-  Future<bool> put(Design d) async => (await request({'op': 'put', 'design': d.toJson()}))['stored'] == true;
+  Future<bool> put(Design d) async => (await push(d)).stored;
+
+  /// [put], with all phobiCCCP said about it.
+  Future<PutResult> push(Design d) async => PutResult.fromJson(await request({'op': 'put', 'design': d.toJson()}));
 
   Future<DesktopInfo> selectMachine(String id) async => DesktopInfo.fromJson(await request({'op': 'machine', 'id': id}));
 
@@ -201,7 +232,11 @@ class Discovery {
         while ((d = sock.receive()) != null) {
           final addr = d!.address.address;
           final desk = parseAnswer(utf8.decode(d.data, allowMalformed: true), addr, typed: typedByAddress[addr] ?? '');
-          if (desk != null) found[desk.id] = desk;
+          if (desk == null) continue;
+          // Heard both at the address typed in and on the LAN: still the one
+          // typed in, whichever answer came last.
+          final before = found[desk.id];
+          found[desk.id] = desk.typed.isEmpty && before != null && before.typed.isNotEmpty ? desk.withTyped(before.typed) : desk;
         }
       });
       final hello = utf8.encode(Protocol.discover);

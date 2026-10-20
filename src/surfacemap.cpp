@@ -151,6 +151,26 @@ QVector<GridPoint> surfaceMapProbeOrder(double x0, double y0, double x1, double 
     return out;
 }
 
+// Highest offset under a straight XY move. Bilinear is not linear inside a
+// cell, so the ends alone can miss a high spot in between: sample at a
+// quarter of the smallest cell (or `step`, if finer) as well.
+static double maxOffsetAlong(const SurfaceMap &map, double ax, double ay, double bx, double by,
+                             double step)
+{
+    if (map.cols > 1)
+        step = std::min(step, (map.x1 - map.x0) / (map.cols - 1) / 4.0);
+    if (map.rows > 1)
+        step = std::min(step, (map.y1 - map.y0) / (map.rows - 1) / 4.0);
+    step = std::max(0.1, step);
+    double hi = std::max(map.offsetAt(ax, ay), map.offsetAt(bx, by));
+    const int n = int(std::ceil(std::hypot(bx - ax, by - ay) / step));
+    for (int k = 1; k < n; ++k) {
+        const double t = double(k) / n;
+        hi = std::max(hi, map.offsetAt(ax + (bx - ax) * t, ay + (by - ay) * t));
+    }
+    return hi;
+}
+
 QVector<Op> applySurfaceMap(const QVector<Op> &ops, const SurfaceMap &map, double maxSegment)
 {
     if (!map.isValid())
@@ -168,9 +188,26 @@ QVector<Op> applySurfaceMap(const QVector<Op> &ops, const SurfaceMap &map, doubl
     for (const Op &op : ops) {
         switch (op.kind) {
         case Op::Rapid: {
+            // A rapid travels at its Z plus the highest surface under the
+            // whole move, not just under its end: a long move at low
+            // clearance would otherwise cross a high spot. With no known
+            // start (program start, after a tool change) that is the highest
+            // point of the map. Then it drops to the offset at its end, so
+            // what follows starts where the program expects.
+            const double end = map.offsetAt(op.x, op.y);
+            double lift = end;
+            if (!known) {
+                double lo, hi;
+                map.offsetRange(&lo, &hi);
+                lift = std::max(end, hi);
+            } else if (op.x != px || op.y != py) {
+                lift = maxOffsetAlong(map, px, py, op.x, op.y, maxSegment);
+            }
             Op o = op;
-            o.z += map.offsetAt(op.x, op.y);
+            o.z += lift;
             out.append(o);
+            if (lift > end + 1e-6)
+                out.append(Op::rapid(op.x, op.y, op.z + end));
             break;
         }
         case Op::Feed: {
@@ -273,6 +310,9 @@ SurfaceMapProber::SurfaceMapProber(GrblStreamer *grbl, QObject *parent)
     });
 }
 
+// How far from its grid point a touch may be and still count for it.
+static const double kOnPointTol = 0.5;
+
 void SurfaceMapProber::start(const SurfaceMapPlan &plan)
 {
     m_plan = plan;
@@ -309,7 +349,23 @@ void SurfaceMapProber::probeNext()
                                    "on the plate, or the magnet on the plate itself?"));
         return;   // still waiting: fix it and press again
     }
+    // The head may have been jogged sideways while waiting (to get over the
+    // plate). A touch there would be filed under the planned point, which
+    // the map then holds as the height at the wrong place. Go back over the
+    // point instead (the move lifts first) and wait again.
+    if (m_plan.pauseEachPoint && m_grbl->status().valid) {
+        const GridPoint &p = m_order.at(m_current);
+        const double off = std::hypot(m_grbl->status().wx - p.x, m_grbl->status().wy - p.y);
+        if (off > kOnPointTol) {
+            emit failed(QStringLiteral("the head is %1 mm off point %2: going back over it — "
+                                       "put the plate under the tool there and probe again")
+                            .arg(off, 0, 'f', 1).arg(m_current + 1));
+            moveToCurrent();
+            return;
+        }
+    }
     m_hits.clear();
+    m_hitValid = false;
     m_stage = Stage::Probing;
     emit probing(m_current + 1, m_order.size());
     m_grbl->startMacro(surfaceMapProbeLines(m_plan));
@@ -328,10 +384,17 @@ void SurfaceMapProber::fail(const QString &why)
     emit failed(why);
 }
 
-void SurfaceMapProber::onProbe(double, double, double mz, bool ok)
+void SurfaceMapProber::onProbe(double mx, double my, double mz, bool ok)
 {
-    if (m_stage == Stage::Probing && ok)
-        m_hits.append(mz);
+    if (m_stage != Stage::Probing || !ok)
+        return;
+    m_hits.append(mz);
+    // Where the touch really was, in work XY. GRBL reports probe hits in
+    // machine coordinates; the last status gives the work offset.
+    const MachineStatus &st = m_grbl->status();
+    m_hitValid = st.valid;
+    m_hitX = st.valid ? mx - (st.mx - st.wx) : 0;
+    m_hitY = st.valid ? my - (st.my - st.wy) : 0;
 }
 
 void SurfaceMapProber::onMacroFinished(bool ok)
@@ -359,8 +422,25 @@ void SurfaceMapProber::onMacroFinished(bool ok)
         }
         const GridPoint &p = m_order.at(m_current);
         const double stock = m_hits.last() - m_plan.plate;
+        // Report the point where the probe actually touched, and never file a
+        // touch taken elsewhere under this grid point.
+        const double hx = m_hitValid ? m_hitX : p.x, hy = m_hitValid ? m_hitY : p.y;
+        const double off = std::hypot(hx - p.x, hy - p.y);
+        if (off > kOnPointTol) {
+            const QString why = QStringLiteral("point %1 was probed %2 mm away from where it belongs")
+                                    .arg(m_current + 1).arg(off, 0, 'f', 1);
+            // Unattended nobody can have moved the head, so trying again
+            // would only repeat whatever went wrong.
+            if (!m_plan.pauseEachPoint) {
+                fail(why);
+                return;
+            }
+            emit failed(why + QStringLiteral(": not used — going back over it"));
+            moveToCurrent();
+            return;
+        }
         m_map.z[p.index] = stock;
-        emit pointMeasured(m_current + 1, total, p.x, p.y, stock);
+        emit pointMeasured(m_current + 1, total, hx, hy, stock);
         if (++m_current < total) {
             moveToCurrent();
             return;

@@ -157,11 +157,16 @@ void Gamepad::closeDevice()
 #endif
 }
 
-bool Gamepad::openPath(const QString &path, bool checkButtons)
+bool Gamepad::openPath(const QString &path, bool checkButtons, bool *notAPad)
 {
+    if (notAPad)
+        *notAPad = false;
 #ifdef __linux__
     if (m_fd >= 0)
         return false;
+    // A node that will not open is not judged: right after plugging in, the
+    // node exists before udev has given the desktop user access to it, so
+    // this open fails once and works a moment later.
     const int fd = ::open(path.toLocal8Bit().constData(), O_RDONLY | O_NONBLOCK);
     if (fd < 0)
         return false;
@@ -173,6 +178,8 @@ bool Gamepad::openPath(const QString &path, bool checkButtons)
         unsigned char buttons = 0;
         if (::ioctl(fd, JSIOCGBUTTONS, &buttons) < 0 || buttons < 2) {
             ::close(fd);
+            if (notAPad)
+                *notAPad = true;
             return false;
         }
         char buf[128] = {0};
@@ -207,9 +214,13 @@ void Gamepad::poll()
         }
         if (m_rejected.contains(path))
             continue;
-        if (openPath(path))
+        bool notAPad = false;
+        if (openPath(path, true, &notAPad))
             return;
-        m_rejected.insert(path);
+        // Only a device that answered and is not a pad is set aside; one
+        // that would not open is tried again on the next scan.
+        if (notAPad)
+            m_rejected.insert(path);
     }
 #endif
 }
@@ -238,6 +249,8 @@ void Gamepad::readEvents()
         }
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
             return;                       // drained
+        if (n < 0 && errno == EINTR)
+            continue;                     // a signal arrived mid-read: not the pad's doing
         if (n == 0 || n < 0) {
             // Unplugged, or the pipe a test was feeding us closed. Not an
             // error: go back to looking for a device.

@@ -54,10 +54,11 @@ QVector<GridPoint> surfaceMapProbeOrder(double x0, double y0, double x1, double 
 // The program with every Z raised by the map's offset at its XY. Feed moves
 // are cut into pieces no longer than `maxSegment` so Z follows the surface
 // between their ends; arcs become chords (within 0.005 mm of the arc) for the
-// same reason. Rapids keep their single move: they travel at safe height and
-// only their end gets the offset. After a tool change the position is not
-// known (the tool-change macro moved the head), so the first move after it is
-// taken whole.
+// same reason. Rapids keep their single move but travel at their Z plus the
+// highest offset anywhere under the move, then drop to the offset at their
+// end. After a tool change the position is not known (the tool-change macro
+// moved the head), so the first move after it is taken whole, and a rapid
+// there clears the highest point of the map.
 QVector<Op> applySurfaceMap(const QVector<Op> &ops, const SurfaceMap &map,
                            double maxSegment = 3.0);
 
@@ -114,6 +115,8 @@ private:
     SurfaceMap m_map;
     int m_current = 0;
     QVector<double> m_hits;
+    double m_hitX = 0, m_hitY = 0;   // last touch, work XY
+    bool m_hitValid = false;
     Stage m_stage = Stage::Idle;
 };
 
