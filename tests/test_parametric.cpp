@@ -350,6 +350,43 @@ int main(int argc, char **argv)
         check(d.toolpaths().first().json.value("end_depth").toString() == "-19.500", "depth string, negative");
         check(approx(d.toolpaths().first().json.value("feed").toDouble(), 1950), "feed number");
         check(param::applyToolpathBindings(d).isEmpty(), "second pass changes nothing");
+
+        // Clamped to the range the form bound the field with; a binding that
+        // can't be worked out keeps its value; both are reported.
+        Toolpath u;
+        u.uuid = "tp2";
+        u.type = "pocket";
+        u.json.insert("name", "Pocket 1");
+        u.json.insert("stepover", 1.5);
+        u.json.insert("end_depth", QStringLiteral("-6.000"));
+        u.json.insert("feed", 800);
+        QJsonObject b2;
+        b2.insert("stepover", QJsonObject{{"expr", "so"}, {"min", 0.0}, {"max", 100.0}});
+        b2.insert("end_depth", QJsonObject{{"expr", "nope + 1"}, {"neg", true}, {"str", true}});
+        b2.insert("feed", QJsonObject{{"expr", "so * 1000"}});     // old binding: no range
+        u.json.insert("phobic_expr", b2);
+        d.addToolpath(u);
+        d.parametricRef().params.append({"so", "-2", ""});
+        QStringList problems;
+        param::applyToolpathBindings(d, &problems);
+        const QJsonObject &uj = d.toolpaths().last().json;
+        check(approx(uj.value("stepover").toDouble(), 0), "stepover clamped to its least, 0");
+        check(uj.value("end_depth").toString() == "-6.000", "a failing binding keeps its value");
+        check(approx(uj.value("feed").toDouble(), -2000), "a binding without a range is not clamped");
+        check(problems.size() == 2, "two problems reported");
+        check(problems.filter("stepover").size() == 1 && problems.filter("stepover").first().contains("Pocket 1")
+                  && problems.filter("stepover").first().contains("set to 0"), "the clamp is reported");
+        check(problems.filter("end_depth").size() == 1
+                  && problems.filter("end_depth").first().contains("can't be worked out, kept 6"),
+              "the failure is reported with the kept value");
+        // A depth's range is on its size: -8 with max 5 is written as -5.
+        QJsonObject b3 = b2;
+        b3.insert("end_depth", QJsonObject{{"expr", "so * 4"}, {"neg", true}, {"str", true},
+                                           {"min", 0.0}, {"max", 5.0}});
+        d.toolpathsRef().last().json.insert("phobic_expr", b3);
+        problems.clear();
+        param::applyToolpathBindings(d, &problems);
+        check(d.toolpaths().last().json.value("end_depth").toString() == "-5.000", "depth size clamped");
     }
 
     // ---- saved and loaded --------------------------------------------------
@@ -403,6 +440,66 @@ int main(int argc, char **argv)
         const QString e = param::newError(d, d.parametric(), after);
         check(e.contains("loop"), "the loop is reported");
         check(param::newError(d, d.parametric(), d.parametric()).isEmpty(), "no edit, no new error");
+    }
+
+    // ---- a parameter may not drive a radius to 0 or below ----------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element c = Element::makeCircle({50, 50}, 10, layer);
+        d.addElement(c);
+        addCon(d, Constraint::Radius, {ref(GeoRef::Circle, c.id, -1)}, "r");
+        d.parametricRef().params = {{"r", "10", ""}};
+        Parametric after = d.parametric();
+        after.params[0].expr = "-5";
+        check(param::newError(d, d.parametric(), after).contains("more than 0"), "negative radius refused");
+        after.params[0].expr = "4";
+        check(param::newError(d, d.parametric(), after).isEmpty(), "positive radius fine");
+    }
+
+    // ---- an angle stays between 0 and 180 degrees -------------------------------
+    {
+        Document d;
+        check(d.load(blank, &err), "load");
+        const Element path = Element::makePath({{0, 0}, {40, 0}, {60, 30}}, false, layer);
+        d.addElement(path);
+        addCon(d, Constraint::Angle, {ref(GeoRef::Line, path.id, 0), ref(GeoRef::Line, path.id, 1)}, "a");
+        d.parametricRef().params = {{"a", "60", ""}};
+        const Constraint &an = d.parametric().constraints.first();
+        check(param::badValue(an, 90).isEmpty(), "90 is an angle");
+        check(!param::badValue(an, 270).isEmpty() && !param::badValue(an, 180).isEmpty()
+                  && !param::badValue(an, 0).isEmpty() && !param::badValue(an, -30).isEmpty(),
+              "0, 180, 270 and -30 are refused");
+        Parametric after = d.parametric();
+        after.params[0].expr = "270";
+        check(param::newError(d, d.parametric(), after).contains("180"), "a parameter driving it to 270 refused");
+        after.params[0].expr = "120";
+        check(param::newError(d, d.parametric(), after).isEmpty(), "120 fine");
+    }
+
+    // ---- parser limits ----------------------------------------------------------
+    {
+        bool ok = true;
+        eval(QString(20000, QLatin1Char('(')) + "1" + QString(20000, QLatin1Char(')')), &ok);
+        check(!ok, "deep nesting fails instead of overflowing the stack");
+        eval("1 cm / 4 in", &ok);
+        check(!ok, "two units in one product refused");
+        eval("max(2,5; 3)", &ok);
+        check(!ok, "mixed , and ; between values refused");
+        check(approx(eval("max(2; 3)", &ok), 3) && ok, "; alone still separates values");
+        check(approx(eval("3 cm + 2 mm", &ok), 32) && ok, "a unit per term still works");
+    }
+
+    // ---- duplicate uids and names in a file are made unique ---------------------
+    {
+        QJsonObject o{{"params", QJsonArray{QJsonObject{{"name", "d1"}, {"expr", "5"}}}},
+                      {"constraints", QJsonArray{QJsonObject{{"type", int(Constraint::Radius)}, {"name", "d1"}, {"expr", "3"},
+                                                             {"refs", QJsonArray{QJsonArray{2, "a", 0, -1}}}},
+                                                 QJsonObject{{"type", int(Constraint::Radius)}, {"uid", "c1"}, {"name", "d2"},
+                                                             {"expr", "4"}, {"refs", QJsonArray{QJsonArray{2, "b", 0, -1}}}}}}};
+        const Parametric p = Parametric::fromJson(o);
+        check(p.constraints.size() == 2 && p.constraints[0].uid != p.constraints[1].uid, "uids unique after load");
+        check(p.constraints[0].name != QLatin1String("d1"), "a dimension does not hide behind a parameter's name");
     }
 
     // ---- constraints follow their nodes, not node numbers -----------------------
@@ -506,6 +603,77 @@ int main(int argc, char **argv)
         addCon(d, Constraint::Distance, {ref(GeoRef::Line, r.id, 0)}, "30");
         check(!param::solve(d).ok, "its size can't be driven");
         check(approx(d.elementById(r.id)->raw.value("width").toDouble(), 20), "and is left alone");
+    }
+
+    // A size driven through zero is no solution: the rectangle or polygon
+    // can only be built the right way out, where the constraints fail.
+    {
+        Document d;
+        const Element r = Element::makeRectangle({50, 50}, 40, 20, layer);
+        const Element p = Element::makePoint({60, 40}, layer);
+        d.addElement(r);
+        d.addElement(p);
+        addCon(d, Constraint::Fix, {ref(GeoRef::Point, r.id, 0)});        // lower left at 30,40
+        addCon(d, Constraint::Fix, {ref(GeoRef::Point, p.id, -1)});
+        addCon(d, Constraint::Coincident, {ref(GeoRef::Point, r.id, 1), ref(GeoRef::Point, p.id, -1)});
+        check(param::solve(d).ok, "rectangle corner on the point");
+        d.parametricRef().constraints[1].at = QPointF(10, 40);           // left of the lower left
+        const param::SolveResult res = param::solve(d);
+        check(!res.ok && !res.failing.isEmpty(), "a width through zero fails");
+        check(approx(d.elementById(r.id)->raw.value("width").toDouble(), 30), "the rectangle is left alone");
+
+        Document d2;
+        const Element poly = Element::makePolygon({50, 50}, 20, 5, layer, 0);
+        d2.addElement(poly);
+        addCon(d2, Constraint::Fix, {ref(GeoRef::Point, poly.id, 0)});    // vertex 0 at 70,50
+        Constraint c;
+        c.type = Constraint::Fix;
+        c.refs = {ref(GeoRef::Point, poly.id, -1)};
+        c.uid = d2.parametric().nextUid();
+        c.at = QPointF(90, 50);                                           // centre beyond vertex 0
+        d2.parametricRef().constraints.append(c);
+        check(!param::solve(d2).ok, "a polygon radius through zero fails");
+        check(param::unsatisfied(d2).size() == 1 && approx(d2.elementById(poly.id)->raw.value("radius").toDouble(), 20),
+              "the polygon is left alone");
+    }
+
+    // A reversed line keeps its direction: through the file, and when a
+    // rectangle becomes a path whose edges run the other way.
+    {
+        Document d;
+        const Element r = Element::makeRectangle({50, 50}, 40, 20, layer);
+        const Element ln = Element::makePath({{80, 80}, {100, 90}}, false, layer);
+        d.addElement(r);
+        d.addElement(ln);
+        addCon(d, Constraint::Fix, {ref(GeoRef::Line, r.id, 0)});
+        addCon(d, Constraint::Angle, {ref(GeoRef::Line, r.id, 0), ref(GeoRef::Line, ln.id, 0)}, "30");
+        check(param::solve(d).ok, "angle holds");
+        const Document before = d;
+        d.replaceElement(Element::withPathModel(r, Element::pathModel(r)));
+        bool changed = false;
+        check(param::reconcile(before, d, nullptr, &changed) == 0 && changed, "angle follows to the path");
+        const GeoRef moved = d.parametric().constraints.at(1).refs.first();
+        check(moved.reversed, "the path edge is taken reversed");
+        QPointF a, b;
+        check(param::line(d, moved, &a, &b) && approx(a.x(), 30) && approx(b.x(), 70) && approx(a.y(), 40),
+              "and still runs left to right");
+        check(param::unsatisfied(d).isEmpty(), "the angle still holds");
+        const Parametric back = Parametric::fromJson(d.parametric().toJson());
+        check(back.constraints.at(1).refs.first().reversed
+                  && !back.constraints.at(1).refs.at(1).reversed, "reversed survives the file");
+
+        // Through a transform: corner 0 mirrored lands on corner 1.
+        Document m;
+        const Element r2 = Element::makeRectangle({50, 50}, 40, 20, layer);
+        m.addElement(r2);
+        addCon(m, Constraint::Fix, {ref(GeoRef::Point, r2.id, 0)});
+        const Document was = m;
+        QTransform flip;
+        flip.translate(50, 0);
+        flip.scale(-1, 1);
+        flip.translate(-50, 0);       // the rectangle maps onto itself
+        check(param::reconcile(was, m, nullptr, nullptr, {{r2.id, flip}}) == 0, "nothing dropped");
+        check(m.parametric().constraints.first().refs.first().index == 1, "corner 0 follows to corner 1");
     }
 
     std::printf("parametric: %d checks passed\n", g_checks);

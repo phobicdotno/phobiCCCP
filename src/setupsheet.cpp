@@ -6,6 +6,7 @@
 
 #include <QDateTime>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonObject>
 #include <QSet>
 #include <cmath>
@@ -43,12 +44,60 @@ static QString toolKind(const QJsonObject &tool)
 
 QString setupSheetHtml(const Document &doc, const QString &title)
 {
-    // The whole job once for the totals, then each enabled toolpath on its
-    // own for its time (pooled ring toolpaths interleave in the real
-    // program, so the per-toolpath figures add up to a little more).
+    // The whole job once, for the totals and for each toolpath's time.
     Document all = doc;
     const GcodeResult whole = exportGcode(all);
     const JobStats total = computeStats(whole.ops);
+
+    // Per-toolpath times come from that same program, not from exporting
+    // each toolpath alone: rest depth makes a toolpath start deeper, or
+    // leaves it out, because of the ones cut before it, and on its own it
+    // never sees them. Each toolpath's ops open with a comment carrying its
+    // name; pooled ring toolpaths come in several runs, which add up.
+    QHash<QString, double> secByName;
+    {
+        QVector<Op> prefix;   // where the machine is when a run starts
+        QString cur;
+        int start = 0, rpm = 0;
+        bool havePos = false;
+        Op pos = Op::rapid(0, 0, 0);
+        auto close = [&](int end) {
+            if (cur.isEmpty() || end <= start)
+                return;
+            QVector<Op> run = prefix;
+            run += whole.ops.mid(start, end - start);
+            secByName[cur] += computeStats(run).timeSec - computeStats(prefix).timeSec;
+        };
+        for (int i = 0; i < whole.ops.size(); ++i) {
+            const Op &op = whole.ops.at(i);
+            if (op.kind == Op::Comment) {
+                close(i);
+                cur = op.text;
+                start = i;
+                // The machine's state carried in, so the run is charged for
+                // its first travel and not for a spin-up that never happens.
+                prefix.clear();
+                if (rpm > 0)
+                    prefix.append(Op::spindle(rpm));
+                if (havePos)
+                    prefix.append(pos);
+            } else if (op.kind == Op::Rapid || op.kind == Op::Feed || op.kind == Op::Arc) {
+                pos = Op::rapid(op.x, op.y, op.z);
+                havePos = true;
+            } else if (op.kind == Op::Spindle) {
+                rpm = op.ival;
+            } else if (op.kind == Op::Tool) {
+                rpm = 0;
+            }
+        }
+        close(whole.ops.size());
+    }
+    // A name two toolpaths share cannot be split by the comments; those fall
+    // back to exporting the toolpath alone.
+    QHash<QString, int> nameUses;
+    for (const Toolpath &t : doc.toolpaths())
+        if (t.json.value("enabled").toBool(true))
+            ++nameUses[t.json.value("name").toString()];
 
     QString h;
     h += QStringLiteral("<!doctype html><html><head><meta charset=\"utf-8\">"
@@ -119,14 +168,32 @@ QString setupSheetHtml(const Document &doc, const QString &title)
         if (!j.value("enabled").toBool(true))
             continue;
         ++row;
-        Document one = doc;
-        for (const Toolpath &o : doc.toolpaths()) {
-            Toolpath c = o;
-            c.json.insert(QStringLiteral("enabled"), o.uuid == t.uuid);
-            one.replaceToolpath(c);
+        const QString name = j.value("name").toString();
+        QString time;
+        if (nameUses.value(name) <= 1) {
+            if (whole.done.contains(name)) {
+                time = minutes(secByName.value(name));
+            } else {
+                QStringList why;
+                for (const QString &sk : whole.skipped)
+                    if (sk.startsWith(name + QStringLiteral(" (")))
+                        why << sk;
+                time = QStringLiteral("<span class=\"skip\">%1</span>")
+                           .arg(esc(why.isEmpty() ? name + QStringLiteral(" (not in the program)")
+                                                  : why.join(QStringLiteral("; "))));
+            }
+        } else {
+            Document one = doc;
+            for (const Toolpath &o : doc.toolpaths()) {
+                Toolpath c = o;
+                c.json.insert(QStringLiteral("enabled"), o.uuid == t.uuid);
+                one.replaceToolpath(c);
+            }
+            const GcodeResult r = exportGcode(one);
+            time = r.done.isEmpty() ? QStringLiteral("<span class=\"skip\">%1</span>")
+                                          .arg(esc(r.skipped.join(QStringLiteral("; "))))
+                                    : minutes(computeStats(r.ops).timeSec);
         }
-        const GcodeResult r = exportGcode(one);
-        const JobStats st = computeStats(r.ops);
         const QJsonObject speeds = j.value("speeds").toObject();
         const QJsonObject tool = j.value("tool").toObject();
         const bool cutout = t.type == QLatin1String("cutout");
@@ -136,9 +203,6 @@ QString setupSheetHtml(const Document &doc, const QString &title)
                                              depthText(j.value("end_depth")));
         const QJsonValue sd = j.value(cutout ? "depth_per_pass" : "stepdown");
         const QJsonValue so = j.value("stepover");
-        QString time = r.done.isEmpty() ? QStringLiteral("<span class=\"skip\">%1</span>")
-                                              .arg(esc(r.skipped.join(QStringLiteral("; "))))
-                                        : minutes(st.timeSec);
         h += QStringLiteral("<tr><td class=\"n\">%1</td><td>%2</td><td>%3</td><td>T%4</td>"
                             "<td class=\"n\">%5</td><td class=\"n\">%6</td><td class=\"n\">%7</td>"
                             "<td class=\"n\">%8 / %9</td><td class=\"n\">%10</td><td class=\"n\">%11</td></tr>")

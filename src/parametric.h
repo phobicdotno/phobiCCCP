@@ -5,6 +5,7 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QTransform>
 #include <QVector>
 #include <functional>
 
@@ -59,12 +60,17 @@ struct UserParameter {
 //   Line:   a straight path segment (sub, index = segment), a rectangle edge
 //           (0 bottom, 1 right, 2 top, 3 left) or a polygon edge.
 //   Circle: a circle element (sketch points too: their center).
+// `reversed`: the line is taken from its end to its start. A rectangle
+// turned into a path (or mirrored) runs its edges the other way round; the
+// flag keeps a direction-dependent constraint (an Angle, a distance on one
+// side) on the line as it was. It is not part of ==: same geometry.
 struct GeoRef {
     enum Kind { Point = 0, Line = 1, Circle = 2 };
     Kind kind = Point;
     QString id;
     int sub = 0;
     int index = -1;
+    bool reversed = false;
 
     bool operator==(const GeoRef &o) const
     {
@@ -127,8 +133,12 @@ QHash<QString, double> values(const Document &doc, const Parametric &p,
                               QStringList *errors = nullptr);
 // The first error ("name: why") that `after` has and `before` hadn't, or
 // empty. Catches loops through other names ("p = d1 + 1", then d1 = p),
-// which checking the edited expression against the old values misses.
+// which checking the edited expression against the old values misses, and
+// dimensions driven to a value they can't have (see badValue).
 QString newError(const Document &doc, const Parametric &before, const Parametric &after);
+// Why `v` can't be the value of dimension `c` (a radius, diameter or line
+// length of 0 or below, an angle outside 0..180 degrees), or empty. newError() checks every dimension too.
+QString badValue(const Constraint &c, double v);
 // Evaluate `expr` against the document's current parameters.
 bool evaluateIn(const Document &doc, const QString &expr, double *value,
                 QString *error = nullptr);
@@ -157,6 +167,8 @@ struct RefShape {
 };
 QVector<RefShape> shapesOf(const Document &doc, const QString &id);
 QVector<GeoRef> refsOf(const Document &doc, const QString &id);
+// Ids of the elements locked whole (a Fix on the element, not a point).
+QSet<QString> lockedElements(const Document &doc);
 
 // ---- solving --------------------------------------------------------------
 struct SolveResult {
@@ -170,13 +182,18 @@ struct SolveResult {
 // Re-evaluate the dimensions from their expressions, then move the geometry
 // until every constraint holds, changing as little as possible - and least
 // of all the elements in `keep` (the ones the user just edited). Elements
-// with a Fix constraint on the whole element never move. The document's
-// elements are only touched when the solve succeeds, unless `force`.
+// with a Fix constraint on the whole element never move. A rectangle or
+// polygon whose size the solve drives through zero fails (it can't be
+// built that way). The document's elements are only touched when the
+// solve succeeds, unless `force`.
 SolveResult solve(Document &doc, const QSet<QString> &keep = {}, bool force = false);
 
-// Re-evaluate every toolpath field bound to an expression (`phobic_expr`).
-// Returns the uuids that changed.
-QStringList applyToolpathBindings(Document &doc);
+// Re-evaluate every toolpath field bound to an expression (`phobic_expr`),
+// clamped to the field's range when the binding carries one (min / max, a
+// depth's "abs" or "neg" ranging its size). Returns the uuids that changed.
+// *problems gets one line for each binding that can't be worked out (it
+// keeps its value) or was clamped.
+QStringList applyToolpathBindings(Document &doc, QStringList *problems = nullptr);
 
 struct Freedom {
     int dof = 0;                    // degrees of freedom the constrained part has left
@@ -195,8 +212,12 @@ QStringList unsatisfied(const Document &doc);
 // that expressions or toolpath fields still use becomes a user parameter of
 // the same name. Returns how many were dropped (their uids in *dropped);
 // *changed says whether the constraints changed at all.
+// `moved`: elements the edit carried through a transform (a mirror, a
+// rotation, a scale). Their references go to whatever sits where the old
+// geometry landed under it, whatever the numbering, so a constraint on a
+// rectangle's lower left corner follows that corner to its mirror image.
 int reconcile(const Document &before, Document &doc, QStringList *dropped = nullptr,
-              bool *changed = nullptr);
+              bool *changed = nullptr, const QHash<QString, QTransform> &moved = {});
 // Every name the expressions in `p` and the document's toolpath fields use.
 QSet<QString> usedNames(const Document &doc, const Parametric &p);
 // reconcile() against the document itself: drops what no longer resolves.

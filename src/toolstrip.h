@@ -16,6 +16,13 @@ struct Op;
 // diameter, angle, flutes, cut length, kind and name. `users` gets the names
 // of the enabled toolpaths that use it.
 LibraryTool toolFromToolpaths(const Document &doc, int number, QStringList *users = nullptr);
+// The bit of one tool change (an Op::Tool): the toolpath tool object whose
+// number AND shape match it, since two bits can share a number. Falls back to
+// the shape the op itself carries when no toolpath matches any more.
+LibraryTool toolForChange(const Document &doc, const Op &change, QStringList *users = nullptr);
+// The Op::Tool ops that make the post emit a tool-change pause (`M0 ;T<n>`),
+// in program order: the k-th pause of the program is the k-th entry.
+QVector<Op> toolChanges(const QVector<Op> &ops);
 // A side-view diagram with dimension lines, `w` x `h` logical px, for dialogs.
 QPixmap toolPicture(const LibraryTool &t, int w, int h, double devicePixelRatio);
 

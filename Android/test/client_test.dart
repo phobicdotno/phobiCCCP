@@ -76,6 +76,8 @@ void main() {
     expect(r.pushed, 1);
     expect(r.tools!.tool(201)!.name, 'End mill');
     expect(store.get('r1')!.name, 'From the PC');
+    expect(store.get('r1')!.base, 50, reason: 'a pulled copy is the base of edits made on it');
+    expect(store.get('l1')!.base, 9, reason: 'so is a copy the computer kept');
     expect(seen.where((s) => s['op'] == 'put').single['design'], isA<Map>());
     await server.close();
     dir.deleteSync(recursive: true);
@@ -99,6 +101,91 @@ void main() {
     expect(r.pushed, 1);
     expect(r.refused.single, contains('text too long'));
     expect(seen.where((s) => s['op'] == 'put').length, 2);
+    await server.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('an edit of a copy that changed on the computer is kept there as a new design', () async {
+    final theirs = Design(id: 'a1', name: 'Desk edit', modified: 15);
+    final (server, seen) = await fakeDesktop((req) => switch (req['op']) {
+          'info' => '{"ok":true,"host":"shop"}',
+          'designs' => '{"ok":true,"designs":[{"id":"a1","modified":15}]}',
+          'get' => jsonEncode({'ok': true, 'design': theirs.toJson()}),
+          'put' => '{"ok":true,"stored":true,"forked":"f1","modified":15}',
+          _ => '{"ok":false,"error":"?"}',
+        });
+    final dir = Directory.systemTemp.createTempSync('pad');
+    // Pulled at 10, edited here at 20; the computer changed it at 15.
+    final store = DesignStore(dir)..put(Design(id: 'a1', name: 'Pad edit', modified: 20, base: 10));
+    final r = await syncWith(Desktop(id: 'x', host: 'shop', address: '127.0.0.1', port: server.port), store, withTools: false);
+    final put = seen.where((s) => s['op'] == 'put').single['design'] as Map;
+    expect(put['base'], 10, reason: 'the pad says which copy it edited');
+    final now = store.get('a1')!;
+    expect(now.name, 'Desk edit', reason: "the computer's copy replaces ours, though older");
+    expect(now.modified, 15);
+    expect(now.base, 15);
+    expect(r.conflicts.single, contains('Pad edit (pad)'));
+    // The next round has nothing to send: the fork comes back by pull.
+    expect(SyncPlan.of({'a1': now.modified}, const [DesignEntry('a1', modified: 15), DesignEntry('f1', modified: 20)]).push, isEmpty);
+    await server.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('an edit made here is offered before a newer copy is pulled over it', () async {
+    final theirs = Design(id: 'a1', name: 'Desk edit', modified: 30);
+    final (server, seen) = await fakeDesktop((req) => switch (req['op']) {
+          'info' => '{"ok":true,"host":"shop"}',
+          'designs' => '{"ok":true,"designs":[{"id":"a1","modified":30}]}',
+          'get' => jsonEncode({'ok': true, 'design': theirs.toJson()}),
+          'put' => '{"ok":true,"stored":true,"forked":"f1","modified":30}',
+          _ => '{"ok":false,"error":"?"}',
+        });
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final store = DesignStore(dir)..put(Design(id: 'a1', name: 'Pad edit', modified: 12, base: 10));
+    final r = await syncWith(Desktop(id: 'x', host: 'shop', address: '127.0.0.1', port: server.port), store, withTools: false);
+    expect(seen.map((s) => s['op']), containsAllInOrder(['put', 'get']));
+    expect(store.get('a1')!.name, 'Desk edit');
+    expect(r.conflicts, hasLength(1));
+    await server.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('a deletion the computer refuses brings the design back', () async {
+    final theirs = Design(id: 'a1', name: 'Kept', modified: 25);
+    final (server, _) = await fakeDesktop((req) => switch (req['op']) {
+          'info' => '{"ok":true,"host":"shop"}',
+          'designs' => '{"ok":true,"designs":[{"id":"a1","modified":25}]}',
+          'get' => jsonEncode({'ok': true, 'design': theirs.toJson()}),
+          'put' => '{"ok":true,"stored":false,"conflict":true,"modified":25}',
+          _ => '{"ok":false,"error":"?"}',
+        });
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final store = DesignStore(dir)..put(Design(id: 'a1', name: 'Kept', modified: 40, base: 10, deleted: true));
+    final r = await syncWith(Desktop(id: 'x', host: 'shop', address: '127.0.0.1', port: server.port), store, withTools: false);
+    expect(store.get('a1')!.deleted, false);
+    expect(r.conflicts.single, contains('not deleted'));
+    await server.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('the base moves on only to a copy the computer has', () async {
+    var answer = '{"ok":true,"stored":false,"modified":9}';
+    final (server, _) = await fakeDesktop((req) => switch (req['op']) {
+          'info' => '{"ok":true,"host":"shop"}',
+          'designs' => '{"ok":true,"designs":[]}',
+          'put' => answer,
+          _ => '{"ok":false,"error":"?"}',
+        });
+    final desk = Desktop(id: 'x', host: 'shop', address: '127.0.0.1', port: server.port);
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final store = DesignStore(dir)..put(Design(id: 'a1', modified: 9, base: 5));
+    await syncWith(desk, store, withTools: false);
+    expect(store.get('a1')!.base, 9, reason: 'it already had this copy');
+    // A phobiCCCP that does not say which copy it has, and did not keep ours.
+    store.put(Design(id: 'a1', modified: 12, base: 9));
+    answer = '{"ok":true,"stored":false}';
+    await syncWith(desk, store, withTools: false);
+    expect(store.get('a1')!.base, 9);
     await server.close();
     dir.deleteSync(recursive: true);
   });

@@ -16,6 +16,7 @@ namespace c2d {
 
 bool Document::load(const QString &path, QString *error)
 {
+    ++m_loads;
     m_params.clear();
     m_elements.clear();
     m_toolpaths.clear();

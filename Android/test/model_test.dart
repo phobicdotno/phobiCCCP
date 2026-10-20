@@ -32,6 +32,47 @@ void main() {
     expect(d.deleted, false);
   });
 
+  test('keys this pad does not know survive an edit', () {
+    final d = Design.fromJson(jsonDecode('{"id":"a","name":"A","modified":1,"parametric":{"p":[1]},'
+        '"shapes":[{"id":"s1","type":"rect","x":0,"y":0,"w":10,"h":10,"bind":"w"}],'
+        '"toolpaths":[{"name":"T","type":"pocket","shapes":["s1"],"tool":201,"depth":3,"phobic_expr":{"depth":"d"}}]}')
+        as Map<String, Object?>);
+    final e = d.copyWith(
+        name: 'B',
+        shapes: [d.shapes.single.moved(1, 1)],
+        toolpaths: [d.toolpaths.single.copyWith(tool: 202)]).toJson();
+    expect(e['parametric'], {'p': [1]});
+    expect((e['shapes'] as List).single['bind'], 'w');
+    expect((e['toolpaths'] as List).single['phobic_expr'], {'depth': 'd'});
+    expect(e['name'], 'B');
+  });
+
+  test('the base and a computer\'s note travel with the design', () {
+    final d = Design.fromJson(jsonDecode('{"id":"a","name":"A","modified":20,"base":10,"desktopOnly":"shop"}') as Map<String, Object?>);
+    expect(d.base, 10);
+    expect(d.desktopOnly, 'shop');
+    final e = d.copyWith(name: 'B').toJson();
+    expect(e['base'], 10);
+    expect(e['desktopOnly'], 'shop');
+    expect(Design(id: 'n').toJson().containsKey('base'), false);
+    expect(Design.fromJson(const {'id': 'a', 'desktopOnly': true}).desktopOnly, isNotEmpty);
+  });
+
+  test('points repeated in a row are dropped', () {
+    expect(dropRepeats([[0, 0], [0, 0], [5, 0], [5, 0], [5, 5]]), [[0, 0], [5, 0], [5, 5]]);
+    expect(dropRepeats([[0, 0], [5, 0], [5, 5], [0, 0]], closed: true), [[0, 0], [5, 0], [5, 5]]);
+    expect(dropRepeats([[0, 0], [5, 0], [5, 5], [0, 0]]), hasLength(4));
+  });
+
+  test('bad copies from the network are made safe', () {
+    final d = Design.fromJson(jsonDecode('{"id":"a","stock":{"width":1e9,"height":0,"thickness":19},'
+        '"shapes":[{"id":"p","type":"path","points":[[1],[2,3],[4,5,6]]}]}') as Map<String, Object?>);
+    expect(d.stock.width, 10000);
+    expect(d.stock.height, 1);
+    expect(d.shapes.single.points, [[2, 3], [4, 5]]);
+    expect(d.shapes.single.bounds(), [2, 3, 4, 5]);
+  });
+
   test('moving and bounds', () {
     final p = const Shape(id: 'p', type: Shape.path, points: [[0, 0], [10, 5]]).moved(1, 2);
     expect(p.points, [[1, 2], [11, 7]]);

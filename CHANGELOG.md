@@ -1,5 +1,142 @@
 # Changelog
 
+## v1.2.6 (build 79) — 2026-10-20
+
+> Bug check 4: pockets no longer cut through islands, tool changes name the right bit, and pad sends that clash are kept as a copy
+
+- **Toolpaths:**
+  - A pocket's links between rings could feed straight across an island (or, in 3D rough, across
+    a hole in the boundary) at full depth. A link now stays down only inside the area the bit may
+    cut; otherwise it lifts. Ordinary pockets keep their links.
+  - A rest-depth contour with a lead-in could plunge the lead arc full depth into stock that was
+    never cut. The lead arcs now count when deciding where it starts.
+  - A ramp that ran out of laps on a tiny inner ring finished the drop at cutting feed; the rest
+    is now plunged at the plunge feed.
+  - Refused with a message instead of cutting wrong: spindle speed 0 (the spindle was stopped),
+    a start depth below the end depth, a tool diameter of 0 or less, and an unreadable 3D max depth.
+- **Machine:**
+  - The tool-change prompt named the first bit with that number, not the one needed, when two
+    bits share a number. It names the right one now.
+  - With the BitSetter off, the prompt can be closed to zero Z by hand; the program waits until
+    Continue (which warns if Z was not zeroed).
+  - Run is refused when the program has tool changes and there is no BitSetter reference yet.
+  - Disconnect during a job asks first, then holds, resets and closes, instead of leaving the
+    machine cutting its buffer with the spindle on.
+  - Cancel job during a dwell (spin-up) now holds the machine before asking.
+  - Zeroing is refused while a program runs (screen, gamepad and BitZero), except Z during a
+    manual tool-change pause.
+  - Jogs start from a fresh position (a quick tap after a hold could move the wrong way), a held
+    jog stops queueing far ahead, and taps can't flood the controller.
+  - Autosave waits while a job runs; a recovery copy is no longer lost when a new session gets
+    the crashed one's process id; a cancelled macro can no longer block the next one.
+- **Drawing and parametric:**
+  - Mirror and rotate keep constraints on the right corners of rectangles and polygons (they used
+    to bend the shape), and rotating by any angle keeps them instead of dropping them.
+  - Convert to path on a rectangle no longer flips distances to the other side or breaks angles.
+  - A solve that would turn a rectangle or polygon inside out is refused instead of writing it.
+  - A shape locked with Fix stays put when moved, turned or resized.
+  - The resize handle of a turned rectangle sits on its corner and sizes it along its own sides.
+  - Reopening a design clears the selection (the Properties panel showed nothing while the shape
+    stayed selected). Node menu actions check the node still exists.
+- **Files and pad link:**
+  - A pad Send that clashed with a desktop edit was forked silently, the opened file linked to the
+    wrong design, and the next sync forked again. Now one copy, the file linked to it, and the pad
+    told. A Send followed by another edit no longer makes a copy for no reason, and retries no
+    longer make extra copies.
+  - A toolpath whose shapes were deleted was added again on every desktop save.
+  - Save As and New asked nothing when "<name>.c2d" already existed; they ask now.
+  - A linked file on a drive that isn't plugged in stays linked (the status bar says so); a
+    stored design that can't be read is never written over.
+  - SVGs from Illustrator (drawing inside `<switch>`) import; DXF paper-space items are left out.
+
+## v1.2.5 (build 78) — 2026-10-19
+
+> Bug check 3: rest cuts no longer cut into islands left standing, the Area tool keeps small islands, and parametric sketches stay put
+
+- **Rest cuts (Skip what the toolpaths above cut):**
+  - The test of whether a toolpath is already inside cleared area looked only at the corners
+    of its passes. A long straight pass between two cleared corners could run through an
+    island still standing between them, so the toolpath started deep and milled the island
+    away (11 mm deep instead of 2 in the test case). Now the whole pass is checked.
+  - Grooves cut by a V-bit or ball-nose, and contours with tabs, were counted as a flat floor
+    at full depth, so a following pocket started too deep (into the tabs, or below a V groove).
+    They are no longer counted as cleared (tabs: only down to the tab top).
+  - A pocket cut in rest bands lost its helical entry and plunged straight; it keeps it now.
+- **Area tool:**
+  - A small island in a big pocket (under about 0.2% of its area, say a 13 mm boss in a
+    300 mm pocket) was dropped, and a pocket made from the selection cut it away. It is kept.
+  - Pieces that only touch at a point (a circle inscribed in a square) came out as one area,
+    so a click in one corner picked all four. Each piece is its own area now.
+- **Parametric sketching:**
+  - A comment, a new or removed parameter, a rename, a moved label or a deleted constraint no
+    longer moves the geometry to a compromise when some constraint is red.
+  - Mirroring a constrained shape kept each angle and side the old way round and folded the
+    shape. Constraints inside the mirrored shapes now follow the mirror.
+  - Constraints on a turned rectangle's corners and edges used the unturned corners; they use
+    the real ones now. Changing a polygon's side count re-attaches its constraints by place.
+  - A radius, diameter or length driven to 0 or below from the Parameters tab (typed there, or
+    through a parameter) is refused, as on the canvas.
+  - Expressions: deep nesting fails instead of crashing; "1 cm / 4 in" (two units in one
+    product) and "max(2,5; 3)" (both , and ; between values) are refused instead of giving a
+    wrong number. Duplicate uids and names in a file are made unique on load.
+  - The Constrain and Dimension tools no longer stay active (invisibly) in Toolpaths mode; a
+    half-placed dimension or open value editor no longer carries over to another design, a
+    tool switch, or an undo/redo that took its name. A constraint picked in the Parameters tab
+    is let go when the canvas is used another way, so Del deletes the shape, not it.
+  - Change tool now unbinds the feeds, speeds, stepdown and stepover it sets, so the next
+    parameter edit no longer puts the old numbers back. Removing a parameter lists the
+    toolpaths that use it.
+- **Toolpaths side:** dragging a card when the panel around the list scrolls no longer jitters
+  or scrolls half as far; a press whose release went to a dialog no longer leaves the list
+  scrolling on hover or picks up a card; a drop after the list was rebuilt mid-drag is ignored
+  instead of moving another toolpath.
+- **Run:** a pad rebuilding the open design while Run was preparing no longer streams the old
+  program.
+- **Pad app:** Document setup and Tool pick no longer save the old copy over one that synced
+  in while the dialog was open, and a move during a sync no longer puts the old copy on the
+  undo stack. The Send dialog can't be closed while sending (the answer always shows) and its
+  list of computers stays live. Keys the pad doesn't know (parametric data, bindings) survive
+  a pad edit. An open path is only hit near its line. Number fields keep the old value for
+  input they can't read ("1/4 in", "2in") instead of misreading it. Malformed designs from
+  the network (one-number points, a 1e9 mm stock) are made safe.
+- **Tool changes:** two toolpaths with the same tool number but a different bit now get a
+  tool change (M0 and the T line) between them, and the simulation uses each toolpath's own
+  bit. Tiling keeps the right bit per tile.
+- **Tiling:** re-entering a tile deep in the stock ramped too short and plunged; the zigzag now
+  has enough legs for the depth. Chip-break lifts are kept in the tile they belong to.
+- **Parametric:** fields bound to an expression are clamped to the field's range (as the form
+  shows) and a binding whose expression fails is reported instead of keeping its old number
+  silently. Angle dimensions must be between 0 and 180. The value editor follows zoom and
+  scroll. Editing a value no longer forces a compromise when the only red constraints were
+  already red. Removing a parameter unbinds its fields in the same undo step. Esc with an
+  unreadable value closes the editor and says the dimension was not added.
+- **Pad link:**
+  - Pad designs carry the version they were made from. An edit on the pad to a design changed
+    on the desktop meanwhile is kept as a copy "<name> (pad)" instead of overwriting the
+    desktop's edit (the pad is told and shows the desktop's copy).
+  - The pad is told when a design is linked to a file it can't rebuild exactly (parametric,
+    curves, tabs, or edited in Carbide Create); its edits go to "<name> (pad).c2d" beside it.
+    A file changed outside phobiCCCP is never rebuilt over.
+  - A pad can no longer switch machines while one is connected unless "Pads may start
+    cutting" is on (also for Send to a machine).
+  - An unreadable or oversized .links.json is reported and never written over. Times more than
+    a year ahead are refused, so a pad with a wrong clock can't win every sync.
+  - Tool libraries are kept per computer; the Send dialog warns when a tool or its feeds are
+    missing there.
+- **Pad app:** hold-to-move now also works after the list started scrolling (wait 500 ms
+  without moving, as on the desktop). Dialog fields are cleaned up properly, the File menu no
+  longer overflows, a computer typed in and found on the LAN shows once, and the path tool
+  drops repeated points.
+- **Other:**
+  - Replacing a vector used by a 3D model keeps the model on it, and the Model panel warns
+    when vectors it used are gone. A .cccp import keeps the drawing where it was.
+  - The mouse wheel scrolls the side panels instead of changing a number or list it passes.
+  - Surface map: rapids clear the highest point along the move; a probe after a jog goes back
+    or retries. The gamepad reopens after it was unplugged.
+  - Texture strokes follow the same entry and lift rules as other toolpaths. Setup sheet
+    times are for the whole program. Continue after a manual tool change rises first when
+    homed. A rectangle, circle or polygon with a size of 0 is refused instead of breaking.
+
 ## v1.2.4 (build 77) — 2026-10-19
 
 > The pad gets the Area fill tool, like the desktop

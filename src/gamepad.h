@@ -53,8 +53,9 @@ public:
     void stop();
 
     // Open one specific device instead of scanning. Used by the tests, which
-    // point it at a pipe carrying synthetic events.
-    bool openPath(const QString &path, bool checkButtons = true);
+    // point it at a pipe carrying synthetic events. `notAPad` is set when the
+    // device opened but is no gamepad (as opposed to not opening at all).
+    bool openPath(const QString &path, bool checkButtons = true, bool *notAPad = nullptr);
 
 signals:
     void connected(const QString &name);

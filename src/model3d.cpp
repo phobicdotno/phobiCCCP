@@ -987,6 +987,52 @@ ModelStore *ModelStore::forDocument(const Document &doc)
     return s;
 }
 
+ModelVectorRefs retargetModelVectors(const Document &doc, const QSet<QString> &removed,
+                                     const QStringList &added)
+{
+    ModelVectorRefs before;
+    ModelStore *s = ModelRegistry::instance().byDoc.value(&doc, nullptr);
+    if (!s || removed.isEmpty())
+        return before;
+    for (ModelComponent &c : s->model.components) {
+        QStringList kept;
+        bool hit = false;
+        for (const QString &id : c.vectorIds) {
+            if (removed.contains(id))
+                hit = true;
+            else
+                kept << id;
+        }
+        if (!hit)
+            continue;
+        before.insert(c.id, c.vectorIds);
+        for (const QString &id : added)
+            if (!kept.contains(id))
+                kept << id;
+        c.vectorIds = kept;
+    }
+    if (!before.isEmpty()) {
+        // The model changed as part of a vector edit; it has to be saved
+        // with it, even over an index row that did not load.
+        s->model.userChanged = true;
+        s->invalidate();
+    }
+    return before;
+}
+
+void restoreModelVectors(const Document &doc, const ModelVectorRefs &before)
+{
+    ModelStore *s = ModelRegistry::instance().byDoc.value(&doc, nullptr);
+    if (!s || before.isEmpty())
+        return;
+    for (ModelComponent &c : s->model.components) {
+        const auto it = before.constFind(c.id);
+        if (it != before.constEnd())
+            c.vectorIds = it.value();
+    }
+    s->invalidate();
+}
+
 const HeightModel *ModelStore::heightModel()
 {
     if (!m_doc)

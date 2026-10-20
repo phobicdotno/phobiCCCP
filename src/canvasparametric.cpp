@@ -12,9 +12,11 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QScrollBar>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QtMath>
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -51,6 +53,28 @@ void restore(Document *d, const ParamState &s)
     d->setElements(s.els);
     d->setToolpaths(s.tps);
     d->setParametric(s.par);
+}
+
+// Is `now` still where `was` lay: every anchor still there and the same
+// extent? A rectangle turned into a path or given an extra node on an
+// edge stays put; one moved, turned, resized or reshaped does not.
+bool stayedPut(const Element &was, const Element &now)
+{
+    auto close = [](QPointF a, QPointF b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 1e-6; };
+    const QRectF ra = was.painterPath.boundingRect(), rb = now.painterPath.boundingRect();
+    if (!close(ra.topLeft(), rb.topLeft()) || !close(ra.bottomRight(), rb.bottomRight()))
+        return false;
+    const PathModel mb = Element::pathModel(now);
+    for (const SubPath &sa : Element::pathModel(was).subs)
+        for (const PathNode &na : sa.nodes) {
+            bool found = false;
+            for (const SubPath &sb : mb.subs)
+                for (const PathNode &nb : sb.nodes)
+                    found = found || close(na.p, nb.p);
+            if (!found)
+                return false;
+        }
+    return true;
 }
 
 // The whole sketch before and after a parametric change: geometry the
@@ -224,8 +248,15 @@ void Canvas::setShowConstraints(bool on)
 void Canvas::setParametricVisible(bool on)
 {
     m_parametricVisible = on;
-    if (!on)
+    if (!on) {
         closeDimEditor();
+        // Hidden tools must not keep taking clicks (Toolpaths mode picks
+        // vectors with them): back to Select, with nothing half picked.
+        resetPicks();
+        m_dragDim.clear();
+        if (m_tool == Constrain || m_tool == Dimension)
+            setTool(Select);
+    }
     viewport()->update();
 }
 
@@ -253,7 +284,7 @@ void Canvas::resetPicks()
 
 // ---- undo steps --------------------------------------------------------------------
 
-void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched)
+void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTransform &moved)
 {
     if (!m_doc || m_doc->parametric().constraints.isEmpty()) {
         m_undo->push(cmd);
@@ -264,18 +295,65 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched)
     m_undo->beginMacro(text);
     m_undo->push(cmd);
     const ParamState s0 = stateOf(m_doc);
+    // A shape locked whole stays where it is, as a fixed point does: the
+    // edit's move of it is put back (deleting it is still allowed).
+    QSet<QString> heldBack;
+    for (const QString &id : param::lockedElements(before)) {
+        const Element *was = nullptr;
+        for (const Element &e : before.elements())
+            if (e.id == id) { was = &e; break; }
+        const Element *now = m_doc->elementById(id);
+        if (was && now && !stayedPut(*was, *now)) {
+            m_doc->replaceElement(*was);
+            heldBack.insert(id);
+        }
+    }
     // Constraints follow their geometry through node deletes and inserts,
-    // fillets and conversions; those on geometry that is gone go too.
+    // fillets, conversions and transforms; those on geometry that is gone
+    // go too.
+    QHash<QString, QTransform> through;
+    if (!moved.isIdentity())
+        for (const QString &id : touched)
+            if (!heldBack.contains(id))
+                through.insert(id, moved);
     QStringList dropped;
     bool renumbered = false;
-    param::reconcile(before, *m_doc, &dropped, &renumbered);
+    param::reconcile(before, *m_doc, &dropped, &renumbered, through);
+    if (moved.determinant() < 0) {
+        // A mirror turns every angle and side round: an Angle or a distance
+        // from a line kept on its old side would fold the shape inside out.
+        Parametric p = m_doc->parametric();
+        bool flipped = false;
+        for (Constraint &c : p.constraints) {
+            bool inside = !c.refs.isEmpty();
+            for (const GeoRef &r : c.refs)
+                inside = inside && through.contains(r.id);
+            if (!inside)
+                continue;
+            Constraint fresh = c;
+            param::prime(*m_doc, fresh);
+            if (fresh.sense != c.sense) {
+                c.sense = fresh.sense;
+                flipped = true;
+            }
+        }
+        if (flipped) {
+            m_doc->setParametric(p);
+            renumbered = true;   // the constraints changed: keep them in the undo step
+        }
+    }
     if (!dropped.isEmpty() && dropped.contains(m_selConstraint))
         selectConstraint(QString());
     const param::SolveResult r = param::solve(*m_doc, QSet<QString>(touched.begin(), touched.end()));
-    if (!r.changed.isEmpty() || renumbered)
+    if (!r.changed.isEmpty() || renumbered || !heldBack.isEmpty())
         m_undo->push(new SnapshotCmd(this, m_doc, s0, stateOf(m_doc), text));
     m_undo->endMacro();
-    if (!r.ok) {
+    if (!heldBack.isEmpty()) {
+        rebuild();
+        emit statusHint(heldBack.size() == 1
+            ? tr("1 shape is locked with Fix and stays where it is")
+            : tr("%1 shapes are locked with Fix and stay where they are").arg(heldBack.size()));
+    } else if (!r.ok) {
         rebuild();
         emit statusHint(r.failing.size() == 1
             ? tr("1 constraint can't hold after this edit — shown in red")
@@ -291,30 +369,59 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
                              const QSet<QString> &keep,
                              const std::function<void(Document &)> &mutate)
 {
+    m_bindProblems.clear();
     if (!m_doc)
         return false;
     const ParamState s0 = stateOf(m_doc);
     m_doc->setParametric(after);
     if (mutate)
         mutate(*m_doc);
-    param::SolveResult r = param::solve(*m_doc, keep, allowFailing);
+    // allowFailing edits (a comment, a name, a label moved, a constraint
+    // deleted) never move geometry to a compromise: with something red, the
+    // shapes stay where they are unless every constraint can hold.
+    param::SolveResult r = param::solve(*m_doc, keep, false);
     if (!r.ok && !allowFailing) {
         // Constraints that were red before don't block an unrelated edit;
-        // only one that makes something else fail is refused.
+        // one the rest of the sketch can't follow is refused. A forced solve
+        // would bend constraints that hold to meet the red ones halfway (and
+        // its compromise can't tell which fail because of the edit), so
+        // solve without the red ones instead: the rest follows the edit
+        // exactly and nothing else moves. First leave out only the red ones
+        // still failing (an edited red dimension that can now hold is kept),
+        // then every one that was red; neither holding refuses the edit.
         Document was = *m_doc;
         was.setElements(s0.els);
         was.setParametric(s0.par);
         const QStringList red = param::unsatisfied(was);
-        bool news = false;
-        for (const QString &uid : r.failing)
-            news = news || !red.contains(uid);
-        if (news) {
+        const QSet<QString> failing(r.failing.begin(), r.failing.end());
+        QSet<QString> redAndFailing;
+        for (const QString &uid : red)
+            if (failing.contains(uid))
+                redAndFailing.insert(uid);
+        bool solved = false;
+        for (const QSet<QString> &omit : {redAndFailing, QSet<QString>(red.begin(), red.end())}) {
+            if (omit.isEmpty())
+                continue;
+            Document part = *m_doc;
+            Parametric pp = part.parametric();
+            pp.constraints.erase(std::remove_if(pp.constraints.begin(), pp.constraints.end(),
+                                                [&](const Constraint &c) { return omit.contains(c.uid); }),
+                                 pp.constraints.end());
+            part.setParametric(pp);
+            if (param::solve(part, keep, false).ok) {
+                m_doc->setElements(part.elements());
+                solved = true;
+                break;
+            }
+        }
+        if (!solved) {
             restore(m_doc, s0);
             return false;
         }
-        r = param::solve(*m_doc, keep, true);
+        r.failing = param::unsatisfied(*m_doc);
+        r.ok = r.failing.isEmpty();
     }
-    param::applyToolpathBindings(*m_doc);
+    param::applyToolpathBindings(*m_doc, &m_bindProblems);
     const ParamState s1 = stateOf(m_doc);
     restore(m_doc, s0);         // the command's redo puts s1 back
     m_undo->push(new SnapshotCmd(this, m_doc, s0, s1, text));
@@ -322,6 +429,8 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
         emit statusHint(r.failing.size() == 1
             ? tr("1 constraint can't hold with these values — shown in red")
             : tr("%1 constraints can't hold with these values — shown in red").arg(r.failing.size()));
+    else if (!m_bindProblems.isEmpty())
+        emit statusHint(m_bindProblems.join(QStringLiteral("; ")));
     return true;
 }
 
@@ -364,6 +473,9 @@ bool Canvas::refShape(const GeoRef &r, RefShape *out) const
     for (const RefShape &s : it.value())
         if (s.ref == r) {
             *out = s;
+            if (r.reversed)
+                std::swap(out->a, out->b);
+            out->ref = r;
             return true;
         }
     // A circle asked for as a point is its center.
@@ -1121,6 +1233,10 @@ void Canvas::openDimEditor(const Constraint &c, bool isNew)
         e->setAlignment(Qt::AlignCenter);
         e->done = [this](bool escape) { commitDimEditor(escape); };
         m_dimEdit = e;
+        // Follow the dimension when the view zooms, pans or scrolls.
+        connect(this, &Canvas::zoomChanged, e, [this] { placeDimEditor(); });
+        connect(horizontalScrollBar(), &QScrollBar::valueChanged, e, [this] { placeDimEditor(); });
+        connect(verticalScrollBar(), &QScrollBar::valueChanged, e, [this] { placeDimEditor(); });
     }
     m_dimEdit->setStyleSheet(QStringLiteral(
         "#dimEdit { background: #17191e; color: #e8ecf2; border: 1.5px solid #f2a536;"
@@ -1129,19 +1245,27 @@ void Canvas::openDimEditor(const Constraint &c, bool isNew)
     m_dimEdit->setText(c.expr.isEmpty() ? param::formatNumber(c.value) : c.expr);
     m_dimEdit->setToolTip(tr("%1 = a value (50, 1/4 in) or an expression with parameters (plate_w / 2)")
                               .arg(c.name));
-    DimDraw d;
-    QPointF at = mapToScene(viewport()->rect().center());
-    if (dimGeometry(c, &d))
-        at = d.text;
-    const QPointF vp = viewportTransform().map(at);
-    const int w = qMax(130, m_dimEdit->fontMetrics().horizontalAdvance(m_dimEdit->text()) + 40);
-    m_dimEdit->setGeometry(int(vp.x()) - w / 2, int(vp.y()) - 15, w, 30);
+    m_dimEditAt = mapToScene(viewport()->rect().center());
+    placeDimEditor();
     m_dimEdit->show();
     m_dimEdit->raise();
     m_dimEdit->setFocus();
     m_dimEdit->selectAll();
     emit statusHint(tr("%1 — type a value or an expression (parameters, + - * /, units); Enter sets it, Esc %2")
                         .arg(c.name, isNew ? tr("keeps the measured value") : tr("cancels")));
+}
+
+// Over the dimension's label, in viewport pixels for the current view (the
+// middle of the view where the editor opened, when it has no geometry).
+void Canvas::placeDimEditor()
+{
+    if (!m_dimEdit)
+        return;
+    DimDraw d;
+    const QPointF at = dimGeometry(m_dimEditing, &d) ? d.text : m_dimEditAt;
+    const QPointF vp = viewportTransform().map(at);
+    const int w = qMax(130, m_dimEdit->fontMetrics().horizontalAdvance(m_dimEdit->text()) + 40);
+    m_dimEdit->setGeometry(int(vp.x()) - w / 2, int(vp.y()) - 15, w, 30);
 }
 
 void Canvas::closeDimEditor()
@@ -1178,14 +1302,22 @@ void Canvas::commitDimEditor(bool escape)
         emit statusHint(tr("%1 — %2").arg(text, why));
         return;
     }
-    if ((c.type == Constraint::Radius || c.type == Constraint::Diameter
-         || (c.type == Constraint::Distance && c.refs.size() == 1)) && v <= 0) {
-        emit statusHint(tr("%1 must be more than 0").arg(Constraint::typeName(c.type)));
+    if (const QString bad = param::badValue(c, v); !bad.isEmpty()) {
+        // Esc on a new dimension whose measured value can't be one (an angle
+        // on parallel lines) drops it, rather than leaving the editor stuck.
+        if (escape)
+            closeDimEditor();
+        emit statusHint(escape ? tr("Dimension not added: %1").arg(bad) : bad);
         return;
     }
     c.expr = text;
     Parametric after = m_doc->parametric();
     if (m_dimEditingNew) {
+        // Named when placed; undo or redo since may have taken that uid or name.
+        if (after.indexOfUid(c.uid) >= 0)
+            c.uid = after.nextUid();
+        if (after.nameInUse(c.name))
+            c.name = after.nextDimensionName();
         after.constraints.append(c);
     } else {
         const int i = after.indexOfUid(c.uid);
@@ -1207,7 +1339,8 @@ void Canvas::commitDimEditor(bool escape)
     const QString what = m_dimEditingNew ? tr("add dimension %1 = %2").arg(c.name, text)
                                          : tr("%1 = %2").arg(c.name, text);
     if (applyParametric(after, what)) {
-        emit statusHint(what);
+        emit statusHint(m_bindProblems.isEmpty()
+            ? what : tr("%1 — %2").arg(what, m_bindProblems.join(QStringLiteral("; "))));
     } else {
         emit statusHint(m_dimEditingNew
             ? tr("%1 would over-constrain the sketch — not added").arg(Constraint::typeName(c.type))
@@ -1238,8 +1371,13 @@ bool Canvas::parametricPress(QMouseEvent *event)
         event->accept();
         return true;
     }
-    if (!overlayOn() || (m_tool != Select && m_tool != Pan && m_tool != SelectArea))
+    if (!overlayOn() || (m_tool != Select && m_tool != Pan && m_tool != SelectArea)) {
+        // A constraint picked in the Parameters tab stays picked only until
+        // the canvas is used another way; Del would delete it, not the shape.
+        if (!m_selConstraint.isEmpty())
+            selectConstraint(QString());
         return false;
+    }
     const QString uid = hitConstraint(event->pos());
     if (uid.isEmpty()) {
         if (!m_selConstraint.isEmpty())

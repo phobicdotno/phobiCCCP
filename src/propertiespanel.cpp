@@ -14,12 +14,36 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QWheelEvent>
 
 namespace c2d {
 
+namespace {
+
+// Number fields and the font list ignore the wheel unless they have focus:
+// scrolling the panel must not resize the selected shape on the way past.
+// Strong focus keeps the wheel itself from handing them focus first.
+template <class Base>
+class NoWheel : public Base
+{
+public:
+    explicit NoWheel(QWidget *parent) : Base(parent) { this->setFocusPolicy(Qt::StrongFocus); }
+
+protected:
+    void wheelEvent(QWheelEvent *e) override
+    {
+        if (this->hasFocus())
+            Base::wheelEvent(e);
+        else
+            e->ignore();
+    }
+};
+
+} // namespace
+
 QDoubleSpinBox *PropertiesPanel::spin(double max)
 {
-    auto *s = new QDoubleSpinBox(this);
+    auto *s = new NoWheel<QDoubleSpinBox>(this);
     s->setRange(-max, max);
     s->setDecimals(3);
     s->setSuffix(QStringLiteral(" mm"));
@@ -86,7 +110,7 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     sizeLay->addWidget(m_height);
     form->addRow(QStringLiteral("W × H"), m_sizeRow);
 
-    m_sides = new QSpinBox(this);
+    m_sides = new NoWheel<QSpinBox>(this);
     m_sides->setRange(3, 64);
     m_sides->setKeyboardTracking(false);
     connect(m_sides, &QSpinBox::valueChanged, this, [this] {
@@ -119,11 +143,11 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     connect(m_text, &QLineEdit::editingFinished, this, textEdited);
     textRow(QStringLiteral("Text"), m_text, m_textRows, m_textLabels);
 
-    m_family = new QFontComboBox(this);
+    m_family = new NoWheel<QFontComboBox>(this);
     connect(m_family, &QFontComboBox::currentFontChanged, this, [textEdited](const QFont &) { textEdited(); });
     textRow(QStringLiteral("Font"), m_family, m_textRows, m_textLabels);
 
-    m_fontHeight = new QDoubleSpinBox(this);
+    m_fontHeight = new NoWheel<QDoubleSpinBox>(this);
     m_fontHeight->setRange(0.5, 1000);
     m_fontHeight->setDecimals(2);
     m_fontHeight->setSuffix(QStringLiteral(" mm"));
@@ -147,7 +171,7 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     connect(m_arcOn, &QCheckBox::toggled, this, textEdited);
     textRow(QStringLiteral("Arc"), m_arcOn, m_textRows, m_textLabels);
 
-    m_arcRadius = new QDoubleSpinBox(this);
+    m_arcRadius = new NoWheel<QDoubleSpinBox>(this);
     m_arcRadius->setRange(0.1, 10000);
     m_arcRadius->setDecimals(2);
     m_arcRadius->setSuffix(QStringLiteral(" mm"));
@@ -155,7 +179,7 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     connect(m_arcRadius, &QDoubleSpinBox::valueChanged, this, textEdited);
     textRow(QStringLiteral("Arc radius"), m_arcRadius, m_arcRows, m_arcLabels);
 
-    m_arcAngle = new QDoubleSpinBox(this);
+    m_arcAngle = new NoWheel<QDoubleSpinBox>(this);
     m_arcAngle->setRange(-360, 360);
     m_arcAngle->setDecimals(1);
     m_arcAngle->setSuffix(QStringLiteral(" °"));

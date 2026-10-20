@@ -600,6 +600,7 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
     }
     case Field::Choice: {
         auto *c = new Combo(this);
+        c->setFocusPolicy(Qt::StrongFocus); // the wheel scrolls the form, not the field
         int at = -1;
         for (int i = 0; i < f.choices.size(); ++i) {
             c->addItem(f.choices.at(i).second);
@@ -626,6 +627,7 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
     }
     case Field::Int: {
         auto *s = new IntSpin(this);
+        s->setFocusPolicy(Qt::StrongFocus); // the wheel scrolls the form, not the field
         s->setRange(int(f.min), int(f.max));
         s->setValue(int(numberOf(v)));
         s->setKeyboardTracking(false);
@@ -635,6 +637,7 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
     case Field::Depth:
     case Field::Number: {
         auto *s = new Spin(this);
+        s->setFocusPolicy(Qt::StrongFocus); // the wheel scrolls the form, not the field
         s->setDecimals(f.decimals);
         s->setRange(f.min, f.max);
         s->setSingleStep(f.step);
@@ -666,13 +669,18 @@ QWidget *ToolpathForm::editorFor(const QString &key, const Field &f)
             return orig.isString() ? QJsonValue(QString::number(out, 'f', 3)) : QJsonValue(out);
         };
         // Bind when the typed text names a parameter, unbind on a plain number.
-        auto bindFor = [key, isDepth, this](const QString &typed, bool negative) {
+        // The binding keeps the field's range, so a parameter changed later
+        // is clamped to it the way typing into the field is.
+        const double lo = f.min, hi = f.max;
+        auto bindFor = [key, isDepth, lo, hi, this](const QString &typed, bool negative) {
             if (typed.isEmpty() || param::namesIn(typed).isEmpty())
                 return QJsonObject();
             QJsonObject b;
             b.insert("expr", typed);
-            if (isDepth && negative)
-                b.insert("neg", true);
+            b.insert("min", lo);
+            b.insert("max", hi);
+            if (isDepth)
+                b.insert(negative ? "neg" : "abs", true);
             if (flatGet(m_json, key).isString())
                 b.insert("str", true);
             return b;

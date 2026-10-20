@@ -149,9 +149,13 @@ private:
         if (!unary(v))
             return false;
         bool named = m_names != names, lastNamed = named;
-        bool divided = false;
+        bool divided = false, hasUnit = false;
         for (;;) {
             if (const double f = unit()) {
+                // "1 cm / 4 in" or "2 in * 3 in" would scale the first number twice.
+                if (hasUnit)
+                    return err(QStringLiteral("one unit per product; put each number with its unit in brackets"));
+                hasUnit = true;
                 if (lastNamed)
                     return err(QStringLiteral("a unit can't follow a name; it is in mm already"));
                 if (named && divided)
@@ -175,8 +179,19 @@ private:
             }
         }
     }
-    // Unary minus binds looser than ^: -2^2 is -4, 2^-1 is 0.5.
+    // Every nesting ("(", "-", "^", a call) goes through here: a crafted
+    // expression of thousands of "(" must fail, not overflow the stack.
     bool unary(double *v)
+    {
+        if (m_depth >= 200)
+            return err(QStringLiteral("nested too deeply"));
+        ++m_depth;
+        const bool ok = unaryInner(v);
+        --m_depth;
+        return ok;
+    }
+    // Unary minus binds looser than ^: -2^2 is -4, 2^-1 is 0.5.
+    bool unaryInner(double *v)
     {
         if (eat(QLatin1Char('-'))) {
             if (!unary(v)) return false;
@@ -245,12 +260,22 @@ private:
             QVector<double> args;
             if (!eat(QLatin1Char(')'))) {
                 ++m_calls;
-                do {
+                bool commas = false, semis = false;
+                for (;;) {
                     double a;
                     if (!expr(&a)) return false;
                     args << a;
-                } while (eat(QLatin1Char(',')) || eat(QLatin1Char(';')));
+                    if (eat(QLatin1Char(',')))
+                        commas = true;
+                    else if (eat(QLatin1Char(';')))
+                        semis = true;
+                    else
+                        break;
+                }
                 --m_calls;
+                // "max(2,5; 3)": 2,5 meant as a decimal comma reads as two values.
+                if (commas && semis)
+                    return err(QStringLiteral("separate the values with , or with ; - not both"));
                 if (!eat(QLatin1Char(')'))) return err(QStringLiteral("missing ')'"));
             }
             return call(id, args, v);
@@ -309,6 +334,7 @@ private:
     const Lookup &m_lookup;
     int m_pos = 0;
     int m_calls = 0;        // function calls open around the current position
+    int m_depth = 0;        // unary() calls open, for the nesting limit
     int m_names = 0;        // names read so far
     QString m_error;
 };
@@ -449,8 +475,12 @@ QJsonObject Parametric::toJson() const
         o.insert("type", int(c.type));
         o.insert("uid", c.uid);
         QJsonArray refs;
-        for (const GeoRef &r : c.refs)
-            refs.append(QJsonArray{int(r.kind), r.id, r.sub, r.index});
+        for (const GeoRef &r : c.refs) {
+            QJsonArray ra{int(r.kind), r.id, r.sub, r.index};
+            if (r.reversed)
+                ra.append(1);
+            refs.append(ra);
+        }
         o.insert("refs", refs);
         if (c.sense != 1)
             o.insert("sense", c.sense);
@@ -480,7 +510,8 @@ Parametric Parametric::fromJson(const QJsonObject &o)
         up.name = po.value("name").toString();
         up.expr = po.value("expr").toString();
         up.comment = po.value("comment").toString();
-        if (!up.name.isEmpty())
+        // A name twice (a hand-edited or old file) would hide one of them.
+        if (!up.name.isEmpty() && !p.nameInUse(up.name))
             p.params.append(up);
     }
     for (const QJsonValue &v : o.value("constraints").toArray()) {
@@ -493,13 +524,14 @@ Parametric Parametric::fromJson(const QJsonObject &o)
         c.uid = co.value("uid").toString();
         for (const QJsonValue &rv : co.value("refs").toArray()) {
             const QJsonArray ra = rv.toArray();
-            if (ra.size() != 4)
+            if (ra.size() != 4 && ra.size() != 5)
                 continue;
             GeoRef r;
             r.kind = GeoRef::Kind(qBound(0, ra.at(0).toInt(), 2));
             r.id = ra.at(1).toString();
             r.sub = ra.at(2).toInt();
             r.index = ra.at(3).toInt();
+            r.reversed = r.kind == GeoRef::Line && ra.size() == 5 && ra.at(4).toInt() != 0;
             c.refs.append(r);
         }
         c.sense = co.value("sense").toInt(1) < 0 ? -1 : 1;
@@ -508,9 +540,33 @@ Parametric Parametric::fromJson(const QJsonObject &o)
         c.expr = co.value("expr").toString();
         c.value = co.value("value").toDouble();
         c.label = arrXy(co.value("label"));
-        if (c.uid.isEmpty())
-            c.uid = p.nextUid();
         p.constraints.append(c);
+    }
+    // Uids made unique once all are read: one without a uid read before a
+    // "c1" further on would otherwise get "c1" too, and the panel and Del
+    // could only ever reach the first.
+    QSet<QString> uids;
+    for (Constraint &c : p.constraints) {
+        if (c.uid.isEmpty() || uids.contains(c.uid))
+            c.uid.clear();
+        else
+            uids.insert(c.uid);
+    }
+    for (Constraint &c : p.constraints)
+        if (c.uid.isEmpty()) {
+            c.uid = p.nextUid();
+            uids.insert(c.uid);
+        }
+    // Likewise a dimension sharing a parameter's or another dimension's name.
+    QSet<QString> names;
+    for (const UserParameter &up : p.params)
+        names.insert(up.name);
+    for (Constraint &c : p.constraints) {
+        if (!c.isDimension() || c.name.isEmpty())
+            continue;
+        if (names.contains(c.name))
+            c.name = p.nextDimensionName();
+        names.insert(c.name);
     }
     return p;
 }
@@ -621,6 +677,13 @@ QHash<QString, double> values(const Document &doc, const Parametric &p, QStringL
                 }
             return false;
         }
+        if (stack.size() > 200) {
+            // A crafted chain thousands of names long would overflow the stack.
+            if (errors && !failed.contains(name))
+                *errors << QStringLiteral("%1: more than 200 names deep").arg(name);
+            failed.insert(name);
+            return false;
+        }
         stack << name;
         QString why;
         double r = 0;
@@ -643,17 +706,52 @@ QHash<QString, double> values(const Document &doc, const Parametric &p, QStringL
     return out;
 }
 
+QString badValue(const Constraint &c, double v)
+{
+    if ((c.type == Constraint::Radius || c.type == Constraint::Diameter
+         || (c.type == Constraint::Distance && c.refs.size() == 1)) && !(v > 0))
+        return QStringLiteral("%1 must be more than 0").arg(Constraint::typeName(c.type));
+    // An angle is measured between 0 and 180 degrees, its direction kept by
+    // `sense`: 270 would solve to 90 while the label still read 270.
+    if (c.type == Constraint::Angle && !(v > 0 && v < 180))
+        return QStringLiteral("Angle must be more than 0 and less than 180°");
+    return QString();
+}
+
+// Dimensions whose value can't be drawn ("name: why"), by name.
+static QHash<QString, QString> badDimensions(const Parametric &p, const QHash<QString, double> &vals)
+{
+    QHash<QString, QString> bad;
+    for (const Constraint &c : p.constraints) {
+        if (!c.isDimension())
+            continue;
+        auto it = vals.constFind(c.name);
+        if (it == vals.constEnd())
+            continue;
+        if (const QString why = badValue(c, it.value()); !why.isEmpty())
+            bad.insert(c.name, QStringLiteral("%1: %2").arg(c.name, why));
+    }
+    return bad;
+}
+
 QString newError(const Document &doc, const Parametric &before, const Parametric &after)
 {
     QStringList was, now;
-    values(doc, before, &was);
-    values(doc, after, &now);
+    const QHash<QString, double> valsBefore = values(doc, before, &was);
+    const QHash<QString, double> valsAfter = values(doc, after, &now);
     QSet<QString> broken;
     for (const QString &e : was)
         broken.insert(e.section(QLatin1Char(':'), 0, 0));
     for (const QString &e : now)
         if (!broken.contains(e.section(QLatin1Char(':'), 0, 0)))
             return e;
+    // A parameter driving a radius or a length to 0 or below (r = -5) would
+    // solve to a circle the dimension then reads as broken for good.
+    const QHash<QString, QString> badBefore = badDimensions(before, valsBefore);
+    const QHash<QString, QString> badAfter = badDimensions(after, valsAfter);
+    for (auto it = badAfter.constBegin(); it != badAfter.constEnd(); ++it)
+        if (!badBefore.contains(it.key()))
+            return it.value();
     return QString();
 }
 
@@ -681,7 +779,7 @@ struct Body {
     int n = 0;                      // variables
     bool locked = false;            // Fix on the whole element
     int sides = 0;                  // polygon
-    double rot = 0;                 // polygon, radians
+    double rot = 0;                 // polygon and rectangle, radians
     PathModel model;                // path
     QHash<quint64, int> nodeVar;    // (sub,node) -> variable offset within the body
     int pathNodes = 0;              // all nodes of the path
@@ -704,6 +802,7 @@ bool bodyFor(const Element &e, Body *b)
         // Rebuilding a rectangle squares CC's rounded / dog-bone corners, so
         // the solver may only move one of those, never resize it.
         b->rounded = e.raw.value("corner_type").toInt() != 0;
+        b->rot = qDegreesToRadians(e.raw.value("rotation").toDouble());
     } else if (g == QLatin1String("regular_polygon")) {
         b->t = Body::Polygon;
         b->n = 3;
@@ -824,15 +923,20 @@ QPointF polyVertex(const Body &b, const double *v, int k)
     return QPointF(v[0] + v[2] * std::cos(a), v[1] + v[2] * std::sin(a));
 }
 
-QPointF rectCorner(const double *v, int k)
+// A corner of a rectangle turned by its `rotation` about its centre, as
+// Carbide Create draws it (corner 0 is the unturned lower left).
+QPointF rectCorner(const Body &b, const double *v, int k)
 {
     const double w = v[2] / 2, h = v[3] / 2;
+    QPointF d;
     switch (((k % 4) + 4) % 4) {
-    case 0:  return QPointF(v[0] - w, v[1] - h);
-    case 1:  return QPointF(v[0] + w, v[1] - h);
-    case 2:  return QPointF(v[0] + w, v[1] + h);
-    default: return QPointF(v[0] - w, v[1] + h);
+    case 0:  d = QPointF(-w, -h); break;
+    case 1:  d = QPointF(w, -h); break;
+    case 2:  d = QPointF(w, h); break;
+    default: d = QPointF(-w, h); break;
     }
+    const double c = std::cos(b.rot), s = std::sin(b.rot);
+    return QPointF(v[0] + d.x() * c - d.y() * s, v[1] + d.x() * s + d.y() * c);
 }
 
 bool bodyPoint(const Body &b, const double *x, const GeoRef &r, QPointF *p)
@@ -844,7 +948,7 @@ bool bodyPoint(const Body &b, const double *x, const GeoRef &r, QPointF *p)
         *p = QPointF(v[0], v[1]);
         return true;
     case Body::Rect:
-        *p = r.index < 0 ? QPointF(v[0], v[1]) : rectCorner(v, r.index);
+        *p = r.index < 0 ? QPointF(v[0], v[1]) : rectCorner(b, v, r.index);
         return true;
     case Body::Polygon:
         *p = r.index < 0 ? QPointF(v[0], v[1]) : polyVertex(b, v, r.index);
@@ -858,11 +962,13 @@ bool bodyPoint(const Body &b, const double *x, const GeoRef &r, QPointF *p)
 
 bool bodyLine(const Body &b, const double *x, const GeoRef &r, QPointF *a, QPointF *e)
 {
+    if (r.reversed)
+        std::swap(a, e);    // written end first: the line runs back
     const double *v = x + b.off;
     switch (b.t) {
     case Body::Rect:
-        *a = rectCorner(v, r.index);
-        *e = rectCorner(v, r.index + 1);
+        *a = rectCorner(b, v, r.index);
+        *e = rectCorner(b, v, r.index + 1);
         return true;
     case Body::Polygon:
         *a = polyVertex(b, v, r.index);
@@ -1634,6 +1740,15 @@ QVector<RefShape> shapesOf(const Document &doc, const QString &id)
     return out;
 }
 
+QSet<QString> lockedElements(const Document &doc)
+{
+    QSet<QString> out;
+    for (const Constraint &c : doc.parametric().constraints)
+        if (c.type == Constraint::Fix && !c.refs.isEmpty() && c.refs.first().kind != GeoRef::Point)
+            out.insert(c.refs.first().id);
+    return out;
+}
+
 QVector<GeoRef> refsOf(const Document &doc, const QString &id)
 {
     QVector<GeoRef> out;
@@ -1741,6 +1856,22 @@ SolveResult solve(Document &doc, const QSet<QString> &keep, bool force)
                 res.failing << sys.constraints()[ci].uid;
                 break;
             }
+    // A rectangle or polygon driven through zero is a solution only on
+    // paper: written() can only build it the right way out, where the
+    // constraints that put it there no longer hold.
+    for (const Body &b : sys.bodies()) {
+        const double *v = x.constData() + b.off;
+        const bool insideOut = (b.t == Body::Rect && !b.rounded && (v[2] <= 0 || v[3] <= 0))
+                             || (b.t == Body::Polygon && v[2] <= 0);
+        if (!insideOut)
+            continue;
+        for (const Constraint &c : sys.constraints())
+            for (const GeoRef &r : c.refs)
+                if (r.id == b.id && !res.failing.contains(c.uid)) {
+                    res.failing << c.uid;
+                    break;
+                }
+    }
     res.ok = res.failing.isEmpty();
     if (!res.ok && !force)
         return res;
@@ -1782,7 +1913,7 @@ static void flatPut(QJsonObject &j, const QString &key, const QJsonValue &v)
     j.insert(key.left(dot), sub);
 }
 
-QStringList applyToolpathBindings(Document &doc)
+QStringList applyToolpathBindings(Document &doc, QStringList *problems)
 {
     QStringList changed;
     const QHash<QString, double> vals = values(doc, doc.parametric());
@@ -1792,24 +1923,50 @@ QStringList applyToolpathBindings(Document &doc)
         *v = it.value();
         return true;
     };
+    auto numberOf = [](const QJsonValue &j) {
+        return j.isString() ? j.toString().toDouble() : j.toDouble();
+    };
     for (Toolpath &t : doc.toolpathsRef()) {
         const QJsonObject binds = t.json.value(QStringLiteral("phobic_expr")).toObject();
         if (binds.isEmpty())
             continue;
+        const QString tpName = t.json.value(QStringLiteral("name")).toString();
         QJsonObject j = t.json;
         for (auto it = binds.begin(); it != binds.end(); ++it) {
             const QJsonObject b = it.value().toObject();
+            const QString expr = b.value("expr").toString();
+            const bool neg = b.value("neg").toBool();
+            // Depths are shown and ranged as their size, the sign kept apart.
+            const bool size = neg || b.value("abs").toBool();
             double v = 0;
-            if (!evaluate(b.value("expr").toString(), look, &v))
+            if (!evaluate(expr, look, &v)) {
+                if (problems) {
+                    const double kept = numberOf(flatValue(j, it.key()));
+                    *problems << QStringLiteral("toolpath %1: %2 = %3 can't be worked out, kept %4")
+                                     .arg(tpName, it.key(), expr,
+                                          formatNumber(size ? std::fabs(kept) : kept));
+                }
                 continue;
-            if (b.value("neg").toBool())
-                v = -std::fabs(v);
+            }
+            if (size)
+                v = std::fabs(v);
+            // The field's range, as the form had it when it bound the field
+            // (bindings made before it was stored have none).
+            const double want = v;
+            if (b.contains("min"))
+                v = qMax(v, b.value("min").toDouble());
+            if (b.contains("max"))
+                v = qMin(v, b.value("max").toDouble());
+            if (v != want && problems)
+                *problems << QStringLiteral("toolpath %1: %2 = %3 is %4, out of range - set to %5")
+                                 .arg(tpName, it.key(), expr, formatNumber(want), formatNumber(v));
+            if (neg)
+                v = -v;
             const QJsonValue nv = b.value("str").toBool()
                 ? QJsonValue(QString::number(v, 'f', 3)) : QJsonValue(v);
             const QJsonValue old = flatValue(j, it.key());
             const bool same = old.isString() == nv.isString()
-                && std::fabs((old.isString() ? old.toString().toDouble() : old.toDouble())
-                             - (nv.isString() ? nv.toString().toDouble() : nv.toDouble())) < 1e-9;
+                && std::fabs(numberOf(old) - numberOf(nv)) < 1e-9;
             if (!same)
                 flatPut(j, it.key(), nv);
         }
@@ -1928,14 +2085,20 @@ QString layoutOf(const Element &e)
     if (e.geometryType == QLatin1String("path"))
         for (const SubPath &s : Element::pathModel(e).subs)
             out += QStringLiteral("|%1%2").arg(s.nodes.size()).arg(s.closed ? 'c' : 'o');
+    // A polygon given another side count renumbers its edges and vertices.
+    if (e.geometryType == QLatin1String("regular_polygon"))
+        out += QStringLiteral("|%1").arg(e.raw.value("num_sides").toInt());
     return out;
 }
 
 bool near(QPointF a, QPointF b) { return std::hypot(a.x() - b.x(), a.y() - b.y()) < 1e-4; }
 
 // The reference in `doc` to the same geometry `r` was in `before`: the
-// point, line or circle at the same place. False when there is none.
-bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef *out)
+// point, line or circle at the same place - where `t` took it, for an
+// element the edit transformed. A line found running the other way is
+// taken reversed, so it keeps its direction. False when there is none.
+bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef *out,
+            const QTransform &t = QTransform())
 {
     QPointF a, b, c;
     double rad = 0;
@@ -1945,6 +2108,10 @@ bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef
         return false;
     if (r.kind == GeoRef::Circle && !circle(before, r, &c, &rad))
         return false;
+    a = t.map(a);
+    b = t.map(b);
+    c = t.map(c);
+    rad *= std::sqrt(std::fabs(t.determinant()));
     // Several can sit at the same place (a closed path's last node on its
     // first): take the one numbered closest to where it was.
     bool found = false;
@@ -1952,8 +2119,10 @@ bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef
     for (const RefShape &s : shapesOf(doc, r.id)) {
         if (s.ref.kind != r.kind)
             continue;
+        const bool ahead = r.kind == GeoRef::Line && near(s.a, a) && near(s.b, b);
+        const bool back = r.kind == GeoRef::Line && !ahead && near(s.a, b) && near(s.b, a);
         const bool same = r.kind == GeoRef::Point ? near(s.a, a)
-                        : r.kind == GeoRef::Line  ? (near(s.a, a) && near(s.b, b)) || (near(s.a, b) && near(s.b, a))
+                        : r.kind == GeoRef::Line  ? ahead || back
                                                   : near(s.a, c) && std::fabs(s.r - rad) < 1e-4;
         // A rectangle or polygon center is never one of its corners.
         if (!same || (r.kind == GeoRef::Point && (s.ref.index == -1) != (r.index == -1)))
@@ -1961,6 +2130,7 @@ bool follow(const Document &before, const Document &doc, const GeoRef &r, GeoRef
         const int score = std::abs(s.ref.sub - r.sub) * 100000 + std::abs(s.ref.index - r.index);
         if (!found || score < best) {
             *out = s.ref;
+            out->reversed = back;
             best = score;
             found = true;
         }
@@ -1992,7 +2162,8 @@ int prune(Document &doc)
     return reconcile(doc, doc);   // same numbering: only what no longer resolves goes
 }
 
-int reconcile(const Document &before, Document &doc, QStringList *dropped, bool *changed)
+int reconcile(const Document &before, Document &doc, QStringList *dropped, bool *changed,
+              const QHash<QString, QTransform> &moved)
 {
     if (changed) *changed = false;
     Parametric p = doc.parametric();
@@ -2011,15 +2182,33 @@ int reconcile(const Document &before, Document &doc, QStringList *dropped, bool 
 
     QVector<Constraint> kept;
     QVector<Constraint> gone;
-    bool moved = false;
+    bool renumbered = false;
     for (Constraint c : p.constraints) {
         bool ok = true;
         for (GeoRef &r : c.refs) {
-            if (r.isOrigin() || keepsNumbers(r.id))
+            if (r.isOrigin())
                 continue;
             GeoRef to;
-            if (!follow(before, doc, r, &to)) { ok = false; break; }
-            moved = moved || !(to == r);
+            const auto t = moved.constFind(r.id);
+            if (t != moved.constEnd() && !t.value().isIdentity()) {
+                // A transformed element may keep its layout and still
+                // renumber (a rectangle flipped over keeps corner 0 at the
+                // lower left): follow the geometry through the transform.
+                // Nothing there (a transform that bent the shape) falls
+                // back to the old numbers while they still hold.
+                if (!follow(before, doc, r, &to, t.value())) {
+                    if (keepsNumbers(r.id))
+                        continue;
+                    ok = false;
+                    break;
+                }
+            } else if (keepsNumbers(r.id)) {
+                continue;
+            } else if (!follow(before, doc, r, &to)) {
+                ok = false;
+                break;
+            }
+            renumbered = renumbered || !(to == r) || to.reversed != r.reversed;
             r = to;
         }
         if (ok && resolves(doc, c))
@@ -2029,7 +2218,7 @@ int reconcile(const Document &before, Document &doc, QStringList *dropped, bool 
     }
     p.constraints = kept;
     if (gone.isEmpty()) {
-        if (moved) {
+        if (renumbered) {
             doc.setParametric(p);       // references moved to new numbers
             if (changed) *changed = true;
         }

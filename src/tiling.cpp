@@ -1,3 +1,4 @@
+#include <optional>
 #include "tiling.h"
 #include "c2ddocument.h"
 #include "gcodeexport.h"
@@ -109,15 +110,19 @@ static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
     bool blockCuts = false, inPreamble = false;
     // A same-tool toolpath carries no tool change of its own: if the block
     // that did is dropped here, the kept block must still load that tool.
-    int toolIn = -1;      // last tool change seen in the input
-    int toolOut = -1;     // last tool change kept in this tile
+    // Compared by number and bit (Op::text): one number can be two bits.
+    std::optional<Op> toolIn;    // last tool change seen in the input
+    std::optional<Op> toolOut;   // last tool change kept in this tile
+    auto sameTool = [](const std::optional<Op> &a, const std::optional<Op> &b) {
+        return a && b && a->ival == b->ival && a->text == b->text;
+    };
     auto flush = [&] {
         if (blockCuts) {
             bool hasTool = false;
             for (const Op &b : block)
-                if (b.kind == Op::Tool) { hasTool = true; toolOut = b.ival; }
-            if (!hasTool && toolIn >= 0 && toolIn != toolOut) {
-                out.append(Op::tool(toolIn));
+                if (b.kind == Op::Tool) { hasTool = true; toolOut = b; }
+            if (!hasTool && toolIn && !sameTool(toolIn, toolOut)) {
+                out.append(*toolIn);
                 toolOut = toolIn;
             }
             out += block;
@@ -142,7 +147,7 @@ static QVector<Op> dropUncutBlocks(const QVector<Op> &ops)
         }
         block.append(o);
         if (o.kind == Op::Tool)
-            toolIn = o.ival;
+            toolIn = o;
     }
     flush();
     return out;
@@ -263,16 +268,38 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
                 }
             }
             if (sAt.last() >= 1.0) {
-                auto zAt = [&](int i) {
-                    return qMin(safeZ, qMax(q.at(i).z, a.z + sAt.at(i) * kRampSlope));
+                // One leg of the ramp rises kRampSlope per mm, so a cut deeper
+                // than the path allows (8 mm x 0.35 = 2.8 mm) goes back and
+                // forth along it until the ramp starts at the stock top (Z 0)
+                // or safe Z, instead of plunging the rest.
+                const double S = sAt.last();
+                const double need = qMin(safeZ, 0.0) - a.z;
+                const int legs = need > S * kRampSlope ? int(std::ceil(need / (S * kRampSlope))) : 1;
+                const double total = legs * S;
+                const double zTop = qMin(safeZ, a.z + total * kRampSlope);
+                auto zAt = [&](int i, double done) {   // `done`: mm of ramp still ahead
+                    return qMin(safeZ, qMax(q.at(i).z, a.z + (zTop - a.z) * done / total));
                 };
                 const int m = int(q.size()) - 1;
-                t.ops.append(Op::rapid(q.at(m).x, q.at(m).y + dy, safeZ));
-                if (zAt(m) < safeZ - 1e-9)
-                    t.ops.append(Op::feedTo(q.at(m).x, q.at(m).y + dy, zAt(m), down));
-                for (int i = m - 1; i > 0; --i)
-                    t.ops.append(Op::feedTo(q.at(i).x, q.at(i).y + dy, zAt(i), down));
-                t.ops.append(Op::feedTo(a.x, a.y + dy, a.z, down));
+                // Legs alternate; the last one always ends at a, so an odd
+                // count starts at the far end and an even one at a.
+                bool fromFar = legs % 2 == 1;
+                const P3 &st = fromFar ? q.at(m) : q.at(0);
+                t.ops.append(Op::rapid(st.x, st.y + dy, safeZ));
+                if (zTop < safeZ - 1e-9)
+                    t.ops.append(Op::feedTo(st.x, st.y + dy, zTop, down));
+                double left = total;
+                for (int leg = 0; leg < legs; ++leg, fromFar = !fromFar) {
+                    for (int s = 1; s <= m; ++s) {
+                        const int i = fromFar ? m - s : s;
+                        const int prev = fromFar ? i + 1 : i - 1;
+                        left -= sAt.at(qMax(i, prev)) - sAt.at(qMin(i, prev));
+                        if (leg == legs - 1 && i == 0)
+                            t.ops.append(Op::feedTo(a.x, a.y + dy, a.z, down));
+                        else
+                            t.ops.append(Op::feedTo(q.at(i).x, q.at(i).y + dy, zAt(i, qMax(0.0, left)), down));
+                    }
+                }
             } else {
                 t.ops.append(Op::rapid(a.x, a.y + dy, safeZ));
                 if (a.z < safeZ - 1e-9)
@@ -329,7 +356,18 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
             break;
         case Op::Rapid:
             // Rapids are not copied: each tile re-links its pieces through
-            // safe Z itself. Only the position is tracked.
+            // safe Z itself. Only the position is tracked - except a straight
+            // up or down move where a tile's bit is (a drill's chip-break
+            // lift), which stays a short move instead of a full retract.
+            if (qAbs(op.x - cur.x) < 1e-9 && qAbs(op.y - cur.y) < 1e-9)
+                for (int k = 0; k < n; ++k) {
+                    TileState &t = tiles[k];
+                    if (t.havePos && same(t.pos, cur)) {
+                        t.ops.append(Op::rapid(op.x, op.y - k * tileHeight, op.z));
+                        t.pos = {op.x, op.y, op.z};
+                        break;
+                    }
+                }
             cur = {op.x, op.y, op.z};
             break;
         case Op::Feed: {

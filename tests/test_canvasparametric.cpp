@@ -16,7 +16,10 @@
 
 #include <QApplication>
 #include <QHeaderView>
+#include <QJsonObject>
 #include <QLineEdit>
+#include <QPushButton>
+#include <QScrollBar>
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
@@ -318,9 +321,258 @@ int main(int argc, char *argv[])
         check(canvas.applyParametric(p3, QStringLiteral("drop width"), true), "clean up");
     }
 
+    // A value edit with something already red: the rest follows the edit
+    // exactly, the red one is left out instead of bending what holds.
+    {
+        const Element ln = Element::makePath({{120, 120}, {170, 121}}, false, doc.defaultLayer());
+        doc.addElement(ln);
+        GeoRef seg, n0;
+        seg.kind = GeoRef::Line; seg.id = ln.id; seg.index = 0;
+        n0.id = ln.id; n0.index = 0;
+        Parametric p = doc.parametric();
+        p.params.append({QStringLiteral("L"), QStringLiteral("50"), QString()});
+        Constraint fix;
+        fix.type = Constraint::Fix;
+        fix.refs = {n0};
+        fix.at = QPointF(120, 120);
+        fix.uid = p.nextUid();
+        p.constraints.append(fix);
+        Constraint h;
+        h.type = Constraint::Horizontal;
+        h.refs = {seg};
+        h.uid = p.nextUid();
+        p.constraints.append(h);
+        Constraint len;
+        len.type = Constraint::Distance;
+        len.refs = {seg};
+        len.uid = p.nextUid();
+        len.name = p.nextDimensionName();
+        len.expr = QStringLiteral("L");
+        p.constraints.append(len);
+        check(canvas.applyParametric(p, QStringLiteral("line")), "line constrained");
+        check(approx(QLineF(node(doc, ln.id, 0), node(doc, ln.id, 1)).length(), 50), "line is 50");
+        Parametric p2 = doc.parametric();
+        Constraint len2 = len;
+        len2.uid = p2.nextUid();
+        len2.name = p2.nextDimensionName();
+        len2.expr = QStringLiteral("40");
+        p2.constraints.append(len2);
+        check(canvas.applyParametric(p2, QStringLiteral("second length"), true), "conflicting length kept");
+        check(param::unsatisfied(doc) == QStringList{len2.uid}, "only the second length is red");
+        const QPointF q0 = node(doc, id, 0), q2 = node(doc, id, 2);
+        const int steps = undo->count();
+        Parametric p3 = doc.parametric();
+        p3.params[p3.indexOfParam(QStringLiteral("L"))].expr = QStringLiteral("60");
+        check(canvas.applyParametric(p3, QStringLiteral("L = 60")), "the edit goes in");
+        check(undo->count() == steps + 1, "one undo step");
+        check(approx(QLineF(node(doc, ln.id, 0), node(doc, ln.id, 1)).length(), 60, 1e-6),
+              "the line follows L exactly, no compromise with the red 40");
+        check(approx(QLineF(node(doc, ln.id, 0), QPointF(120, 120)).length(), 0, 1e-6)
+                  && approx(node(doc, ln.id, 0).y(), node(doc, ln.id, 1).y(), 1e-6),
+              "the fix and the horizontal still hold");
+        check(param::unsatisfied(doc) == QStringList{len2.uid}, "the second length is still the only red one");
+        check(approx(QLineF(node(doc, id, 0), q0).length(), 0, 1e-9)
+                  && approx(QLineF(node(doc, id, 2), q2).length(), 0, 1e-9), "nothing else moved");
+        // A value the rest can't follow even without the red one is refused.
+        Parametric p4 = doc.parametric();
+        Constraint v;
+        v.type = Constraint::Vertical;
+        v.refs = {seg};
+        v.uid = p4.nextUid();
+        p4.constraints.append(v);
+        check(!canvas.applyParametric(p4, QStringLiteral("V")), "a new failure is refused");
+        check(doc.parametric().indexOfUid(v.uid) < 0 && undo->count() == steps + 1, "and nothing changed");
+
+        // --- the value editor follows its dimension when the view moves ---------
+        canvas.editDimension(len.uid);
+        QLineEdit *ed = canvas.viewport()->findChild<QLineEdit *>(QStringLiteral("dimEdit"));
+        check(ed && ed->isVisible(), "editor open on the line's length");
+        const QPoint c0 = ed->geometry().center();
+        canvas.zoomBy(1.5);
+        check((ed->geometry().center() - c0).manhattanLength() > 10, "it moves with a zoom");
+        canvas.zoomBy(1 / 1.5);
+        check((ed->geometry().center() - c0).manhattanLength() <= 2, "and comes back with it");
+        QScrollBar *hs = canvas.horizontalScrollBar();
+        if (hs->maximum() - hs->minimum() > 80) {
+            const int at = hs->value() + 40 <= hs->maximum() ? hs->value() + 40 : hs->value() - 40;
+            const int dx = at - hs->value();
+            hs->setValue(at);
+            check(std::abs(ed->geometry().center().x() - (c0.x() - dx)) <= 1, "it moves with a scroll");
+            hs->setValue(at - dx);
+        }
+        QTest::keyClick(ed, Qt::Key_Escape);
+        Parametric p5 = doc.parametric();
+        p5.constraints.removeAt(p5.indexOfUid(len2.uid));
+        check(canvas.applyParametric(p5, QStringLiteral("drop second length"), true), "clean up");
+    }
+
+    // An angle dimension is between 0 and 180: 270 is refused everywhere.
+    {
+        const Element ang = Element::makePath({{120, 160}, {160, 160}, {180, 185}}, false, doc.defaultLayer());
+        doc.addElement(ang);
+        Parametric p = doc.parametric();
+        Constraint a;
+        a.type = Constraint::Angle;
+        GeoRef l0, l1;
+        l0.kind = l1.kind = GeoRef::Line;
+        l0.id = l1.id = ang.id;
+        l0.index = 0; l1.index = 1;
+        a.refs = {l0, l1};
+        a.uid = p.nextUid();
+        a.name = p.nextDimensionName();
+        param::prime(doc, a);
+        a.expr = QStringLiteral("60");
+        p.constraints.append(a);
+        check(canvas.applyParametric(p, QStringLiteral("angle")), "angle dimension added");
+        canvas.editDimension(a.uid);
+        QLineEdit *ed = canvas.viewport()->findChild<QLineEdit *>(QStringLiteral("dimEdit"));
+        ed->selectAll();
+        QTest::keyClicks(ed, QStringLiteral("270"));
+        QTest::keyClick(ed, Qt::Key_Return);
+        const auto exprOf = [&] { return doc.parametric().constraints.at(doc.parametric().indexOfUid(a.uid)).expr; };
+        check(ed->isVisible() && exprOf() == QLatin1String("60"), "the canvas editor refuses 270");
+        QTest::keyClick(ed, Qt::Key_Escape);
+        ParametersPanel panel(&canvas);
+        panel.setDocument(&doc);
+        QTableWidget *dims = nullptr;
+        for (QTableWidget *t : panel.findChildren<QTableWidget *>())
+            if (t->horizontalHeaderItem(t->columnCount() - 1)->text() != QLatin1String("Comment"))
+                dims = t;
+        int row = -1;
+        for (int r = 0; r < dims->rowCount(); ++r)
+            if (dims->item(r, 0)->data(Qt::UserRole).toString() == a.uid)
+                row = r;
+        check(row >= 0, "angle row");
+        dims->item(row, 2)->setText(QStringLiteral("270"));
+        check(exprOf() == QLatin1String("60"), "the Parameters tab refuses 270");
+        dims->item(row, 2)->setText(QStringLiteral("100"));
+        check(exprOf() == QLatin1String("100"), "100 goes in");
+    }
+
+    // Removing a parameter unbinds the toolpath fields bound to it, keeping
+    // their values, in the same undo step.
+    {
+        Parametric p = doc.parametric();
+        p.params.append({QStringLiteral("cut"), QStringLiteral("4"), QString()});
+        check(canvas.applyParametric(p, QStringLiteral("add cut")), "add cut");
+        Toolpath t;
+        t.uuid = QStringLiteral("tpcut");
+        t.type = QStringLiteral("contour_toolpath");
+        t.json.insert(QStringLiteral("name"), QStringLiteral("Outline"));
+        t.json.insert(QStringLiteral("end_depth"), QStringLiteral("-4.000"));
+        t.json.insert(QStringLiteral("feed"), 1000);
+        QJsonObject binds;
+        binds.insert(QStringLiteral("end_depth"), QJsonObject{{"expr", "cut"}, {"neg", true}, {"str", true}});
+        binds.insert(QStringLiteral("feed"), QJsonObject{{"expr", "stock_t * 100"}});
+        t.json.insert(QStringLiteral("phobic_expr"), binds);
+        doc.addToolpath(t);
+        ParametersPanel panel(&canvas);
+        panel.setDocument(&doc);
+        panel.refresh();
+        QTableWidget *params = nullptr;
+        for (QTableWidget *tw : panel.findChildren<QTableWidget *>())
+            if (tw->horizontalHeaderItem(tw->columnCount() - 1)->text() == QLatin1String("Comment"))
+                params = tw;
+        int row = -1;
+        for (int r = 0; r < params->rowCount(); ++r)
+            if (params->item(r, 0) && params->item(r, 0)->text() == QLatin1String("cut"))
+                row = r;
+        check(row >= 0, "cut row");
+        params->setCurrentCell(row, 0);
+        QPushButton *remove = nullptr;
+        for (QPushButton *b : panel.findChildren<QPushButton *>())
+            if (b->text() == QLatin1String("Remove"))
+                remove = b;
+        check(remove && remove->isEnabled(), "Remove button");
+        const int steps = undo->count();
+        remove->click();
+        const auto tpJson = [&] { return doc.toolpaths().last().json; };
+        check(doc.parametric().indexOfParam(QStringLiteral("cut")) < 0, "cut removed");
+        check(undo->count() == steps + 1, "one undo step");
+        check(!tpJson().value(QStringLiteral("phobic_expr")).toObject().contains(QStringLiteral("end_depth"))
+                  && tpJson().value(QStringLiteral("phobic_expr")).toObject().contains(QStringLiteral("feed")),
+              "only the field bound to cut is unbound");
+        check(tpJson().value(QStringLiteral("end_depth")).toString() == QLatin1String("-4.000"), "its value kept");
+        Parametric again = doc.parametric();
+        again.params.append({QStringLiteral("cut"), QStringLiteral("9"), QString()});
+        check(canvas.applyParametric(again, QStringLiteral("add cut again")), "a new cut");
+        check(tpJson().value(QStringLiteral("end_depth")).toString() == QLatin1String("-4.000"),
+              "a new parameter of the same name doesn't take it over");
+        undo->undo();
+        undo->undo();
+        check(tpJson().value(QStringLiteral("phobic_expr")).toObject().contains(QStringLiteral("end_depth"))
+                  && doc.parametric().indexOfParam(QStringLiteral("cut")) >= 0, "undo binds it again");
+        undo->redo();
+    }
+
     // Freedom: a closed quad with H, parallel and a length still slides about.
     canvas.rebuild();
     check(canvas.freedomLeft() > 0 && !canvas.fullyConstrained().contains(id), "not fully constrained");
+
+    // Convert to path on a rectangle: its edges run the other way as path
+    // segments, and a distance or angle on one keeps its side and value.
+    {
+        auto ref = [](GeoRef::Kind k, const QString &rid, int index) {
+            GeoRef r;
+            r.kind = k; r.id = rid; r.index = index;
+            return r;
+        };
+        auto add = [](Document &d, Constraint::Type t, const QVector<GeoRef> &refs, const QString &expr = QString()) {
+            Constraint c;
+            c.type = t;
+            c.refs = refs;
+            c.uid = d.parametric().nextUid();
+            if (c.isDimension()) { c.name = d.parametric().nextDimensionName(); c.expr = expr; }
+            param::prime(d, c);
+            d.parametricRef().constraints.append(c);
+        };
+        Document cd;
+        const Element rect = Element::makeRectangle({50, 50}, 40, 20, cd.defaultLayer());
+        const Element pt = Element::makePoint({50, 45}, cd.defaultLayer());       // 5 above the bottom, inside
+        const Element ln = Element::makePath({{80, 80}, {100, 90}}, false, cd.defaultLayer());
+        cd.addElement(rect);
+        cd.addElement(pt);
+        cd.addElement(ln);
+        add(cd, Constraint::Distance, {ref(GeoRef::Point, pt.id, -1), ref(GeoRef::Line, rect.id, 0)}, "5");
+        add(cd, Constraint::Fix, {ref(GeoRef::Line, rect.id, 0)});
+        add(cd, Constraint::Angle, {ref(GeoRef::Line, rect.id, 0), ref(GeoRef::Line, ln.id, 0)}, "30");
+        param::solve(cd);
+        canvas.setDocument(&cd);
+        QPointF a0, b0;
+        check(param::line(cd, ref(GeoRef::Line, ln.id, 0), &a0, &b0), "free line resolves");
+        canvas.convertToPaths({rect.id});
+        check(cd.elementById(rect.id)->geometryType == QLatin1String("path"), "rectangle is a path");
+        check(cd.parametric().constraints.size() == 3 && param::unsatisfied(cd).isEmpty(), "all three still hold");
+        check(QLineF(node(cd, pt.id, -1), QPointF(50, 45)).length() < 1e-6, "the point stays inside, 5 above the bottom");
+        QPointF a1, b1;
+        check(param::line(cd, ref(GeoRef::Line, ln.id, 0), &a1, &b1)
+                  && QLineF(a0, a1).length() < 1e-6 && QLineF(b0, b1).length() < 1e-6, "the angled line stays put");
+    }
+
+    // Fix on a whole shape holds it as Fix on a point does: a move is put back.
+    {
+        Document fd;
+        const Element c1 = Element::makeCircle({50, 50}, 10, fd.defaultLayer());
+        fd.addElement(c1);
+        Constraint c;
+        c.type = Constraint::Fix;
+        GeoRef r;
+        r.kind = GeoRef::Circle;
+        r.id = c1.id;
+        c.refs = {r};
+        c.uid = fd.parametric().nextUid();
+        fd.parametricRef().constraints.append(c);
+        canvas.setDocument(&fd);
+        QString hint;
+        auto conn = QObject::connect(&canvas, &Canvas::statusHint, [&](const QString &h) { hint = h; });
+        canvas.moveElementBy(c1.id, 30, 0);
+        QObject::disconnect(conn);
+        check(QLineF(node(fd, c1.id, -1), QPointF(50, 50)).length() < 1e-9, "the locked circle stays put");
+        check(hint.contains(QStringLiteral("locked")), "and the status bar says why");
+        canvas.undoStack()->undo();
+        check(QLineF(node(fd, c1.id, -1), QPointF(50, 50)).length() < 1e-9, "undo leaves it there too");
+        canvas.setDocument(&doc);
+    }
 
     std::printf("canvasparametric: %d checks passed\n", g_checks);
     return 0;

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 #ifdef HAVE_CLIPPER2
 #include <clipper2/clipper.h>
@@ -22,13 +23,24 @@ namespace c2d {
 
 // ---- parameters -----------------------------------------------------------
 
-// Same sign-agnostic depth reading as the 2D exporter.
-static double depthToZ(const QJsonValue &v)
+// Same sign-agnostic, checked depth reading as the 2D exporter: absent is
+// fine (0), present but unreadable is not a depth and `ok` says so. A bare
+// toString().toDouble() read "5,0" or "5mm" as 0, which here means "down to
+// the model floor" - deeper than the limit that was set.
+static double depthToZ(const QJsonValue &v, bool *ok)
 {
-    return -qAbs(v.isString() ? v.toString().toDouble() : v.toDouble());
+    *ok = true;
+    if (v.isUndefined() || v.isNull())
+        return 0.0;
+    const double d = numOr(v, std::numeric_limits<double>::quiet_NaN());
+    if (!std::isfinite(d)) {
+        *ok = false;
+        return 0.0;
+    }
+    return -qAbs(d);
 }
 
-Cam3dParams cam3dParams(const QJsonObject &j, double safeZ)
+Cam3dParams cam3dParams(const QJsonObject &j, double safeZ, bool *ok)
 {
     Cam3dParams p;
     p.safeZ = safeZ;
@@ -57,7 +69,10 @@ Cam3dParams cam3dParams(const QJsonObject &j, double safeZ)
     p.stepover = qMax(0.05, stepover);
 
     // max_depth 0 / absent = down to the model floor.
-    const double md = depthToZ(j.value("max_depth"));
+    bool mdOk = true;
+    const double md = depthToZ(j.value("max_depth"), &mdOk);
+    if (ok)
+        *ok = mdOk;
     if (md < -1e-9)
         p.maxDepth = md;
     p.boundaryOffset = numOr(j.value("boundary_offset"), 0);

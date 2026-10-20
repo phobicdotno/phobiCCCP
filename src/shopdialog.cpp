@@ -8,7 +8,7 @@
 
 namespace c2d {
 
-bool shopAsk(QWidget *parent, const ShopAsk &a)
+ShopAnswer shopChoose(QWidget *parent, const ShopAsk &a)
 {
     // No window-manager title bar: the caption inside is the title, and the
     // card gets an amber edge instead so it still reads as a popup.
@@ -100,6 +100,13 @@ bool shopAsk(QWidget *parent, const ShopAsk &a)
         QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
         row->addWidget(cancel);
     }
+    constexpr int kAlt = 2;
+    if (!a.altText.isEmpty()) {
+        auto *alt = new QPushButton(a.altText, &dlg);
+        alt->setObjectName(QStringLiteral("cancel"));   // the quiet look
+        QObject::connect(alt, &QPushButton::clicked, &dlg, [&dlg] { dlg.done(kAlt); });
+        row->addWidget(alt);
+    }
     auto *ok = new QPushButton(a.okText, &dlg);
     ok->setObjectName(a.okDanger ? QStringLiteral("okDanger") : QStringLiteral("ok"));
     QObject::connect(ok, &QPushButton::clicked, &dlg, &QDialog::accept);
@@ -111,7 +118,15 @@ bool shopAsk(QWidget *parent, const ShopAsk &a)
     else
         cancel->setDefault(true);
     (a.defaultOk || !cancel ? ok : cancel)->setFocus();
-    return dlg.exec() == QDialog::Accepted;
+    const int r = dlg.exec();
+    return r == QDialog::Accepted ? ShopAnswer::Ok
+         : r == kAlt              ? ShopAnswer::Alt
+                                  : ShopAnswer::Cancel;
+}
+
+bool shopAsk(QWidget *parent, const ShopAsk &a)
+{
+    return shopChoose(parent, a) == ShopAnswer::Ok;
 }
 
 void shopTell(QWidget *parent, const QString &title, const QString &headline,

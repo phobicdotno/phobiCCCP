@@ -70,6 +70,9 @@ String? hitShape(Design d, double x, double y, double slop) {
   for (final s in d.shapes) {
     final b = s.bounds();
     if (x < b[0] - slop || x > b[2] + slop || y < b[1] - slop || y > b[3] + slop) continue;
+    // An open path is only hit near its line, not anywhere in its box, or a
+    // long diagonal one would take every tap on the empty board.
+    if (s.type == Shape.path && s.closed != true && !_nearPath(s.points ?? const [], x, y, slop)) continue;
     final size = math.sqrt(math.pow(b[2] - b[0], 2) + math.pow(b[3] - b[1], 2));
     if (size < bestSize) {
       best = s;
@@ -77,6 +80,18 @@ String? hitShape(Design d, double x, double y, double slop) {
     }
   }
   return best?.id;
+}
+
+bool _nearPath(List<List<double>> p, double x, double y, double slop) {
+  if (p.length == 1) return math.sqrt(math.pow(p[0][0] - x, 2) + math.pow(p[0][1] - y, 2)) <= slop;
+  for (var i = 1; i < p.length; i++) {
+    final ax = p[i - 1][0], ay = p[i - 1][1], dx = p[i][0] - ax, dy = p[i][1] - ay;
+    final len = dx * dx + dy * dy;
+    final t = len == 0 ? 0.0 : (((x - ax) * dx + (y - ay) * dy) / len).clamp(0.0, 1.0);
+    final ex = ax + t * dx - x, ey = ay + t * dy - y;
+    if (ex * ex + ey * ey <= slop * slop) return true;
+  }
+  return false;
 }
 
 /// What a drag with a drawing tool would make: shown while dragging.

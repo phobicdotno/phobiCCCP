@@ -151,8 +151,13 @@ int main()
     for (const Op &o : out)
         if (o.kind == Op::Rapid)
             ++rapids;
-    check(rapids == 3, "rapids stay single moves");
-    check(out[3].kind == Op::Rapid && near(out[3].z, expectZ(100, 0, 5)), "rapid end gets the offset");
+    // The first rapid has no known start: it clears the map's highest point
+    // (+1.0 at X100 Y0), then drops to the offset under it.
+    check(rapids == 4, "rapids stay single moves, plus one drop after the blind first one");
+    check(out[2].kind == Op::Rapid && near(out[2].z, 5 + 1.0), "a rapid from nowhere clears the highest point");
+    check(out[3].kind == Op::Rapid && near(out[3].x, 0) && near(out[3].z, expectZ(0, 0, 5)),
+          "then drops to the offset at its end");
+    check(out[4].kind == Op::Rapid && near(out[4].z, expectZ(100, 0, 5)), "rapid end gets the offset");
     double lx = 0, ly = 0;
     bool have = false;
     int feeds = 0;
@@ -183,7 +188,7 @@ int main()
     const QVector<Op> arcOut = applySurfaceMap(circ, tilt, 3.0);
     int chords = 0;
     double minAngle = 10, maxAngle = -10;
-    for (int i = 2; i < arcOut.size(); ++i) {
+    for (int i = 3; i < arcOut.size(); ++i) {   // after the blind first rapid and its drop
         const Op &o = arcOut[i];
         check(o.kind == Op::Feed, "an arc becomes feeds");
         check(near(std::hypot(o.x - 50, o.y - 50), 10, 1e-6), "chord ends on the circle");
@@ -196,14 +201,44 @@ int main()
     // Sagitta of a chord of angle d on r 10 is 10 (1 - cos(d/2)) <= 0.005.
     check(chords >= int(std::ceil(2 * M_PI / (2 * std::acos(1 - 0.005 / 10)))), "chords within 0.005 mm");
     check(minAngle < -3.0 && maxAngle > 3.0, "the whole circle is swept");
-    check(arcOut[2].y < 50, "clockwise from (60, 50) goes down first");
+    check(arcOut[3].y < 50, "clockwise from (60, 50) goes down first");
 
     // After a tool change the head is wherever the tool-change macro left it.
     QVector<Op> tc = {Op::rapid(0, 0, 5), Op::feedTo(0, 0, -1, 300), Op::tool(2),
                       Op::feedTo(100, 100, -1, 300)};
     const QVector<Op> tcOut = applySurfaceMap(tc, tilt, 3.0);
-    check(tcOut.size() == 4 && tcOut[3].kind == Op::Feed && near(tcOut[3].x, 100),
+    check(tcOut.size() == 5 && tcOut[4].kind == Op::Feed && near(tcOut[4].x, 100),   // [0..1]: blind rapid + drop
           "first move after a tool change is taken whole");
+
+    // A long rapid over a bump: lifted by the peak in between, not by its ends.
+    {
+        QVector<Op> hop = {Op::rapid(0, 50, 2), Op::feedTo(0, 50, -1, 300), Op::rapid(0, 50, 2),
+                           Op::rapid(100, 50, 2), Op::feedTo(100, 50, -1, 300)};
+        const QVector<Op> hopOut = applySurfaceMap(hop, bump, 3.0);
+        int i = 0;
+        while (i < hopOut.size() && !(hopOut[i].kind == Op::Rapid && near(hopOut[i].x, 100)))
+            ++i;
+        check(i + 1 < hopOut.size() && near(hopOut[i].z, 2 + 1.0),
+              "a rapid across a high spot travels above it");
+        check(hopOut[i + 1].kind == Op::Rapid && near(hopOut[i + 1].x, 100) && near(hopOut[i + 1].z, 2),
+              "and comes down to the surface at its end");
+        // Diagonal across a cell: the peak is passed between samples of the
+        // ends only.
+        const QVector<Op> diag = applySurfaceMap(
+            {Op::rapid(0, 0, 2), Op::feedTo(0, 0, 0, 300), Op::rapid(0, 0, 2), Op::rapid(100, 100, 2)},
+            bump, 3.0);
+        double top = -1e9;
+        for (const Op &o : diag)
+            if (o.kind == Op::Rapid && near(o.x, 100))
+                top = std::max(top, o.z);
+        check(near(top, 3.0, 0.01), "a diagonal rapid over the peak is lifted by it");
+        // Z-only rapids are exact already and stay one move.
+        int zr = 0;
+        for (const Op &o : hopOut)
+            if (o.kind == Op::Rapid && near(o.x, 0))
+                ++zr;
+        check(zr == 3, "rapids that only move Z are not doubled (beyond the blind first one)");
+    }
 
     // A flat map changes no Z.
     SurfaceMap flat = tilt;

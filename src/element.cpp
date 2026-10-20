@@ -880,6 +880,19 @@ Element Element::regen(const Element &src, const QHash<QString, double> &p)
     const double cy = p.value("cy", c.size() == 2 ? c.at(1).toDouble() : 0);
     const QJsonObject layer = r.value("layer").toObject();
 
+    // A size of zero or less (or not a number) has no outline to build; the
+    // shape stays as it was. The properties panel's fields stop at 0.01 mm,
+    // but a solver or a scale by 0 can still ask for it.
+    auto sizeOk = [&](const char *key) {
+        if (!p.contains(QLatin1String(key)))
+            return true;
+        const double v = p.value(QLatin1String(key));
+        return std::isfinite(v) && v > 0;
+    };
+    const bool rect = src.geometryType == QLatin1String("rectangle");
+    if (!(rect ? sizeOk("width") && sizeOk("height") : sizeOk("radius")))
+        return src;
+
     Element e;
     if (src.geometryType == QLatin1String("circle")) {
         e = makeCircle({cx, cy}, p.value("radius", r.value("radius").toDouble()), layer);
