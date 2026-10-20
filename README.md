@@ -59,7 +59,8 @@ pan the canvas. File > Send to phobiCCCP… sends the design to the computer by
 the machine (which needs File > Receive from Syntexophobic and pads on), and
 can start the cut there. There is no serial port on a pad, so the Machine side
 there has nothing to connect to. Without Boost on Android, V-carve uses the ring
-approximation.
+approximation. The other way, File > Send to pad… on a computer lists the pads
+running this program and opens the design there.
 
 ## Screenshots
 
@@ -327,7 +328,9 @@ on the same network, and sent to any of them, on any of its machines. A design f
 stays linked to its `.c2d`: saving it here updates the pads, and a later pad edit rebuilds
 the file while it holds only what the pad can. A pad can also start the cut straight away
 when **Machine › Pads may start cutting** is on (off by default); the machine still has to
-be connected, homed and idle.
+be connected, homed and idle. The other way, **File › Send to pad…** sends the open design
+to a pad that is in touch (it opens there within a few seconds), and the pad's edits come
+back to the same file.
 
 **Isometric preview** (Preview tab): the generated route drawn in 3D over the
 stock — rapids dashed, cuts coloured by depth — with orbit / zoom, and an
