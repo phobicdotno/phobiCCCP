@@ -621,6 +621,23 @@ class MachineStatus {
 }
 
 /// The answer to "info".
+/// A design someone at the computer sent to this pad to edit (desktop: File ›
+/// Send to pad…). [seq] tells one sending from the next.
+class OpenRequest {
+  final int seq;
+  final String design, name, from;
+  const OpenRequest({required this.seq, required this.design, this.name = '', this.from = ''});
+
+  /// Null when [v] is not a whole request.
+  static OpenRequest? fromJson(Object? v) {
+    if (v is! Map) return null;
+    final j = v.cast<String, Object?>();
+    final seq = _i(j['seq']), design = _s(j['design']);
+    if (seq <= 0 || design.isEmpty) return null;
+    return OpenRequest(seq: seq, design: design, name: _s(j['name']), from: _s(j['from']));
+  }
+}
+
 class DesktopInfo {
   final String host, version, id, activeMachine, document;
   final List<MachineInfo> machines;
@@ -628,7 +645,7 @@ class DesktopInfo {
   final bool allowStart;
 
   /// It keeps two copies edited apart itself, by their version vectors
-  /// (phobiCCCP 1.2.9 and later). An older one lists no versions and keeps
+  /// (phobiCCCP 1.3.1 and later). An older one lists no versions and keeps
   /// the later copy or forks by the base alone; the pad then settles such
   /// pairs for it (sync.dart).
   bool get keepsBoth {
@@ -636,9 +653,11 @@ class DesktopInfo {
     while (v.length < 3) {
       v.add(0);
     }
-    return v[0] != 1 ? v[0] > 1 : (v[1] != 2 ? v[1] > 2 : v[2] >= 9);
+    return v[0] != 1 ? v[0] > 1 : (v[1] != 3 ? v[1] > 3 : v[2] >= 1);
   }
 
+  /// A design sent from there for this pad to open; null when none waits.
+  final OpenRequest? open;
   const DesktopInfo({
     this.host = '',
     this.version = '',
@@ -648,6 +667,7 @@ class DesktopInfo {
     this.machines = const [],
     this.status = const MachineStatus(),
     this.allowStart = false,
+    this.open,
   });
   factory DesktopInfo.fromJson(Map<String, Object?> j) => DesktopInfo(
         host: _s(j['host']),
@@ -658,6 +678,7 @@ class DesktopInfo {
         machines: _l(j['machines']).map((m) => MachineInfo.fromJson(_m(m))).toList(),
         status: MachineStatus.fromJson(_m(j['status'])),
         allowStart: _b(j['allowStart']),
+        open: OpenRequest.fromJson(j['open']),
       );
 }
 

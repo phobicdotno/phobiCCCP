@@ -3,6 +3,7 @@
 #include "backgroundimage.h"
 #include "canvas.h"
 #include "recovery.h"
+#include "padlink.h"
 #include <QMainWindow>
 #include <memory>
 
@@ -91,6 +92,7 @@ private:
     void removeUntitledFile();    // the scratch file behind an untitled design
     // Crash recovery (recovery.h): a copy of the unsaved design every couple
     // of minutes, offered again at start-up if the session died.
+    void onSendTo();
     void autosave();
     void offerRecovery();
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
@@ -106,7 +108,17 @@ private:
     // A design sent from a pad stays linked to its .c2d both ways: saving the
     // .c2d here updates the pad design (padShareSaved), and a newer pad design
     // rebuilds the .c2d when it holds nothing the pad cannot (padDesignChanged).
-    void padShareSaved(const QString &c2dPath);
+    // The id it was shared under, empty when not shared (`error` says why).
+    // `startLink`: a file not linked yet becomes a pad design of its own
+    // (File > Send to pad…). `lost`: what the pads get it without.
+    QString padShareSaved(const QString &c2dPath, bool startLink = false, QStringList *lost = nullptr,
+                          QString *error = nullptr);
+    // File > Send to pad…: the open file to a pad, to edit it there.
+    void onSendToPad();
+    // The design as it is now, saved or not, as a .c2d in the cache (to send whole).
+    QString sendCopy(QString *error);
+    qint64 sendToPad(const QString &padId, QString *note, QString *error);
+    padlink::Pads m_pads;   // pads in touch lately, and designs waiting for them
     void padDesignChanged(const QString &id);
     void padMoveLinks(const QString &id, const QString &forkId);
     // Machine menu: several machines on this computer (machineprofiles.h).

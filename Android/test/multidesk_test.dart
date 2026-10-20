@@ -97,7 +97,7 @@ class VvDesk {
   Map<String, Object?> _answer(Map<String, Object?> req) {
     switch (req['op']) {
       case 'info':
-        return {'ok': true, 'host': name, 'id': '$name-id', if (!older) 'version': '1.2.9'};
+        return {'ok': true, 'host': name, 'id': '$name-id', if (!older) 'version': '1.3.1'};
       case 'designs':
         return {
           'ok': true,

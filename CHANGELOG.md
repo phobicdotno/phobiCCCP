@@ -1,6 +1,48 @@
 # Changelog
 
-## v1.2.9 (build 82) — 2026-10-20
+## v1.3.1 (build 91) — 2026-10-20
+
+> Recursive bug hunt, rounds 1 to 3: about 70 bugs fixed in toolpaths, the machine, drawing, panels and the pad link
+
+### Round 3
+
+> Finishing passes cut narrow arms in steps again, 3D toolpaths stay out of the model, text is shaped properly, and nothing moves after Stop
+
+- **Toolpaths:**
+  - Round 2's finishing check let narrow arms and letter stems be cut at full depth in one
+    pass; they are stepped down again (finishing is left out there, with a note).
+  - 3D: ball-nose and V-bit finishing now find the true highest point under the tool (up to
+    0.1 mm into steep walls before), flat roughing with no stock to leave stays out of the model,
+    and waterline links no longer cut through walls.
+  - An inlay plug was a coarse polygon (0.2 mm undersized on round shapes); it follows the
+    curve now.
+  - Texture and the 3D boundary leave open paths out, as pockets do.
+  - A thread starting below the top no longer runs its helix up into the stock; circular
+    "outside" spirals down instead of plunging into uncut stock.
+- **Machine:**
+  - Jog taps waiting for a position could still go out after Stop; they are dropped.
+  - Reconnecting to a controller locked by an end-stop alarm left Initialize and Unlock dead.
+  - Run while held, or with an alarm raised while the Run question was open, is refused; the
+    Hold button no longer shows the wrong state, and a macro stops on an end-stop alarm.
+  - Stop during homing no longer parks afterwards, and Stop after Cancel no longer rises.
+- **Drawing:**
+  - Text is laid out as a whole: Hebrew and Arabic come out right, accents sit on their
+    letters, and kerning is applied.
+  - Dragging something attached to a free rectangle moves the rectangle instead of squashing it.
+  - Deleting a node of a triangle no longer leaves a closed path with no area.
+  - The "constraints can't hold" warning stays visible after rotate, scale and mirror.
+- **Panels:**
+  - Ctrl+Z pressed twice quickly on the Simulate page undid one step twice.
+  - G is Constrain; Snap moved to Shift+G (both were on G and neither worked).
+  - The tool library's "Broke one" follows the stock count as it is typed.
+- **Pad link:**
+  - A tablet restored from a backup (or a copied Documents folder) shared its identity with
+    the original, and their edits overwrote each other. The identity is kept out of backups and
+    renewed when a copy is detected.
+  - Pads and computers on older versions mixed with new ones no longer lose edits; the computer
+    warns when an older pad that can't be made safe syncs with it.
+
+### Round 2
 
 > Bug hunt round 2: adaptive no longer cuts one pass thousands of times, tabs hold the part, pad edits survive syncing with two computers, and Preview no longer freezes the window
 
@@ -46,11 +88,9 @@
     they follow now.
   - A Send from a pad that hadn't synced opened its older copy; it opens the newest.
 
-## v1.2.8 (build 81) — 2026-10-20
+### Round 1
 
 > Bug hunt round 1: tiled programs no longer rapid through the work, finishing passes and adaptive links stay off neighbouring parts, and the tool-change pause can't be skipped
-
-(v1.2.7 is left for the Desktop-on-pad change.)
 
 - **Toolpaths:**
   - A tiled program could rapid diagonally out of a cut, through the wall between two
@@ -87,6 +127,41 @@
   - Save As adds the new name to Open Recent.
 - **Pad:** an offline edit was thrown away when the desktop turned down the sync (for instance
   while it was asking about a Send); it is kept and offered again.
+
+## v1.3.0 (build 90) — 2026-10-20
+
+> Send the open design from the computer to a pad, to edit it there
+
+- **File › Send to pad…** lists the PhobiCCCP pads in touch with this computer (each one shows
+  within a few seconds of the pad app being open on the same network). Pick one and Send: the
+  design opens on the pad on its next sync round, and the dialog says when it is open there.
+  An unsaved design is saved first, since the pad gets the file as saved.
+- Edits made on the pad come back to the same file, as for a design sent from a pad. A design
+  that holds what the pad cannot (curves, tabs, parameters, a 3D model…) still goes, and the
+  dialog says the pad's edits then come back as a copy beside the file.
+- **Pad:** a design sent from a computer opens in place of the one on screen (which is already
+  saved), with a line saying where it came from.
+- **Link:** a pad's `info` request now carries `pad` {id, name}; the answer may carry `open`
+  {seq, design, name, from}, and the pad answers with a new `opened` request once the design is
+  in. Older pads and computers ignore the new fields.
+
+## v1.2.7 (build 80) — 2026-10-20
+
+> The desktop program runs on a pad, and any phobiCCCP can send a design to the computer by the machine
+
+- **phobiCCCP for Android.** The desktop program itself now builds as an Android app, so the
+  pad gets exactly the same tools, icons, panels and look. CI builds the APK on every push
+  (`android-qt`). For now it sits beside the Flutter pad app, which stays the released one
+  until the new one has been tried on the pad.
+- **Touch.** Hold a finger still for a moment to right-click (context menus); pinch with two
+  fingers on the canvas to zoom, and move them to pan.
+- **File > Send to phobiCCCP…** Sends the open design, whole, to phobiCCCP on another
+  computer found on the network (or typed in by address), picks its machine, and can start
+  cutting there when that computer allows it (Machine > Pads may start cutting). Works from a
+  pad and between two computers alike. The other side opens it under
+  Documents/phobiCCCP/Received and asks to save first if it has unsaved changes.
+- On Android the file dialogs are Qt's own (as on the desktop) and designs are kept in the
+  app's Documents/phobiCCCP folder.
 
 ## v1.2.6 (build 79) — 2026-10-20
 

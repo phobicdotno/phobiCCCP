@@ -31,11 +31,16 @@
 #include "settingsdialog.h"
 #include <QComboBox>
 #include <QDir>
+#include <QStandardPaths>
 #include <QFileDialog>
 #include <QIcon>
 #include <QListView>
 #include <QToolButton>
 #include <QTreeView>
+#include <QPointer>
+#include <QAbstractButton>
+#include <QContextMenuEvent>
+#include <QMouseEvent>
 
 // Tool buttons with variants open their menu after a 500 ms press-and-hold
 // (Fusion's default is 600 ms); a plain click uses the current variant.
@@ -101,6 +106,77 @@ public:
         }
         return false;
     }
+};
+
+// Touch: holding a finger still for 600 ms is a right-click, so the context
+// menus (vector operations, toolpath cards, ...) open on a pad and on the
+// shop PC's touchscreen. Only presses Qt made from a touch count; tool
+// buttons keep their own press-and-hold menus.
+class TouchHold : public QObject
+{
+public:
+    explicit TouchHold(QObject *parent) : QObject(parent)
+    {
+        m_timer.setSingleShot(true);
+        m_timer.setInterval(600);
+        connect(&m_timer, &QTimer::timeout, this, &TouchHold::fire);
+    }
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        switch (e->type()) {
+        case QEvent::MouseButtonPress: {
+            auto *me = static_cast<QMouseEvent *>(e);
+            auto *w = qobject_cast<QWidget *>(o);
+            if (!w || me->button() != Qt::LeftButton || me->source() == Qt::MouseEventNotSynthesized
+                || qobject_cast<QAbstractButton *>(w))
+                return false;
+            m_target = w;
+            m_pos = me->position().toPoint();
+            m_global = me->globalPosition().toPoint();
+            m_eatRelease = false;
+            m_timer.start();
+            return false;
+        }
+        case QEvent::MouseMove:
+            if (m_timer.isActive() && o == m_target
+                && (static_cast<QMouseEvent *>(e)->globalPosition().toPoint() - m_global).manhattanLength() > 14)
+                m_timer.stop();
+            return false;
+        case QEvent::MouseButtonRelease:
+            if (m_eatRelease) {
+                // Already let go below, before the menu; the finger lifting
+                // must not pick the menu item it happens to be over.
+                m_eatRelease = false;
+                return true;
+            }
+            if (o == m_target)
+                m_timer.stop();
+            return false;
+        default:
+            return false;
+        }
+    }
+
+private:
+    void fire()
+    {
+        QWidget *w = m_target;
+        if (!w)
+            return;
+        // End the press first, where it began, so a drag or rubber band does
+        // not carry on under the menu; the finger's own release is eaten.
+        QMouseEvent up(QEvent::MouseButtonRelease, QPointF(m_pos), QPointF(m_global), Qt::LeftButton,
+                       Qt::NoButton, Qt::NoModifier);
+        QCoreApplication::sendEvent(w, &up);
+        m_eatRelease = true;
+        QContextMenuEvent menu(QContextMenuEvent::Mouse, m_pos, m_global);
+        QCoreApplication::sendEvent(w, &menu);
+    }
+
+    QTimer m_timer;
+    QPointer<QWidget> m_target;
+    QPoint m_pos, m_global;
+    bool m_eatRelease = false;
 };
 
 // Fusion + a hand-tuned dark palette; small QSS pass for spacing/accents.
@@ -521,6 +597,15 @@ int main(int argc, char *argv[])
                 break;
             }
     app.installEventFilter(new FileDialogIcons(&app));
+    app.installEventFilter(new TouchHold(&app));
+#ifdef Q_OS_ANDROID
+    // Qt's own file dialog, as on the desktop: Android's picker hands back
+    // content:// links, which a design (an SQLite file) cannot be opened
+    // or saved through. Designs live in the app's Documents folder.
+    app.setAttribute(Qt::AA_DontUseNativeDialogs);
+    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+                  + QStringLiteral("/phobiCCCP"));
+#endif
 
     if (argc == 4 && QByteArray(argv[1]) == "--selftest")
         return selftest(QString::fromLocal8Bit(argv[2]),

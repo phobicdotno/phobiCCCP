@@ -20,6 +20,7 @@
 #include <QSqlQuery>
 #include <QUuid>
 
+#include <algorithm>
 #include <cmath>
 
 namespace c2d::padlink {
@@ -1155,6 +1156,82 @@ bool Store::put(const QJsonObject &design, QString *error, PutOutcome *outcome, 
     if (haveModified >= modified)
         return false;
     return write(d, error);
+}
+
+bool Pads::seen(const QJsonObject &pad, const QString &address, qint64 now)
+{
+    const QString id = pad.value(QStringLiteral("id")).toString();
+    if (!validId(id))
+        return false;
+    QString name = pad.value(QStringLiteral("name")).toString().simplified().left(60);
+    if (name.isEmpty())
+        name = address;
+    // Anyone on the network can claim to be a pad: only so many are kept.
+    if (!m_pads.contains(id) && m_pads.size() >= 64) {
+        auto oldest = m_pads.begin();
+        for (auto it = m_pads.begin(); it != m_pads.end(); ++it)
+            if (it->lastSeen < oldest->lastSeen)
+                oldest = it;
+        m_open.remove(oldest.key());
+        m_pads.erase(oldest);
+    }
+    m_pads.insert(id, Pad{id, name, address, now});
+    return true;
+}
+
+QList<Pads::Pad> Pads::recent(qint64 now) const
+{
+    QList<Pad> out;
+    for (const Pad &p : m_pads)
+        if (now - p.lastSeen <= kRecentMs)
+            out.append(p);
+    std::sort(out.begin(), out.end(), [](const Pad &a, const Pad &b) {
+        return a.lastSeen != b.lastSeen ? a.lastSeen > b.lastSeen : a.id < b.id;
+    });
+    return out;
+}
+
+QString Pads::nameOf(const QString &padId) const
+{
+    return m_pads.value(padId).name;
+}
+
+qint64 Pads::sendOpen(const QString &padId, const QString &designId, const QString &name,
+                      const QString &from, qint64 now)
+{
+    // Numbered from the clock, so a pad that remembers the last one it opened
+    // from here does not take a request after a restart for that one.
+    m_seq = std::max(m_seq + 1, now);
+    m_open.insert(padId, Open{m_seq, now, designId, name, from});
+    return m_seq;
+}
+
+QJsonObject Pads::pendingFor(const QString &padId, qint64 now) const
+{
+    const auto it = m_open.constFind(padId);
+    if (it == m_open.cend() || now - it->at > kOpenMs)
+        return {};
+    return QJsonObject{{QStringLiteral("seq"), double(it->seq)},
+                       {QStringLiteral("design"), it->design},
+                       {QStringLiteral("name"), it->name},
+                       {QStringLiteral("from"), it->from}};
+}
+
+bool Pads::opened(const QString &padId, qint64 seq, QString *name)
+{
+    const auto it = m_open.find(padId);
+    if (it == m_open.end() || it->seq != seq)
+        return false;
+    if (name)
+        *name = it->name;
+    m_open.erase(it);
+    return true;
+}
+
+bool Pads::waiting(const QString &padId, qint64 seq) const
+{
+    const auto it = m_open.constFind(padId);
+    return it != m_open.cend() && it->seq == seq;
 }
 
 } // namespace c2d::padlink

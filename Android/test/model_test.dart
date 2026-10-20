@@ -69,10 +69,11 @@ void main() {
   });
 
   test('which phobiCCCPs keep two copies edited apart themselves', () {
-    expect(const DesktopInfo(version: '1.2.9').keepsBoth, true);
+    expect(const DesktopInfo(version: '1.3.1').keepsBoth, true);
     expect(const DesktopInfo(version: '1.10.0').keepsBoth, true);
     expect(const DesktopInfo(version: '2.0').keepsBoth, true);
     expect(const DesktopInfo(version: '1.2.6').keepsBoth, false);
+    expect(const DesktopInfo(version: '1.3.0').keepsBoth, false);
     expect(const DesktopInfo().keepsBoth, false);
   });
 

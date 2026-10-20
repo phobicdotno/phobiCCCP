@@ -83,6 +83,52 @@ void main() {
     dir.deleteSync(recursive: true);
   });
 
+  test('a design sent from the computer comes with the sync, and the computer hears it opened', () async {
+    final sent = Design(id: 'd1', name: 'Sign', modified: 40);
+    final (server, seen) = await fakeDesktop((req) => switch (req['op']) {
+          'info' => '{"ok":true,"host":"shop","open":{"seq":7,"design":"d1","name":"Sign","from":"shop"}}',
+          'designs' => '{"ok":true,"designs":[{"id":"d1","modified":40}]}',
+          'get' => jsonEncode({'ok': true, 'design': sent.toJson()}),
+          'opened' => '{"ok":true}',
+          _ => '{"ok":false,"error":"?"}',
+        });
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final store = DesignStore(dir);
+    final desk = Desktop(id: 'x', host: 'shop', address: '127.0.0.1', port: server.port);
+    final r = await syncWith(desk, store, withTools: false, pad: {'id': 'p1', 'name': 'Tab'});
+    expect((seen.first['pad'] as Map)['id'], 'p1', reason: 'the pad says who it is');
+    expect(r.open?.design, 'd1');
+    expect(store.get('d1')!.name, 'Sign', reason: 'pulled before it is opened');
+    final ack = seen.lastWhere((s) => s['op'] == 'opened');
+    expect(ack['seq'], 7);
+    expect(ack['pad'], 'p1');
+    // Its answer lost: asked again, said again, but not opened again.
+    final again = await syncWith(desk, store, withTools: false, pad: {'id': 'p1', 'name': 'Tab'}, handled: 7);
+    expect(again.open, isNull);
+    expect(seen.where((s) => s['op'] == 'opened').length, 2);
+    // Without a pad id (an older call), nothing is opened or said.
+    final none = await syncWith(desk, store, withTools: false);
+    expect(none.open, isNull);
+    expect(seen.where((s) => s['op'] == 'opened').length, 2);
+    await server.close();
+    dir.deleteSync(recursive: true);
+  });
+
+  test('a design sent that could not be pulled is not opened, nor said to be', () async {
+    final (server, seen) = await fakeDesktop((req) => switch (req['op']) {
+          'info' => '{"ok":true,"host":"shop","open":{"seq":3,"design":"gone"}}',
+          'designs' => '{"ok":true,"designs":[]}',
+          _ => '{"ok":false,"error":"?"}',
+        });
+    final dir = Directory.systemTemp.createTempSync('pad');
+    final r = await syncWith(Desktop(id: 'x', host: 'shop', address: '127.0.0.1', port: server.port), DesignStore(dir),
+        withTools: false, pad: {'id': 'p1', 'name': 'Tab'});
+    expect(r.open, isNull);
+    expect(seen.where((s) => s['op'] == 'opened'), isEmpty);
+    await server.close();
+    dir.deleteSync(recursive: true);
+  });
+
   test('one design the computer turns down does not hold back the rest', () async {
     final (server, seen) = await fakeDesktop((req) => switch (req['op']) {
           'info' => '{"ok":true,"host":"shop"}',

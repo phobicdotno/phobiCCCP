@@ -19,7 +19,7 @@ void main() {
         final req = jsonDecode(line) as Map<String, Object?>;
         Map<String, Object?> a;
         switch (req['op']) {
-          case 'info': a = {'ok': true, 'host': 'shop', 'version': '1.2.9'}; break;
+          case 'info': a = {'ok': true, 'host': 'shop', 'version': '1.3.1'}; break;
           case 'designs': a = {'ok': true, 'designs': [for (final d in kept.values) {'id': d['id'], 'modified': d['modified']}]}; break;
           case 'get': a = {'ok': true, 'design': kept[req['id']]}; break;
           case 'put': a = {'ok': false, 'error': 'shop is busy with another design; try again shortly'}; break;

@@ -119,3 +119,58 @@ jobs:
           name: PhobiCCCP-android
           path: Android/build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
+
+  # The desktop program itself built for Android (the pad), as an APK to try
+  # from the run's artifacts. Signed with a throwaway debug key.
+  android-qt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # aqtinstall directly: install-qt-action cannot resolve Qt 6.8 for Android.
+      - name: Qt for Android
+        run: |
+          python3 -m venv "$RUNNER_TEMP/aqt"
+          "$RUNNER_TEMP/aqt/bin/pip" install -q aqtinstall
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux desktop 6.8.3 linux_gcc_64 -O "$RUNNER_TEMP/qt"
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux android 6.8.3 android_arm64_v8a -O "$RUNNER_TEMP/qt" -m qtserialport
+          echo "QT_ROOT_DIR=$RUNNER_TEMP/qt/6.8.3/android_arm64_v8a" >> "$GITHUB_ENV"
+          echo "QT_HOST_PATH=$RUNNER_TEMP/qt/6.8.3/gcc_64" >> "$GITHUB_ENV"
+
+      - name: Android SDK parts
+        run: |
+          sudo apt-get install -y --no-install-recommends ninja-build
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      - name: Configure
+        run: |
+          "$QT_ROOT_DIR/bin/qt-cmake" -S . -B build-android -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DQT_HOST_PATH="$QT_HOST_PATH" -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/26.1.10909125"
+
+      - name: Build APK
+        run: cmake --build build-android --parallel
+
+      - name: Sign
+        run: |
+          bt="$ANDROID_SDK_ROOT/build-tools/34.0.0"
+          keytool -genkeypair -keystore debug.keystore -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+          "$bt/zipalign" -f -p 4 build-android/android-build/build/outputs/apk/release/android-build-release-unsigned.apk aligned.apk
+          "$bt/apksigner" sign --ks debug.keystore --ks-pass pass:android --out PhobiCCCP-desktop.apk aligned.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhobiCCCP-desktop-android
+          path: PhobiCCCP-desktop.apk
+          if-no-files-found: error

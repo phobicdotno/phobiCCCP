@@ -25,6 +25,9 @@ laid out for a pad in landscape.
   (Carbide Create), the pads still get the change, but a pad edit no longer overwrites the
   file: it goes to a copy beside it, `<name> (pad).c2d`, and the status bar says so. The pad
   says this too when such a design is opened or edited there.
+- **Sent from the computer to edit.** On the desktop, **File › Send to pad…** lists the pads
+  that are open on the network and sends the open design to one of them; it opens there within
+  a few seconds, and edits made on the pad come back to that file as above.
 - **Several machines on one phobiCCCP.** The Machine page lists each computer's machines
   (desktop: Machine › Add machine…) with their state; tap one to make it the one in use.
   Switching drops the machine's connection and homing, so while one is connected a pad
@@ -93,13 +96,22 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 
 | op | sends | answer |
 |---|---|---|
-| `info` | | host, version, id, `machines` [{id, name, active, size}], `activeMachine`, `status` {connected, state, homed, busy, streaming, job}, `allowStart`, `document` |
+| `info` | `pad` {id, name} (optional) | host, version, id, `machines` [{id, name, active, size}], `activeMachine`, `status` {connected, state, homed, busy, streaming, job}, `allowStart`, `document` |
 | `tools` | | `materials` [{id, name}], `tools` [{number, name, kind, diameter, angle, flutes, materials}] |
 | `designs` | | `designs` [{id, name, modified, deleted, vv}] |
 | `get` | `id` | `design` |
 | `put` | `design` (with `base` and `vv`), `versions` | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id of the design one of two copies edited apart was kept as, with `moved` when that was the computer's copy (the one put took its place); or `conflict`: a deletion refused |
 | `machine` | `id` | as `info`, after switching (refused while a machine is connected, unless pads may start cutting) |
 | `send` | `design`, `machine` (id or ""), `start`, `from`, `versions` | `started`, `message`, `notes`; as for `put`, `modified`, `forked` and `moved` (what opens is the pad's version: the fork unless `moved`, or the pad's copy on its own, unlinked, when that fork was deleted since; the computer's later copy when it already had one made from the pad's) |
+| `opened` | `seq`, `pad` (its id) | (nothing more) |
+
+**Sent from the computer** (File › Send to pad…): the pad never listens, so a design for it
+waits on the computer. Each sync round's `info` names the pad (`pad`: its own id, made once,
+and its name); the computer lists the pads heard in the last 20 seconds, and when a design
+waits for that pad, the answer carries `open` {seq, design, name, from}. The design is an
+ordinary synced one, so the same round pulls it; then the pad opens it and answers `opened`
+with the `seq`. A request not taken in two minutes is given up. A pad that already opened a
+`seq` (its `opened` answer lost) says `opened` again without opening it twice.
 
 The design format is described in `src/padlink.h`; `tests/data/pad-design.json` is an
 example both the app's tests and the desktop's `test_padlink` check against.
@@ -117,7 +129,7 @@ a folder that is not backed up or moved to a new tablet (Android's `no_backup`, 
 app data (not in Documents, which may be synced or copied) tied to the computer and that
 place. Designs restored from a backup, copied or synced elsewhere come without a matching
 token there, so that device makes an id of its own (an id phobiCCCP kept in Documents
-before 1.2.9 is dropped for a new one too, as a copy of Documents cannot be told from the
+before 1.3.1 is dropped for a new one too, as a copy of Documents cannot be told from the
 original). A new id only adds an entry to the vvs of the designs edited from then on. An edit sets its own entry to its new `modified`, so the newest
 entry is always the copy's `modified`. A copy whose entries are all at least another's
 was made from it and replaces it; equal vvs are the same copy. Two copies neither of
@@ -133,7 +145,7 @@ computer's or edited apart from it, pulls one made from its own, and after a con
 takes the computer's copy under the id and the fork.
 
 Compatibility: a vv is believed only when its newest entry is the copy's `modified`. A pad
-or phobiCCCP from before vvs (before 1.2.9) keeps the vv it got (as an unknown key) but
+or phobiCCCP from before vvs (before 1.3.1) keeps the vv it got (as an unknown key) but
 stamps a new time. That vv still names the copy it edited: against a copy with a believed
 vv, one with an entry above it was not made from it, so the two were edited apart and both
 are kept as above; otherwise the older one's edit was made from it and replaces it. A copy
@@ -154,7 +166,7 @@ pad sees `forked` with or without `moved` as before and takes the computer's cop
 is then its own version when `moved`. Pads from before this keep one base for all
 computers, so an older pad that syncs with more than one computer can still lose edits
 as before: update every pad. phobiCCCP says so in its status bar the first time a pad
-from before 1.2.9 puts or sends a design (newer pads add `"versions": 1` to `put` and
+from before 1.3.1 puts or sends a design (newer pads add `"versions": 1` to `put` and
 `send`).
 
 A design the pad sends carries `base`, the `modified` of the copy it last got from or gave

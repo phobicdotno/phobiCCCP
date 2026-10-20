@@ -1,12 +1,19 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.2.9 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
+if(ANDROID)
+    # Qt for Android has no zstd; the host rcc would compress with it.
+    set(CMAKE_AUTORCC_OPTIONS "--no-zstd")
+endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Sql SerialPort Network)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Sql Network)
+# The serial link to the machine. Qt has no serial ports on Android or iPad:
+# there src/serialstub.h stands in and a pad sends its jobs to a computer.
+find_package(Qt6 QUIET COMPONENTS SerialPort)
 find_package(ZLIB REQUIRED)
 
 # Exact polygon offsetting for CAM (pockets, contour offsets, v-carve rings).
@@ -66,9 +73,15 @@ target_include_directories(phobicccp_core PUBLIC src)
 # PROJECT_VERSION is the single source of truth in this file.
 target_compile_definitions(phobicccp_core PUBLIC PHOBICCCP_VERSION="${PROJECT_VERSION}"
     PHOBICCCP_SOURCE_DIR="${CMAKE_SOURCE_DIR}" PHOBICCCP_BUILD_DIR="${CMAKE_BINARY_DIR}")
-target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql Qt6::SerialPort ZLIB::ZLIB)
+target_link_libraries(phobicccp_core PUBLIC Qt6::Gui Qt6::Sql ZLIB::ZLIB)
+if(Qt6SerialPort_FOUND)
+    target_link_libraries(phobicccp_core PUBLIC Qt6::SerialPort)
+    target_compile_definitions(phobicccp_core PUBLIC HAVE_SERIALPORT)
+else()
+    target_sources(phobicccp_core PRIVATE src/serialstub.h)
+endif()
 
-add_executable(phobicccp
+set(PHOBICCCP_APP_SOURCES
     src/main.cpp
     src/canvas.cpp src/canvasparametric.cpp
     src/mainwindow.cpp
@@ -97,7 +110,24 @@ add_executable(phobicccp
     src/settingsdialog.cpp
     src/toolbarorder.cpp
     src/projectreceiver.cpp
+    src/sendtopaddialog.cpp
+    src/sendtodialog.cpp
 )
+if(ANDROID)
+    # The same program on a pad: Qt builds it as the app's library, and
+    # qt-android/ holds the manifest (network access, landscape, the icon).
+    qt_add_executable(phobicccp ${PHOBICCCP_APP_SOURCES})
+    # Always rising, and above the Flutter pad app's build numbers.
+    math(EXPR PHOBICCCP_VERSION_CODE
+         "${PROJECT_VERSION_MAJOR} * 10000 + ${PROJECT_VERSION_MINOR} * 100 + ${PROJECT_VERSION_PATCH}")
+    set_target_properties(phobicccp PROPERTIES
+        QT_ANDROID_PACKAGE_SOURCE_DIR ${CMAKE_SOURCE_DIR}/qt-android
+        QT_ANDROID_VERSION_NAME ${PROJECT_VERSION}
+        QT_ANDROID_VERSION_CODE ${PHOBICCCP_VERSION_CODE}
+        QT_ANDROID_TARGET_SDK_VERSION 34)
+else()
+    add_executable(phobicccp ${PHOBICCCP_APP_SOURCES})
+endif()
 
 target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
 if(PHOBICCCP_WITH_CLIPPER2)
@@ -114,6 +144,10 @@ if(BOOST_VORONOI_INC)
     message(STATUS "Boost.Polygon Voronoi found: medial-axis v-carve enabled")
 else()
     message(STATUS "Boost.Polygon Voronoi NOT found: v-carve uses ring fallback")
+endif()
+
+if(ANDROID)
+    return()   # no tests on the pad build; CI runs them on Linux
 endif()
 
 # Tests: `ctest --test-dir build`. Geometry/CAM checks are plain asserts;
@@ -215,6 +249,13 @@ if(Qt6Test_FOUND)
                    src/propertiespanel.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
+    add_executable(test_sendto tests/test_sendto.cpp src/sendtodialog.cpp src/projectreceiver.cpp)
+    target_link_libraries(test_sendto PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
+    add_test(NAME sendto COMMAND test_sendto)
+    add_executable(test_sendtopad tests/test_sendtopad.cpp src/sendtopaddialog.cpp src/sendtodialog.cpp
+                   src/projectreceiver.cpp)
+    target_link_libraries(test_sendtopad PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
+    add_test(NAME sendtopad COMMAND test_sendtopad)
     add_executable(test_canvasparametric tests/test_canvasparametric.cpp src/canvas.cpp
                    src/canvasparametric.cpp src/parameterspanel.cpp)
     target_link_libraries(test_canvasparametric PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
@@ -255,7 +296,7 @@ if(Qt6Test_FOUND)
                    src/tracedialog.cpp src/backgrounddialog.cpp src/modelpanel.cpp
                    src/exportprogress.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/bitzeropanel.cpp src/settingsdialog.cpp src/toolbarorder.cpp
-                   src/projectreceiver.cpp)
+                   src/projectreceiver.cpp src/sendtopaddialog.cpp src/sendtodialog.cpp)
     target_link_libraries(test_mainwindow PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
     add_test(NAME mainwindow COMMAND test_mainwindow)
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.

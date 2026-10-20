@@ -166,6 +166,7 @@ protected:
     void drawBackground(QPainter *painter, const QRectF &rect) override;
     void drawForeground(QPainter *painter, const QRectF &rect) override;
     void wheelEvent(QWheelEvent *event) override;        // scroll to zoom
+    bool viewportEvent(QEvent *event) override;          // two-finger pinch zooms and pans
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
