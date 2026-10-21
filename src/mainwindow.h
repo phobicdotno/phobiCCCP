@@ -178,6 +178,9 @@ private:
     // (Export G-code, the setup sheet): a pad or computer must not replace it.
     int m_holdDoc = 0;
     bool docHeld() const;
+    // Where Export G-code starts: beside the design (or the file an untitled
+    // one came from), named after it.
+    QString gcodeSuggestion() const;
     void commitEdits();
     bool typingPending() const;
     QAction *m_receiveAct = nullptr;

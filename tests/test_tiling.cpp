@@ -460,6 +460,52 @@ int main(int argc, char *argv[])
         check(diagonal == 0, "every tile lifts straight up before a rapid across");
     }
 
+    // A pilot drill then a drill (another bit) at the same hole: in the
+    // tile the drill starts where the pilot ended, and after the tool change
+    // it must come back through safe Z, not feed there from wherever the
+    // change left the spindle.
+    {
+        c2d::Document doc;
+        doc.setParam("width", "100");
+        doc.setParam("height", "100");
+        const QJsonObject L;
+        const c2d::Element h = c2d::Element::makeCircle({5, 41}, 4, L), b = c2d::Element::makeCircle({60, 39}, 4, L),
+                           c = c2d::Element::makeCircle({90, 39}, 4, L);
+        doc.addElement(h);
+        doc.addElement(b);
+        doc.addElement(c);
+        for (const auto &[u, tool] : {std::pair{QStringLiteral("pilot"), QJsonObject{{"diameter", 3.175}, {"number", 1}}},
+                                      std::pair{QStringLiteral("drill"), QJsonObject{{"diameter", 6.35}, {"number", 2}}}}) {
+            c2d::Toolpath t;
+            t.uuid = u;
+            t.type = QStringLiteral("drilling_toolpath");
+            t.json = QJsonObject{{"type", "drilling_toolpath"}, {"name", u}, {"enabled", true}, {"uuid", u},
+                                 {"start_depth", "0.000"}, {"end_depth", "5.000"}, {"stepdown", 5.0},
+                                 {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+                                 {"tool", tool},
+                                 {"elements", QJsonArray{QJsonObject{{"uuid", h.id}}, QJsonObject{{"uuid", b.id}},
+                                                         QJsonObject{{"uuid", c.id}}}}};
+            doc.addToolpath(t);
+        }
+        QTemporaryDir dir;
+        const c2d::TiledExport r = c2d::exportTiled(doc, dir.filePath(QStringLiteral("job")), 40);
+        bool ok = r.error.isEmpty() && r.gcode.size() >= 2;
+        const QRegularExpression motion(QStringLiteral("^G([01])(?![0-9])"));
+        for (const QString &g : r.gcode) {
+            const int m0 = g.indexOf(QStringLiteral("M0 ;T2"));
+            if (m0 < 0)
+                continue;
+            for (const QString &line : g.mid(m0).split(QLatin1Char('\n'))) {
+                const QRegularExpressionMatch mm = motion.match(line);
+                if (mm.hasMatch()) {
+                    ok = ok && mm.captured(1) == QLatin1String("0");
+                    break;
+                }
+            }
+        }
+        check(ok, "tiling: the first move after a tool change is a rapid through safe Z");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

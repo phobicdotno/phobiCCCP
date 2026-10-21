@@ -319,6 +319,18 @@ int main(int argc, char *argv[])
         w.m_updateStep.reset();
     }
 
+    // Export G-code is offered beside the file an untitled design came
+    // from, named after it - not after the cache's scratch copy.
+    {
+        const bool wasUntitled = w.m_untitled;
+        const QString wasFrom = w.m_untitledFrom;
+        w.m_untitled = true;
+        w.m_untitledFrom = QStringLiteral("/tmp/parts/part.dxf");
+        check(w.gcodeSuggestion() == QLatin1String("/tmp/parts/part.nc"), "export: named after the imported file");
+        w.m_untitled = wasUntitled;
+        w.m_untitledFrom = wasFrom;
+    }
+
     w.m_dirty = false;
     std::printf("test_mainwindow: %d checks OK\n", g_checks);
     return 0;

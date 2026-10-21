@@ -394,6 +394,11 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
                     t.pos.z = safeZ;
                 }
                 t.ops.append(op);
+                // After a bit change the spindle is wherever the change left
+                // it: the next cut reconnects through safe Z, even one that
+                // starts where the last cut ended (a pilot then a drill).
+                if (op.kind == Op::Tool)
+                    t.havePos = false;
             }
             break;
         case Op::Comment:

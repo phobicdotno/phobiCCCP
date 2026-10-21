@@ -468,6 +468,13 @@ int main(int argc, char **argv)
             // The 1 px rect at 0 pins the left edge: the width is the symbol's reach.
             check(std::abs(useLeft(" width='100mm'") - useLeft("")) < 1e-6,
                   "svg: a symbol under a width-only root is not shifted");
+            // A <use> of a nested <svg> keeps that svg's place and viewBox.
+            const c2d::ImportResult ns = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='100mm' "
+                "height='100mm' viewBox='0 0 100 100'><defs><svg id='n' x='10' y='10' width='20' height='20' "
+                "viewBox='0 0 10 10'><rect width='10' height='10'/></svg></defs><use xlink:href='#n' x='50'/></svg>",
+                opts(0, 0), QStringLiteral("nested"));
+            check(ns.ok && std::abs(ns.bounds.width() - 20) < 0.01, "svg: a used nested svg keeps its size");
         }
         {
             // <use> places what it refers to (pdftocairo's text, clones).

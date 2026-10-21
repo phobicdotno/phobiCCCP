@@ -596,6 +596,24 @@ QVector<double> crossings(const PathModel &m, int sub, const QVector<PathModel> 
             crossFlats(A, flatten(os), &hits);
     for (const auto &h : hits)
         out.append(h.first);
+    // An open path's end resting on this one (where Extend leaves it) is a
+    // cut too: from the convex side it never reaches the flattened polyline.
+    auto touching = [&](const SubPath &os) {
+        if (os.closed || os.nodes.size() < 2)
+            return;
+        for (const QPointF &e : {os.nodes.first().p, os.nodes.last().p}) {
+            int seg;
+            double t;
+            if (s.closest(e, &seg, &t) < 1e-5 && seg >= 0)
+                out.append(seg + t);
+        }
+    };
+    for (int i = 0; i < m.subs.size(); ++i)
+        if (i != sub)
+            touching(m.subs.at(i));
+    for (const PathModel &o : others)
+        for (const SubPath &os : o.subs)
+            touching(os);
     // Self-crossings, minus the joints between consecutive segments.
     QVector<QPair<double, double>> self;
     crossFlats(A, A, &self);

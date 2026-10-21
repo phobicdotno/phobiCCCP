@@ -1791,7 +1791,7 @@ void MainWindow::onExportGcode()
     }
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export G-code"),
-        QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
+        gcodeSuggestion(),
         QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
     if (path.isEmpty())
         return;
@@ -1842,7 +1842,7 @@ void MainWindow::onExportGcodeTiled()
         return;
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export tiled G-code — base name (_tile1.nc, _tile2.nc, … are added)"),
-        QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
+        gcodeSuggestion(),
         QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
     if (path.isEmpty())
         return;
@@ -2939,6 +2939,16 @@ QJsonObject MainWindow::padInfo()
         {QStringLiteral("document"), m_doc.filePath().isEmpty() || m_untitled
                                          ? QString() : QFileInfo(m_doc.filePath()).fileName()},
         {QStringLiteral("unsaved"), m_dirty}};
+}
+
+QString MainWindow::gcodeSuggestion() const
+{
+    // An untitled design's file is a scratch copy in the cache
+    // ("untitled-6829"): name the export after where it came from.
+    const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
+    if (fi.fileName().isEmpty())
+        return QDir::homePath() + QStringLiteral("/Untitled.nc");
+    return fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".nc");
 }
 
 bool MainWindow::docHeld() const

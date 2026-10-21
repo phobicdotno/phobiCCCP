@@ -655,8 +655,49 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
             selectElements(ids);
             return;
         }
+    // An island of several rings with no counters ("TL" text, an "i"): each
+    // glyph is its own hole of the face, so none matches the whole element
+    // alone. When every ring of it is one of the holes, it is the element.
+    auto subpaths = [](const QPainterPath &p) {
+        QList<QPainterPath> out;
+        for (int i = 0; i < p.elementCount(); ++i) {
+            const QPainterPath::Element e = p.elementAt(i);
+            if (e.isMoveTo()) {
+                out.append(QPainterPath());
+                out.last().moveTo(e);
+            } else if (out.isEmpty()) {
+                continue;
+            } else if (e.isLineTo()) {
+                out.last().lineTo(e);
+            } else if (e.isCurveTo() && i + 2 < p.elementCount()) {
+                out.last().cubicTo(e, p.elementAt(i + 1), p.elementAt(i + 2));
+                i += 2;
+            }
+        }
+        return out;
+    };
+    QSet<int> taken;   // face rings an island already accounts for
+    for (const auto &c : closed) {
+        const QList<QPainterPath> parts = subpaths(c.second);
+        if (parts.size() < 2)
+            continue;
+        QSet<int> mine;
+        for (const QPainterPath &part : parts)
+            for (int r = 1; r < face.size(); ++r)
+                if (!taken.contains(r) && !mine.contains(r) && same(pathOf({face.at(r)}), part, true)) {
+                    mine.insert(r);
+                    break;
+                }
+        if (mine.size() == parts.size()) {
+            taken.unite(mine);
+            keep(c.first);
+        }
+    }
     QVector<QPolygonF> fresh;
-    for (const QPolygonF &ring : face) {
+    for (int fi = 0; fi < face.size(); ++fi) {
+        if (taken.contains(fi))
+            continue;
+        const QPolygonF &ring = face.at(fi);
         QString match;
         for (const auto &c : closed)
             if (same(pathOf({ring}), c.second, &ring != &face.first())) {

@@ -237,7 +237,7 @@ class _NumBoxState extends State<NumBox> {
     // is left alone rather than read as some other number.
     // Untouched, the rounded text would replace 3.175 with 3.17.
     if (_c.text == _shown) {
-      _c.text = _show(widget.value);
+      _c.text = _shown = _show(widget.value);
       return;
     }
     final t = _c.text.trim().toLowerCase().replaceAll(',', '.').replaceFirst(RegExp(r'\s*(mm|°)$'), '');
@@ -246,7 +246,9 @@ class _NumBoxState extends State<NumBox> {
       final k = v.clamp(widget.min, widget.max).toDouble();
       if (k != widget.value) widget.onChanged(k);
     }
-    _c.text = _show(widget.value);
+    // Done commits, then focus loss commits again: the text put back here
+    // must count as untouched, or the old value is sent after the new one.
+    _c.text = _shown = _show(widget.value);
   }
 
   @override

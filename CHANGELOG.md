@@ -54,6 +54,9 @@
     that floor, not at its start depth, so the cone and shank could cut into the pocket's wall.
   - A V-carve over an uncut island of a pocket (a boss left standing under the letter) took the
     pocket's floor as its stock top, so its first pass went through the island full depth.
+  - In a tiled program, a toolpath with another bit starting where the last cut in that tile
+    ended (a pilot drill then a drill at the same hole) fed straight down from wherever the tool
+    change left the spindle; it now comes back through safe Z first.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
@@ -98,6 +101,11 @@
     counter or room; the face is added as its own closed path now.
   - Offset of an open path whose last node sits on its first left its last side unstroked.
   - An SVG symbol drawn with `<use>` under a root with only a width came in shifted right.
+  - Trim and Break missed a curve whose crossing was a line's end resting on it from outside
+    (where Extend leaves it): Trim deleted the whole circle.
+  - The Area tool round text with no counters ("TL", "i") added copies of the letters as new
+    paths; it selects the text.
+  - An SVG `<use>` of a nested `<svg>` left out that svg's position, size and viewBox.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
@@ -196,6 +204,8 @@
   - Depth fields in the toolpath settings kept 2 decimals (3.175 was saved as 3.17); they keep 3.
   - A thread's Passes took up to 50 and the Adaptive ramp angle up to 45°, but the export cuts at
     most 20 passes and ramps at 0.5 to 15°; the fields stop there.
+  - Export G-code suggested the cache's scratch name ("untitled-6829.nc") for a design opened
+    from a DXF or SVG, and no folder; it suggests the source's name beside it.
 - **Pad link:**
   - A pad design cut with any bit but #201 counted as having toolpath settings made on the
     computer after its first Save there, so every later pad edit went to a "(pad)" copy. The
@@ -225,6 +235,8 @@
   - A tap with the Area tool on one big outline (thousands of points) froze the pad for seconds.
   - Tapping the pad's End depth field and leaving it changed 3.175 to 3.17, so a profile no
     longer cut through; a field left as it was keeps its value, and End shows 3 decimals.
+  - Typing a number into a pad field and pressing Done put the old value back when the old one
+    had more decimals than the field shows.
 
 ## v1.3.1 (build 91) — 2026-10-20
 

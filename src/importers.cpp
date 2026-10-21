@@ -930,6 +930,23 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                 } else if (xml.name() != QLatin1String("svg")) {
                     bool known = false, bad = false;
                     f.path = svgShape(xml.name(), at, &known, &bad, vpW, vpH);
+                } else if (!stack.isEmpty()) {
+                    // A nested <svg>: its x, y, size and viewBox place what
+                    // it holds, for a <use> of it as where it stands.
+                    double x = 0, y = 0, w = vpW, h = vpH;
+                    svgUserLength(at.value(QLatin1String("x")), vpW, &x);
+                    svgUserLength(at.value(QLatin1String("y")), vpH, &y);
+                    svgUserLength(at.value(QLatin1String("width")), vpW, &w);
+                    svgUserLength(at.value(QLatin1String("height")), vpH, &h);
+                    QTransform vp;
+                    Scanner sc{at.value(QLatin1String("viewBox"))};
+                    double a[4];
+                    bool vb = true;
+                    for (double &v : a) vb = vb && sc.number(&v);
+                    if (vb && a[2] > 0 && a[3] > 0 && w > 0 && h > 0)
+                        vp = svgViewBoxTransform(a[0], a[1], a[2], a[3], w, h,
+                                                 at.value(QLatin1String("preserveAspectRatio")));
+                    f.own = vp * QTransform::fromTranslate(x, y) * f.own;
                 }
                 stack.append(f);
             } else if (tok == QXmlStreamReader::EndElement && !stack.isEmpty()) {

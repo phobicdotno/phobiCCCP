@@ -51,5 +51,19 @@ int main(int argc,char**argv){
     printf("self-near O and horseshoe: selected %d, counter or room cut: %d, panel cut: %d\n",(int)sel.size(),cuts,S.contains(QPointF(5,5)));
     if(cuts||!S.contains(QPointF(5,5))) ++bad;
   }
+  // Several rings, no counters: the text itself is the hole, nothing copied.
+  for (QString t : {"TL","i",":"}) {
+    Document doc; Canvas cv; cv.resize(900,700); cv.setDocument(&doc);
+    const QJsonObject L=doc.defaultLayer();
+    Element panel=Element::makeRectangle({150,150},300,300,L);
+    Element txt=Element::makeText(t,{120,120},40,"DejaVu Sans",L);
+    doc.addElement(panel); doc.addElement(txt); cv.rebuild();
+    const int n0=doc.elements().size();
+    cv.selectAreaAt({10,10});
+    const QStringList sel=cv.selectedElementIds();
+    const int added=(int)doc.elements().size()-n0;
+    printf("'%s' in a panel: selected %d (text %s), added %d\n",qPrintable(t),(int)sel.size(),sel.contains(txt.id)?"yes":"no",added);
+    if(added!=0||!sel.contains(txt.id)||!sel.contains(panel.id)) ++bad;
+  }
   return bad?1:0;
 }
