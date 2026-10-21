@@ -12,7 +12,8 @@
     vectors (the female leaves them out).
   - An inlay male starting deep below the top was carved even when the V-bit's cone was too
     short to reach the stock top, so its shank rubbed and the plug kept a ledge. It is refused
-    with a note now. Per pass 0 on a V-carve is one pass for its flat clearing too (it stepped
+    with a note now (a V-carve on a pocket's floor counts its stock from that floor, and
+    its passes start there). Per pass 0 on a V-carve is one pass for its flat clearing too (it stepped
     down 0.05 mm at a time).
   - Site order ran a toolpath out of list order before one it depends on: a straight
     horizontal or vertical line (a dado, a groove) before a cutout or pocket at the same
@@ -121,6 +122,11 @@
   - Initialize on a controller that refuses homing ($22=0) left every jog refused "while
     homing" until Stop or a disconnect. A tool length offset the controller keeps refusing
     is tried three times, then reported, instead of at every status report.
+  - A start from a pad now refuses a design set up for tiling that needs more than one tile
+    (Run on the computer too: it drove Y past the end of travel), and refuses while the
+    surface map or Air cut is switched on at the computer (an old map bent the new design's
+    depths; an air cut was reported as "cutting started"). Every job starts with the feed,
+    rapid and spindle overrides back at 100 % (they carried over from the job before).
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
@@ -161,6 +167,9 @@
     halfway, under the file's name. The recovery is offered once the open is done.
   - A command-line file that failed to open (moved, damaged) left a window where every tool
     did nothing; a blank design follows the error now.
+  - Delete pressed while a toolpath value was still being typed put that value into the
+    toolpath shown next. An STL deeper than the board was scaled up many times by the
+    default fit instead of down; it now fits the board both ways.
   - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
     it unsaved; it saves (and stays read-only, also when run as root).
 - **Pad link:**
@@ -183,6 +192,8 @@
   - Start on the pad's Machine page and the Send dialog went to the machine of the last send,
     not the one the computer uses now (a machine picked on another computer could even
     retarget this one); both use the machine in use.
+  - The pad's Area fill joined pieces through a circle touching a side (a circle in a panel's
+    corner filled the whole panel, not the nook); it fills the piece tapped, as the computer does.
 
 ## v1.3.1 (build 91) — 2026-10-20
 
