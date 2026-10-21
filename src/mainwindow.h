@@ -40,6 +40,7 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
     void openFile(const QString &path);
+    bool hasDocument() const { return !m_doc.filePath().isEmpty(); }
     void showParameters();          // Design page, Parameters tab
     // A blank design the size of the machine in Settings, not yet saved
     // anywhere: what the window starts on when no file is given.

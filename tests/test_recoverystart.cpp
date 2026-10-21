@@ -97,5 +97,15 @@ int main(int argc, char *argv[])
     }
     const bool recovered = w.m_doc.elements().size() == 3 && w.m_untitledFrom != dxf;
     std::printf("%s the recovery is offered afterwards\n", recovered ? "ok  " : "FAIL");
-    return mixed || !recovered ? 1 : 0;
+    // A command-line file that fails to open leaves no design, which main()
+    // replaces with a blank one (every tool did nothing without it).
+    c2d::MainWindow v;
+    v.openFile(tmp.filePath(QStringLiteral("moved-away.c2d")));
+    const bool none = !v.hasDocument();
+    if (none)
+        v.newUntitled();
+    const bool blank = none && v.hasDocument();
+    std::printf("%s a file that fails to open is seen as no design, and a blank one follows\n",
+                blank ? "ok  " : "FAIL");
+    return mixed || !recovered || !blank ? 1 : 0;
 }

@@ -111,6 +111,25 @@ static void run(const QString &mode)
         check(std::abs(e->raw.value("radius").toDouble() - 20) < 1e-6 && canvas.undoStack()->canRedo(),
               "undo mid resize drag: no stale resize lands, the redo step stays");
     }
+    else if (mode == "seltool" || mode == "selnodes") {
+        // A tool key during a Select drag: the shape goes back where the
+        // design has it (it stayed drawn moved, with no undo step).
+        const c2d::Element c = c2d::Element::makeCircle({100, 100}, 15, doc.defaultLayer());
+        doc.addElement(c);
+        canvas.rebuild();
+        canvas.setTool(c2d::Canvas::Select);
+        QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&canvas, {115, 100}));
+        QTest::mouseMove(canvas.viewport(), vp(&canvas, {125, 100}));
+        QTest::mouseMove(canvas.viewport(), vp(&canvas, {145, 100}));
+        canvas.setTool(mode == "seltool" ? c2d::Canvas::DrawCircle : c2d::Canvas::NodeEdit);
+        QTest::mouseMove(canvas.viewport(), vp(&canvas, {150, 100}));
+        QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&canvas, {150, 100}));
+        const QRectF d = doc.elementById(c.id)->painterPath.boundingRect();
+        const QRectF i = itemRect(&canvas, c.id);
+        check(std::abs(d.left() - i.left()) < 1e-6 && std::abs(d.left() - 85) < 1e-6,
+              mode == "seltool" ? "tool key mid Select drag: the shape is drawn where the design has it"
+                                : "N mid Select drag: the shape is drawn where the design has it");
+    }
     else if (mode == "concentric") {
         c2d::Element a = c2d::Element::makeCircle({100, 100}, 5, doc.defaultLayer());
         c2d::Element b = c2d::Element::makeCircle({130, 100}, 8, doc.defaultLayer());
@@ -135,7 +154,7 @@ int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
-    for (const char *m : {"node", "resize", "concentric", "nodetool", "nodesel", "resizeundo"})
+    for (const char *m : {"node", "resize", "concentric", "nodetool", "nodesel", "resizeundo", "seltool", "selnodes"})
         run(QString::fromLatin1(m));
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;

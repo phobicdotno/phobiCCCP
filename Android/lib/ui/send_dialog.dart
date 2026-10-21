@@ -62,8 +62,9 @@ class _SendDialogState extends State<SendDialog> {
     final reach = _reachable();
     final c = reach.where((c) => c.desktop.id == last.first).firstOrNull ?? reach.firstOrNull;
     _computer = c?.desktop.id;
-    final machines = c?.info?.machines ?? const [];
-    _machine = machines.any((m) => last.length > 1 && m.id == last[1]) ? last[1] : c?.info?.activeMachine;
+    // The machine the computer uses now: the last send's machine may have
+    // been switched away from since, and sending would switch it back.
+    _machine = c?.info?.activeMachine;
   }
 
   @override

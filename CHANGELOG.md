@@ -10,6 +10,10 @@
     pocket's depth and ends at it: the gap of glue below, the plug the gap proud.
   - The inlay male no longer carves construction guides and points into the male as real
     vectors (the female leaves them out).
+  - An inlay male starting deep below the top was carved even when the V-bit's cone was too
+    short to reach the stock top, so its shank rubbed and the plug kept a ledge. It is refused
+    with a note now. Per pass 0 on a V-carve is one pass for its flat clearing too (it stepped
+    down 0.05 mm at a time).
   - Site order ran a toolpath out of list order before one it depends on: a straight
     horizontal or vertical line (a dado, a groove) before a cutout or pocket at the same
     place, or a rest-depth groove along the seam of two earlier pockets between them.
@@ -79,6 +83,8 @@
   - A tool switch or a selection change (Ctrl+A) during a node drag left the dragged shape
     drawn on the item while the design kept the old one. Undo during a resize drag no longer
     lands a stale resize on release (it also cleared the redo step).
+  - A tool key pressed during a Select drag left the shape drawn moved while the design kept
+    it in place; it goes back now.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
@@ -153,6 +159,8 @@
     toolpath with such a name is no longer dropped.
   - Opening a file from the command line after a crash could have the recovery copy swapped in
     halfway, under the file's name. The recovery is offered once the open is done.
+  - A command-line file that failed to open (moved, damaged) left a window where every tool
+    did nothing; a blank design follows the error now.
   - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
     it unsaved; it saves (and stays read-only, also when run as root).
 - **Pad link:**
@@ -172,8 +180,9 @@
     and the copies made after that are still known to be made from each other.
   - A design sent by another computer no longer warns that the pad is old.
   - The pad shows its real version (it said 1.2.3).
-  - Start on the pad's Machine page went to the machine of the last send, not the one just
-    picked there; it uses the machine the computer has in use.
+  - Start on the pad's Machine page and the Send dialog went to the machine of the last send,
+    not the one the computer uses now (a machine picked on another computer could even
+    retarget this one); both use the machine in use.
 
 ## v1.3.1 (build 91) — 2026-10-20
 

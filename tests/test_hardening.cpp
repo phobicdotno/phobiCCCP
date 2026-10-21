@@ -26,6 +26,7 @@
 #include <QDateTime>
 #include <QLockFile>
 #include <QLineF>
+#include <QSet>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -1130,6 +1131,48 @@ int main(int argc, char *argv[])
             c2d::exportTiled(doc, td.filePath(QStringLiteral("j")), 200.0, &never);
         check(!tiled.error.isEmpty(), "cancel: a cancelled tiled export is not a success");
         check(tiled.files.isEmpty(), "cancel: and writes no tiles");
+    }
+
+    // -----------------------------------------------------------------------
+    // V-carve reach is measured at the stock top: an inlay male starting 5.5
+    // below it needs a 6 mm cone there, which a 6.35 mm 90° bit lacks (its
+    // shank rubbed the stock with no note). Per pass 0 on a V-carve is one
+    // pass, also for the flat clearing (it stepped 0.05 mm at a time).
+    if (c2d::medialAxisAvailable()) {
+        const QJsonObject layer;
+        const QJsonObject vbit{{"diameter", 6.35}, {"number", 301}, {"angle", 90.0}, {"type", 2}};
+        Rig f;
+        f.addShape(c2d::Element::makeRectangle({30, 30}, 3, 40, layer));
+        f.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", "6.000"},
+                                                   {"stepdown", 2.0}, {"tool", vbit}});
+        const c2d::GcodeResult fg = c2d::exportGcode(f.doc);
+        check(fg.skipped.isEmpty() && fg.notes.isEmpty(), "vcarve: a narrow female carves without a note");
+        Rig m;
+        const c2d::Element border = c2d::Element::makeRectangle({100, 30}, 23, 60, layer);
+        const c2d::Element strip = c2d::Element::makeRectangle({100, 30}, 3, 40, layer);
+        m.addShape(border);
+        m.addShape(strip);
+        m.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "5.500"}, {"end_depth", "6.000"},
+                                                   {"stepdown", 2.0}, {"tool", vbit},
+                                                   {"elements", QJsonArray{QJsonObject{{"uuid", border.id}},
+                                                                           QJsonObject{{"uuid", strip.id}}}}});
+        const c2d::GcodeResult mg = c2d::exportGcode(m.doc);
+        double widest = 0;
+        for (const c2d::Op &o : mg.ops)
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < 0)
+                widest = std::max(widest, -o.z);
+        check(widest <= 3.175 + 1e-6 && (!mg.skipped.isEmpty() || !mg.notes.isEmpty()),
+              "vcarve: an inlay male deeper than the cone at the stock top is refused with a note");
+        const QJsonObject wide{{"diameter", 12.7}, {"number", 301}, {"angle", 90.0}, {"type", 2}};
+        Rig one;
+        one.addShape(c2d::Element::makeRectangle({30, 30}, 16, 16, layer));
+        one.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", "5.000"},
+                                                     {"stepdown", 0.0}, {"tool", wide}});
+        QSet<long> levels;
+        for (const c2d::Op &o : c2d::exportGcode(one.doc).ops)
+            if (o.kind != c2d::Op::Rapid && o.z < -1e-6)
+                levels.insert(std::lround(o.z * 1000));
+        check(levels.size() < 20, "vcarve: Per pass 0 clears the flat bottom in one pass");
     }
 
     // -----------------------------------------------------------------------

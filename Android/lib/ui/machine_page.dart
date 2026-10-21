@@ -21,7 +21,7 @@ class MachinePage extends StatefulWidget {
 }
 
 class _MachinePageState extends State<MachinePage> {
-  String? _computer, _machine;
+  String? _computer;
   bool _busy = false;
   AppState get app => widget.app;
 
@@ -35,11 +35,10 @@ class _MachinePageState extends State<MachinePage> {
   }
 
   String? _targetMachine(Computer c) {
-    // The machine the computer uses now, unless one was picked on this page:
-    // the last send's machine went stale once someone switched machines.
-    final ms = c.info?.machines ?? const [];
-    final want = _machine;
-    return ms.any((m) => m.id == want) ? want : c.info?.activeMachine;
+    // The machine the computer uses now (a pick here switches it): the last
+    // send's machine, or one remembered here, goes stale once someone at the
+    // computer switches machines.
+    return c.info?.activeMachine;
   }
 
   static const _caps = TextStyle(fontSize: 12, color: C.label, letterSpacing: 1.2, fontWeight: FontWeight.w500);
@@ -124,7 +123,6 @@ class _MachinePageState extends State<MachinePage> {
         InkWell(
           onTap: online ? () => setState(() {
                 _computer = c.desktop.id;
-                _machine = null;
               }) : null,
           child: Row(children: [
             Container(width: 10, height: 10, decoration: BoxDecoration(shape: BoxShape.circle, color: online ? C.preview : C.disabled)),
@@ -174,7 +172,6 @@ class _MachinePageState extends State<MachinePage> {
                   : () async {
                       try {
                         await app.selectMachine(c, m.id);
-                        if (mounted) setState(() => _machine = m.id);
                         widget.onStatus('${c.name} now uses ${m.name}');
                       } catch (e) {
                         widget.onStatus('Could not switch: $e');

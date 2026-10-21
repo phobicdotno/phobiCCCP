@@ -3436,18 +3436,21 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     // wider than the bit, end depth past the cone), the shank
                     // rubs and leaves a lip along the walls: that shape is
                     // left out, with a note. Narrow letters never get there.
+                    // The cone's width where it leaves the stock top: an
+                    // inlay male starts below the top, and the cone above
+                    // its start depth still has to cut up through the stock.
+                    auto zOf = [&](const VPoint &p) {
+                        return qMax(cp.zBot, cp.zTop - p.d / halfTan);
+                    };
                     double reach = 0;
                     for (const QVector<VPoint> &ch : pend)
                         for (const VPoint &v : ch)
-                            reach = qMax(reach, qMin(v.d, dMax));
+                            reach = qMax(reach, -zOf(v) * halfTan);
                     if (reach > vg.radius() + 1e-6) {
                         ++tooDeep;
                         continue;
                     }
                     medialDone = !pend.isEmpty();
-                    auto zOf = [&](const VPoint &p) {
-                        return qMax(cp.zBot, cp.zTop - p.d / halfTan);
-                    };
                     QPointF cur = em.pos();
                     while (!pend.isEmpty()) {
                         int best = 0;
@@ -3490,6 +3493,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     }
                     // Flat-bottom clearing where the shape is wider than the
                     // bit's reach at full depth.
+                    // No Per pass on file (0): one pass, as for the medial chains.
+                    const double step = numOr(j.value("stepdown"), 1.0) > 1e-6 ? cp.stepdown : 1e9;
                     if (medialDone && dMax > 1e-9) {
                         double delta = dMax;
                         int guard = 0;
@@ -3511,7 +3516,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                 double zr = 0.0;
                                 bool deeper = true;
                                 while (deeper) {
-                                    zr = qMax(cp.zBot, zr - cp.stepdown);
+                                    zr = qMax(cp.zBot, zr - step);
                                     deeper = zr > cp.zBot + 1e-9;
                                     em.plungeTo(ring.first(), zr);
                                     em.followRing(ring, zr, flat);

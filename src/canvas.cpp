@@ -1167,6 +1167,16 @@ void Canvas::setTool(Tool t)
         || !m_splinePts.isEmpty() || !m_tanLines.isEmpty() || m_preview)
         cancelDrawing();
     restoreEditItem();
+    // A Select drag cut off by a tool key: the moved items go back, as a node
+    // drag does (the release only saves a move in Select, so the shape stayed
+    // drawn moved while the design kept it in place).
+    if (m_tool == Select && t != Select) {
+        if (QGraphicsItem *g = m_scene->mouseGrabberItem())
+            g->ungrabMouse();
+        for (QGraphicsItem *it : m_scene->items())
+            if (it->data(0).isValid() && !it->pos().isNull())
+                it->setPos(0, 0);
+    }
     m_tool = t;
     m_drawing = false;
     m_grab = GrabNone;

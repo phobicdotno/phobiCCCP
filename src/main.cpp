@@ -1517,10 +1517,11 @@ int main(int argc, char *argv[])
     w.showStartupWindow();
 
     // Open a file passed on the command line, or start on a blank design
-    // the size of the machine.
+    // the size of the machine. A file that fails to open (moved, damaged)
+    // still leaves a blank design: without one every tool did nothing.
     if (argc > 1)
         w.openFile(QString::fromLocal8Bit(argv[1]));
-    else
+    if (!w.hasDocument())
         w.newUntitled();
 
     return app.exec();
