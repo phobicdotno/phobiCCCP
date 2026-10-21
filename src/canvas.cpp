@@ -570,7 +570,13 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
                 QPainterPath frame;
                 frame.addRect(box);
                 const QVector<QPolygonF> f = vec::fillFace({frame, shape}, box.topLeft() + QPointF(5, 5));
-                back = f.mid(1);
+                // Only when the island came back whole: a multi-ring island
+                // ("O" text) gives other holes, and is not this face's hole.
+                int own = 0;
+                for (const QPolygonF &g : shape.toSubpathPolygons())
+                    own += g.size() >= 3 ? 1 : 0;
+                if (f.size() - 1 == own)
+                    back = f.mid(1);
             } else {
                 const QVector<QPolygonF> in = vec::offsetRings({shape}, {}, -0.01);
                 back = in.isEmpty() ? in : vec::offsetRings({pathOf(in)}, {}, 0.01);

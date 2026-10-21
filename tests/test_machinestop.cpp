@@ -909,6 +909,52 @@ int main(int argc, char **argv)
         std::printf("r13endtap: jog at %d, rise at %d, M5 at %d\n", grbl.indexOf("$J="), grbl.indexOf("G53 G0 Z"), m5);
         check(m5 >= 0, "r13endtap: the spindle is stopped at the end of the job");
     }
+    if (mode == "steptap" || mode == "stephold") {
+        wait(600);
+        grbl.events.clear();
+        int ran = 0; int evAt = -1;
+        panel.whenIdle([&] { ++ran; evAt = grbl.events.size(); grbl.events << (grbl.jogging() ? "STEP-WHILE-JOG" : "STEP"); });
+        if (mode == "steptap") {
+            padPress(5);
+        } else {
+            panel.beginHoldJog('Z', 1);
+            wait(1500);
+            panel.endHoldJog();
+        }
+        wait(3000);
+        for (const QByteArray &e : grbl.events) std::printf("  ev: %s\n", e.constData());
+        int lastJog = -1;
+        for (int i = 0; i < grbl.events.size(); ++i) if (grbl.events.at(i).startsWith("$J=") || grbl.events.at(i) == "JOGCANCEL") lastJog = i;
+        std::printf("r14: ran %d, step at %d, last jog/cancel at %d\n", ran, evAt, lastJog);
+        check(ran == 1, "r14: the step runs once");
+        // Before the jog starts or after it ends, never in the middle (under
+        // load the hold may only begin once the step has run).
+        check(grbl.events.indexOf("STEP-WHILE-JOG") < 0 && (evAt > lastJog || evAt == 0),
+              "r14: the step does not run in the middle of the jog");
+    }
+    if (mode == "bzstart") {
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::ZOnly)->click();
+        grbl.probeZ = -40;
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        spin(5000, [&] { return panel.m_onIdle && panel.m_phase == c2d::MachinePanel::Phase::Idle; });
+        std::printf("step pending: %d, busy %d, state %s\n", bool(panel.m_onIdle), panel.isBusy(), qPrintable(panel.m_machineState));
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("Stop the job"); };
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("remote start: %d (%s), streaming %d\n", started, qPrintable(why), s->isStreaming());
+        wait(2000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        const int g10 = grbl.indexOf("G10 L20");
+        const int g21 = grbl.indexOf("G21");
+        std::printf("r14bzstart: G10 at %d, job's first line at %d\n", g10, g21);
+        check(!(started && (g10 < 0 || g10 > g21)), "r14bzstart: no job starts before BitZero's zero is set");
+        s->stopStream();
+        wait(500);
+    }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();

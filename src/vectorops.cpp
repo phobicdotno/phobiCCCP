@@ -784,8 +784,10 @@ QVector<QTransform> pathTransforms(const QPainterPath &path, int count, double s
         QPointF p;
         double d = 0;
         at(s, &p, &d);
+        // A copy that lands on the start (a figure-eight crossing it, a tiny
+        // circle) is skipped; the path goes on past it.
         if (closed && QLineF(p, p0).length() < 0.05)
-            break;
+            continue;
         QTransform t;
         t.translate(p.x(), p.y());
         if (orient)

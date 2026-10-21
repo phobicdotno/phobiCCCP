@@ -19,5 +19,14 @@ int main(int argc,char**argv){
   const QVector<QTransform> t2=vec::pathTransforms(circ.painterPath,5,25.0,false);
   printf("circle: %d placements, last dx %.4f dy %.4f\n",(int)t2.size(),t2.isEmpty()?0:t2.last().dx(),t2.isEmpty()?0:t2.last().dy());
   int nearStart=0; for(const QTransform&x:t2) if(std::hypot(x.dx(),x.dy())<0.05) ++nearStart;
-  return stacked||nearStart?1:0;
+  // A figure-eight passing through its start halfway: the copy that lands
+  // there is skipped, the second lobe still gets its copy.
+  Element eight=Element::makePath({{0,0},{10,5},{10,-5},{0,0},{-10,5},{-10,-5}},true,L);
+  const QVector<QTransform> t3=vec::pathTransforms(eight.painterPath,4,0.0,false);
+  printf("figure-eight: %d placements\n",(int)t3.size());
+  // A 1 mm circle with 80 copies: the first ones are near the start, the rest are not.
+  Element tiny=Element::makeCircle({50,50},0.5,L);
+  const QVector<QTransform> t4=vec::pathTransforms(tiny.painterPath,80,0.0,false);
+  printf("1 mm circle, 80: %d placements\n",(int)t4.size());
+  return stacked||nearStart||t3.size()!=2||t4.size()<40?1:0;
 }

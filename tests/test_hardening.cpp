@@ -869,15 +869,24 @@ int main(int argc, char *argv[])
     // solid wood: the tiled export is refused; within one tile it goes ahead.
     {
         QTemporaryDir d;
-        for (const double y : {20.0, 5.0}) {
+        struct Case { double y, angle; bool tall, refused; const char *what; };
+        const Case cases[] = {
+            {20, 90, true, true, "tiling: a keyhole across a tile line is refused"},
+            {5, 90, true, false, "tiling: a keyhole inside one tile is exported"},
+            {30, 0, true, false, "tiling: a sideways keyhole near a tile line is exported"},
+            {30, 90, true, false, "tiling: a keyhole running up inside its tile is exported"},
+            {10, 90, false, false, "tiling: a keyhole in a one-tile job is exported"},
+        };
+        for (const Case &c : cases) {
             Rig r;
-            r.addShape(c2d::Element::makePoint({40, y}, layer));
-            r.addToolpath("keyhole_toolpath", {{"angle", 90}, {"length", 12.7}, {"end_depth", "9.000"}});
+            if (c.tall) {   // something 100 mm tall: four tiles
+                r.addShape(c2d::Element::makePath({{60, 0}, {60, 100}}, false, layer));
+                r.addToolpath("contour", {{"ofset_dir", 0}, {"uuid", "{tp-0}"}});
+            }
+            r.addShape(c2d::Element::makePoint({40, c.y}, layer));
+            r.addToolpath("keyhole_toolpath", {{"angle", c.angle}, {"length", 12.7}, {"end_depth", "9.000"}});
             const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("k")), 25.0);
-            if (y == 20.0)
-                check(te.error.contains("tile line"), "tiling: a keyhole across a tile line is refused");
-            else
-                check(te.error.isEmpty(), "tiling: a keyhole inside one tile is exported");
+            check(c.refused ? te.error.contains("tile line") : te.error.isEmpty(), c.what);
         }
     }
 

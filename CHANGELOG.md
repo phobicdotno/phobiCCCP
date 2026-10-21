@@ -84,7 +84,7 @@
     rehearsal's summary.
   - A pad jog tap during BitZero went out just before its zero, so the zero (and the rise)
     was refused by the controller while the log said it was set. Taps are dropped while a
-    step waits for the machine to stand still.
+    step waits for the machine to stand still, and a start sent from a pad then is refused.
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -114,6 +114,11 @@
     committed a typed number reloaded the design and lost the number.
   - Two unnamed machines could both be called "Machine 3", and Remove other machine then
     removed the wrong one.
+  - A G-code export that failed part-way (a full disk, a pulled stick) left a cut-off program
+    in place of the previous one; the old file stays until the new one is complete, for tiled
+    and command-line exports too.
+  - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
+    it unsaved; it saves (and stays read-only).
 - **Pad link:**
   - Send and start from a pad cut the rest of a design when a toolpath could not be made (a
     V-bit in a pocket), freeing the part before it. Such a start is refused with the reason,

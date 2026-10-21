@@ -2693,8 +2693,10 @@ bool MachinePanel::isBusy() const
     const QString &st = m_machineState;
     // A surface map waiting for the plate counts: the operator's hand and
     // the plate are under the tool.
+    // A step waiting for Idle (the end-of-job rise, BitZero's zero) counts:
+    // a job started under it replaced the step, and the zero was never set.
     return m_grbl->isStreaming() || m_grbl->isMacroRunning() || m_phase != Phase::Idle
-        || endRiseWaiting()
+        || m_onIdle
         || (m_mapper && m_mapper->isRunning())
         || st == QLatin1String("Run") || st == QLatin1String("Jog")
         || st.startsWith(QLatin1String("Home")) || st.startsWith(QLatin1String("Hold"));

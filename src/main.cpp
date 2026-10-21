@@ -15,6 +15,7 @@
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
+#include <QSaveFile>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QRegularExpression>
@@ -1473,12 +1474,13 @@ int main(int argc, char *argv[])
             return 3;
         }
         const QByteArray bytes = r.gcode.toUtf8();
-        QFile f(QString::fromLocal8Bit(argv[3]));
+        // Moved into place only when complete (a full disk leaves the old file).
+        QSaveFile f(QString::fromLocal8Bit(argv[3]));
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
             qWarning() << "write failed:" << f.errorString();
             return 2;
         }
-        if (f.write(bytes) != bytes.size() || !f.flush()) {
+        if (f.write(bytes) != bytes.size() || !f.commit()) {
             qWarning() << "write failed:" << f.errorString();
             return 2;
         }

@@ -1795,21 +1795,19 @@ void MainWindow::onExportGcode()
         QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
     if (path.isEmpty())
         return;
-    QFile f(path);
+    // Written beside the target and moved over it only when complete: a full
+    // disk or a stick pulled mid-write must not leave a program ending in the
+    // middle of a block (no retract, no spindle stop) in place of the good one.
+    QSaveFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
     }
-    // Unchecked and unflushed, a full disk or a stick pulled mid-write left a
-    // program ending in the middle of a block - no retract, no spindle stop -
-    // and the status bar said it had been exported.
     const QByteArray bytes = r.gcode.toUtf8();
-    if (f.write(bytes) != bytes.size() || !f.flush()) {
+    if (f.write(bytes) != bytes.size() || !f.commit()) {
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
-        f.close();
         return;
     }
-    f.close();
     QString msg = QStringLiteral("Exported %1 toolpath(s) to %2   [%3]")
                       .arg(r.done.size()).arg(path)
                       .arg(statsSummary(computeStats(r.ops))
@@ -2218,8 +2216,16 @@ void MainWindow::onSave()
 void MainWindow::saveExtras(const QString &path)
 {
     QString bgErr, mdErr;
+    // Document::save keeps a read-only file read-only; the extras are part of
+    // the same save, so they get to write before that is put back.
+    const QFileDevice::Permissions perms = QFile::permissions(path);
+    const bool readOnly = !(perms & QFileDevice::WriteOwner);
+    if (readOnly)
+        QFile::setPermissions(path, perms | QFileDevice::WriteOwner);
     const bool bgOk = m_bg.saveTo(path, &bgErr);
     const bool mdOk = m_model->saveTo(path, &mdErr);
+    if (readOnly)
+        QFile::setPermissions(path, perms);
     if (!bgOk || !mdOk) {
         QMessageBox::warning(
             this, QStringLiteral("Saved incompletely"),

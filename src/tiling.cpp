@@ -4,6 +4,8 @@
 #include "gcodeexport.h"
 
 #include <QFile>
+#include <QSaveFile>
+#include <memory>
 #include <QJsonArray>
 #include <QtMath>
 #include <cmath>
@@ -472,31 +474,6 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.tileHeight = 508.0;
     const double safeZ = documentSafeZ(doc);
 
-    // A keyhole slot or a thread mill cut in two tiles comes back in through
-    // solid wood (the keyhole bit ramps down, then lifts out through the
-    // neck): such a job must sit in one tile.
-    for (const Toolpath &t : doc.toolpaths()) {
-        const QJsonObject &j = t.json;
-        const bool keyhole = t.type == QLatin1String("keyhole_toolpath");
-        if (!j.value("enabled").toBool(true) || !(keyhole || t.type == QLatin1String("thread_toolpath")))
-            continue;
-        const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
-        const double reach = toolR + (keyhole ? std::fabs(j.value("length").toDouble(12.7)) : 0.0);
-        for (const QJsonValue &v : j.value("elements").toArray()) {
-            const Element *e = doc.elementById(v.toObject().value("uuid").toString());
-            if (!e)
-                continue;
-            const QRectF b = e->painterPath.boundingRect();
-            auto tileOf = [&](double y) { return qMax(0, int(std::floor(y / r.tileHeight))); };
-            if (tileOf(b.top() - reach) != tileOf(b.bottom() + reach)) {
-                r.error = QStringLiteral("%1 crosses a tile line (every %2 mm): a keyhole or thread "
-                                         "must be cut within one tile. Move it or change the tile height.")
-                              .arg(j.value("name").toString()).arg(r.tileHeight, 0, 'f', 1);
-                return r;
-            }
-        }
-    }
-
     const GcodeResult g = exportGcode(doc, watch, relief);
     r.done = g.done;
     r.skipped = g.skipped;
@@ -508,16 +485,62 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.error = QStringLiteral("no exportable toolpaths");
         return r;
     }
+    // A keyhole slot or a thread mill cut in two tiles comes back in through
+    // solid wood (the keyhole bit ramps down, then lifts out through the
+    // neck): such a job must sit in one tile. Tiles split by tool centre,
+    // and the last one is open at the top.
+    const int lastTile = tileCount(g.ops, r.tileHeight) - 1;
+    auto tileOf = [&](double y) { return qBound(0, int(std::floor(y / r.tileHeight)), qMax(0, lastTile)); };
+    for (const Toolpath &t : doc.toolpaths()) {
+        const QJsonObject &j = t.json;
+        const bool keyhole = t.type == QLatin1String("keyhole_toolpath");
+        if (!j.value("enabled").toBool(true) || !(keyhole || t.type == QLatin1String("thread_toolpath")))
+            continue;
+        const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
+        for (const QJsonValue &v : j.value("elements").toArray()) {
+            const Element *e = doc.elementById(v.toObject().value("uuid").toString());
+            if (!e)
+                continue;
+            double y0, y1;
+            if (keyhole) {
+                // The centre (as the export takes it), then the slot along its angle.
+                const QJsonArray c = e->raw.value("center").toArray();
+                const double cy = c.size() == 2 ? c.at(1).toDouble() : e->painterPath.boundingRect().center().y();
+                const double dy = j.value("length").toDouble(12.7)
+                                  * std::sin(qDegreesToRadians(j.value("angle").toDouble(90)));
+                y0 = qMin(cy, cy + dy);
+                y1 = qMax(cy, cy + dy);
+            } else {
+                // The thread's laps and its way out beside the wall.
+                const QRectF b = e->painterPath.boundingRect();
+                y0 = b.top() - 2 * toolR - 1;
+                y1 = b.bottom() + 2 * toolR + 1;
+            }
+            if (tileOf(y0) != tileOf(y1)) {
+                r.error = QStringLiteral("%1 crosses a tile line (every %2 mm): a keyhole or thread "
+                                         "must be cut within one tile. Move it or change the tile height.")
+                              .arg(j.value("name").toString()).arg(r.tileHeight, 0, 'f', 1);
+                return r;
+            }
+        }
+    }
     const QVector<QVector<Op>> tiles = tileOps(g.ops, r.tileHeight, safeZ);
+    // Every tile is staged and the set is moved into place only once all are
+    // written: a failure part-way leaves the previous tiles as they were, not
+    // a truncated tile or new tiles mixed with old ones.
+    std::vector<std::unique_ptr<QSaveFile>> staged;
     for (int k = 0; k < tiles.size(); ++k) {
         QVector<Op> ops;
         ops.append(Op::comment(QStringLiteral("tile %1/%2").arg(k + 1).arg(tiles.size())));
         ops.append(tiles.at(k));
         const QString gcode = GrblPost(true).generate(ops);
         const QString path = QStringLiteral("%1_tile%2.nc").arg(outBase).arg(k + 1);
-        QFile f(path);
+        staged.push_back(std::make_unique<QSaveFile>(path));
+        QSaveFile &f = *staged.back();
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
             r.error = QStringLiteral("%1: %2").arg(path, f.errorString());
+            r.files.clear();
+            r.gcode.clear();
             return r;
         }
         // The single-file exporter already checks this; the tiled one did not,
@@ -533,6 +556,14 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         }
         r.files << path;
         r.gcode << gcode;
+    }
+    for (const auto &f : staged) {
+        if (!f->commit()) {
+            r.error = QStringLiteral("%1: %2").arg(f->fileName(), f->errorString());
+            r.files.clear();
+            r.gcode.clear();
+            return r;
+        }
     }
     // A previous export under the same base name may have needed more tiles.
     // Those files are still on disk, still look like part of this job, and
