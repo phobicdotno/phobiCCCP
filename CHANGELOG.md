@@ -12,8 +12,8 @@
     vectors (the female leaves them out).
   - An inlay male starting deep below the top was carved even when the V-bit's cone was too
     short to reach the stock top, so its shank rubbed and the plug kept a ledge. It is refused
-    with a note now (a V-carve on a pocket's floor counts its stock from that floor, and
-    its passes start there). Per pass 0 on a V-carve is one pass for its flat clearing too (it stepped
+    with a note now (a V-carve on a pocket's or a facing's floor counts its stock from that
+    floor where the floor is wide enough for the cone, and its passes start there). Per pass 0 on a V-carve is one pass for its flat clearing too (it stepped
     down 0.05 mm at a time).
   - Site order ran a toolpath out of list order before one it depends on: a straight
     horizontal or vertical line (a dado, a groove) before a cutout or pocket at the same
@@ -74,6 +74,7 @@
     it, as a lone shape or as an island in a pocket (hair-thin islands too).
   - Pattern on path with a spacing round a closed path put the last copy on the original.
   - A DXF saved with a byte-order mark failed to import.
+  - An SVG with only a width or only a height and no viewBox came in stretched to that size.
   - A closed path of a single curve from an SVG or PDF (a teardrop) vanished on Rotate, Mirror,
     Scale, node edits, Break, Trim or Extend.
   - Escape pressed while dragging a node crashed the program; it now cancels the drag. Escape
@@ -193,7 +194,8 @@
     not the one the computer uses now (a machine picked on another computer could even
     retarget this one); both use the machine in use.
   - The pad's Area fill joined pieces through a circle touching a side (a circle in a panel's
-    corner filled the whole panel, not the nook); it fills the piece tapped, as the computer does.
+    corner filled the whole panel, not the nook), and filled a window framed by shapes that is
+    inside none of them; it fills what the computer fills, also where outlines nearly coincide.
 
 ## v1.3.1 (build 91) — 2026-10-20
 

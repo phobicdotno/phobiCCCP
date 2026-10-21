@@ -71,48 +71,99 @@ bool ringContains(List<Pt> r, Pt p) {
 // meet exactly.
 const _q = 10000.0;
 
-// Gaps this narrow (0.01 mm, on the grid) count as touching.
-const _touch = 100;
+// Gaps this narrow (0.02 mm, on the grid) count as touching: the desktop
+// shrinks the face by 0.01 mm and grows it back, which cuts any channel
+// narrower than twice that.
+const _touch = 200;
 
 typedef _V = (int, int);
+
+// Flattened, a circle touching a side no longer touches it: the pieces hang
+// together by a slit a few microns wide. Each corner within [_touch] of
+// another shape's edge gets a short bridge to that edge, which cuts the slit
+// the way the desktop's shrink-and-regrow does. The outlines themselves stay
+// exactly as drawn (moving or bending them broke the map where outlines run
+// within microns of each other).
+List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
+  final out = <(_V, _V, int)>[];
+  for (var ri = 0; ri < rings.length; ri++) {
+    for (final p in rings[ri]) {
+      for (var rj = 0; rj < rings.length; rj++) {
+        if (rj == ri) continue;
+        final r = rings[rj];
+        var best = double.infinity;
+        var bestSeg = -1;
+        _V bestQ = p;
+        for (var k = 0; k < r.length; k++) {
+          final a = r[k], b = r[(k + 1) % r.length];
+          if (a == b || edgeOf[rj][k] < 0) continue;
+          if (p.$1 < math.min(a.$1, b.$1) - _touch || p.$1 > math.max(a.$1, b.$1) + _touch) continue;
+          if (p.$2 < math.min(a.$2, b.$2) - _touch || p.$2 > math.max(a.$2, b.$2) + _touch) continue;
+          final dx = (b.$1 - a.$1).toDouble(), dy = (b.$2 - a.$2).toDouble();
+          final t = (((p.$1 - a.$1) * dx + (p.$2 - a.$2) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+          final q = ((a.$1 + dx * t).round(), (a.$2 + dy * t).round());
+          final ex = (p.$1 - q.$1).toDouble(), ey = (p.$2 - q.$2).toDouble();
+          final d2 = ex * ex + ey * ey;
+          if (d2 < best) {
+            best = d2;
+            bestSeg = edgeOf[rj][k];
+            bestQ = q;
+          }
+        }
+        // Touching already (on the edge, or a shared corner): nothing to cut.
+        if (bestSeg < 0 || best > _touch * _touch || best <= 2) continue;
+        out.add((p, bestQ, bestSeg));
+      }
+    }
+  }
+  return out;
+}
 
 /// The face around [at] bounded by [rings]: its outline first, then its
 /// holes (the shapes standing inside it), wound the other way. Empty when
 /// [at] is inside none.
 List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
-  // Every edge, on the grid.
+  // A tap inside none of the shapes (a window framed by overlapping bars)
+  // fills nothing, as on the computer.
+  if (!rings.any((r) => r.length >= 3 && ringContains(r, at))) return const [];
+  // Every edge, on the grid, after closing the slits between near-touching
+  // shapes.
+  final grid = [for (final r in rings) [for (final p in r) _snap(p)]];
   final segs = <(_V, _V)>[];
-  for (final r in rings) {
+  final edgeOf = <List<int>>[];
+  for (final r in grid) {
+    final ids = <int>[];
     for (var i = 0; i < r.length; i++) {
-      final a = _snap(r[i]), b = _snap(r[(i + 1) % r.length]);
+      final a = r[i], b = r[(i + 1) % r.length];
+      ids.add(a != b ? segs.length : -1);
       if (a != b) segs.add((a, b));
     }
+    edgeOf.add(ids);
   }
   if (segs.isEmpty) return const [];
+  final bridges = _bridges(grid, edgeOf);
+  final shapeSegs = segs.length;
+  for (final (p, q, _) in bridges) {
+    segs.add((p, q));
+  }
 
   // Split each edge wherever another crosses or touches it.
   final cuts = [
     for (final s in segs) <_V>{s.$1, s.$2},
   ];
+  // A bridge ends on its edge to within the grid's rounding: cut it there.
+  for (final (_, q, seg) in bridges) {
+    if (seg < shapeSegs) cuts[seg].add(q);
+  }
   for (var i = 0; i < segs.length; i++) {
     final (a, b) = segs[i];
     for (var j = i + 1; j < segs.length; j++) {
       final (c, d) = segs[j];
-      if (math.max(a.$1, b.$1) + _touch < math.min(c.$1, d.$1) ||
-          math.max(c.$1, d.$1) + _touch < math.min(a.$1, b.$1) ||
-          math.max(a.$2, b.$2) + _touch < math.min(c.$2, d.$2) ||
-          math.max(c.$2, d.$2) + _touch < math.min(a.$2, b.$2)) {
+      if (math.max(a.$1, b.$1) < math.min(c.$1, d.$1) ||
+          math.max(c.$1, d.$1) < math.min(a.$1, b.$1) ||
+          math.max(a.$2, b.$2) < math.min(c.$2, d.$2) ||
+          math.max(c.$2, d.$2) < math.min(a.$2, b.$2)) {
         continue;
-      }
-      // Flattened, a circle touching a side no longer touches it: the pieces
-      // hang together by a slit a few microns wide. A corner within 0.01 mm
-      // of another edge cuts it there, as the desktop's shrink-and-regrow
-      // by 0.01 mm does.
-      for (final p in [c, d]) {
-        if (p != a && p != b && _cross(a, b, p) != 0 && _distSeg(p, a, b) <= _touch) cuts[i].add(p);
-      }
-      for (final p in [a, b]) {
-        if (p != c && p != d && _cross(c, d, p) != 0 && _distSeg(p, c, d) <= _touch) cuts[j].add(p);
       }
       final d1 = _cross(a, b, c), d2 = _cross(a, b, d), d3 = _cross(c, d, a), d4 = _cross(c, d, b);
       if (d1 == 0 && d2 == 0) {
@@ -219,14 +270,6 @@ List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
     if (smallestAround(r.first, comp) == outer) res.add(r);
   }
   return res;
-}
-
-double _distSeg(_V p, _V a, _V b) {
-  final dx = (b.$1 - a.$1).toDouble(), dy = (b.$2 - a.$2).toDouble();
-  final l2 = dx * dx + dy * dy;
-  final t = l2 > 0 ? (((p.$1 - a.$1) * dx + (p.$2 - a.$2) * dy) / l2).clamp(0.0, 1.0) : 0.0;
-  final x = a.$1 + t * dx - p.$1, y = a.$2 + t * dy - p.$2;
-  return math.sqrt(x * x + y * y);
 }
 
 _V _snap(Pt p) => ((p.$1 * _q).round(), (p.$2 * _q).round());

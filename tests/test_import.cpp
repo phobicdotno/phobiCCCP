@@ -428,6 +428,18 @@ int main(int argc, char **argv)
             check(b.ok && b.elements.size() == 1, "dxf: a UTF-8 byte-order mark is skipped");
         }
         {
+            // No viewBox and only a width (or height): user units stay px,
+            // the content box is not stretched to the page.
+            for (const char *attr : {"width='100mm'", "height='100mm'"}) {
+                const c2d::ImportResult w = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' ") + attr
+                        + "><rect width='10' height='10'/></svg>", opts(0, 0), QStringLiteral("wonly"));
+                check(w.ok && std::abs(w.bounds.width() - 10 * 25.4 / 96) < 0.01
+                          && std::abs(w.bounds.height() - 10 * 25.4 / 96) < 0.01,
+                      "svg: width or height alone without a viewBox keeps px user units");
+            }
+        }
+        {
             // <use> places what it refers to (pdftocairo's text, clones).
             const c2d::ImportResult u = c2d::importSvgData(
                 "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "

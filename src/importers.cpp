@@ -1100,12 +1100,12 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     // width x height. No width/height: the viewBox is measured in px.
     const double pxMm = 25.4 / 96;
     if (vw <= 0 || vh <= 0) {
+        // Each axis on its own: a width alone used to stretch the content
+        // box to it (a 10 px square in a width="100mm" file came in 100 mm).
         vx = vy = 0;
-        if (wMm > 0 && hMm > 0) { vw = wMm / pxMm; vh = hMm / pxMm; }
-        else {
-            const QRectF ub = user.boundingRect();
-            vw = qMax(1.0, ub.right()); vh = qMax(1.0, ub.bottom());
-        }
+        const QRectF ub = user.boundingRect();
+        vw = wMm > 0 ? wMm / pxMm : qMax(1.0, ub.right());
+        vh = hMm > 0 ? hMm / pxMm : qMax(1.0, ub.bottom());
     }
     if (wMm <= 0 || hMm <= 0) {
         if (wMm > 0)      { hMm = wMm * vh / vw; }

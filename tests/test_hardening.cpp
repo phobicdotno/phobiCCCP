@@ -1183,6 +1183,37 @@ int main(int argc, char *argv[])
                 deepest = std::min(deepest, o.z);
         check(pg.skipped.isEmpty() && pg.notes.isEmpty() && deepest < -6.4,
               "vcarve: a letter on a pocket's floor carves (the stock starts at the floor)");
+        // ...but only a floor wide enough for the cone around the letter: a
+        // pocket 1 mm wider than the letter each side still has its walls
+        // standing where the cone (and shank) would pass, so it is refused.
+        Rig nw;
+        const c2d::Element slot = c2d::Element::makeRectangle({50, 50}, 6, 34, layer);
+        const c2d::Element inSlot = c2d::Element::makeRectangle({50, 50}, 4, 30, layer);
+        nw.addShape(slot);
+        nw.addShape(inSlot);
+        nw.addToolpath("pocket_toolpath", {{"end_depth", "3.000"}, {"uuid", "{tp-0}"},
+                                           {"tool", QJsonObject{{"diameter", 3.175}, {"number", 201}}},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", slot.id}}}}});
+        nw.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "3.000"}, {"end_depth", "10.000"},
+                                                    {"tool", v60}, {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", inSlot.id}}}}});
+        const c2d::GcodeResult ng = c2d::exportGcode(nw.doc);
+        check(!ng.skipped.isEmpty() || !ng.notes.isEmpty(),
+              "vcarve: a pocket floor too narrow for the cone around the letter does not count");
+        // A faced panel's floor counts like a pocket's.
+        Rig fc;
+        const c2d::Element faceArea = c2d::Element::makeRectangle({50, 50}, 80, 60, layer);
+        const c2d::Element onFace = c2d::Element::makeRectangle({50, 50}, 5, 30, layer);
+        fc.addShape(faceArea);
+        fc.addShape(onFace);
+        fc.addToolpath("face_toolpath", {{"end_depth", "2.000"}, {"uuid", "{tp-0}"},
+                                         {"tool", QJsonObject{{"diameter", 12.0}, {"number", 1}}},
+                                         {"elements", QJsonArray{QJsonObject{{"uuid", faceArea.id}}}}});
+        fc.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "2.000"}, {"end_depth", "10.000"},
+                                                    {"tool", v60}, {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", onFace.id}}}}});
+        const c2d::GcodeResult fcg = c2d::exportGcode(fc.doc);
+        check(fcg.skipped.isEmpty() && fcg.notes.isEmpty(), "vcarve: a letter on a faced panel carves");
         const QJsonObject wide{{"diameter", 12.7}, {"number", 301}, {"angle", 90.0}, {"type", 2}};
         Rig one;
         one.addShape(c2d::Element::makeRectangle({30, 30}, 16, 16, layer));

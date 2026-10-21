@@ -3449,9 +3449,22 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         QPainterPath core = regionFromRings(insetRings(comp, 0.05));
                         if (core.isEmpty())
                             core = comp;
-                        for (const Cleared &c : cleared)
-                            if (c.zBot < top && c.foot.contains(core))
-                                top = qMax(c.zBot, cp.zTop);
+                        for (const Cleared &c : cleared) {
+                            const double cand = qMax(c.zBot, cp.zTop);
+                            if (!(cand < top))
+                                continue;
+                            // The cone (or the shank, at most) widens past the
+                            // shape between that floor and Z0: that ring must be air too.
+                            const double grow = qMin(vg.radius(), -cand * halfTan);
+                            const QPainterPath need = grow > 0.05
+                                ? regionFromRings(outsetRings(core, grow)) : core;
+                            QList<QPainterPath> regs;
+                            for (const Cleared &o : cleared)
+                                if (o.zBot <= c.zBot + 1e-6)
+                                    regs << o.foot;
+                            if (unionRegions(regs).contains(need))
+                                top = cand;
+                        }
                     }
                     double reach = 0;
                     for (const QVector<VPoint> &ch : pend)
@@ -3768,6 +3781,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             cp.linkOk = linkInside(unionRegions(pocketMine));
         }
 
+        // A face with a flat end mill leaves a flat floor too (a V-carve on a
+        // faced panel counts its stock from there).
+        if (face && !jobs.isEmpty() && toolGeomOf(tool).kind == ToolGeom::Flat)
+            cleared.append({sweptRegion(jobs.first().rings, toolR), cp.zBot});
         if (!jobs.isEmpty() && (pocket || contour || cutout)) {
             // Rest depth: start where the toolpaths above left off.
             QList<QPolygonF> centres;
