@@ -409,6 +409,31 @@ int main(int argc, char **argv)
         check(reach > 50 - r - 0.05, "a channel just wider than the tool is cut to its end");
     }
 
+    // ---- a round groove round a centred island: entered in the groove ----
+    {
+        const double r = 3.175;
+        adaptive::Params p;
+        p.toolR = r;
+        p.stepover = 0.635;
+        auto disc = [](double R) {
+            QPolygonF c;
+            for (int k = 0; k <= 180; ++k)
+                c << QPointF(R * std::cos(k * M_PI / 90), R * std::sin(k * M_PI / 90));
+            return c;
+        };
+        const adaptive::Plan plan = adaptive::plan({disc(50), disc(30)}, p);
+        bool helixInGroove = true, middleCut = false;
+        for (const adaptive::Move &m : plan.moves) {
+            if (m.kind == adaptive::Move::Helix)
+                helixInGroove = helixInGroove && std::hypot(m.center.x(), m.center.y()) - m.radius > 30 + r - 0.05;
+            else
+                for (const QPointF &q : m.path)
+                    middleCut = middleCut || std::abs(std::hypot(q.x(), q.y()) - 40) < 1;
+        }
+        check(helixInGroove, "groove: the entry helix is in the groove, not the island");
+        check(middleCut, "groove: the middle of the groove is cleared");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

@@ -299,6 +299,12 @@ if(Qt6Test_FOUND)
                    src/projectreceiver.cpp src/sendtopaddialog.cpp src/sendtodialog.cpp)
     target_link_libraries(test_mainwindow PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
     add_test(NAME mainwindow COMMAND test_mainwindow)
+    # A pad's edit arriving while a typed number is not yet committed.
+    get_target_property(_mwsrc test_mainwindow SOURCES)
+    list(REMOVE_ITEM _mwsrc tests/test_mainwindow.cpp)
+    add_executable(test_padput tests/test_padput.cpp ${_mwsrc})
+    target_link_libraries(test_padput PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME padput COMMAND test_padput)
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.
     add_executable(test_dragscroll tests/test_dragscroll.cpp src/canvas.cpp src/canvasparametric.cpp
                    src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
@@ -340,7 +346,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)
-    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

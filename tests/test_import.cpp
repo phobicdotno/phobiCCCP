@@ -410,6 +410,18 @@ int main(int argc, char **argv)
             check(!isClosed(sq.elements.at(1)), "dxf: the loose line stays open");
         }
         {
+            // A MINSERT array turns with the insert.
+            const QByteArray dxf =
+                "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n2\nSQ\n10\n0\n20\n0\n"
+                "0\nLWPOLYLINE\n90\n4\n70\n1\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n10\n0\n20\n10\n"
+                "0\nENDBLK\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n"
+                "0\nINSERT\n2\nSQ\n10\n0\n20\n0\n50\n90\n70\n3\n71\n1\n44\n20\n45\n0\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult m = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("minsert"));
+            check(m.ok && m.elements.size() == 3 && std::abs(m.bounds.width() - 10.0) < 0.1
+                      && std::abs(m.bounds.height() - 50.0) < 0.1, "dxf: a rotated MINSERT array turns with it");
+        }
+        {
             const QByteArray dxf = QByteArray("\xEF\xBB\xBF") +
                 "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\n10\n21\n0\n0\nENDSEC\n0\nEOF\n";
             const c2d::ImportResult b = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("bom"));
@@ -445,6 +457,25 @@ int main(int argc, char **argv)
             check(y.ok && y.elements.size() == 1 && std::abs(y.bounds.width() - 50.0) < 0.1
                       && std::abs(y.bounds.height() - 50.0) < 0.1,
                   "svg: a symbol's viewBox fits the use's size");
+        }
+        {
+            // A clone leaves out the clip paths and definitions inside what it
+            // clones; a <use> may refer to a symbol defined after it, and a
+            // percentage inside definitions is of the viewport.
+            const c2d::ImportResult c = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><symbol id='s' viewBox='0 0 100 100'><g><defs><rect id='C' width='100' height='100'/></defs>"
+                "<clipPath id='k'><use href='#C'/></clipPath><rect x='40' y='40' width='20' height='20'/></g></symbol></defs>"
+                "<use href='#s' width='100' height='100'/></svg>", opts(0, 0), QStringLiteral("useclip"));
+            check(c.ok && c.elements.size() == 1 && std::abs(c.bounds.width() - 20.0) < 0.1,
+                  "svg: a clone leaves out inline clip paths");
+            const c2d::ImportResult f = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><g id='g'><use href='#s' width='50%' height='50%'/></g>"
+                "<symbol id='s' viewBox='0 0 10 10'><rect width='10' height='10'/></symbol></defs>"
+                "<use href='#g'/></svg>", opts(0, 0), QStringLiteral("usefwd"));
+            check(f.ok && f.elements.size() == 1 && std::abs(f.bounds.width() - 100.0) < 0.1,
+                  "svg: a symbol defined later, at a percentage of the viewport");
         }
         // Extrusion 0,0,-1 mirrors OCS entities only: a LINE is stored in
         // world coordinates and must stay at +X.

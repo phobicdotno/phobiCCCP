@@ -290,6 +290,7 @@ private:
     bool insideTravel(double x, double y) const;
     double switchClearance() const;
     double safeZ() const;
+    double riseZ() const;
     QString m_unhomedWhy = QStringLiteral("not connected");
     QString m_lastLimitPins;
     bool m_limitWarned = false;

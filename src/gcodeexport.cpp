@@ -2868,13 +2868,14 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // Round a boss, the laps stop short of the other selected bosses
             // (their wall plus the tool radius and stock to leave); one the
             // tool cannot pass between its neighbours and itself is skipped.
-            auto roomOut = [&](const QPointF &ctr) {
+            auto roomOut = [&](const QPointF &ctr, double R) {
                 double room = std::numeric_limits<double>::max();
                 for (const Job &o : holes) {
                     const QPointF oc = o.rings.first().at(0);
-                    if (oc == ctr)
-                        continue;
-                    room = qMin(room, QLineF(ctr, oc).length() - o.rings.first().at(1).x() - toolR - leave);
+                    const double oR = o.rings.first().at(1).x(), d = QLineF(ctr, oc).length();
+                    if (d + oR <= R + 1e-9)
+                        continue;   // itself, or a circle inside this boss
+                    room = qMin(room, d - oR - toolR - leave);
                 }
                 return room;
             };
@@ -2884,7 +2885,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 const double R = h.rings.first().at(1).x();
                 QVector<double> radii;   // in cutting order
                 if (outside) {
-                    const double rb = R + toolR + leave, room = roomOut(ctr);
+                    const double rb = R + toolR + leave, room = roomOut(ctr, R);
                     if (rb > room + 1e-9) {
                         ++crowded;
                         continue;

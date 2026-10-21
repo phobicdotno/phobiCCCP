@@ -2802,7 +2802,10 @@ bool buildPadFile(const QJsonObject &d, const QString &path, QString *err)
 
 bool MainWindow::sameDesign(const QString &opened, QString *err) const
 {
-    if (m_doc.filePath() == opened)
+    // The same file by another path counts (a pad's edit reopens it by its
+    // canonical path, a symlinked folder's target).
+    if (m_doc.filePath() == opened
+        || (!opened.isEmpty() && !m_doc.filePath().isEmpty() && QFileInfo(m_doc.filePath()) == QFileInfo(opened)))
         return true;
     if (err)
         *err = QStringLiteral("a different design was opened here; close this and send again");
@@ -3397,6 +3400,9 @@ void MainWindow::padMoveLinks(const QString &id, const QString &forkId)
 
 void MainWindow::padDesignChanged(const QString &id)
 {
+    // A number typed but not committed is an unsaved change too: commit it
+    // before deciding whether the open file may take the pad's version.
+    commitEdits();
     padlink::Links links(padDir());
     const QJsonObject d = padStore().get(id);
     const QString name = d.value(QStringLiteral("name")).toString();

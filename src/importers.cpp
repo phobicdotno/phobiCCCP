@@ -876,49 +876,69 @@ QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, doub
     return (vb * QTransform::fromTranslate(x, y)).map(def.path);
 }
 
-QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString> &hiddenClasses)
+QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString> &hiddenClasses,
+                                      double vpW, double vpH)
 {
+    // Clip paths, masks, patterns, markers and nested definitions draw
+    // nothing where they stand: their ids are kept, their paths are not part
+    // of the group or symbol around them.
+    static const QStringList noDraw = {
+        QStringLiteral("defs"), QStringLiteral("symbol"), QStringLiteral("clipPath"),
+        QStringLiteral("mask"), QStringLiteral("pattern"), QStringLiteral("marker")};
     QHash<QString, SvgDef> defs;
     struct Frame { QString id; QTransform own; QPainterPath path; bool hidden = false;
-                   QRectF viewBox; QString aspect; };
-    QVector<Frame> stack;
-    QXmlStreamReader xml(data);
-    while (!xml.atEnd()) {
-        const auto tok = xml.readNext();
-        if (tok == QXmlStreamReader::StartElement) {
-            const QXmlStreamAttributes at = xml.attributes();
-            Frame f{at.value(QLatin1String("id")).toString(),
-                    parseSvgTransform(at.value(QLatin1String("transform")).toString()), {},
-                    svgHidden(at, hiddenClasses), {}, {}};
-            if (xml.name() == QLatin1String("use")) {
-                const auto ref = defs.constFind(svgHref(at));
-                if (ref != defs.constEnd())
-                    f.path = svgPlaceUse(*ref, at, 0, 0);
-            } else if (xml.name() == QLatin1String("symbol")) {
-                Scanner sc{at.value(QLatin1String("viewBox"))};
-                double a[4];
-                bool vb = true;
-                for (double &v : a) vb = vb && sc.number(&v);
-                if (vb && a[2] > 0 && a[3] > 0) {
-                    f.viewBox = QRectF(a[0], a[1], a[2], a[3]);
-                    f.aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
+                   QRectF viewBox; QString aspect; bool noDraw = false; };
+    // Two passes: the second sees what the first found, so a <use> of
+    // something defined further down (a symbol after the group using it)
+    // resolves too.
+    QHash<QString, SvgDef> earlier;
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) {
+            earlier = defs;
+            defs.clear();
+        }
+        QVector<Frame> stack;
+        QXmlStreamReader xml(data);
+        while (!xml.atEnd()) {
+            const auto tok = xml.readNext();
+            if (tok == QXmlStreamReader::StartElement) {
+                const QXmlStreamAttributes at = xml.attributes();
+                Frame f{at.value(QLatin1String("id")).toString(),
+                        parseSvgTransform(at.value(QLatin1String("transform")).toString()), {},
+                        svgHidden(at, hiddenClasses), {}, {}, noDraw.contains(xml.name().toString())};
+                if (xml.name() == QLatin1String("use")) {
+                    const QString href = svgHref(at);
+                    const auto here = defs.constFind(href), before = earlier.constFind(href);
+                    if (here != defs.constEnd())
+                        f.path = svgPlaceUse(*here, at, vpW, vpH);
+                    else if (before != earlier.constEnd())
+                        f.path = svgPlaceUse(*before, at, vpW, vpH);
+                } else if (xml.name() == QLatin1String("symbol")) {
+                    Scanner sc{at.value(QLatin1String("viewBox"))};
+                    double a[4];
+                    bool vb = true;
+                    for (double &v : a) vb = vb && sc.number(&v);
+                    if (vb && a[2] > 0 && a[3] > 0) {
+                        f.viewBox = QRectF(a[0], a[1], a[2], a[3]);
+                        f.aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
+                    }
+                } else if (xml.name() != QLatin1String("svg")) {
+                    bool known = false, bad = false;
+                    f.path = svgShape(xml.name(), at, &known, &bad, vpW, vpH);
                 }
-            } else if (xml.name() != QLatin1String("svg")) {
-                bool known = false, bad = false;
-                f.path = svgShape(xml.name(), at, &known, &bad, 0, 0);
+                stack.append(f);
+            } else if (tok == QXmlStreamReader::EndElement && !stack.isEmpty()) {
+                const Frame f = stack.takeLast();
+                if (f.hidden)
+                    continue;   // display:none draws nothing, through a <use> either
+                const QPainterPath mapped = f.own.map(f.path);
+                if (!f.id.isEmpty() && !mapped.isEmpty())
+                    defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
+                if (!stack.isEmpty() && !mapped.isEmpty() && !f.noDraw)
+                    stack.last().path.addPath(mapped);
+                if (defs.size() > 100000)
+                    break;
             }
-            stack.append(f);
-        } else if (tok == QXmlStreamReader::EndElement && !stack.isEmpty()) {
-            const Frame f = stack.takeLast();
-            if (f.hidden)
-                continue;   // display:none draws nothing, through a <use> either
-            const QPainterPath mapped = f.own.map(f.path);
-            if (!f.id.isEmpty() && !mapped.isEmpty())
-                defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
-            if (!stack.isEmpty() && !mapped.isEmpty())
-                stack.last().path.addPath(mapped);
-            if (defs.size() > 100000)
-                break;
         }
     }
     return defs;
@@ -1045,7 +1065,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                     user.addPath(ctx.xf.map(local));
             } else if (name == QLatin1String("use")) {
                 if (!defsMade) {
-                    defs = svgDefinitions(data, hiddenClasses);
+                    defs = svgDefinitions(data, hiddenClasses, stack.first().vpW, stack.first().vpH);
                     defsMade = true;
                 }
                 // Placed at x,y inside its own transform.
@@ -1518,7 +1538,9 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
                 local.translate(-b.base.x(), -b.base.y());
                 local = local * QTransform::fromScale(sx, sy);
                 QTransform rt; rt.rotate(rot);
-                local = local * rt * QTransform::fromTranslate(ins.x() + c * colSp, ins.y() + r * rowSp);
+                // The array turns with the insert, about its insertion point.
+                const QPointF off = rt.map(QPointF(c * colSp, r * rowSp));
+                local = local * rt * QTransform::fromTranslate(ins.x() + off.x(), ins.y() + off.y());
                 // Spent: one more call records it, then stop the array
                 // instead of looping rows x cols x entities for nothing.
                 if (ctx.budget <= 0) {

@@ -1205,9 +1205,9 @@ MachinePanel::MachinePanel(QWidget *parent)
         // the way Carbide Motion ends a run. A stopped one was reset, which
         // already killed the spindle.
         if (endJob) {
-            log(QStringLiteral("job done: up to Z top, then spindle off"));
+            log(QStringLiteral("job done: up to safe Z, then spindle off"));
             m_grbl->startMacro({QStringLiteral("G90"),
-                                QStringLiteral("G53 G0 Z%1").arg(safeZ(), 0, 'f', 3),
+                                QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
                                 QStringLiteral("M5")});
         }
     });
@@ -1945,7 +1945,9 @@ void MachinePanel::bitZeroApply()
         if (m_bzWantX) what += QStringLiteral("X0 ");
         if (m_bzWantY) what += QStringLiteral("Y0 ");
         if (m_bzWantZ) what += QStringLiteral("Z0 ");
-        const BitSetterConfig bs = bitSetter();
+        BitSetterConfig bs = bitSetter();
+        if (m_homed)
+            bs.safeZ = -switchClearance();   // risen to the top first, below
         if (m_bzWantZ && bs.enabled) {
             m_phase = Phase::MeasureForRef;
             m_grbl->startMacro(cmds + riseToTop()
@@ -2388,7 +2390,7 @@ BitSetterConfig MachinePanel::bitSetter() const
     c.enabled = m_bsEnabled->isChecked();
     c.x = m_bsX->value();
     c.y = m_bsY->value();
-    c.safeZ = safeZ();
+    c.safeZ = riseZ();
     c.fastFeed = m_bsFast->value();
     c.slowFeed = m_bsSlow->value();
     return c;
@@ -2776,7 +2778,7 @@ void MachinePanel::park()
     const double tz = m_grbl->setting(132, 75.0);
     const double clear = switchClearance();
     const double x = -qMin(qMax(kMargin, clear), tx / 2), y = -qMax(clear, ty - kMargin);
-    const double z = safeZ();
+    const double z = riseZ();
     log(QStringLiteral("parking front right (X%1 Y%2, machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
     m_grbl->startMacro({QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
@@ -2791,6 +2793,17 @@ double MachinePanel::safeZ() const
     constexpr double kMargin = 5.0;
     const double tz = m_grbl->setting(132, 75.0);
     return qBound(-(tz - kMargin), m_bsSafeZ->value(), -switchClearance());
+}
+
+double MachinePanel::riseZ() const
+{
+    // A rise to safe Z never goes down: with safe Z set below where the
+    // spindle already is (a high job retract over tall stock) the move would
+    // plunge at the current X Y. Up to the top at most.
+    const double z = safeZ();
+    if (!m_homed || !m_grbl->isConnected())
+        return z;
+    return qMax(z, qMin(m_grbl->status().mz, -switchClearance()));
 }
 
 void MachinePanel::whenIdle(std::function<void()> fn)
@@ -2902,7 +2915,7 @@ void MachinePanel::goToXY0()
         return;
     m_phase = Phase::GoToZero;
     m_grbl->startMacro({QStringLiteral("G90"),
-                        QStringLiteral("G53 G0 Z%1").arg(safeZ(), 0, 'f', 3),
+                        QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
                         QStringLiteral("G0 X0 Y0")});
 }
 
@@ -2959,7 +2972,7 @@ void MachinePanel::parkForTool()
     m_phase = Phase::ParkForTool;
     // Spindle off, up, and over to where the operator can reach the collet.
     m_grbl->startMacro({QStringLiteral("M5"), QStringLiteral("G90"),
-                        QStringLiteral("G53 G0 Z%1").arg(safeZ(), 0, 'f', 3),
+                        QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
                         QStringLiteral("G53 G0 X%1 Y%2")
                             .arg(m_tcX->value(), 0, 'f', 3).arg(m_tcY->value(), 0, 'f', 3)});
 }
@@ -3424,6 +3437,9 @@ bool MachinePanel::reloadMachine(QString *why)
     const bool wasConnected = m_grbl->isConnected();
     if (wasConnected)
         m_grbl->disconnectPort();
+    // The last machine's measured tool length is not this one's: it would be
+    // sent again on the new controller's startup.
+    m_grbl->applyToolLengthOffset(0);
     resetFlow();
     m_savedHomedAt.clear();
     // A machine with no port yet must not inherit the last one's.

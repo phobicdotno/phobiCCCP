@@ -21,9 +21,11 @@
 #include <QAction>
 #include <QApplication>
 #include <QDoubleSpinBox>
+#include <QFileInfo>
 #include <QJsonObject>
 #include <QMap>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
 #include <QTreeWidget>
@@ -248,6 +250,13 @@ int main(int argc, char *argv[])
         check(!w.sendCopy(w.m_doc.filePath(), &err).isEmpty(), "send copy: the same design is copied");
         check(w.sendCopy(QStringLiteral("/elsewhere/Alpha.c2d"), &err).isEmpty() && !err.isEmpty(),
               "send copy: another design is refused");
+        // The same file through a symlinked folder is the same design.
+        const QFileInfo fi(w.m_doc.filePath());
+        QTemporaryDir links;
+        if (!fi.filePath().isEmpty() && QFile::link(fi.absolutePath(), links.filePath("via"))) {
+            const QString viaLink = links.filePath("via/") + fi.fileName();
+            check(!w.sendCopy(viaLink, &err).isEmpty(), "send copy: the same file by another path");
+        }
     }
 
     // The window stays open while an update step's process runs.

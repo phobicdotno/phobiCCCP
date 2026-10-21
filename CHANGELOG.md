@@ -18,6 +18,8 @@
     is skipped with a note.
   - Adaptive left most of a channel only a little wider than the tool uncut, without a
     note; each part now ends with a lap round where the tool can reach.
+  - Adaptive on a groove round a centred island (a ring channel round a boss) entered with
+    its helix inside the island and left the groove's middle uncut; it enters in the groove.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
@@ -28,6 +30,9 @@
   - Text in PDF, AI and EPS files (and SVG clones) was dropped on import; it comes in now.
     A clone of a group leaves out the group's hidden parts, and a clone of an icon symbol
     takes the size it is given.
+    Clip paths inside a cloned symbol or group no longer come in as extra squares; a clone may
+    refer to a symbol defined after it.
+  - A rotated DXF block array (MINSERT) ran along X instead of turning with the insert.
   - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
@@ -39,6 +44,9 @@
     and it ran by itself (zeroing and probing) after the next Initialize.
   - A safe Z typed above the Z switch (0, -1) tripped the limit switch at every tool change,
     Go to X0 Y0 and job end, as Park already avoided; every safe-Z move keeps within the travel now.
+  - A "rise" to safe Z no longer moves down when the spindle already stands higher (safe Z set
+    below a tall job's retract height plunged at the last X Y at the end of the job).
+  - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
@@ -50,6 +58,10 @@
     Send to pad, New and closing the window.
   - A Send window left open while another design is opened refuses to send that one under the
     first one's name.
+  - A pad's edit arriving while a number was typed but not committed asked to save over it and
+    lost the pad's edit; the typed number now counts as unsaved, so the file is left alone.
+  - A Send window refused its own design after a pad edit reopened it by its real path.
+  - A design of exactly 12 MB passed the size check and then failed as "request too long".
 - **Pad link:**
   - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
     identity, and the pad's id on the computer is its own id in the versions.

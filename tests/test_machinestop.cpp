@@ -563,6 +563,46 @@ int main(int argc, char **argv)
         check(moves == 3, "safez: park, tool park and X0 Y0 each rise");
     }
 
+    if (mode == "descend") {
+        // Safe Z set to machine Z -30; the machine stands higher, at -10
+        // (a tall board: the job's retract height is above -30).
+        panel.m_bsSafeZ->setValue(-30.0);
+        grbl.mz = -10;
+        wait(600);
+        grbl.events.clear();
+        panel.goToXY0();
+        wait(600);
+        std::printf("goToXY0 from Z-10:\n");
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        grbl.events.clear();
+        panel.m_endOfJobPending = true;
+        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G0X1")});
+        wait(1200);
+        std::printf("end of job from Z-10:\n");
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        bool down = false;
+        for (const QByteArray &e : grbl.events)
+            if (e.startsWith("G53 G0 Z") && e.mid(8).toDouble() < grbl.mz - 1e-9)
+                down = true;
+        check(!down, "descend: a 'rise' to safe Z never moves Z down");
+    }
+
+    if (mode == "tlo") {
+        // Machine A: a tool measured 12 mm longer than the reference.
+        s->applyToolLengthOffset(12.0);
+        wait(600);
+        // Switch to machine B (same port here), which has no BitSetter.
+        grbl.events.clear();
+        QString why;
+        panel.reloadMachine(&why);
+        wait(300);
+        grbl.send("\r\nGrbl 1.1h ['$' for help]\r\n");   // the board reboots on port open (DTR)
+        wait(2500);
+        std::printf("offset label on machine B: %s\n", qPrintable(panel.m_tloLabel->text()));
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(grbl.count("G43.1 Z12") == 0, "tlo: machine A's tool offset is not applied on machine B");
+    }
+
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();
