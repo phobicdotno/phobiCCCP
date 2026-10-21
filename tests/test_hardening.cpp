@@ -961,6 +961,28 @@ int main(int argc, char *argv[])
             check(nearestFloorCut(g.ops, QPointF(25 + arm / 2, 70)) <= 3.175 + 0.01,
                   "pocket: the narrow arm of an L gets its middle cut");
         }
+        // With a helix entry each ring is entered where it is nearest: the
+        // only plunges from above the stock are the helix's own, one per depth.
+        auto plungesFromAbove = [](const QVector<c2d::Op> &ops) {
+            int n = 0;
+            double px = 0, py = 0, pz = 10;
+            for (const c2d::Op &o : ops) {
+                if (o.kind == c2d::Op::Feed && std::abs(o.x - px) < 1e-6 && std::abs(o.y - py) < 1e-6
+                    && o.z < pz - 1e-6 && pz > 0)
+                    ++n;
+                if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc || o.kind == c2d::Op::Rapid) {
+                    px = o.x; py = o.y; pz = o.z;
+                }
+            }
+            return n;
+        };
+        {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({100, 100}, 80, 50, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"helix_entry", true}, {"end_depth", "6.0"}});
+            check(plungesFromAbove(c2d::exportGcode(r.doc).ops) == 3,
+                  "pocket: rings entered where nearest, no plunge at a ring's start");
+        }
     }
 
     // An internal thread plunges at the hole's centre: a mill wider than the

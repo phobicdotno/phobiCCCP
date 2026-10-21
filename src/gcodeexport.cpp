@@ -1085,13 +1085,13 @@ static bool ringFillJob(const QPainterPath &area, double firstDelta, double step
     }
     for (int k = shells.size() - 1; k >= 0; --k)
         job.rings.append(shells.at(k));
-    if (!job.rings.isEmpty())
-        jobs.append(job);
     // A branch that runs out while the rest goes on (the arm of an L, a
     // channel beside an island) can keep a rib the check above never sees:
-    // fill what the rings' sweep leaves of the centre region. Only a
-    // stepover past the radius can leave one.
-    if (toolR > 0 && stepover > 0.95 * toolR && !shells.isEmpty()) {
+    // fill what the rings' sweep leaves of the centre region, as the job's
+    // last laps (the stock round it is gone by then, and a helix entry on
+    // the job stays where it was). Only a stepover past the radius can
+    // leave one: the default (the radius) never pays for the check.
+    if (toolR > 0 && stepover > toolR + 1e-6 && !shells.isEmpty()) {
         QPainterPath centre;
         centre.setFillRule(Qt::OddEvenFill);
         for (const QPolygonF &g : shells.first()) {
@@ -1102,9 +1102,14 @@ static bool ringFillJob(const QPainterPath &area, double firstDelta, double step
         for (const QPainterPath &comp : components(left)) {
             if (insetRings(comp, 0.02).isEmpty())
                 continue;            // a sliver the tool all but reaches
-            full &= ringFillJob(comp, 0.0, stepover, jobs);
+            QList<Job> more;
+            full &= ringFillJob(comp, 0.0, stepover, more);
+            for (const Job &m : std::as_const(more))
+                job.rings.append(m.rings);
         }
     }
+    if (!job.rings.isEmpty())
+        jobs.append(job);
     return full;
 }
 
@@ -1981,7 +1986,10 @@ public:
             arcTo(atP0 ? p1 : p0, z, h.c, false);   // flat lap at depth
             arcTo(atP0 ? p0 : p1, z, h.c, false);
             for (int i = 0; i < job.rings.size(); ++i) {
-                const QPolygonF &ring = job.rings.at(i);
+                // Each ring entered where it is nearest: from its own first
+                // vertex the next ring was often past the link limit, a
+                // retract and a plunge into solid stock at every depth.
+                const QPolygonF ring = startNearest(job.rings.at(i), pos());
                 const QPointF rs = ring.first();
                 if (QLineF(pos(), rs).length() > 1e-6) {
                     // The first ring was chosen as the one nearest the helix
@@ -2040,7 +2048,12 @@ public:
             for (int k = 0; k < job.rings.size(); ++k)
                 order.append(forward ? k : job.rings.size() - 1 - k);
 
-            const QPolygonF &firstRing = job.rings.at(order.first());
+            // Pocket rings are entered where they are nearest (see
+            // runHelixJob); a lone ring keeps its start, where its tabs and
+            // lead are measured from.
+            const bool nearest = job.closed && job.rings.size() > 1;
+            const QPolygonF firstRing = nearest && !first ? startNearest(job.rings.at(order.first()), pos())
+                                                          : job.rings.at(order.first());
             // A ramp runs the loop at depth from vertex 0 and knows nothing
             // of tabs: on a pass below the tab tops it would cut through every
             // tab before the tabbed lap below lifts over them. Plunge there
@@ -2066,7 +2079,9 @@ public:
             }
 
             for (int oi = 0; oi < order.size(); ++oi) {
-                const QPolygonF &ring = job.rings.at(order.at(oi));
+                const QPolygonF ring = oi == 0 ? firstRing
+                                     : nearest ? startNearest(job.rings.at(order.at(oi)), pos())
+                                               : job.rings.at(order.at(oi));
                 const QPointF rs = ring.first();
                 if (QLineF(pos(), rs).length() > 1e-6) {
                     if (QLineF(pos(), rs).length() <= cp.linkDist
@@ -3725,7 +3740,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     capped |= !ringFillJob(comp, toolR + leave, stepover, jobs, toolR);
                     pocketMine << regionFromRings(insetRings(comp, toolR + leave));
                     if (helix && jobs.size() > before)
-                        addHelix(jobs.last(), insetRings(comp, toolR + leave), helixWant, helixAngle);
+                        addHelix(jobs[before], insetRings(comp, toolR + leave), helixWant, helixAngle);
                 }
             }
             if (capped)
@@ -3806,7 +3821,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                 const int before = banded.size();
                                 ringFillJob(rc, 0.0, pocketStep, banded, toolR);
                                 if (helix && banded.size() > before)
-                                    addHelix(banded.last(), insetRings(rc, 0.0), helixWant, helixAngle);
+                                    addHelix(banded[before], insetRings(rc, 0.0), helixWant, helixAngle);
                                 for (int k = before; k < banded.size(); ++k) {
                                     banded[k].band = b;
                                     banded[k].bandTop = bands.at(b).zTop;

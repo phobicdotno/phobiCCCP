@@ -39,6 +39,9 @@
   - A pocket with a stepover past the tool radius (60 to 75 % of the bit) could leave a rib of
     full height along its middle, or a pin in a round pocket, also in a narrower arm or a
     channel beside an island; laps are added where the rings left something uncut.
+  - Pockets retracted and plunged into solid stock at the start of a ring at every depth
+    (helix entry or not) when the ring's first point was far from where the last one ended;
+    each ring is now entered where it is nearest.
   - An internal thread took a thread mill wider than the hole's minor diameter and shaved the
     crests where it plunges at the centre; such a hole is left out as too small.
   - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
