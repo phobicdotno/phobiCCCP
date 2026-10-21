@@ -955,6 +955,18 @@ int main(int argc, char **argv)
         s->stopStream();
         wait(500);
     }
+    if (mode == "jogstart") {
+        // A pad start right after a jog tap, before the status shows Jog.
+        grbl.jogMs = 800;
+        wait(600);
+        panel.m_step->setCurrentIndex(panel.m_step->count() - 1);
+        padPress(4);
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("remote start right after a tap: %d (%s)\n", started, qPrintable(why));
+        check(!started && !s->isStreaming(), "a start right after a jog tap is refused");
+        wait(1500);
+    }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();

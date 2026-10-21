@@ -890,6 +890,24 @@ int main(int argc, char *argv[])
         }
     }
 
+    // An internal thread stays in its hole: one inside a tile is exported
+    // (the margin for an external thread's way out refused it); one across
+    // a tile line is still refused.
+    {
+        QTemporaryDir d;
+        for (const auto &c : {std::pair<double, bool>{12, false}, std::pair<double, bool>{25, true}}) {
+            Rig r;
+            r.addShape(c2d::Element::makePath({{80, 0}, {80, 100}}, false, layer));
+            r.addToolpath("contour", {{"ofset_dir", 0}, {"uuid", "{tp-0}"}});
+            r.addShape(c2d::Element::makeCircle({40, c.first}, 6, layer));
+            r.addToolpath("thread_toolpath", {{"pitch", 1.75}, {"side", "internal"}, {"end_depth", "6.000"}});
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("th")), 25.0);
+            check(c.second ? te.error.contains("tile line") : te.error.isEmpty(),
+                  c.second ? "tiling: an internal thread across a tile line is refused"
+                           : "tiling: an internal thread inside one tile is exported");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Texture over a big sheet. The generator used to sample the region every
     // 0.5 mm along the diagonal for every hatch line, so its cost grew with

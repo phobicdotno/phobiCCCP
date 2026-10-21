@@ -24,6 +24,16 @@
 #include <algorithm>
 #include <cmath>
 
+
+// makeToolpath() sizes the lead-in, rest and helix from the document's last
+// toolpath of the kind (or #201), which differs between building a design
+// and reading it back; size them from the pad's own bit in both.
+static void sizeToTool(QJsonObject &j, const c2d::LibraryTool &t)
+{
+    if (j.contains(QStringLiteral("lead_radius"))) j.insert(QStringLiteral("lead_radius"), 0.5 * t.diameter);
+    if (j.contains(QStringLiteral("rest_diameter"))) j.insert(QStringLiteral("rest_diameter"), t.diameter);
+    if (j.contains(QStringLiteral("helix_diameter"))) j.insert(QStringLiteral("helix_diameter"), t.diameter);
+}
 namespace c2d::padlink {
 
 namespace {
@@ -300,6 +310,7 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         Toolpath tp = makeToolpath(doc, ccType, refs);
         QJsonObject j = tp.json;
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
+        sizeToTool(j, *tool);
         const double depth = t.value(QStringLiteral("depth")).toDouble();
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
         if (ccType == QLatin1String("contour")) {
@@ -600,6 +611,7 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         Toolpath fresh = makeToolpath(doc, type, elementIds);
         QJsonObject j = fresh.json;
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
+        sizeToTool(j, *tool);
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
         if (type == QLatin1String("contour"))
             j.insert(QStringLiteral("ofset_dir"), dir);

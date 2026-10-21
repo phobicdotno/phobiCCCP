@@ -700,6 +700,11 @@ PathModel Element::pathModel(const Element &e)
             return;
         if (cur.closed && cur.nodes.size() >= 2
             && samePt(cur.nodes.last().p, cur.nodes.first().p)) {
+            // One curve from a point back to itself (an SVG teardrop): split
+            // it first, or folding the end into the start leaves one node and
+            // no outline, which every edit would then write back.
+            if (cur.nodes.size() == 2)
+                cur.insertNode(0, 0.5);
             // The return-to-start row carries the closing segment's handles.
             cur.nodes.first().in = cur.nodes.last().in;
             cur.nodes.removeLast();

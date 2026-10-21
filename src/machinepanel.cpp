@@ -3516,6 +3516,10 @@ bool MachinePanel::runProgram(QString *remoteWhy)
                       QStringLiteral("In Alarm, press Initialize first."));
     if (!m_homed)
         return refuse(QStringLiteral("The machine needs Initialize (homing) first: %1.").arg(m_unhomedWhy));
+    // A jog just sent still reads Idle until the next status report; the
+    // program's first lines would be answered error:9 and the job aborted.
+    if (!standingStill())
+        return refuse(QStringLiteral("The machine is still moving (%1).").arg(stillMovingWhy()));
     // Only now: a refusal above leaves a hold (and its Resume button) as it was.
     setHeld(false);
     if (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart)

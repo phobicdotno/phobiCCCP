@@ -868,6 +868,28 @@ static void testProfiles(const QString &dir)
 
 // File > Send to pad…: pads in touch are listed, and a design sent to one
 // waits for its next "info" until it says it opened it.
+// A profile on a bit other than #201, built and read back unchanged, lost
+// nothing (the lead-in was sized from another bit, so it looked set here).
+static void testOtherBitRoundTrip(const QString &dir)
+{
+    for (int tool : {201, 102, 602}) {
+        const QJsonObject d{{"format", "phobicccp-pad"}, {"version", 1}, {"id", "sign"}, {"name", "Sign"},
+                            {"modified", 1000.0}, {"material", "softwood"},
+                            {"stock", QJsonObject{{"width", 300}, {"height", 200}, {"thickness", 12}}},
+                            {"shapes", QJsonArray{QJsonObject{{"id", "r"}, {"type", "rect"}, {"x", 10}, {"y", 10}, {"w", 100}, {"h", 50}}}},
+                            {"toolpaths", QJsonArray{QJsonObject{{"name", "Cut"}, {"type", "profile"}, {"side", "outside"},
+                                                                 {"shapes", QJsonArray{"r"}}, {"tool", tool}, {"depth", 12.5}},
+                                                     QJsonObject{{"name", "Pocket"}, {"type", "pocket"},
+                                                                 {"shapes", QJsonArray{"r"}}, {"tool", tool}, {"depth", 3}}}}};
+        const QString path = QDir(dir).filePath(QStringLiteral("bit%1.c2d").arg(tool));
+        QString err;
+        check(padlink::buildDocument(d, path, nullptr, &err), "other bit: built");
+        QStringList lost;
+        padlink::designFromDocument(path, d, &lost, &err);
+        check(lost.isEmpty(), "other bit: nothing lost on the way back");
+    }
+}
+
 static void testPads()
 {
     padlink::Pads pads;
@@ -932,6 +954,7 @@ int main(int argc, char **argv)
     testVersions(tmp.path(), d);
     testFollowDesign(tmp.path(), d);
     testProfiles(tmp.path());
+    testOtherBitRoundTrip(tmp.path());
     testPads();
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;

@@ -1799,6 +1799,7 @@ void MainWindow::onExportGcode()
     // disk or a stick pulled mid-write must not leave a program ending in the
     // middle of a block (no retract, no spindle stop) in place of the good one.
     QSaveFile f(path);
+    f.setDirectWriteFallback(true);       // a folder it cannot make files in
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
@@ -2218,7 +2219,8 @@ void MainWindow::saveExtras(const QString &path)
     QString bgErr, mdErr;
     // Document::save keeps a read-only file read-only; the extras are part of
     // the same save, so they get to write before that is put back.
-    const QFileDevice::Permissions perms = QFile::permissions(path);
+    const QFileDevice::Permissions perms = QFile::permissions(path)
+        & ~(QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser);
     const bool readOnly = !(perms & QFileDevice::WriteOwner);
     if (readOnly)
         QFile::setPermissions(path, perms | QFileDevice::WriteOwner);

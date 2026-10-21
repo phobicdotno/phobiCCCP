@@ -15,6 +15,7 @@
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 #include <QSaveFile>
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -1474,14 +1475,27 @@ int main(int argc, char *argv[])
             return 3;
         }
         const QByteArray bytes = r.gcode.toUtf8();
-        // Moved into place only when complete (a full disk leaves the old file).
-        QSaveFile f(QString::fromLocal8Bit(argv[3]));
-        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            qWarning() << "write failed:" << f.errorString();
-            return 2;
+        // A file is moved into place only when complete (a full disk leaves the
+        // old one); /dev/stdout, a pipe or a device is written straight.
+        const QString out = QString::fromLocal8Bit(argv[3]);
+        const QFileInfo oi(out);
+        const bool stream = oi.exists()
+                            && (!oi.isFile() || oi.canonicalFilePath().startsWith(QLatin1String("/proc/"))
+                                || oi.absoluteFilePath().startsWith(QLatin1String("/dev/")));
+        bool ok = false;
+        QString why;
+        if (stream) {
+            QFile f(out);
+            ok = f.open(QIODevice::WriteOnly | QIODevice::Text) && f.write(bytes) == bytes.size() && f.flush();
+            why = f.errorString();
+        } else {
+            QSaveFile f(out);
+            f.setDirectWriteFallback(true);
+            ok = f.open(QIODevice::WriteOnly | QIODevice::Text) && f.write(bytes) == bytes.size() && f.commit();
+            why = f.errorString();
         }
-        if (f.write(bytes) != bytes.size() || !f.commit()) {
-            qWarning() << "write failed:" << f.errorString();
+        if (!ok) {
+            qWarning() << "write failed:" << why;
             return 2;
         }
         qInfo() << "exported:" << r.done << "skipped:" << r.skipped
