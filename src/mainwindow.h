@@ -178,6 +178,7 @@ private:
     int m_holdDoc = 0;
     bool docHeld() const;
     void commitEdits();
+    bool typingPending() const;
     QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
     // refreshIso runs the event loop behind its progress dialog. An edit made

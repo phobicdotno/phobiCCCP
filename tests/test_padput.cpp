@@ -1,7 +1,7 @@
-// A pad's edit ("put") of the open, linked design while a field holds a
-// typed but uncommitted number: that number is an unsaved change, so the
-// file is left alone (the pad's edit stays on the pads) and nothing asks
-// to save over it.
+// A pad's edit ("put") of the open, linked design while a number is being
+// typed: that number is an unsaved change, so the file is left alone (the
+// pad's edit stays on the pads), nothing asks to save over it, and the
+// typing is not cut short.
 //
 // Plain checks, no framework; exits 0 on success.
 #define private public
@@ -89,7 +89,7 @@ int main(int argc, char *argv[])
     spin->setFocus();
     QApplication::processEvents();
     QTest::keyClick(spin, Qt::Key_A, Qt::ControlModifier);
-    QTest::keyClicks(spin, "55");
+    QTest::keyClicks(spin, "5");
     std::fprintf(stderr, "before put: dirty %d\n", int(w.m_dirty));
 
     // Whatever asks: take its default button (Save), as Enter would.
@@ -104,6 +104,10 @@ int main(int argc, char *argv[])
     poll.start(50);
     w.onPadRequest(1, QJsonObject{{"op", "put"}, {"design", design}}, "10.0.0.9");
     poll.stop();
+    // The typing goes on undisturbed: the pad's edit did not take the focus.
+    QTest::keyClicks(spin, "5");
+    const bool typingKept = spin->hasFocus() && spin->text().startsWith(QStringLiteral("55"));
+    std::fprintf(stderr, "field after the put: '%s' focus %d\n", qPrintable(spin->text()), int(spin->hasFocus()));
     std::fprintf(stderr, "asked: %s\n", qPrintable(asked));
 
     c2d::Document onDisk;
@@ -118,8 +122,12 @@ int main(int argc, char *argv[])
     for (const QJsonValue &v : kept.value("shapes").toArray()) keptW = v.toObject().value("w").toDouble();
     std::fprintf(stderr, "file: rect width %g, height %g; pads now have width %g; window doc %s dirty %d\n",
                  width, depth, keptW, qPrintable(w.m_doc.filePath()), int(w.m_dirty));
-    const bool ok = asked.isEmpty() && keptW > 100 && width < 50 && w.m_dirty;
+    const bool ok = asked.isEmpty() && keptW > 100 && width < 50 && typingKept;
     std::printf("%s\n", ok ? "test_padput: OK, the pad edit is kept on the pads and the file left alone"
                             : "FAIL: test_padput");
+    // Done typing before the window goes (as closing it would commit first).
+    spin->clearFocus();
+    QApplication::processEvents();
+    w.m_dirty = false;
     return ok ? 0 : 1;
 }

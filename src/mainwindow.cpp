@@ -19,7 +19,6 @@
 #include "padlink.h"
 #include "sendtopaddialog.h"
 #include <QActionGroup>
-#include <QLineEdit>
 #include <QJsonDocument>
 #include <QUuid>
 #include <QRandomGenerator>
@@ -37,6 +36,7 @@
 #include <QUrl>
 
 #include <QApplication>
+#include <QAbstractSpinBox>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QJsonArray>
@@ -2282,6 +2282,20 @@ void MainWindow::commitEdits()
     }
 }
 
+bool MainWindow::typingPending() const
+{
+    QWidget *f = QApplication::focusWidget();
+    if (!f || !isAncestorOf(f))
+        return false;
+    if (f->property("typed").toBool())
+        return true;
+    auto *le = qobject_cast<QLineEdit *>(f);
+    if (!le)
+        if (auto *sb = qobject_cast<QAbstractSpinBox *>(f))
+            le = sb->findChild<QLineEdit *>();
+    return le && le->isModified();
+}
+
 bool MainWindow::confirmDiscard(const QString &what)
 {
     commitEdits();
@@ -3400,9 +3414,6 @@ void MainWindow::padMoveLinks(const QString &id, const QString &forkId)
 
 void MainWindow::padDesignChanged(const QString &id)
 {
-    // A number typed but not committed is an unsaved change too: commit it
-    // before deciding whether the open file may take the pad's version.
-    commitEdits();
     padlink::Links links(padDir());
     const QJsonObject d = padStore().get(id);
     const QString name = d.value(QStringLiteral("name")).toString();
@@ -3464,7 +3475,10 @@ void MainWindow::padDesignChanged(const QString &id)
             continue;
         }
         const bool open = !m_untitled && QFileInfo(m_doc.filePath()) == QFileInfo(path);
-        if (open && (m_dirty || m_machine->isBusy())) {
+        // A number being typed (not committed yet) is an unsaved change too.
+        // Not committed here: taking the focus away mid-number would keep
+        // half of it ("2" of "2.5").
+        if (open && (m_dirty || typingPending() || m_machine->isBusy())) {
             statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; save or finish %2 first, "
                                                     "then send it again from the pad")
                                          .arg(name, file), 10000);

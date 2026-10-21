@@ -1206,9 +1206,14 @@ MachinePanel::MachinePanel(QWidget *parent)
         // already killed the spindle.
         if (endJob) {
             log(QStringLiteral("job done: up to safe Z, then spindle off"));
-            m_grbl->startMacro({QStringLiteral("G90"),
-                                QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
-                                QStringLiteral("M5")});
+            // Once the machine stands still: the last lines are acked when
+            // planned, so the position read now is from before the program's
+            // own final retract, and a rise from it could go down.
+            whenIdle([this] {
+                m_grbl->startMacro({QStringLiteral("G90"),
+                                    QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
+                                    QStringLiteral("M5")});
+            });
         }
     });
 
@@ -2970,9 +2975,12 @@ void MachinePanel::parkForTool()
     if (needsInit() || !requireHomed(QStringLiteral("Parking for the tool change")))
         return;
     m_phase = Phase::ParkForTool;
-    // Spindle off, up, and over to where the operator can reach the collet.
+    // Spindle off, up to the top, and over to where the operator can reach
+    // the collet. The top, not safe Z: the position reported at the pause
+    // can be from before the program's last retract, and room to swap the
+    // bit is what this park is for.
     m_grbl->startMacro({QStringLiteral("M5"), QStringLiteral("G90"),
-                        QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
+                        QStringLiteral("G53 G0 Z%1").arg(-switchClearance(), 0, 'f', 3),
                         QStringLiteral("G53 G0 X%1 Y%2")
                             .arg(m_tcX->value(), 0, 'f', 3).arg(m_tcY->value(), 0, 'f', 3)});
 }

@@ -44,6 +44,9 @@ public:
     // so a design can be started without an existing file to clone from.
     static bool createBlank(const QString &path, double width, double height,
                             double thickness, QString *error = nullptr);
+    // Sets one param row in the container at path (replacing any with that key).
+    static bool writeParam(const QString &path, const QString &key, const QString &value,
+                           QString *error = nullptr);
 
 private:
     // Params and toolpath groups from memory into a blank container at path,

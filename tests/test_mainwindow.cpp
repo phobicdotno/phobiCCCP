@@ -20,6 +20,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QGraphicsItem>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
 #include <QJsonObject>
@@ -241,6 +242,27 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "typed field: end depth %g\n", depth);
         check(qAbs(depth - 12) < 1e-6, "typed field: committed before the file action");
         check(spin->hasFocus() || !w.isActiveWindow(), "typed field: focus given back");
+    }
+
+    // The Area tool on a big shape with a small notch overlapping its corner
+    // picks the shape minus the notch (added as a closed path), not the whole
+    // shape: the notch is far more than a sliver along the outline.
+    {
+        w.setMode(c2d::MainWindow::Mode::Design, false);
+        const c2d::Element t = c2d::Element::makeRectangle({1000, 1000}, 600, 400, d.defaultLayer());
+        const QRectF tb = t.painterPath.boundingRect();
+        c2d::Element n = c2d::Element::makeRectangle({0, 0}, 20, 20, d.defaultLayer());
+        const QPointF shift = tb.bottomRight() - n.painterPath.boundingRect().center();
+        n = c2d::Element::makeRectangle(QPointF(0, 0) + shift, 20, 20, d.defaultLayer());
+        d.addElement(t);
+        d.addElement(n);
+        w.m_canvas->setDocument(&d);
+        QApplication::processEvents();
+        const int before = int(d.elements().size());
+        QGraphicsItem *ti = w.m_canvas->itemFor(t.id);
+        check(ti, "area notch: the table is drawn");
+        w.m_canvas->selectAreaAt(ti->sceneBoundingRect().center(), false);
+        check(int(d.elements().size()) == before + 1, "area notch: the face is added, not the whole shape taken");
     }
 
     // A Send-to dialog sends the design it was opened for: a different one

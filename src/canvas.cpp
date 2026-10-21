@@ -574,8 +574,14 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
             return false;
         const double diff = area(vec::booleanRings({a}, {b}, vec::BoolOp::Subtract))
                             + area(vec::booleanRings({b}, {a}, vec::BoolOp::Subtract));
-        const double whole = area(vec::booleanRings({a}, {}, vec::BoolOp::Union));
-        return diff <= 0.002 * whole + 0.01;
+        // A sliver along the outline (rounding, flattening): 0.02 mm of its
+        // length. A share of the area let a notch of 0.2% of a big shape
+        // (22 x 22 mm on a 600 x 400 table) count as the whole shape.
+        double perimeter = 0;
+        for (const QPolygonF &g : a.toSubpathPolygons())
+            for (int i = 0; i + 1 < g.size(); ++i)
+                perimeter += QLineF(g.at(i), g.at(i + 1)).length();
+        return diff <= 0.02 * perimeter + 0.01;
     };
     auto keep = [&ids](const QString &id) {
         if (!ids.contains(id))
@@ -1621,8 +1627,11 @@ bool Canvas::pickOpenEnd(const QPointF &q, QPointF *end, QPointF *dir) const
             const int n = sp.nodes.size();
             const PathNode &f = sp.nodes.first(), &l = sp.nodes.last();
             // Leaving an end means carrying on the way the curve arrives there.
-            const QPointF outFirst = f.hasOut() ? f.p - f.out : f.p - sp.nodes.at(1).p;
-            const QPointF outLast = l.hasIn() ? l.p - l.in : l.p - sp.nodes.at(n - 2).p;
+            // Its own handle, else the next node's handle (an S after a
+            // line), else the chord.
+            const PathNode &f1 = sp.nodes.at(1), &l1 = sp.nodes.at(n - 2);
+            const QPointF outFirst = f.hasOut() ? f.p - f.out : f1.hasIn() ? f.p - f1.in : f.p - f1.p;
+            const QPointF outLast = l.hasIn() ? l.p - l.in : l1.hasOut() ? l.p - l1.out : l.p - l1.p;
             for (const auto &cand : {qMakePair(f.p, outFirst), qMakePair(l.p, outLast)}) {
                 const double d = QLineF(cand.first, q).length();
                 if (d <= best && std::hypot(cand.second.x(), cand.second.y()) > 1e-9) {

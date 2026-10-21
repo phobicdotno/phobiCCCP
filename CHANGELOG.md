@@ -33,6 +33,11 @@
     Clip paths inside a cloned symbol or group no longer come in as extra squares; a clone may
     refer to a symbol defined after it.
   - A rotated DXF block array (MINSERT) ran along X instead of turning with the insert.
+  - Extend, and the tangent arc's start, went along the chord off a curve whose end has no
+    handle of its own (an S after a line); they follow the curve now.
+  - The Area tool took the whole shape when a small notch overlapped it (anything under 0.2%
+    of a big shape's area); only a sliver along the outline counts as the same shape now.
+    The pad's Area tool has the same rule.
   - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
@@ -46,6 +51,8 @@
     Go to X0 Y0 and job end, as Park already avoided; every safe-Z move keeps within the travel now.
   - A "rise" to safe Z no longer moves down when the spindle already stands higher (safe Z set
     below a tall job's retract height plunged at the last X Y at the end of the job).
+    The end-of-job rise waits until the program's own last retract has run, and a tool change
+    parks at the top.
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -62,6 +69,10 @@
     lost the pad's edit; the typed number now counts as unsaved, so the file is left alone.
   - A Send window refused its own design after a pad edit reopened it by its real path.
   - A design of exactly 12 MB passed the size check and then failed as "request too long".
+  - A pad's edit of a Carbide Create file reset its retract height to 2.54 mm (and its file
+    permissions); both are kept now.
+  - A pad's edit of another design, arriving while a number was being typed, cut the number
+    short ("2" of "2.5"); the typing is left alone.
 - **Pad link:**
   - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
     identity, and the pad's id on the computer is its own id in the versions.

@@ -777,7 +777,11 @@ bool extend(PathModel &m, QPointF q, double tol, const QVector<PathModel> &other
     const bool atEnd = QLineF(q, s.nodes.last().p).length() < QLineF(q, s.nodes.first().p).length();
     const Cubic endSeg = cubicOf(s, atEnd ? n - 1 : 0);
     const QPointF P = atEnd ? endSeg.p[3] : endSeg.p[0];
+    // The tangent at the end: its own handle, else the segment's other one
+    // (an S after a line), else the chord.
     QPointF dir = atEnd ? endSeg.p[3] - endSeg.p[2] : endSeg.p[0] - endSeg.p[1];
+    if (std::hypot(dir.x(), dir.y()) < 1e-12)
+        dir = atEnd ? endSeg.p[3] - endSeg.p[1] : endSeg.p[0] - endSeg.p[2];
     if (std::hypot(dir.x(), dir.y()) < 1e-12)
         dir = atEnd ? endSeg.p[3] - endSeg.p[0] : endSeg.p[0] - endSeg.p[3];
     const double dl = std::hypot(dir.x(), dir.y());

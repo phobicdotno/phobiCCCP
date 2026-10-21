@@ -173,6 +173,23 @@ static void testPadFixture(const QString &dir)
     check(doc.toolpaths().size() == 4 && g.done.size() == 4, "and all four toolpaths export");
 }
 
+// A pad's edit rebuilds the linked file, keeping what the pad design does
+// not carry: the retract height a Carbide Create file raised (clamps).
+static void testRebuildKeepsRetract(const QString &dir)
+{
+    QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
+    f.open(QIODevice::ReadOnly);
+    const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
+    const QString path = QDir(dir).filePath("retract.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "retract fixture builds");
+    check(Document::writeParam(path, "retract", "10", &err), "retract raised to 10 mm");
+    check(padlink::rebuildDocument(d, path, &err), "a pad's edit rebuilds the file");
+    Document doc;
+    doc.load(path, &err);
+    check(doc.params().value("retract") == QLatin1String("10"), "the rebuilt file keeps its retract height");
+}
+
 // A design from a pad, saved here, goes back to the pads unchanged; once
 // something only phobiCCCP has is added, the pad copy says what it lacks.
 static void testBackToPad(const QString &dir)
@@ -876,6 +893,7 @@ int main(int argc, char **argv)
     testBuild(tmp.path(), d);
     testPadFixture(tmp.path());
     testBackToPad(tmp.path());
+    testRebuildKeepsRetract(tmp.path());
     testLinks(tmp.path());
     testStore(tmp.path(), d);
     testConflicts(tmp.path(), d);

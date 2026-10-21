@@ -231,6 +231,15 @@ bool sameRing(List<Pt> a, List<Pt> b) {
   for (var i = 0; i < 4; i++) {
     if ((ba[i] - bb[i]).abs() > 0.05) return false;
   }
+  // A sliver along the outline (rounding, flattening): 0.02 mm of its
+  // length. A share of the area let a notch of 0.2% of a big shape count as
+  // the whole shape. The same rule as the desktop's Area tool.
+  var perimeter = 0.0;
+  for (var i = 0; i < a.length; i++) {
+    final n = a[(i + 1) % a.length];
+    final dx = n.$1 - a[i].$1, dy = n.$2 - a[i].$2;
+    perimeter += math.sqrt(dx * dx + dy * dy);
+  }
   final aa = ringArea(a).abs(), ab = ringArea(b).abs();
-  return (aa - ab).abs() <= 0.002 * math.max(aa, ab) + 0.01;
+  return (aa - ab).abs() <= 0.02 * perimeter + 0.01;
 }

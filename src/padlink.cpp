@@ -364,6 +364,20 @@ bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err)
         if (err) *err = QStringLiteral("could not write %1").arg(path);
         return false;
     }
+    // What the pad design does not carry is kept from the file it replaces:
+    // the retract height (raised to clear clamps) and the file's permissions
+    // (a shared, group-writable file stays so).
+    {
+        Document before;
+        if (before.load(path)) {
+            const QString retract = before.params().value(QStringLiteral("retract"));
+            if (!retract.isEmpty() && !Document::writeParam(tmp, QStringLiteral("retract"), retract, err)) {
+                QFile::remove(tmp);
+                return false;
+            }
+        }
+        QFile::setPermissions(tmp, QFile::permissions(path));
+    }
     // The old file is moved aside, not deleted, until the new one is in.
     const QString old = path + QStringLiteral(".pad-old");
     QFile::remove(old);

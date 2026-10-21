@@ -249,6 +249,21 @@ int main(int argc, char **argv)
               nearPt(l.subs[0].nodes.last().p, {25, 0}), "line end grows to the wall");
         PathModel l2 = line({0, 0}, {10, 0});
         check(!sketch::extend(l2, {1, 0}, 2, wall), "the far end runs into nothing");
+        // An end whose own handle is on its anchor (an S after a line)
+        // carries on along the segment's other handle, not the chord.
+        {
+            PathModel c;
+            SubPath sp;
+            PathNode p0, p1;
+            p0.p = p0.in = p0.out = QPointF(0, 0);
+            p1.p = p1.out = QPointF(100, 0);
+            p1.in = QPointF(50, 50);
+            sp.nodes << p0 << p1;
+            c.subs << sp;
+            check(sketch::extend(c, {1, 0.5}, 5, {line({-10, -50}, {-10, 50})})
+                      && nearPt(c.subs[0].nodes.first().p, {-10, -10}),
+                  "an end with no handle of its own follows the curve's tangent");
+        }
         PathModel l3 = line({30, 0}, {40, 0});
         check(sketch::extend(l3, {31, 0}, 2, wall) && nearPt(l3.subs[0].nodes.first().p, {25, 0}),
               "start end grows backwards to the wall");
