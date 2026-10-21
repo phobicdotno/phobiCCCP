@@ -241,6 +241,15 @@ int main(int argc, char *argv[])
         check(spin->hasFocus() || !w.isActiveWindow(), "typed field: focus given back");
     }
 
+    // A Send-to dialog sends the design it was opened for: a different one
+    // opened under it meanwhile is refused, not sent under the old name.
+    {
+        QString err;
+        check(!w.sendCopy(w.m_doc.filePath(), &err).isEmpty(), "send copy: the same design is copied");
+        check(w.sendCopy(QStringLiteral("/elsewhere/Alpha.c2d"), &err).isEmpty() && !err.isEmpty(),
+              "send copy: another design is refused");
+    }
+
     // The window stays open while an update step's process runs.
     {
         w.m_updateStep = std::make_shared<bool>(true);

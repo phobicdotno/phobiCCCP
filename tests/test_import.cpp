@@ -428,6 +428,24 @@ int main(int argc, char **argv)
             check(std::abs(u.bounds.width() - 80.0) < 0.1 && std::abs(u.bounds.height() - 80.0) < 0.1,
                   "svg: placed at its x,y inside its transform");
         }
+        {
+            // A <use> of a group leaves out its hidden children; a <use> of a
+            // <symbol viewBox> fits it into the use's width x height.
+            const c2d::ImportResult h = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><g id='a'><rect width='10' height='10'/>"
+                "<rect y='50' width='10' height='10' style='display:none'/></g></defs>"
+                "<use href='#a' x='50'/></svg>", opts(0, 0), QStringLiteral("usehidden"));
+            check(h.ok && h.elements.size() == 1 && std::abs(h.bounds.height() - 10.0) < 0.1,
+                  "svg: a <use> leaves out hidden children");
+            const c2d::ImportResult y = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><symbol id='i' viewBox='0 0 10 10'><rect width='10' height='10'/></symbol></defs>"
+                "<use href='#i' x='20' y='20' width='50' height='50'/></svg>", opts(0, 0), QStringLiteral("usesym"));
+            check(y.ok && y.elements.size() == 1 && std::abs(y.bounds.width() - 50.0) < 0.1
+                      && std::abs(y.bounds.height() - 50.0) < 0.1,
+                  "svg: a symbol's viewBox fits the use's size");
+        }
         // Extrusion 0,0,-1 mirrors OCS entities only: a LINE is stored in
         // world coordinates and must stay at +X.
         {
@@ -748,6 +766,15 @@ int main(int argc, char **argv)
         const c2d::ImportResult in = c2d::importHpglData(
             QByteArray("IN;DT@;LBa@;IN;LBNext\x03;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "in3.plt");
         check(in.ok && in.elements.size() == 1, "HPGL IN: the label terminator is back to ETX");
+        // Plotter-on (ESC.( / ESC.Y) takes no parameters and has no ':'.
+        const c2d::ImportResult on = c2d::importHpglData(
+            QByteArray("\x1b.(IN;SP1;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "on.plt");
+        check(on.ok && std::abs(on.bounds.width() - 100.0) < 0.1 && std::abs(on.bounds.height() - 100.0) < 0.1,
+              "HPGL ESC.(: plotter-on is one letter");
+        const c2d::ImportResult on2 = c2d::importHpglData(
+            QByteArray("\x1b.Y;IN;PU0,0;PD4000,0,4000,4000;PU;LBTime: 12\x03;PU8000,0;PD12000,0;PU;"
+                       "\x1b.I81;;17:PU0,8000;PD400,8000;PU;"), opts(0, 0), "on2.plt");
+        check(on2.ok && on2.elements.size() == 3, "HPGL ESC.Y: nothing after it is dropped; ESC.I to ':'");
     }
 
     std::printf("test_import: %d checks OK\n", g_checks);

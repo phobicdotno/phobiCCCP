@@ -2271,6 +2271,10 @@ void MainWindow::commitEdits()
     const QPointer<QWidget> f = QApplication::focusWidget();
     if (f && isAncestorOf(f)) {
         f->clearFocus();
+        // Other queued calls run here too: a pad's request is refused as busy
+        // rather than opening a design under the save or export that called this.
+        ++m_holdDoc;
+        const auto hold = qScopeGuard([this] { --m_holdDoc; });
         for (int i = 0; i < 3; ++i)
             QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
         if (f)
@@ -2796,8 +2800,19 @@ bool buildPadFile(const QJsonObject &d, const QString &path, QString *err)
 
 } // namespace
 
-QString MainWindow::sendCopy(QString *err)
+bool MainWindow::sameDesign(const QString &opened, QString *err) const
 {
+    if (m_doc.filePath() == opened)
+        return true;
+    if (err)
+        *err = QStringLiteral("a different design was opened here; close this and send again");
+    return false;
+}
+
+QString MainWindow::sendCopy(const QString &opened, QString *err)
+{
+    if (!sameDesign(opened, err))
+        return {};
     // A copy as the design is now, saved or not; the user's file is untouched.
     const QString name = m_untitled || m_doc.filePath().isEmpty()
                              ? QStringLiteral("Untitled")
@@ -2817,10 +2832,14 @@ QString MainWindow::sendCopy(QString *err)
 
 void MainWindow::onSendTo()
 {
+    commitEdits();
     const QString name = m_untitled || m_doc.filePath().isEmpty()
                              ? QStringLiteral("Untitled")
                              : QFileInfo(m_doc.filePath()).completeBaseName();
-    SendToDialog dlg(name, instanceId(), [this](QString *err) { return sendCopy(err); }, this);
+    // The dialog stays open while another computer or a pad may open a design
+    // here; its name is fixed, so a different design is refused, not sent as this one.
+    const QString opened = m_doc.filePath();
+    SendToDialog dlg(name, instanceId(), [this, opened](QString *err) { return sendCopy(opened, err); }, this);
     dlg.exec();
 }
 
@@ -3292,6 +3311,7 @@ QString MainWindow::padShareSaved(const QString &c2dPath, bool startLink, QStrin
 
 void MainWindow::onSendToPad()
 {
+    commitEdits();
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Nothing to send"),
                                  QStringLiteral("Open or make a design first."));
@@ -3312,11 +3332,14 @@ void MainWindow::onSendToPad()
     }
     SendToPadDialog::Hooks hooks;
     hooks.pads = [this] { return m_pads.recent(QDateTime::currentMSecsSinceEpoch()); };
-    hooks.send = [this](const QString &padId, QString *note, QString *error) {
+    const QString opened = m_doc.filePath();
+    hooks.send = [this, opened](const QString &padId, QString *note, QString *error) {
+        if (!sameDesign(opened, error))
+            return qint64(0);
         return sendToPad(padId, note, error);
     };
     hooks.waiting = [this](const QString &padId, qint64 seq) { return m_pads.waiting(padId, seq); };
-    hooks.makeCopy = [this](QString *err) { return sendCopy(err); };
+    hooks.makeCopy = [this, opened](QString *err) { return sendCopy(opened, err); };
     hooks.ownId = instanceId();
     SendToPadDialog dlg(QFileInfo(m_doc.filePath()).completeBaseName(), m_receiver != nullptr, hooks, this);
     dlg.exec();

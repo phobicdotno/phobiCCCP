@@ -1839,6 +1839,38 @@ int main(int argc, char *argv[])
             check(g.done.size() == 1 && plunges == 0, "circular boss: no plunge into the stock");
             check(approx(rOut, 12 + R + 5, 1e-6), "circular boss: the helix stays on the outermost lap");
         }
+        // Bosses side by side: the laps round one stop short of the other,
+        // and one the tool cannot pass beside is skipped with a note.
+        {
+            const double gap = 2 * R + 3;
+            Rig r;
+            const c2d::Element a = c2d::Element::makeCircle({40, 40}, 12, layer),
+                               b = c2d::Element::makeCircle({40 + 24 + gap, 40}, 12, layer);
+            r.addShape(a);
+            r.addShape(b);
+            r.addToolpath("circular_toolpath", {{"end_depth", "3.000"}, {"stepdown", 1.5},
+                                                {"side", "outside"}, {"stepover", 2.5},
+                                                {"elements", QJsonArray{QJsonObject{{"uuid", a.id}},
+                                                                        QJsonObject{{"uuid", b.id}}}}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            double nearest = 1e9;
+            for (const c2d::Op &op : g.ops)
+                if ((op.kind == c2d::Op::Arc || op.kind == c2d::Op::Feed) && op.z < -1e-9)
+                    nearest = std::min({nearest, std::hypot(op.x - 40, op.y - 40),
+                                        std::hypot(op.x - 40 - 24 - gap, op.y - 40)});
+            check(g.done.size() == 1 && nearest >= 12 + R - 1e-6, "circular bosses: no lap cuts the other boss");
+            Rig t;
+            const c2d::Element c = c2d::Element::makeCircle({40, 40}, 12, layer),
+                               e = c2d::Element::makeCircle({40 + 24 + R, 40}, 12, layer);
+            t.addShape(c);
+            t.addShape(e);
+            t.addToolpath("circular_toolpath", {{"end_depth", "3.000"}, {"side", "outside"},
+                                                {"elements", QJsonArray{QJsonObject{{"uuid", c.id}},
+                                                                        QJsonObject{{"uuid", e.id}}}}});
+            const c2d::GcodeResult gt = c2d::exportGcode(t.doc);
+            check(!gt.skipped.isEmpty() && gt.skipped.first().contains("too close"),
+                  "circular bosses: closer than the tool is reported");
+        }
         Rig small;
         small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
         small.addToolpath("circular_toolpath", {});

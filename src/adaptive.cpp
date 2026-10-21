@@ -643,6 +643,13 @@ Plan plan(const QVector<QPolygonF> &rings, const Params &p, const std::function<
                 stalled = 0;
             }
         }
+        // A lap round where the tool centre may go, cutting only what is
+        // still there: a channel barely wider than the tool, or an acute
+        // corner, is a sliver the growing front's area test stops before.
+        const Candidate fin = runsOf(orientedRings(part, p.climb), cl, r, step);
+        for (const QPolygonF &run : fin.runs)
+            if (!run.isEmpty() && !plannedBefore(run))
+                addCut(run);
     }
     return out;
 }

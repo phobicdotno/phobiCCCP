@@ -2865,12 +2865,31 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 em.arcTo(s1, z, ctr, !ccw);
                 em.arcTo(s0, z, ctr, !ccw);
             };
+            // Round a boss, the laps stop short of the other selected bosses
+            // (their wall plus the tool radius and stock to leave); one the
+            // tool cannot pass between its neighbours and itself is skipped.
+            auto roomOut = [&](const QPointF &ctr) {
+                double room = std::numeric_limits<double>::max();
+                for (const Job &o : holes) {
+                    const QPointF oc = o.rings.first().at(0);
+                    if (oc == ctr)
+                        continue;
+                    room = qMin(room, QLineF(ctr, oc).length() - o.rings.first().at(1).x() - toolR - leave);
+                }
+                return room;
+            };
+            int crowded = 0;
             for (const Job &h : orderJobs(holes, lastPos)) {
                 const QPointF ctr = h.rings.first().at(0);
                 const double R = h.rings.first().at(1).x();
                 QVector<double> radii;   // in cutting order
                 if (outside) {
-                    const double rb = R + toolR + leave, ro = rb + clearance;
+                    const double rb = R + toolR + leave, room = roomOut(ctr);
+                    if (rb > room + 1e-9) {
+                        ++crowded;
+                        continue;
+                    }
+                    const double ro = qMin(rb + clearance, room);
                     const int n = qMax(0, int(std::ceil((ro - rb) / stepover - 1e-9)));
                     for (int k = 0; k <= n; ++k)
                         radii << (n == 0 ? rb : ro - (ro - rb) * k / n);
@@ -2912,6 +2931,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 em.retract();
                 lastPos = home;
             }
+            if (crowded)
+                res.skipped << QStringLiteral("%1 (%2 boss(es) too close to another for the tool)").arg(name).arg(crowded);
         } else if (adaptive) {
             // ADAPTIVE (phobiCCCP type, Fusion's 2D Adaptive): the closed
             // vectors cleared without the cutter ever taking much more than

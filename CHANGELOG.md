@@ -13,13 +13,21 @@
   - Site order ran a toolpath out of list order before one it depends on: a straight
     horizontal or vertical line (a dado, a groove) before a cutout or pocket at the same
     place, or a rest-depth groove along the seam of two earlier pockets between them.
+  - Circular round several bosses cut into the neighbouring bosses when they stood closer
+    than the clearance; the laps stop short of them, and a boss the tool cannot pass beside
+    is skipped with a note.
+  - Adaptive left most of a channel only a little wider than the tool uncut, without a
+    note; each part now ends with a lap round where the tool can reach.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
   - HPGL import read text as commands (the "Pr" of "Project" switched to relative moves);
     labels, display texts, quoted comments and names, and encoded polylines are skipped.
     HPGL inside a printer-driver wrapper (PCL/PJL) keeps its first command too.
+    A file starting with a plotter-on code (ESC.( or ESC.Y) keeps its drawing.
   - Text in PDF, AI and EPS files (and SVG clones) was dropped on import; it comes in now.
+    A clone of a group leaves out the group's hidden parts, and a clone of an icon symbol
+    takes the size it is given.
   - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
@@ -29,6 +37,8 @@
     reset mid-cut; it is refused now.
   - An end stop or controller reset during BitZero's last move left its final step waiting,
     and it ran by itself (zeroing and probing) after the next Initialize.
+  - A safe Z typed above the Z switch (0, -1) tripped the limit switch at every tool change,
+    Go to X0 Y0 and job end, as Park already avoided; every safe-Z move keeps within the travel now.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
@@ -36,6 +46,10 @@
     dialog or an export (Export G-code wrote the old design's program under the new name);
     the sender is told to try again shortly. An open Send to pad window does not count, so
     a design sent back from the pad still opens.
+  - A number typed in a field without Enter is kept by Save, Export G-code, the setup sheet,
+    Send to pad, New and closing the window.
+  - A Send window left open while another design is opened refuses to send that one under the
+    first one's name.
 - **Pad link:**
   - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
     identity, and the pad's id on the computer is its own id in the versions.

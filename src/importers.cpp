@@ -851,10 +851,36 @@ QString svgHref(const QXmlStreamAttributes &at)
 // pdftocairo) draw every glyph of their text as a <use> of one defined once,
 // and Inkscape's clones are <use> too. A <use> inside counts as what it
 // refers to, when that was defined before it.
-QHash<QString, QPainterPath> svgDefinitions(const QByteArray &data)
+struct SvgDef {
+    QPainterPath path;
+    QRectF viewBox;   // a <symbol>'s, fitted into the <use>'s width x height
+    QString aspect;
+};
+
+// Where a <use> draws what it refers to: a symbol's viewBox fitted into the
+// use's width x height (100% of the viewport when absent), then at x,y.
+QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, double vpW, double vpH)
 {
-    QHash<QString, QPainterPath> defs;
-    struct Frame { QString id; QTransform own; QPainterPath path; };
+    double x = 0, y = 0;
+    svgUserLength(at.value(QLatin1String("x")), vpW, &x);
+    svgUserLength(at.value(QLatin1String("y")), vpH, &y);
+    QTransform vb;
+    if (def.viewBox.isValid()) {
+        double w = vpW > 0 ? vpW : def.viewBox.width(), h = vpH > 0 ? vpH : def.viewBox.height();
+        svgUserLength(at.value(QLatin1String("width")), vpW, &w);
+        svgUserLength(at.value(QLatin1String("height")), vpH, &h);
+        if (w > 0 && h > 0)
+            vb = svgViewBoxTransform(def.viewBox.x(), def.viewBox.y(), def.viewBox.width(),
+                                     def.viewBox.height(), w, h, def.aspect);
+    }
+    return (vb * QTransform::fromTranslate(x, y)).map(def.path);
+}
+
+QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString> &hiddenClasses)
+{
+    QHash<QString, SvgDef> defs;
+    struct Frame { QString id; QTransform own; QPainterPath path; bool hidden = false;
+                   QRectF viewBox; QString aspect; };
     QVector<Frame> stack;
     QXmlStreamReader xml(data);
     while (!xml.atEnd()) {
@@ -862,11 +888,21 @@ QHash<QString, QPainterPath> svgDefinitions(const QByteArray &data)
         if (tok == QXmlStreamReader::StartElement) {
             const QXmlStreamAttributes at = xml.attributes();
             Frame f{at.value(QLatin1String("id")).toString(),
-                    parseSvgTransform(at.value(QLatin1String("transform")).toString()), {}};
+                    parseSvgTransform(at.value(QLatin1String("transform")).toString()), {},
+                    svgHidden(at, hiddenClasses), {}, {}};
             if (xml.name() == QLatin1String("use")) {
-                const QPainterPath ref = defs.value(svgHref(at));
-                f.path = QTransform::fromTranslate(at.value(QLatin1String("x")).toDouble(),
-                                                   at.value(QLatin1String("y")).toDouble()).map(ref);
+                const auto ref = defs.constFind(svgHref(at));
+                if (ref != defs.constEnd())
+                    f.path = svgPlaceUse(*ref, at, 0, 0);
+            } else if (xml.name() == QLatin1String("symbol")) {
+                Scanner sc{at.value(QLatin1String("viewBox"))};
+                double a[4];
+                bool vb = true;
+                for (double &v : a) vb = vb && sc.number(&v);
+                if (vb && a[2] > 0 && a[3] > 0) {
+                    f.viewBox = QRectF(a[0], a[1], a[2], a[3]);
+                    f.aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
+                }
             } else if (xml.name() != QLatin1String("svg")) {
                 bool known = false, bad = false;
                 f.path = svgShape(xml.name(), at, &known, &bad, 0, 0);
@@ -874,9 +910,11 @@ QHash<QString, QPainterPath> svgDefinitions(const QByteArray &data)
             stack.append(f);
         } else if (tok == QXmlStreamReader::EndElement && !stack.isEmpty()) {
             const Frame f = stack.takeLast();
+            if (f.hidden)
+                continue;   // display:none draws nothing, through a <use> either
             const QPainterPath mapped = f.own.map(f.path);
             if (!f.id.isEmpty() && !mapped.isEmpty())
-                defs.insert(f.id, mapped);
+                defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
             if (!stack.isEmpty() && !mapped.isEmpty())
                 stack.last().path.addPath(mapped);
             if (defs.size() > 100000)
@@ -916,7 +954,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     static const QStringList reportedSkips = {
         QStringLiteral("text"), QStringLiteral("image"),
         QStringLiteral("linearGradient"), QStringLiteral("radialGradient")};
-    QHash<QString, QPainterPath> defs;   // made on the first <use>
+    QHash<QString, SvgDef> defs;   // made on the first <use>
     bool defsMade = false;
 
     while (!xml.atEnd()) {
@@ -1007,7 +1045,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                     user.addPath(ctx.xf.map(local));
             } else if (name == QLatin1String("use")) {
                 if (!defsMade) {
-                    defs = svgDefinitions(data);
+                    defs = svgDefinitions(data, hiddenClasses);
                     defsMade = true;
                 }
                 // Placed at x,y inside its own transform.
@@ -1015,10 +1053,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 if (ref == defs.constEnd()) {
                     addSkipped(res, skippedCounts, name);
                 } else {
-                    double x = 0, y = 0;
-                    svgUserLength(at.value(QLatin1String("x")), ctx.vpW, &x);
-                    svgUserLength(at.value(QLatin1String("y")), ctx.vpH, &y);
-                    user.addPath((QTransform::fromTranslate(x, y) * ctx.xf).map(*ref));
+                    user.addPath(ctx.xf.map(svgPlaceUse(*ref, at, ctx.vpW, ctx.vpH)));
                 }
             } else if (name == QLatin1String("g") || name == QLatin1String("svg")
                        || name == QLatin1String("a") || name == QLatin1String("switch")) {
@@ -1702,6 +1737,12 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
                              || text.at(at) == QLatin1Char('*') || text.at(at) == QLatin1Char('(')
                              || text.at(at) == QLatin1Char(')'))) {
                 ++at;
+                // ESC.@ .H .I .M .N .P .S .T take parameters up to ':'; the
+                // other device controls (ESC.( .Y .) .Z .B ...) are one letter.
+                if (dot && at < len && !QStringLiteral("@HIMNPST").contains(text.at(at))) {
+                    ++at;
+                    continue;
+                }
                 while (at < len) {
                     const QChar c = text.at(at++);
                     if (dot ? c == QLatin1Char(':') : (c >= QLatin1Char('A') && c <= QLatin1Char('Z')) || c == QLatin1Char('@'))

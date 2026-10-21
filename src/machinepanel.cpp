@@ -1207,7 +1207,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         if (endJob) {
             log(QStringLiteral("job done: up to Z top, then spindle off"));
             m_grbl->startMacro({QStringLiteral("G90"),
-                                QStringLiteral("G53 G0 Z%1").arg(m_bsSafeZ->value(), 0, 'f', 3),
+                                QStringLiteral("G53 G0 Z%1").arg(safeZ(), 0, 'f', 3),
                                 QStringLiteral("M5")});
         }
     });
@@ -2388,7 +2388,7 @@ BitSetterConfig MachinePanel::bitSetter() const
     c.enabled = m_bsEnabled->isChecked();
     c.x = m_bsX->value();
     c.y = m_bsY->value();
-    c.safeZ = m_bsSafeZ->value();
+    c.safeZ = safeZ();
     c.fastFeed = m_bsFast->value();
     c.slowFeed = m_bsSlow->value();
     return c;
@@ -2776,11 +2776,21 @@ void MachinePanel::park()
     const double tz = m_grbl->setting(132, 75.0);
     const double clear = switchClearance();
     const double x = -qMin(qMax(kMargin, clear), tx / 2), y = -qMax(clear, ty - kMargin);
-    const double z = qBound(-(tz - kMargin), m_bsSafeZ->value(), -clear);
+    const double z = safeZ();
     log(QStringLiteral("parking front right (X%1 Y%2, machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
     m_grbl->startMacro({QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
                         QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
+}
+
+double MachinePanel::safeZ() const
+{
+    // The box allows 0 down to -1000: above the switch clearance a move trips
+    // the Z limit switch (hard limits are on), below the travel it drives into
+    // the stock or the bottom stop. Every safe-Z move uses this bound.
+    constexpr double kMargin = 5.0;
+    const double tz = m_grbl->setting(132, 75.0);
+    return qBound(-(tz - kMargin), m_bsSafeZ->value(), -switchClearance());
 }
 
 void MachinePanel::whenIdle(std::function<void()> fn)
@@ -2892,7 +2902,7 @@ void MachinePanel::goToXY0()
         return;
     m_phase = Phase::GoToZero;
     m_grbl->startMacro({QStringLiteral("G90"),
-                        QStringLiteral("G53 G0 Z%1").arg(m_bsSafeZ->value(), 0, 'f', 3),
+                        QStringLiteral("G53 G0 Z%1").arg(safeZ(), 0, 'f', 3),
                         QStringLiteral("G0 X0 Y0")});
 }
 
@@ -2949,7 +2959,7 @@ void MachinePanel::parkForTool()
     m_phase = Phase::ParkForTool;
     // Spindle off, up, and over to where the operator can reach the collet.
     m_grbl->startMacro({QStringLiteral("M5"), QStringLiteral("G90"),
-                        QStringLiteral("G53 G0 Z%1").arg(m_bsSafeZ->value(), 0, 'f', 3),
+                        QStringLiteral("G53 G0 Z%1").arg(safeZ(), 0, 'f', 3),
                         QStringLiteral("G53 G0 X%1 Y%2")
                             .arg(m_tcX->value(), 0, 'f', 3).arg(m_tcY->value(), 0, 'f', 3)});
 }
@@ -3177,7 +3187,7 @@ void MachinePanel::rehearseToolChange()
         "  3. measure it on the BitSetter (machine X%4 Y%5) and apply the offset\n"
         "  4. return to safe Z\n\n"
         "The spindle never starts and nothing is cut.")
-        .arg(m_bsSafeZ->value(), 0, 'f', 1)
+        .arg(safeZ(), 0, 'f', 1)
         .arg(m_tcX->value(), 0, 'f', 1).arg(m_tcY->value(), 0, 'f', 1)
         .arg(m_bsX->value(), 0, 'f', 1).arg(m_bsY->value(), 0, 'f', 1);
     ask.note = QStringLiteral("Keep a hand near the e-stop the first time.");

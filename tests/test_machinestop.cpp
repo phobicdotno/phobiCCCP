@@ -541,6 +541,28 @@ int main(int argc, char **argv)
         check(grbl.count("ALARM3") == 0, "cancelresume: no reset while moving");
     }
 
+    if (mode == "safez") {
+        // Safe Z typed as 0 (the box allows 0..-1000): every safe-Z move
+        // keeps out of the Z switch's trigger zone, not only Park.
+        panel.m_bsSafeZ->setValue(0.0);
+        grbl.events.clear();
+        panel.park();
+        wait(600);
+        panel.parkForTool();
+        wait(600);
+        panel.goToXY0();
+        wait(600);
+        int moves = 0;
+        for (const QByteArray &e : grbl.events)
+            if (e.startsWith("G53 G0 Z")) {
+                ++moves;
+                const double z = e.mid(8).toDouble();
+                std::printf("sent: %s\n", e.constData());
+                check(z <= -panel.switchClearance() + 1e-9, "safez: below the switch clearance");
+            }
+        check(moves == 3, "safez: park, tool park and X0 Y0 each rise");
+    }
+
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();

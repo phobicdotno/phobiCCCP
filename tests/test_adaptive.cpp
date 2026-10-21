@@ -391,6 +391,24 @@ int main(int argc, char **argv)
         check(pl.moves.size() < 2000, "the plan stays its real size");
     }
 
+    // ---- a channel barely wider than the tool off a pocket: cut to its end
+    {
+        const double r = 3.175, w = 6.40;
+        adaptive::Params p;
+        p.toolR = r;
+        p.stepover = 0.635;
+        const QPolygonF ring({{0, 0}, {30, 0}, {30, 15 - w / 2}, {50, 15 - w / 2}, {50, 15 + w / 2},
+                              {30, 15 + w / 2}, {30, 30}, {0, 30}, {0, 0}});
+        const adaptive::Plan plan = adaptive::plan({ring}, p);
+        double reach = 0;
+        for (const adaptive::Move &m : plan.moves)
+            if (m.kind == adaptive::Move::Cut)
+                for (const QPointF &q : m.path)
+                    reach = std::max(reach, q.x());
+        std::fprintf(stderr, "channel: tool centre reaches x = %.3f\n", reach);
+        check(reach > 50 - r - 0.05, "a channel just wider than the tool is cut to its end");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }
