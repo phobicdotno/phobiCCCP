@@ -556,7 +556,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         ops.append(Op::comment(QStringLiteral("tile %1/%2").arg(k + 1).arg(tiles.size())));
         ops.append(tiles.at(k));
         const QString gcode = GrblPost(true).generate(ops);
-        const QString path = QStringLiteral("%1_tile%2.nc").arg(outBase).arg(k + 1);
+        const QString path = QStringLiteral("%1_tile%2.nc").arg(outBase, QString::number(k + 1));
         staged.push_back(std::make_unique<QSaveFile>(path));
         QSaveFile &f = *staged.back();
         f.setDirectWriteFallback(true);
@@ -594,7 +594,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
     // deleting anything: they are the user's files, and the overwrite prompt
     // they answered was for <base>.nc, which is never written.
     for (int k = tiles.size(); ; ++k) {
-        const QString stale = QStringLiteral("%1_tile%2.nc").arg(outBase).arg(k + 1);
+        const QString stale = QStringLiteral("%1_tile%2.nc").arg(outBase, QString::number(k + 1));
         if (!QFile::exists(stale))
             break;
         r.stale << stale;

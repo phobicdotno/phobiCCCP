@@ -129,6 +129,8 @@
     in place of the previous one; the old file stays until the new one is complete, for tiled
     and command-line exports too (--export to /dev/stdout or a pipe still writes straight).
     A read-only program stays read-only when exported over.
+  - A tiled export whose name or folder held "%2" (a browser-saved "Sign%2C v2") wrote the
+    tiles under a mangled name, or failed; the name is kept.
   - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
     it unsaved; it saves (and stays read-only, also when run as root).
 - **Pad link:**

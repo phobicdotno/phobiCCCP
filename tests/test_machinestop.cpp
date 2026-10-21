@@ -103,6 +103,7 @@ struct FakeGrbl {
     bool hangDwell = false;
     bool ackJogs = true;
     bool holdAcks = false;
+    bool homeOkLate = false, pendingHomeOk = false;
     int heldOks = 0;
     QByteArray reject;
     QByteArray alarmOn;
@@ -144,6 +145,7 @@ struct FakeGrbl {
                                   && (homeClock.elapsed() < 300 || homeReports > 0);
                 if (home && homeReports > 0)
                     --homeReports;
+                if (pendingHomeOk && !home) { pendingHomeOk = false; send("ok\r\n<Idle|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz) + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n"); continue; }
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : running ? "Run" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
                      + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:0.000,0.000,0.000>\r\n");
@@ -192,6 +194,7 @@ struct FakeGrbl {
                     homeClock.start();
                     homeReports = 2;
                     alarm = false;
+                    if (homeOkLate) { pendingHomeOk = true; line.clear(); continue; }
                 } else if (line == "$X")
                     alarm = false;
                 else if (alarm && !line.isEmpty() && line[0] != '$')
@@ -1031,6 +1034,18 @@ int main(int argc, char **argv)
             logText += t->toPlainText();
         check(!logText.contains("error:9") && logText.contains("stands still"),
               "refused with the reason while a jog tap still moves");
+    }
+    if (mode == "homepark" || mode == "homepark0") {
+        if (mode == "homepark") s->applyToolLengthOffset(1.5);
+        wait(600);
+        grbl.homeOkLate = true;
+        grbl.events.clear();
+        panel.initializeMachine();
+        wait(3000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+            std::printf("LOG:\n%s\n", qPrintable(t->toPlainText().right(800)));
+        check(grbl.count("G53 G0 X") == 1, "park after homing goes out (TLO re-sent after $H)");
     }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);

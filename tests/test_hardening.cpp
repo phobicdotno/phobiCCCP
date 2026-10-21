@@ -908,6 +908,18 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A base name with "%2" in it (a browser-saved "Sign%2C v2") kept it.
+    {
+        QTemporaryDir d;
+        Rig r;
+        r.addShape(c2d::Element::makePath({{60, 0}, {60, 100}}, false, layer));
+        r.addToolpath("contour", {{"ofset_dir", 0}});
+        const QString base = d.filePath(QStringLiteral("Sign%2C v2"));
+        const c2d::TiledExport te = c2d::exportTiled(r.doc, base, 25.0);
+        check(te.error.isEmpty() && !te.files.isEmpty() && QFile::exists(base + QStringLiteral("_tile1.nc")),
+              "tiling: a base name with %2 in it is kept");
+    }
+
     // A pocket at a stepover past the tool radius left a rib along its middle
     // (the last ring a stepover short of the centre line, the tool reaching
     // only its radius); every width gets its middle cut now.

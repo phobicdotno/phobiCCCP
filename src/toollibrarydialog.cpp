@@ -330,7 +330,7 @@ void ToolLibraryDialog::rebuildCollections(const QString &show)
         m_collection->clear();
         m_collection->addItem(QStringLiteral("All bits"), QString());
         for (const ToolCollection &c : m_collections.all())
-            m_collection->addItem(QStringLiteral("%1 (%2)").arg(c.name).arg(c.tools.size()),
+            m_collection->addItem(QStringLiteral("%1 (%2)").arg(c.name, QString::number(c.tools.size())),
                                   c.name);
         const int i = m_collection->findData(show);
         m_collection->setCurrentIndex(i >= 0 ? i : 0);

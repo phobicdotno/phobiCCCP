@@ -327,6 +327,9 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         tp.json = j;
         doc.addToolpath(tp);
     }
+    // Lead-in, rest and helix follow each toolpath's own bit (sizeToTool);
+    // files without this mark were built before that.
+    doc.setParam(QStringLiteral("pad_sizing"), QStringLiteral("bit"));
     if (!doc.save(c2dPath, &err))
         return fail(err);
     return true;
@@ -392,7 +395,8 @@ bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err, co
                 }
             }
         }
-        QFile::setPermissions(tmp, QFile::permissions(source));
+        QFile::setPermissions(tmp, QFile::permissions(source)
+                                       & ~(QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser));
     }
     if (!QFileInfo::exists(path)) {
         if (QFile::rename(tmp, path))
@@ -566,18 +570,22 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
     d.insert(QStringLiteral("shapes"), shapes);
 
     QJsonArray toolpaths;
-    // Files built before sizeToTool() sized the lead-in, rest and helix from
-    // #201 or an earlier toolpath's bit: those sizes are what the pad built,
-    // not settings made here.
-    QList<double> oldSizes;
+    // Files built before sizeToTool() (no pad_sizing mark) sized the
+    // lead-in, rest and helix from the previous toolpath's flat bit, else
+    // #201: that size is what the pad built, not a setting made here. Only
+    // that one size, and only in those files: any other is a desktop edit.
+    const bool oldSizing = doc.params().value(QStringLiteral("pad_sizing")) != QLatin1String("bit");
+    double prevFlat = 0;
     if (const LibraryTool *t201 = lib.byNumber(201))
-        oldSizes << t201->diameter;
+        prevFlat = t201->diameter;
     for (const Toolpath &t : doc.toolpaths()) {
         const QString type = t.json.value(QStringLiteral("type")).toString();
-        const double thisDia = t.json.value(QStringLiteral("tool")).toObject().value(QStringLiteral("diameter")).toDouble();
-        const QList<double> earlierSizes = oldSizes;
-        if (thisDia > 0)
-            oldSizes << thisDia;
+        const QJsonObject thisTool = t.json.value(QStringLiteral("tool")).toObject();
+        const double oldSize = prevFlat;
+        const int ccType = int(thisTool.value(QStringLiteral("type")).toDouble(0));
+        if (thisTool.value(QStringLiteral("diameter")).toDouble() > 0 && ccType != 1 && ccType != 2
+            && thisTool.value(QStringLiteral("angle")).toDouble(0) <= 0)
+            prevFlat = thisTool.value(QStringLiteral("diameter")).toDouble();
         const QString kind = type == QLatin1String("contour")           ? QStringLiteral("profile")
                            : type == QLatin1String("pocket_toolpath")   ? QStringLiteral("pocket")
                            : type == QLatin1String("drilling_toolpath") ? QStringLiteral("drill")
@@ -628,11 +636,10 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         j.insert(QStringLiteral("enabled"), t.json.value(QStringLiteral("enabled")).toBool(true));
         QJsonObject have = t.json;
         auto oldBuild = [&](const QString &k, double scale) {
-            if (!have.contains(k) || !j.contains(k))
+            if (!oldSizing || !have.contains(k) || !j.contains(k) || oldSize <= 0)
                 return;
-            for (double d : earlierSizes)
-                if (std::abs(have.value(k).toDouble() - d * scale) < 1e-6)
-                    j.insert(k, have.value(k));
+            if (std::abs(have.value(k).toDouble() - oldSize * scale) < 1e-6)
+                j.insert(k, have.value(k));
         };
         oldBuild(QStringLiteral("lead_radius"), 0.5);
         oldBuild(QStringLiteral("rest_diameter"), 1.0);

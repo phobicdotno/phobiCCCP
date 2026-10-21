@@ -2635,7 +2635,7 @@ void MachinePanel::onStatus(const MachineStatus &st)
     if (m_parkAfterHome && st.state == QLatin1String("Idle")
         && (m_sawHoming || m_lastState.startsWith(QLatin1String("Home")))) {
         m_parkAfterHome = false;
-        park();
+        park(true);
     }
     if (alarm)
         m_parkAfterHome = false;
@@ -2801,7 +2801,7 @@ void MachinePanel::initializeMachine()
 // BACK on this Shapeoko, so front right is X just off its switch and Y the full
 // cutting height of the machine picked in Settings forward, less a margin so
 // the front end stop is never touched.
-void MachinePanel::park()
+void MachinePanel::park(bool afterHoming)
 {
     if (jobWindingDown(QStringLiteral("Park")))
         return;
@@ -2813,7 +2813,9 @@ void MachinePanel::park()
         return;
     if (!requireHomed(QStringLiteral("Park")))
         return;
-    if (movingStill(QStringLiteral("Park")))
+    // After homing nothing jogged: the tool offset re-sent on the $H answer
+    // may still be pending, and the park simply queues behind it.
+    if (!afterHoming && movingStill(QStringLiteral("Park")))
         return;
     QSettings st;
     const auto machine = appsettings::machine(st);

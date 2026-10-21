@@ -1810,8 +1810,8 @@ void MainWindow::onExportGcode()
         return;
     }
     QString msg = QStringLiteral("Exported %1 toolpath(s) to %2   [%3]")
-                      .arg(r.done.size()).arg(path)
-                      .arg(statsSummary(computeStats(r.ops))
+                      .arg(QString::number(r.done.size()), path,
+                           statsSummary(computeStats(r.ops))
                                .replace(QChar('\n'), QStringLiteral("  ·  ")));
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
@@ -3617,7 +3617,7 @@ void MainWindow::rebuildMachineMenu()
                 // Labels unique, so the pick maps back to one machine.
                 QString label = p.name;
                 for (int n = 2; names.contains(label); ++n)
-                    label = QStringLiteral("%1 (%2)").arg(p.name).arg(n);
+                    label = QStringLiteral("%1 (%2)").arg(p.name, QString::number(n));
                 names << label;
                 ids << p.id;
             }

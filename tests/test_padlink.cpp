@@ -895,11 +895,10 @@ static void testOtherBitRoundTrip(const QString &dir)
         for (double lead : {201.0, 7.0}) {
             Document doc;
             doc.load(path, &err);
+            doc.setParam("pad_sizing", QString());   // built before the mark
             for (Toolpath t : doc.toolpaths()) {
                 if (t.json.contains("lead_radius"))
                     t.json.insert("lead_radius", lead == 201.0 ? 3.175 : lead);
-                if (t.json.contains("rest_diameter"))
-                    t.json.insert("rest_diameter", 6.35);
                 doc.replaceToolpath(t);
             }
             doc.save(path, &err);
@@ -908,6 +907,22 @@ static void testOtherBitRoundTrip(const QString &dir)
             check(lead == 201.0 ? lost.isEmpty() : !lost.isEmpty(),
                   lead == 201.0 ? "other bit: an older file's #201 sizes are not settings made here"
                                 : "other bit: a lead-in typed here still is");
+        }
+        // In a file built with the mark, the same #201 sizes are a desktop
+        // edit (a 2x helix on a 1/8" bit) and fork rather than be undone.
+        {
+            check(padlink::buildDocument(d, path, nullptr, &err), "other bit: rebuilt");
+            Document doc;
+            doc.load(path, &err);
+            for (Toolpath t : doc.toolpaths()) {
+                if (t.json.contains("helix_diameter"))
+                    t.json.insert("helix_diameter", 6.35);
+                doc.replaceToolpath(t);
+            }
+            doc.save(path, &err);
+            lost.clear();
+            padlink::designFromDocument(path, d, &lost, &err);
+            check(!lost.isEmpty(), "other bit: a helix set here to #201's size is a setting made here");
         }
     }
 }

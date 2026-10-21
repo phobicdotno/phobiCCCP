@@ -239,7 +239,7 @@ private:
     QString m_machineState;      // last reported state, never cleared by whenIdle
     bool needsInit();            // true (and says so in the log) while in Alarm
     void initializeMachine();    // $H, then park()
-    void park();                 // safe Z, then the tool-change XY
+    void park(bool afterHoming = false);   // safe Z, then the tool-change XY
     bool m_parkAfterHome = false;
     bool m_sawHoming = false;
     quint64 m_flowSeq = 0;       // counts resetFlow(): a Stop since calls off what was planned
