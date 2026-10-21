@@ -552,7 +552,18 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
         return r;
     };
     // Same region: what is in one and not the other is a sliver at most.
-    auto same = [&](const QPainterPath &a, const QPainterPath &b) {
+    auto same = [&](const QPainterPath &a, const QPainterPath &shape) {
+        // fillFace() shrinks and regrows the face by 0.01 mm, which blunts
+        // sharp tips (a 10-degree point loses over 0.1 mm); the shape gets
+        // the same treatment before it is compared.
+        QPainterPath b = shape;
+        if (a.boundingRect().adjusted(-1, -1, 1, 1).contains(shape.boundingRect())
+            && shape.boundingRect().adjusted(-1, -1, 1, 1).contains(a.boundingRect())) {
+            const QVector<QPolygonF> in = vec::offsetRings({shape}, {}, -0.01);
+            const QVector<QPolygonF> back = in.isEmpty() ? in : vec::offsetRings({pathOf(in)}, {}, 0.01);
+            if (!back.isEmpty())
+                b = pathOf(back);
+        }
         // A pocket shape with an island inside is two rings; a lone outline
         // around it is one - not the same, however small the island.
         auto rings = [](const QPainterPath &p) {

@@ -9,6 +9,7 @@
 #include "tooldiagram.h"
 #include "settingsdialog.h"
 #include <QApplication>
+#include <QPointer>
 #include "canvas.h"
 #include "c2ddocument.h"
 #include "toollibrary.h"
@@ -480,6 +481,7 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
         "Set this toolpath's vectors to the elements selected on the canvas"));
     lay->addWidget(assign);
     connect(assign, &QPushButton::clicked, this, [this] {
+        flushForm();
         if (!m_doc || m_uuid.isEmpty())
             return;
         Toolpath *t = m_doc->toolpathByUuid(m_uuid);
@@ -549,6 +551,7 @@ void ToolpathPanel::newToolpath(const QString &type)
 
 void ToolpathPanel::duplicateCurrent()
 {
+    flushForm();
     if (!m_doc || m_uuid.isEmpty())
         return;
     const Toolpath *t = m_doc->toolpathByUuid(m_uuid);
@@ -659,8 +662,20 @@ void ToolpathPanel::pickTool()
     m_canvas->editToolpath(uuid, j);
 }
 
+void ToolpathPanel::flushForm()
+{
+    const QPointer<QWidget> f = QApplication::focusWidget();
+    const bool inForm = f && m_form->isAncestorOf(f);
+    if (inForm)
+        f->clearFocus();
+    QCoreApplication::sendPostedEvents(this, QEvent::MetaCall);
+    if (inForm && f)
+        f->setFocus();
+}
+
 void ToolpathPanel::createInlayMale()
 {
+    flushForm();
     if (!m_doc || m_uuid.isEmpty())
         return;
     Toolpath *t = m_doc->toolpathByUuid(m_uuid);
@@ -988,22 +1003,28 @@ void ToolpathPanel::onItemChanged(QTreeWidgetItem *item, int column)
     Toolpath *t = m_doc->toolpathByUuid(uuid);
     if (!t)
         return;
-    QJsonObject j = t->json;
     const bool enabled = item->checkState(0) == Qt::Checked;
     const QString name = item->text(0).trimmed();
-    if (enabled != j.value("enabled").toBool(true))
-        j.insert(QStringLiteral("enabled"), enabled);
-    if (!name.isEmpty() && name != j.value("name").toString())
-        j.insert(QStringLiteral("name"), name);
     // Only a change to the row the user is actually on may move the selection.
     if (item == m_list->currentItem())
         m_uuid = uuid;
     // editToolpath ends in documentChanged -> refresh(), which clears the tree
     // and destroys `item` (and, for a rename, its open editor) while the view
     // is still unwinding the change notification on it. Let the current event
-    // finish first.
-    QMetaObject::invokeMethod(this, [this, uuid, j] { m_canvas->editToolpath(uuid, j); },
-                              Qt::QueuedConnection);
+    // finish first. The toolpath is read then, not now: a number typed in the
+    // form is committed by the same click, and its queued edit runs first.
+    QMetaObject::invokeMethod(this, [this, uuid, enabled, name] {
+        const Toolpath *t = m_doc ? m_doc->toolpathByUuid(uuid) : nullptr;
+        if (!t)
+            return;
+        QJsonObject j = t->json;
+        if (enabled == j.value("enabled").toBool(true) && (name.isEmpty() || name == j.value("name").toString()))
+            return;
+        j.insert(QStringLiteral("enabled"), enabled);
+        if (!name.isEmpty())
+            j.insert(QStringLiteral("name"), name);
+        m_canvas->editToolpath(uuid, j);
+    }, Qt::QueuedConnection);
 }
 
 void ToolpathPanel::showToolpath(const QString &uuid)

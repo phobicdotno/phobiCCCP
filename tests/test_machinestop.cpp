@@ -701,6 +701,56 @@ int main(int argc, char **argv)
         check(!down, "parkend: no move down from the job's final retract");
     }
 
+    if (mode == "rehearsetc") {
+        // Tool-change spot typed as Y +20 (the minus forgotten): outside the
+        // travel (machine coordinates are negative). Run refuses a job with
+        // tool changes for that; the rehearsal should too.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(20.0);
+        std::printf("insideTravel(tc) = %d\n", int(panel.insideTravel(-120, 20)));
+        answer = [&](const Seen &v) {
+            std::printf("prompt: %s\n", qPrintable(v.headline));
+            if (v.headline.contains("Start the rehearsal")) return QStringLiteral("Start rehearsal");
+            if (v.headline.contains("outside the machine's travel")) return QStringLiteral("OK");
+            return QStringLiteral("Stop the job");
+        };
+        grbl.events.clear();
+        panel.rehearseToolChange();
+        wait(2500);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(grbl.indexOf("G53 G0 X-120.000 Y20.000") < 0,
+              "rehearsetc: no rapid to a tool-change spot outside the travel");
+    }
+
+    if (mode == "zeroend") {
+        // Zero Z (BitSetter on) pressed right as the job's last move ends:
+        // the end-of-job rise fires while the measure macro runs.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        wait(600);
+        grbl.events.clear();
+        panel.m_endOfJobPending = true;
+        grbl.running = true;
+        s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+        spin(2000, [&] { return !s->isStreaming(); });
+        wait(500);
+        grbl.running = false;
+        // first Idle report
+        const int r0 = reports;
+        spin(1000, [&] { return reports > r0 && panel.m_machineState == "Idle"; });
+        panel.zero(QStringLiteral("Z"));
+        wait(3000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        std::printf("haveRef=%d refZ=%.3f\n", int(panel.m_haveRef), panel.m_refZ);
+        check(panel.m_haveRef, "zeroend: the reference measured by Zero Z is kept");
+        check(grbl.indexOf("M5") >= 0, "zeroend: spindle off");
+    }
+
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();

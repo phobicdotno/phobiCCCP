@@ -195,6 +195,30 @@ static void testRebuildKeepsRetract(const QString &dir)
               && doc.params().value("tile_height") == QLatin1String("300"), "and its tiling");
 }
 
+// Layers and groups are not something the pad holds: a file with them is not
+// the pad's to replace.
+static void testLayersAndGroupsLost(const QString &dir)
+{
+    QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
+    f.open(QIODevice::ReadOnly);
+    const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
+    const QString path = QDir(dir).filePath("layers.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "layers fixture builds");
+    QStringList lost;
+    padlink::designFromDocument(path, d, &lost, &err);
+    check(!lost.contains(QStringLiteral("layers and groups")), "a pad-built file has no layers or groups to lose");
+    Document doc;
+    doc.load(path, &err);
+    QJsonObject raw = doc.elements().first().raw;
+    raw.insert("group_id", QJsonArray{"{G1}"});
+    doc.replaceElement(Element::fromJson(raw));
+    doc.save(path, &err);
+    lost.clear();
+    padlink::designFromDocument(path, d, &lost, &err);
+    check(lost.contains(QStringLiteral("layers and groups")), "a group is reported as lost to the pad");
+}
+
 // A design from a pad, saved here, goes back to the pads unchanged; once
 // something only phobiCCCP has is added, the pad copy says what it lacks.
 static void testBackToPad(const QString &dir)
@@ -899,6 +923,7 @@ int main(int argc, char **argv)
     testPadFixture(tmp.path());
     testBackToPad(tmp.path());
     testRebuildKeepsRetract(tmp.path());
+    testLayersAndGroupsLost(tmp.path());
     testLinks(tmp.path());
     testStore(tmp.path(), d);
     testConflicts(tmp.path(), d);

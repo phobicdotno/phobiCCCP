@@ -2895,6 +2895,10 @@ void MachinePanel::zero(const QString &axes)
         return;
     if (!zeroAllowed(axes.contains(QChar('X')) || axes.contains(QChar('Y'))))
         return;
+    // The end-of-job rise would land in the middle of a BitSetter reference
+    // measure and fail it.
+    if (jobWindingDown(QStringLiteral("Zero")))
+        return;
     if (!m_grbl->canSendCommand()) {
         log(QStringLiteral("!! busy — cannot zero now"));
         return;
@@ -3198,6 +3202,15 @@ void MachinePanel::rehearseToolChange()
 {
     if (!requireHomed(QStringLiteral("The tool-change rehearsal")))
         return;
+    // The park rapids there in machine coordinates, as a job's tool change
+    // does: off the travel trips a limit switch (Run refuses it the same way).
+    if (!insideTravel(m_tcX->value(), m_tcY->value())) {
+        shopTell(this, QStringLiteral("Rehearse tool change"),
+                 QStringLiteral("The tool-change spot (X %1  Y %2) is outside the machine's travel.")
+                     .arg(m_tcX->value(), 0, 'f', 1).arg(m_tcY->value(), 0, 'f', 1),
+                 QStringLiteral("Set it again on the BitSetter page (Use here) with the machine homed."));
+        return;
+    }
     if (!m_grbl->isConnected()) {
         shopTell(this, QStringLiteral("Rehearse tool change"),
                  QStringLiteral("Connect to the controller first."));

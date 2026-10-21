@@ -25,6 +25,11 @@
   - V-carve with a flat or ball bit cut straight down past the walls; it asks for a V-bit,
     as 2D Chamfer does. 2D Chamfer no longer takes a ball bit with an angle on file, and a
     bevel wider than the V-bit's cone (which the shank would cut) is refused with a note.
+    A V-carve shape that would go deeper than the bit's cone (a wide shape with the end depth
+    past the cone) is left out with a note, rather than cut with a lip along its walls.
+  - V-carve's flat clearing (and the inlay male's, which starts below the top) took its first
+    lap at the start depth in untouched stock; it steps down from the stock top.
+  - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
@@ -45,6 +50,7 @@
     outline. The pad's Area tool has the same rule.
   - Break and Convert to paths on text left the extra pieces out of the shape's group and
     dropped construction from them.
+  - The Area tool copied a shape with sharp tips (under about 20 degrees) instead of selecting it.
   - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
@@ -60,7 +66,9 @@
     below a tall job's retract height plunged at the last X Y at the end of the job).
     The end-of-job rise waits until the program's own last retract has run, and a tool change
     parks at the top. Park, Go to X0 Y0 and Measure are refused while that rise is still
-    waiting (they moved down from the job's last retract).
+    waiting (they moved down from the job's last retract), and so is Zero.
+  - Rehearse tool change parked at a tool-change spot outside the travel (Y +20 for -20 tripped
+    the limit switch); it is refused, as Run already refused it.
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -83,7 +91,11 @@
   - A pad's edit of another design, arriving while a number was being typed, cut the number
     short ("2" of "2.5"); the typing is left alone. Enter on a field left unchanged no longer
     counts as typing, so the pad's edit is taken.
+  - A number typed in a toolpath (no Enter) undid Assign selected vectors, was lost when the
+    toolpath's on/off box was clicked, and went to the original instead of the copy on Duplicate.
 - **Pad link:**
+  - A Carbide Create file with layers or groups lost them when a pad edited it; they are now
+    named as something the pad does not hold, so the pad's edit is kept as a copy beside it.
   - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
     identity, and the pad's id on the computer is its own id in the versions.
   - A design edited in turn by an older and a newer client no longer outgrows its versions,

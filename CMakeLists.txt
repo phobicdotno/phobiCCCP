@@ -308,6 +308,9 @@ if(Qt6Test_FOUND)
     add_executable(test_padenter tests/test_padenter.cpp ${_mwsrc})
     target_link_libraries(test_padenter PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
     add_test(NAME padenter COMMAND test_padenter)
+    add_executable(test_tpflush tests/test_tpflush.cpp ${_mwsrc})
+    target_link_libraries(test_tpflush PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME tpflush COMMAND test_tpflush)
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.
     add_executable(test_dragscroll tests/test_dragscroll.cpp src/canvas.cpp src/canvasparametric.cpp
                    src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
@@ -349,7 +352,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)
-    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

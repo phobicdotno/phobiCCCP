@@ -2530,7 +2530,16 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             if (elems.isEmpty())
                 area = stock;
             const double stepover = qBound(0.05, numOr(j.value("stepover"), toolR), 2 * toolR);
-            const double x0 = area.left() - toolR - 1, x1 = area.right() + toolR + 1;
+            double x0 = area.left() - toolR - 1, x1 = area.right() + toolR + 1;
+            if (!elems.isEmpty()) {
+                // The box around the vectors is the face: the tool stays
+                // inside it (it may stand in the middle of the stock, so its
+                // plunges are not in the air there).
+                const double inX = qMin(toolR, area.width() / 2), inY = qMin(toolR, area.height() / 2);
+                area.adjust(0, inY, 0, -inY);
+                x0 = area.left() + inX;
+                x1 = area.right() - inX;
+            }
             // Rows from one edge to the other, the outermost exactly on the
             // edges, evenly spread (never wider than the stepover asked for).
             const int rows = qMax(1, int(std::ceil(area.height() / stepover - 1e-9))) + 1;
@@ -3355,6 +3364,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                           return ca.x() + ca.y() * 0.01 < cb.x() + cb.y() * 0.01;
                       });
             const CutParams flat;   // single full-depth lap per ring
+            int tooDeep = 0;
             for (const QPainterPath &comp : comps) {
                 bool medialDone = false;
                 if (medialAxisAvailable()) {
@@ -3364,6 +3374,18 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     // clearance (and the bit) runs out to zero.
                     QVector<QVector<VPoint>> pend =
                         medialAxis(comp.toSubpathPolygons());
+                    // Where the carve goes deeper than the cone (a shape
+                    // wider than the bit, end depth past the cone), the shank
+                    // rubs and leaves a lip along the walls: that shape is
+                    // left out, with a note. Narrow letters never get there.
+                    double reach = 0;
+                    for (const QVector<VPoint> &ch : pend)
+                        for (const VPoint &v : ch)
+                            reach = qMax(reach, qMin(v.d, dMax));
+                    if (reach > vg.radius() + 1e-6) {
+                        ++tooDeep;
+                        continue;
+                    }
                     medialDone = !pend.isEmpty();
                     auto zOf = [&](const VPoint &p) {
                         return qMax(cp.zBot, cp.zTop - p.d / halfTan);
@@ -3409,8 +3431,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                 // untouched. Plunging straight to zBot and
                                 // taking the whole depth in one lap breaks
                                 // bits. Step down like every other ring job.
+                                // From the stock top, not the start depth: an
+                                // inlay male starts well below the top, and the
+                                // stock above it is still there.
                                 em.rapidTo(ring.first());
-                                double zr = cp.zTop;
+                                double zr = 0.0;
                                 bool deeper = true;
                                 while (deeper) {
                                     zr = qMax(cp.zBot, zr - cp.stepdown);
@@ -3448,6 +3473,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     }
                 }
                 lastPos = em.pos();
+            }
+            if (tooDeep > 0) {
+                const QString why = QStringLiteral("deeper than the V-bit's cone (%1 mm): lower the end depth "
+                                                   "or use a wider bit").arg(vg.radius() / halfTan, 0, 'f', 2);
+                if (tooDeep == comps.size()) {
+                    res.skipped << QStringLiteral("%1 (%2)").arg(name, why);
+                    continue;
+                }
+                res.notes << QStringLiteral("%1: %2 shape(s) left uncut, %3").arg(name).arg(tooDeep).arg(why);
             }
         } else if (engrave) {
             // ENGRAVE (phobiCCCP type, see toolpathfactory.cpp). mode

@@ -462,11 +462,18 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         padIds[e.id].append(s.value(QStringLiteral("id")).toString());
         shapes.append(s);
     };
+    const QJsonValue firstLayer = doc.elements().isEmpty() ? QJsonValue()
+                                                           : doc.elements().first().raw.value(QStringLiteral("layer"));
     for (const Element &e : doc.elements()) {
         if (Element::isConstruction(e)) {
             lose(QStringLiteral("construction lines"));
             continue;
         }
+        // The pad puts every shape on one layer, in no group.
+        const QJsonValue group = e.raw.value(QStringLiteral("group_id"));
+        if ((group.isArray() ? !group.toArray().isEmpty() : !group.toString().isEmpty())
+            || e.raw.value(QStringLiteral("layer")) != firstLayer)
+            lose(QStringLiteral("layers and groups"));
         if (!e.raw.value(QStringLiteral("tabs")).toArray().isEmpty())
             lose(QStringLiteral("tabs"));
         const QString sid = padShapeId(e.id);

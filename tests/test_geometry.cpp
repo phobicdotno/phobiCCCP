@@ -1240,6 +1240,20 @@ int main(int argc, char *argv[])
         }
         check(plungesOff, "face plunges beside the stock");
     }
+    // Face over selected vectors: the box around them, the tool inside it.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({150, 100}, 60, 40, layer));
+        r.addToolpath("face_toolpath", {{"end_depth", "1.000"}, {"stepdown", 1.0}, {"stepover", 4.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        const double R = 6.35 / 2;
+        check(g.done.size() == 1 && bb.left() >= 120 + R - 1e-3 && bb.right() <= 180 - R + 1e-3
+                  && bb.top() >= 80 + R - 1e-3 && bb.bottom() <= 120 - R + 1e-3,
+              "face over vectors keeps the tool inside their box");
+        check(bb.width() > 60 - 2 * R - 0.1 && bb.height() > 40 - 2 * R - 0.1, "face over vectors covers the box");
+    }
 
     // --- bore: helix down the circle's wall ------------------------------------
     {
@@ -1337,6 +1351,42 @@ int main(int argc, char *argv[])
         const c2d::GcodeResult gv = c2d::exportGcode(rv.doc);
         check(gv.done.isEmpty() && gv.skipped.size() == 1 && gv.skipped.first().contains("V-bit"),
               "v-carve with an end mill is refused");
+        // V-carve deeper than the cone (90 degrees, 12.7 mm: 6.35 mm) on a
+        // shape wider than the bit leaves a lip: refused; within the cone it carves.
+        for (const char *end : {"10.000", "6.000"}) {
+            Rig rd;
+            rd.addShape(c2d::Element::makeRectangle({30, 30}, 40, 40, layer));
+            rd.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", end}, {"tool", vbit}});
+            const c2d::GcodeResult gd = c2d::exportGcode(rd.doc);
+            const bool deep = QByteArray(end) == "10.000";
+            check(deep ? gd.done.isEmpty() && gd.skipped.size() == 1 && gd.skipped.first().contains("cone")
+                       : gd.done.size() == 1 && gd.skipped.isEmpty(),
+                  deep ? "v-carve deeper than the cone is refused" : "v-carve within the cone carves");
+        }
+        // An inlay male starts below the top; its flat clearing laps still
+        // step down from the stock top, not a full lap at the start depth.
+        {
+            Rig ri;
+            const c2d::Element outer = c2d::Element::makeRectangle({60, 60}, 60, 60, layer);
+            const c2d::Element inner = c2d::Element::makeRectangle({60, 60}, 20, 20, layer);
+            ri.addShape(outer);
+            ri.addShape(inner);
+            QJsonObject v60 = vbit;
+            v60.insert("angle", 60);
+            ri.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "4.500"}, {"end_depth", "5.000"},
+                                                        {"stepdown", 1.0}, {"tool", v60},
+                                                        {"elements", QJsonArray{QJsonObject{{"uuid", outer.id}},
+                                                                                QJsonObject{{"uuid", inner.id}}}}});
+            const c2d::GcodeResult gi = c2d::exportGcode(ri.doc);
+            bool firstLap = false;
+            for (int i = 1; i < gi.ops.size(); ++i) {
+                const c2d::Op &o = gi.ops.at(i), &prev = gi.ops.at(i - 1);
+                if (o.kind == c2d::Op::Feed && prev.kind == c2d::Op::Rapid && std::fabs(prev.x - o.x) < 1e-9
+                    && std::fabs(prev.y - o.y) < 1e-9 && std::fabs(o.z + 1.0) < 1e-6)
+                    firstLap = true;
+            }
+            check(gi.done.size() == 1 && firstLap, "v-carve flat clearing steps down from the stock top");
+        }
     }
 
     // --- adaptive: helix entry, passes repeated per level, inside the pocket --

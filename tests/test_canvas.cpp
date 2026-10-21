@@ -663,6 +663,19 @@ int main(int argc, char *argv[])
         want = {pk.id, boss.id};
         want.sort();
         check(got == want, "area click keeps a small boss as an island");
+        // A lone shape with sharp tips (a 16-degree diamond) is selected,
+        // not copied: fillFace() blunts the tips a little.
+        {
+            const double h = 50 * std::tan(8 * M_PI / 180);
+            const c2d::Element dia = c2d::Element::makePath({{300, 450}, {350, 450 + h}, {400, 450}, {350, 450 - h}},
+                                                            true, adoc.defaultLayer());
+            adoc.addElement(dia);
+            ac.rebuild();
+            const int n = int(adoc.elements().size());
+            click(&ac, {350, 450});
+            check(ac.selectedElementIds() == QStringList{dia.id} && int(adoc.elements().size()) == n,
+                  "area click on a sharp diamond selects it");
+        }
     }
 
     // --- a CC rectangle's corner style survives a resize --------------------------------
