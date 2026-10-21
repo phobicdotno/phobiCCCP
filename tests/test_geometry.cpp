@@ -1386,6 +1386,29 @@ int main(int argc, char *argv[])
                     firstLap = true;
             }
             check(gi.done.size() == 1 && firstLap, "v-carve flat clearing steps down from the stock top");
+            double firstCut = 1;
+            for (const c2d::Op &o : gi.ops)
+                if (o.kind == c2d::Op::Feed) {
+                    firstCut = o.z;
+                    break;
+                }
+            check(firstCut > -1.0 - 1e-6, "v-carve's carving pass takes one Per pass at a time too");
+        }
+        // Offset toolpaths with a V-bit: offset by its radius, the part came
+        // out oversize. Refused; on the line it is fine.
+        {
+            for (const char *type : {"pocket_toolpath", "cutout"}) {
+                Rig rp;
+                rp.addShape(c2d::Element::makeRectangle({30, 30}, 40, 40, layer));
+                rp.addToolpath(type, {{"tool", vbit}});
+                const c2d::GcodeResult gp = c2d::exportGcode(rp.doc);
+                check(gp.done.isEmpty() && gp.skipped.size() == 1 && gp.skipped.first().contains("end mill"),
+                      "an offset toolpath with a V-bit is refused");
+            }
+            Rig rl;
+            rl.addShape(c2d::Element::makeRectangle({30, 30}, 40, 40, layer));
+            rl.addToolpath("contour", {{"ofset_dir", 0}, {"tool", vbit}});
+            check(c2d::exportGcode(rl.doc).done.size() == 1, "a contour on the line with a V-bit is fine");
         }
     }
 

@@ -533,6 +533,7 @@ void ToolpathPanel::applyTextSize()
 
 void ToolpathPanel::newToolpath(const QString &type)
 {
+    flushForm();
     if (!m_doc)
         return;
     const QStringList ids = m_canvas->selectedElementIds();

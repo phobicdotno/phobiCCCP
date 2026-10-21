@@ -10,6 +10,8 @@
 // Plain asserts, no framework; exits 0 on success.
 
 #include <QApplication>
+#include <QButtonGroup>
+#include <QAbstractButton>
 #include <QDialog>
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -38,11 +40,14 @@
 #include "../src/toolstrip.h"
 #define private public
 #define protected public
+#include "../src/bitzeropanel.h"
 #include "../src/machinepanel.h"
 #undef private
 #undef protected
 
 #include <QApplication>
+#include <QButtonGroup>
+#include <QAbstractButton>
 #include <QDialog>
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -191,7 +196,7 @@ struct FakeGrbl {
                     alarm = false;
                 else if (alarm && !line.isEmpty() && line[0] != '$')
                     reply = "error:9\r\n";
-                else if (line.contains("G38.2"))
+                else if (line.contains("G38.2") || line.contains("G38.3"))
                     send("[PRB:" + num(mx) + "," + num(my) + "," + num(probeZ) + ":1]\r\n");
                 else if (line.startsWith("$J="))
                     jogClock.start();
@@ -751,6 +756,87 @@ int main(int argc, char **argv)
         check(grbl.indexOf("M5") >= 0, "zeroend: spindle off");
     }
 
+
+    if (mode == "zerooff" || mode == "zerounhomed") {
+        // BitSetter on; Zero Z. r12zerooff: button position typed as Y +20
+        // (outside the travel; Measure tool refuses it). r12zerounhomed:
+        // unlocked out of an alarm without homing (Measure tool refuses).
+        panel.m_bsEnabled->setChecked(true);
+        if (mode == "zerooff") {
+            panel.m_bsX->setValue(-20.0);
+            panel.m_bsY->setValue(20.0);
+            std::printf("insideTravel(bs) = %d\n", int(panel.insideTravel(-20, 20)));
+        } else {
+            panel.m_homed = false;
+            panel.m_unhomedWhy = QStringLiteral("unlocked out of an alarm without homing");
+        }
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("OK"); };
+        wait(600);
+        grbl.events.clear();
+        panel.measureTool(c2d::MachinePanel::Phase::MeasureManual);
+        wait(600);
+        const int measureG53 = grbl.count("G53");
+        std::printf("Measure tool sent %d G53 moves\n", measureG53);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(2500);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(measureG53 == 0, "r12: Measure tool refuses");
+        check(grbl.count("G53 G0 X") == 0, "r12: Zero Z sends no machine-coordinate move to the BitSetter Measure tool refuses");
+    }
+
+    if (mode == "bzoff") {
+        // BitZero Z only, BitSetter on with its button typed outside the travel.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_bsX->setValue(-20.0);
+        panel.m_bsY->setValue(20.0);
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::ZOnly)->click();
+        wait(600);
+        answer = [&](const Seen &v) {
+            return v.headline.contains("off the machine") ? QStringLiteral("OK") : QString();
+        };
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(4000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(grbl.count("G53 G0 X-20.000 Y20.000") == 0, "r12bz: no rapid to a BitSetter outside the travel");
+    }
+
+    if (mode == "deaf") {
+        // Status reports reaching the panel while the tool-change prompt is open.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        wait(600);
+        grbl.events.clear();
+        int during = -1, sentJogs = -1;
+        double dro0 = 0, dro1 = 0;
+        answer = [&](const Seen &v) {
+            std::printf("prompt: %s\n", qPrintable(v.headline));
+            const int r0 = reports;
+            dro0 = panel.m_grbl->status().mx;
+            grbl.mx = -150;   // the machine reports a new position meanwhile
+            QElapsedTimer t; t.start();
+            while (t.elapsed() < 1500) QApplication::processEvents(QEventLoop::AllEvents, 20);
+            during = reports - r0;
+            dro1 = panel.m_grbl->status().mx;
+            const int j0 = grbl.count("$J=");
+            for (int k = 0; k < 4; ++k) {
+                padPress(4);   // z- tap on the pad
+                QElapsedTimer u; u.start();
+                while (u.elapsed() < 300) QApplication::processEvents(QEventLoop::AllEvents, 20);
+            }
+            sentJogs = grbl.count("$J=") - j0;
+            return QStringLiteral("Measure and continue");
+        };
+        s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("M0 ;T2"), QStringLiteral("G1X6F500")});
+        spin(10000, [&] { return !s->isStreaming(); });
+        wait(1000);
+        std::printf("status reports processed during 1.5 s of open prompt: %d; DRO X %.3f -> %.3f; pad z- taps that went out: %d of 4\n",
+                    during, dro0, dro1, sentJogs);
+        check(during >= 3, "r12deaf: status keeps coming in while the tool prompt is open");
+    }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();

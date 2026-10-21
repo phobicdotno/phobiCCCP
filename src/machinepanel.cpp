@@ -1688,6 +1688,10 @@ void MachinePanel::bitZeroBegin()
                            "plate, or the magnet on the plate itself? Move clear and retry"));
         return;
     }
+    // Z with the BitSetter on ends in a reference measure on the button.
+    if ((m_bzPanel->mode() == BitZeroPanel::Corner || m_bzPanel->mode() == BitZeroPanel::ZOnly)
+        && bitSetter().enabled && !bitSetterReachable(bitSetter(), QStringLiteral("BitZero")))
+        return;
     stopHoldJog();
     m_bz = m_bzPanel->config();
     m_bzMode = m_bzPanel->mode();
@@ -2640,11 +2644,22 @@ void MachinePanel::onStatus(const MachineStatus &st)
 
     // Deferred actions wait for two consecutive Idle reports: the `ok` of a
     // G0 arrives before the move starts, so a single Idle can be stale.
-    if (m_onIdle) {
+    // Run from the event loop, not here inside the serial read: a step that
+    // opens a prompt (the tool change) left the panel reading nothing from
+    // the controller while it was open - no status, no alarms, pad jogs
+    // refused. The step stays pending (and can still be voided) until then.
+    if (m_onIdle && !m_idlePosted) {
         if (st.state == QLatin1String("Idle") && m_lastState == QLatin1String("Idle")) {
-            auto fn = std::move(m_onIdle);
-            m_onIdle = nullptr;
-            fn();
+            m_idlePosted = true;
+            const quint64 seq = m_idleSeq;
+            QTimer::singleShot(0, this, [this, seq] {
+                m_idlePosted = false;
+                if (!m_onIdle || seq != m_idleSeq)
+                    return;
+                auto fn = std::move(m_onIdle);
+                m_onIdle = nullptr;
+                fn();
+            });
         }
     }
     m_lastState = st.state;
@@ -2823,6 +2838,7 @@ double MachinePanel::riseZ() const
 void MachinePanel::whenIdle(std::function<void()> fn)
 {
     m_lastState.clear();
+    ++m_idleSeq;
     m_onIdle = std::move(fn);
 }
 
@@ -2912,6 +2928,11 @@ void MachinePanel::zero(const QString &axes)
     }
     QStringList cmds;
     const bool zeroZ = axes.contains(QChar('Z'));
+    // With the BitSetter on, a Z zero measures the reference there: checked
+    // before any zero goes out, as Measure bit checks it.
+    if (zeroZ && bitSetter().enabled
+        && !bitSetterReachable(bitSetter(), QStringLiteral("Zeroing Z (it measures on the BitSetter)")))
+        return;
     if (zeroZ) {
         // A fresh Z zero belongs to the tool in the spindle, so any old length
         // offset must go first; the measurement below re-establishes it as 0.
@@ -2942,6 +2963,22 @@ void MachinePanel::zero(const QString &axes)
     updateOffsetLabels();
 }
 
+// The BitSetter measure rapids to the button in machine coordinates: the
+// machine must be homed and the button inside the travel.
+bool MachinePanel::bitSetterReachable(const BitSetterConfig &cfg, const QString &what)
+{
+    if (!requireHomed(what))
+        return false;
+    if (!insideTravel(cfg.x, cfg.y)) {
+        shopTell(this, QStringLiteral("BitSetter"), QStringLiteral("BitSetter position is off the machine"),
+                 QStringLiteral("X %1  Y %2 is outside the machine's travel. It was probably "
+                                "set while the machine was not homed. Jog over the button and "
+                                "press Use here again.").arg(cfg.x, 0, 'f', 1).arg(cfg.y, 0, 'f', 1));
+        return false;
+    }
+    return true;
+}
+
 void MachinePanel::goToXY0()
 {
     if (jobWindingDown(QStringLiteral("Go to X0 Y0")))
@@ -2965,15 +3002,8 @@ void MachinePanel::measureTool(Phase why)
         log(QStringLiteral("!! not connected"));
         return;
     }
-    if (!requireHomed(QStringLiteral("Measuring on the BitSetter")))
+    if (!bitSetterReachable(cfg, QStringLiteral("Measuring on the BitSetter")))
         return;
-    if (!insideTravel(cfg.x, cfg.y)) {
-        shopTell(this, QStringLiteral("BitSetter"), QStringLiteral("BitSetter position is off the machine"),
-                 QStringLiteral("X %1  Y %2 is outside the machine's travel. It was probably "
-                                "set while the machine was not homed. Jog over the button and "
-                                "press Use here again.").arg(cfg.x, 0, 'f', 1).arg(cfg.y, 0, 'f', 1));
-        return;
-    }
     if (!cfg.enabled) {
         log(QStringLiteral("!! BitSetter is disabled — enable it and set the button position"));
         return;

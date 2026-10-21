@@ -27,8 +27,11 @@
     bevel wider than the V-bit's cone (which the shank would cut) is refused with a note.
     A V-carve shape that would go deeper than the bit's cone (a wide shape with the end depth
     past the cone) is left out with a note, rather than cut with a lip along its walls.
-  - V-carve's flat clearing (and the inlay male's, which starts below the top) took its first
-    lap at the start depth in untouched stock; it steps down from the stock top.
+  - V-carve took its whole depth in one pass, ignoring Per pass (an inlay male, which starts
+    below the top, plunged 4.5 mm into untouched stock at its first move); the carving and the
+    flat clearing both step down from the stock top now.
+  - Pocket, Cutout and offset Contours accepted a V-bit and kept it a whole radius off the
+    vectors, so the part came out oversize; they ask for an end mill (on-the-line is fine).
   - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
@@ -50,7 +53,8 @@
     outline. The pad's Area tool has the same rule.
   - Break and Convert to paths on text left the extra pieces out of the shape's group and
     dropped construction from them.
-  - The Area tool copied a shape with sharp tips (under about 20 degrees) instead of selecting it.
+  - The Area tool copied a shape with sharp tips (under about 20 degrees) instead of selecting
+    it, as a lone shape or as an island in a pocket.
   - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
@@ -68,7 +72,11 @@
     parks at the top. Park, Go to X0 Y0 and Measure are refused while that rise is still
     waiting (they moved down from the job's last retract), and so is Zero.
   - Rehearse tool change parked at a tool-change spot outside the travel (Y +20 for -20 tripped
-    the limit switch); it is refused, as Run already refused it.
+    the limit switch); it is refused, as Run already refused it. Zero Z and BitZero with the
+    BitSetter on check, as Measure bit does, that the machine is homed and the button inside
+    the travel before they go to measure.
+  - While the tool-change prompt was open the panel read nothing from the controller: no
+    position, no alarms, and pad jogs refused. It keeps listening now.
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -93,6 +101,8 @@
     counts as typing, so the pad's edit is taken.
   - A number typed in a toolpath (no Enter) undid Assign selected vectors, was lost when the
     toolpath's on/off box was clicked, and went to the original instead of the copy on Duplicate.
+    It was also lost on a new toolpath from the toolbar, and a typed Properties value was lost
+    when a Vectors toolbar action (Mirror, ...) was clicked.
 - **Pad link:**
   - A Carbide Create file with layers or groups lost them when a pad edited it; they are now
     named as something the pad does not hold, so the pad's edit is kept as a copy beside it.

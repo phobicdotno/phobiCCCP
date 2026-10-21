@@ -228,6 +228,8 @@ private:
     bool m_toolMeasured = false;
     bool m_rehearsal = false;            // the running program is a rehearsal
     std::function<void()> m_onIdle;
+    quint64 m_idleSeq = 0;      // which whenIdle() step a posted run belongs to
+    bool m_idlePosted = false;   // a run of m_onIdle is queued
     QString m_lastState;
     // Carbide Motion's "Initialize machine": after power-up GRBL sits in Alarm
     // until it has homed, and refuses jogs and zeroing (error:9) till then.
@@ -292,6 +294,7 @@ private:
     double safeZ() const;
     double riseZ() const;
     bool endRiseWaiting() const;
+    bool bitSetterReachable(const BitSetterConfig &cfg, const QString &what);
     bool jobWindingDown(const QString &what);
     QString m_unhomedWhy = QStringLiteral("not connected");
     QString m_lastLimitPins;

@@ -676,6 +676,23 @@ int main(int argc, char *argv[])
             check(ac.selectedElementIds() == QStringList{dia.id} && int(adoc.elements().size()) == n,
                   "area click on a sharp diamond selects it");
         }
+        // The same diamond as an island in a pocket: the pocket and the
+        // diamond are selected, nothing is added.
+        {
+            const double h = 30 * std::tan(8 * M_PI / 180);
+            const c2d::Element pocket = c2d::Element::makeRectangle({600, 450}, 120, 100, adoc.defaultLayer());
+            const c2d::Element isl = c2d::Element::makePath({{570, 450}, {600, 450 + h}, {630, 450}, {600, 450 - h}},
+                                                            true, adoc.defaultLayer());
+            adoc.addElement(pocket);
+            adoc.addElement(isl);
+            ac.rebuild();
+            const int n = int(adoc.elements().size());
+            click(&ac, {600, 480});
+            QStringList sel = ac.selectedElementIds(), exp{pocket.id, isl.id};
+            sel.sort();
+            exp.sort();
+            check(sel == exp && int(adoc.elements().size()) == n, "area click keeps a sharp diamond as an island");
+        }
     }
 
     // --- a CC rectangle's corner style survives a resize --------------------------------

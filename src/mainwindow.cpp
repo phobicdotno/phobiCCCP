@@ -1205,7 +1205,8 @@ MainWindow::MainWindow(QWidget *parent)
     tb->addSeparator();
     tb->addAction(undoAct);
     tb->addAction(redoAct);
-    new VectorActions(m_canvas, editMenu, this);   // Edit → Vectors + icon bar
+    auto *vecActions = new VectorActions(m_canvas, editMenu, this);   // Edit → Vectors + icon bar
+    vecActions->beforeAction = [this] { commitEdits(); };
 
     // Status bar: transient hints. Zoom and the live mm position are on the
     // canvas itself (bottom right, with the zoom buttons).

@@ -2319,6 +2319,14 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             continue;
         }
         const double toolR = toolGeomOf(tool).radius();
+        // An offset is a tool radius off the vectors; a V-bit cuts far
+        // narrower than its radius at a shallow depth, so the part came out
+        // oversize (a pocket undersize, with strips left between the rings).
+        if ((pocket || cutout || (contour && j.value("ofset_dir").toInt(0) != 0))
+            && toolGeomOf(tool).kind == ToolGeom::VBit) {
+            res.skipped << QStringLiteral("%1 (needs an end mill: a V-bit only follows the line)").arg(name);
+            continue;
+        }
 
         // Every depth this toolpath reads, with one flag for whether they were
         // all readable. A toolpath whose depth we cannot read is refused, not
@@ -3407,12 +3415,26 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         if (rev)
                             std::reverse(ch.begin(), ch.end());
                         const QPointF s(ch.first().x, ch.first().y);
-                        em.rapidTo(s);
-                        em.plungeTo(s, zOf(ch.first()));
-                        for (int k = 1; k < ch.size(); ++k)
-                            em.feedAt(QPointF(ch.at(k).x, ch.at(k).y),
-                                      zOf(ch.at(k)), feed);
-                        em.retract();
+                        // Per pass from the stock top: deeper than one pass
+                        // (a wide letter, an inlay male that starts below the
+                        // top) the chain is ridden again at each level, the
+                        // last at its own depth.
+                        double deepest = 0;
+                        for (const VPoint &v : ch)
+                            deepest = qMin(deepest, zOf(v));
+                        const double step = cp.stepdown > 1e-6 ? cp.stepdown : 1e9;
+                        double level = 0;
+                        do {
+                            level = qMax(deepest, level - step);
+                            if (level < deepest + 1e-9)
+                                level = deepest;
+                            em.rapidTo(s);
+                            em.plungeTo(s, qMax(level, zOf(ch.first())));
+                            for (int k = 1; k < ch.size(); ++k)
+                                em.feedAt(QPointF(ch.at(k).x, ch.at(k).y),
+                                          qMax(level, zOf(ch.at(k))), feed);
+                            em.retract();
+                        } while (level > deepest + 1e-9);
                         cur = em.pos();
                     }
                     // Flat-bottom clearing where the shape is wider than the
