@@ -1163,6 +1163,26 @@ int main(int argc, char *argv[])
                 widest = std::max(widest, -o.z);
         check(widest <= 3.175 + 1e-6 && (!mg.skipped.isEmpty() || !mg.notes.isEmpty()),
               "vcarve: an inlay male deeper than the cone at the stock top is refused with a note");
+        // A letter V-carved on a pocket's floor (Start 3) has its stock start
+        // at that floor: it carves, and its passes start there, not in air.
+        const QJsonObject v60{{"diameter", 6.35}, {"number", 301}, {"angle", 60.0}, {"type", 2}};
+        Rig pf;
+        const c2d::Element panel = c2d::Element::makeRectangle({50, 50}, 80, 40, layer);
+        const c2d::Element letter = c2d::Element::makeRectangle({50, 50}, 4, 30, layer);
+        pf.addShape(panel);
+        pf.addShape(letter);
+        pf.addToolpath("pocket_toolpath", {{"end_depth", "3.000"}, {"uuid", "{tp-0}"},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", panel.id}}}}});
+        pf.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "3.000"}, {"end_depth", "10.000"},
+                                                    {"tool", v60}, {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", letter.id}}}}});
+        const c2d::GcodeResult pg = c2d::exportGcode(pf.doc);
+        double deepest = 0;
+        for (const c2d::Op &o : pg.ops)
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc)
+                deepest = std::min(deepest, o.z);
+        check(pg.skipped.isEmpty() && pg.notes.isEmpty() && deepest < -6.4,
+              "vcarve: a letter on a pocket's floor carves (the stock starts at the floor)");
         const QJsonObject wide{{"diameter", 12.7}, {"number", 301}, {"angle", 90.0}, {"type", 2}};
         Rig one;
         one.addShape(c2d::Element::makeRectangle({30, 30}, 16, 16, layer));

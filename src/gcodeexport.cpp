@@ -3436,16 +3436,27 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     // wider than the bit, end depth past the cone), the shank
                     // rubs and leaves a lip along the walls: that shape is
                     // left out, with a note. Narrow letters never get there.
-                    // The cone's width where it leaves the stock top: an
-                    // inlay male starts below the top, and the cone above
-                    // its start depth still has to cut up through the stock.
+                    // The cone's width where it leaves the stock: an inlay
+                    // male starts below the top, and the cone above its start
+                    // depth still has to cut up through the stock. Where a
+                    // flat floor above already covers the shape (a letter on
+                    // a pocket's floor), the stock starts at that floor.
                     auto zOf = [&](const VPoint &p) {
                         return qMax(cp.zBot, cp.zTop - p.d / halfTan);
                     };
+                    double top = 0;
+                    {
+                        QPainterPath core = regionFromRings(insetRings(comp, 0.05));
+                        if (core.isEmpty())
+                            core = comp;
+                        for (const Cleared &c : cleared)
+                            if (c.zBot < top && c.foot.contains(core))
+                                top = qMax(c.zBot, cp.zTop);
+                    }
                     double reach = 0;
                     for (const QVector<VPoint> &ch : pend)
                         for (const VPoint &v : ch)
-                            reach = qMax(reach, -zOf(v) * halfTan);
+                            reach = qMax(reach, (top - zOf(v)) * halfTan);
                     if (reach > vg.radius() + 1e-6) {
                         ++tooDeep;
                         continue;
@@ -3477,7 +3488,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                             deepest = qMin(deepest, zOf(v));
                         // No Per pass on file (0): one pass, as before.
                         const double step = numOr(j.value("stepdown"), 1.0) > 1e-6 ? cp.stepdown : 1e9;
-                        double level = 0;
+                        double level = top;
                         do {
                             level = qMax(deepest, level - step);
                             if (level < deepest + 1e-9)
@@ -3513,7 +3524,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                 // inlay male starts well below the top, and the
                                 // stock above it is still there.
                                 em.rapidTo(ring.first());
-                                double zr = 0.0;
+                                double zr = top;
                                 bool deeper = true;
                                 while (deeper) {
                                     zr = qMax(cp.zBot, zr - step);

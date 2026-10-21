@@ -332,6 +332,16 @@ if(Qt6Test_FOUND)
     add_executable(test_typedclick tests/test_typedclick.cpp ${_mwsrc})
     target_link_libraries(test_typedclick PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
     add_test(NAME typedclick COMMAND test_typedclick)
+    # Delete with a value still typed in the toolpath form.
+    add_executable(test_tpdelete tests/test_tpdelete.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
+    target_link_libraries(test_tpdelete PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME tpdelete COMMAND test_tpdelete)
+    # STL import's default size for a mesh too big for the board.
+    add_executable(test_stlplace tests/test_stlplace.cpp src/modelpanel.cpp)
+    target_link_libraries(test_stlplace PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME stlplace COMMAND test_stlplace)
     # Crash recovery offered at start-up waits for the command-line file's open.
     add_executable(test_recoverystart tests/test_recoverystart.cpp ${_mwsrc})
     target_link_libraries(test_recoverystart PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
@@ -383,7 +393,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)
-    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

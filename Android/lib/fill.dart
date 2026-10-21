@@ -71,6 +71,9 @@ bool ringContains(List<Pt> r, Pt p) {
 // meet exactly.
 const _q = 10000.0;
 
+// Gaps this narrow (0.01 mm, on the grid) count as touching.
+const _touch = 100;
+
 typedef _V = (int, int);
 
 /// The face around [at] bounded by [rings]: its outline first, then its
@@ -95,11 +98,21 @@ List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
     final (a, b) = segs[i];
     for (var j = i + 1; j < segs.length; j++) {
       final (c, d) = segs[j];
-      if (math.max(a.$1, b.$1) < math.min(c.$1, d.$1) ||
-          math.max(c.$1, d.$1) < math.min(a.$1, b.$1) ||
-          math.max(a.$2, b.$2) < math.min(c.$2, d.$2) ||
-          math.max(c.$2, d.$2) < math.min(a.$2, b.$2)) {
+      if (math.max(a.$1, b.$1) + _touch < math.min(c.$1, d.$1) ||
+          math.max(c.$1, d.$1) + _touch < math.min(a.$1, b.$1) ||
+          math.max(a.$2, b.$2) + _touch < math.min(c.$2, d.$2) ||
+          math.max(c.$2, d.$2) + _touch < math.min(a.$2, b.$2)) {
         continue;
+      }
+      // Flattened, a circle touching a side no longer touches it: the pieces
+      // hang together by a slit a few microns wide. A corner within 0.01 mm
+      // of another edge cuts it there, as the desktop's shrink-and-regrow
+      // by 0.01 mm does.
+      for (final p in [c, d]) {
+        if (p != a && p != b && _cross(a, b, p) != 0 && _distSeg(p, a, b) <= _touch) cuts[i].add(p);
+      }
+      for (final p in [a, b]) {
+        if (p != c && p != d && _cross(c, d, p) != 0 && _distSeg(p, c, d) <= _touch) cuts[j].add(p);
       }
       final d1 = _cross(a, b, c), d2 = _cross(a, b, d), d3 = _cross(c, d, a), d4 = _cross(c, d, b);
       if (d1 == 0 && d2 == 0) {
@@ -206,6 +219,14 @@ List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
     if (smallestAround(r.first, comp) == outer) res.add(r);
   }
   return res;
+}
+
+double _distSeg(_V p, _V a, _V b) {
+  final dx = (b.$1 - a.$1).toDouble(), dy = (b.$2 - a.$2).toDouble();
+  final l2 = dx * dx + dy * dy;
+  final t = l2 > 0 ? (((p.$1 - a.$1) * dx + (p.$2 - a.$2) * dy) / l2).clamp(0.0, 1.0) : 0.0;
+  final x = a.$1 + t * dx - p.$1, y = a.$2 + t * dy - p.$2;
+  return math.sqrt(x * x + y * y);
 }
 
 _V _snap(Pt p) => ((p.$1 * _q).round(), (p.$2 * _q).round());

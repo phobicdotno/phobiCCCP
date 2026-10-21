@@ -12,6 +12,7 @@
 #include "gcodeexport.h"
 #include "surfacemap.h"
 #include "post_grbl.h"
+#include "tiling.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -3442,6 +3443,25 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     if (remote && !r.skipped.isEmpty())
         return refuse(QStringLiteral("Some toolpaths cannot be cut: %1.").arg(r.skipped.join(QStringLiteral(", "))),
                       QStringLiteral("Fix or turn them off, then send again."));
+    // A document set up for tiling whose job needs more than one tile is
+    // taller than the machine: streamed whole it drove Y past the far end.
+    {
+        const double tileH = m_doc->params().value("tile_height", "0").toDouble();
+        if (m_doc->params().value("tiling_enabled") == QLatin1String("1") && tileH > 0
+            && tileCount(r.ops, tileH) > 1)
+            return refuse(QStringLiteral("This design is tiled: the job needs %1 tiles of %2 mm.")
+                              .arg(QString::number(tileCount(r.ops, tileH)), QString::number(tileH)),
+                          QStringLiteral("Export G-code makes one program per tile; run those one at a time."));
+    }
+    // Settings made at the computer for one run, which nobody at a pad sees:
+    // an old surface map bent the new design's depths, and a left-on air
+    // cut ran with the spindle off while the pad said "cutting started".
+    if (remote && m_useMap->isChecked() && m_map.isValid())
+        return refuse(QStringLiteral("The surface map is switched on at the computer."),
+                      QStringLiteral("Turn it off there, or start the job at the computer."));
+    if (remote && m_airCut->isChecked())
+        return refuse(QStringLiteral("Air cut is switched on at the computer."),
+                      QStringLiteral("Turn it off there, or start the job at the computer."));
     // Surface map: every Z follows the measured surface. Applied to the
     // operations and posted again, so feeds are cut up along the way.
     QVector<Op> ops = r.ops;
@@ -3575,6 +3595,11 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
     m_jobTools = toolChanges(ops);
+    // GRBL keeps overrides until M2 or a reset, and the job's M2 is stripped:
+    // three +10 % taps ran every later job at 130 %. Each job starts at 100 %.
+    m_grbl->sendRealtime(char(0x90));   // feed
+    m_grbl->sendRealtime(char(0x95));   // rapids
+    m_grbl->sendRealtime(char(0x99));   // spindle
     m_grbl->startStream(lines);
     return true;
 }

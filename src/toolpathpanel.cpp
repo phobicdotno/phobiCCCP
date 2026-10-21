@@ -567,6 +567,9 @@ void ToolpathPanel::duplicateCurrent()
 
 void ToolpathPanel::deleteCurrent()
 {
+    // A value still being typed belongs to this toolpath, not the one the
+    // form shows next (it landed there when the field lost focus).
+    flushForm();
     if (!m_doc || m_uuid.isEmpty())
         return;
     const Toolpath *t = m_doc->toolpathByUuid(m_uuid);

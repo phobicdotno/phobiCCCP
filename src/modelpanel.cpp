@@ -233,7 +233,12 @@ bool askStlPlacement(QWidget *parent, const QString &name, double bw, double bd,
     const double natural = bw;
     const bool tooBig = natural > boardW || bd > boardH;
     fit->setChecked(tooBig);
-    width->setValue(tooBig ? boardW * 0.8 : natural);
+    // Fitted to 80 % of the board both ways: a mesh too deep for the board
+    // was scaled to 80 % of its width, up many times instead of down.
+    double fitScale = bw > 0 ? 0.8 * boardW / bw : 1.0;
+    if (bd > 0)
+        fitScale = std::min(fitScale, 0.8 * boardH / bd);
+    width->setValue(tooBig ? bw * fitScale : natural);
     width->setEnabled(tooBig);
     QObject::connect(fit, &QCheckBox::toggled, width, &QWidget::setEnabled);
     auto *fitRow = new QHBoxLayout;

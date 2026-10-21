@@ -38,6 +38,7 @@
 #include "../src/gcodeexport.h"
 #include "../src/toollibrary.h"
 #include "../src/toolstrip.h"
+#include "../src/surfacemap.h"
 #define private public
 #define protected public
 #include "../src/bitzeropanel.h"
@@ -162,6 +163,8 @@ struct FakeGrbl {
             } else if (uchar(c) == 0x85) {
                 jogClock.invalidate();
                 events << "JOGCANCEL";
+            } else if (uchar(c) >= 0x90 && uchar(c) <= 0x9D) {
+                events << ("OVR" + QByteArray::number(uchar(c), 16));
             } else if (c == 0x18) {
                 const bool moving = (running && !held) || jogging()
                                     || (held && holdClock.isValid() && holdClock.elapsed() < holdSettleMs);
@@ -1104,6 +1107,46 @@ int main(int argc, char **argv)
         s->applyToolLengthOffset(1.5);
         wait(3000);
         check(grbl.count("G43.1") <= 4, "a refused G43.1 is not retried endlessly");
+    }
+    if (mode == "remoteset" || mode == "ovrreset") {
+        // Run settings made at the computer that a pad cannot see refuse a
+        // pad start (an old surface map, a left-on air cut, a tiled design),
+        // and every job starts its overrides at 100 %.
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("Insert tool")) return QStringLiteral("Same length: continue");
+            return QStringLiteral("OK");
+        };
+        QString why;
+        if (mode == "remoteset") {
+            panel.m_airCut->setChecked(true);
+            check(!panel.startFromRemote(&why) && why.contains("Air cut"), "a pad start with air cut on is refused");
+            panel.m_airCut->setChecked(false);
+            c2d::SurfaceMap m;
+            m.x0 = 0; m.y0 = 0; m.x1 = 100; m.y1 = 100; m.cols = 2; m.rows = 2;
+            m.z = {-50.0, -52.0, -50.0, -52.0};
+            panel.setSurfaceMap(m);
+            panel.m_useMap->setChecked(true);
+            check(!panel.startFromRemote(&why) && why.contains("surface map"), "a pad start with the surface map on is refused");
+            panel.m_useMap->setChecked(false);
+            doc.setParam("tiling_enabled", "1");
+            doc.setParam("tile_height", "5");
+            check(!panel.startFromRemote(&why) && why.contains("tiled"), "a tiled design that needs several tiles is refused");
+        } else {
+            grbl.events.clear();
+            check(panel.startFromRemote(&why), "the job starts");
+            wait(800);
+            const int ovr = grbl.events.indexOf("OVR90");
+            int firstMove = -1;
+            for (int i = 0; i < grbl.events.size() && firstMove < 0; ++i)
+                if (grbl.events.at(i).startsWith("G0") || grbl.events.at(i).startsWith("G1"))
+                    firstMove = i;
+            check(ovr >= 0 && grbl.events.contains("OVR99") && (firstMove < 0 || ovr < firstMove),
+                  "feed and spindle overrides are reset to 100 % before the job's first move");
+            spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+        }
     }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
