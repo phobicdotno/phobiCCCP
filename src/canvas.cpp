@@ -984,9 +984,21 @@ void Canvas::drawNodes(QPainter *p) const
     }
 }
 
+// A node drag shows its live shape on the item; when the drag is dropped
+// without a commit, the item goes back to the element's own path.
+void Canvas::restoreEditItem()
+{
+    if (m_grab == GrabNone || m_editId.isEmpty() || !m_doc)
+        return;
+    if (const Element *e = m_doc->elementById(m_editId))
+        if (QGraphicsPathItem *it = itemFor(m_editId))
+            it->setPath(e->painterPath);
+}
+
 void Canvas::syncEditTarget()
 {
     const QStringList ids = selectedElementIds();
+    restoreEditItem();
     m_editId.clear();
     m_model = PathModel();
     if (m_doc && ids.size() == 1) {
@@ -1154,6 +1166,7 @@ void Canvas::setTool(Tool t)
     if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool)
         || !m_splinePts.isEmpty() || !m_tanLines.isEmpty() || m_preview)
         cancelDrawing();
+    restoreEditItem();
     m_tool = t;
     m_drawing = false;
     m_grab = GrabNone;
@@ -1242,6 +1255,7 @@ void Canvas::rebuild()
     const QStringList selected = selectedElementIds();
     m_scene->blockSignals(true);
     m_preview = nullptr;           // owned by the scene; clear() deletes it
+    m_resizing = false;            // its preview is gone with the scene
     m_previewItems.clear();        // likewise
     m_scene->clear();
     if (!m_doc) {

@@ -290,6 +290,7 @@ void GrblStreamer::abortAfterReset()
     m_macroSkipAck = false;                     // its ack died with the reset
     m_macroQueue.clear();
     m_tloPending = (m_tlo != 0.0);
+    m_tloRetries = 0;
     emit errorOccurred(QStringLiteral("controller reset: %1 stopped")
                            .arg(wasProgram ? QStringLiteral("the program")
                                            : QStringLiteral("the tool measurement")));
@@ -394,6 +395,7 @@ void GrblStreamer::stopStream()
     m_adhocPending = 0;                         // reset flushes GRBL's buffer
     m_adhocLines.clear();
     m_tloPending = (m_tlo != 0.0);              // GRBL forgets G43.1 on reset
+    m_tloRetries = 0;
     emit consoleLine(QStringLiteral("> [soft reset]"));
     if (wasMacro)
         emit macroFinished(false);
@@ -564,6 +566,7 @@ void GrblStreamer::applyToolLengthOffset(double mm)
 {
     m_tlo = mm;
     m_tloPending = true;
+    m_tloRetries = 0;
     flushTlo();
 }
 
@@ -782,9 +785,19 @@ void GrblStreamer::handleLine(const QByteArray &line)
         // A refused G43.1 (error:9 while a jog still runs) left the controller
         // without the offset the panel shows: the next job cut that far off.
         // Sent again once the controller reports Idle.
-        if (err && sent == QLatin1String("G43.1")) {
-            m_tloPending = true;
-            m_tloWaitIdle = true;
+        // A controller that keeps refusing it gets three tries, not one per
+        // status report forever.
+        if (sent == QLatin1String("G43.1")) {
+            if (!err) {
+                m_tloRetries = 0;
+            } else if (++m_tloRetries <= 3) {
+                m_tloPending = true;
+                m_tloWaitIdle = true;
+            } else {
+                m_tloRetries = 0;
+                emit errorOccurred(QStringLiteral("the controller refuses the tool length offset "
+                                                  "(G43.1) — it is not applied"));
+            }
         }
         emit commandAnswered(sent, ok);
         if (m_adhocPending == 0) {

@@ -1165,6 +1165,15 @@ MachinePanel::MachinePanel(QWidget *parent)
                                "tool's. Wait until the machine stands still and zero again"));
         }
     });
+    // A refused $H (error:5 with homing disabled, say) never homes: without
+    // this the pending park blocked every jog until Stop or a disconnect.
+    connect(m_grbl, &GrblStreamer::commandAnswered, this, [this](const QString &line, bool ok) {
+        if (ok || line != QLatin1String("$H") || !m_parkAfterHome)
+            return;
+        m_parkAfterHome = false;
+        m_homingStarted = false;
+        log(QStringLiteral("!! the controller refused the homing cycle — no park follows"));
+    });
     connect(m_grbl, &GrblStreamer::probeResult, this,
             [this](double x, double y, double z, bool ok) {
         log(QStringLiteral("probe %1 at machine X%2 Y%3 Z%4")

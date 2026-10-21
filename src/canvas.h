@@ -199,6 +199,7 @@ private:
 
     // Node editor.
     enum NodeGrab { GrabNone, GrabAnchor, GrabIn, GrabOut };
+    void restoreEditItem();             // undo a dropped drag's live item path
     void syncEditTarget();              // pick the node-edit target from the selection
     bool hitNode(const QPointF &scenePos, int *sub, int *node, NodeGrab *what) const;
     bool hitSegment(const QPointF &scenePos, int *sub, int *seg, double *t) const;

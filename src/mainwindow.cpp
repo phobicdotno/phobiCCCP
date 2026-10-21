@@ -2555,6 +2555,13 @@ void MainWindow::autosave()
 // design (Save As offers the original name), never over the user's file.
 void MainWindow::offerRecovery()
 {
+    // Queued at start-up: a box the command-line file's open shows runs
+    // events, and swapping in a recovered design there left it half opened
+    // under the other file's name. Asked once that open is done.
+    if (QApplication::activeModalWidget()) {
+        QTimer::singleShot(200, this, &MainWindow::offerRecovery);
+        return;
+    }
     for (const Recovery::Entry &e : m_recovery.pending()) {
         const QString what = e.untitled ? QStringLiteral("an untitled design")
                                         : QFileInfo(e.source).fileName();

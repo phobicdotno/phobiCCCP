@@ -106,6 +106,7 @@ struct FakeGrbl {
     bool homeOkLate = false, pendingHomeOk = false; QList<QByteArray> queued;
     int heldOks = 0;
     QByteArray reject;
+    bool rejectHome = false;               // answer $H with error:5 (homing disabled)
     QByteArray alarmOn;
     bool locked = false;      // after ALARM:1: deaf until ctrl-X
     bool alarm = false;       // Alarm state: G-code answered error:9
@@ -193,6 +194,8 @@ struct FakeGrbl {
                 }
                 if (line == "$$")
                     send(travel);
+                else if (line == "$H" && rejectHome)
+                    reply = "error:5\r\n";
                 else if (line == "$H") {
                     homeClock.start();
                     homeReports = 2;
@@ -1081,6 +1084,26 @@ int main(int argc, char **argv)
         wait(1500);
         std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G43.1"));
         check(refused >= 1 && grbl.count("G43.1") > refused, "a refused tool offset is sent again");
+    }
+    if (mode == "homerej") {
+        // A refused $H must not leave the park pending (it blocked every jog).
+        wait(600);
+        grbl.rejectHome = true;
+        panel.m_step->setCurrentIndex(0);
+        grbl.events.clear();
+        panel.initializeMachine();
+        wait(1500);
+        panel.jogStep('X', -1);
+        wait(1500);
+        check(!panel.m_parkAfterHome && grbl.count("$J=") == 1, "a jog after a refused $H goes out");
+    }
+    if (mode == "tlospam") {
+        // A G43.1 the controller keeps refusing gets a few tries, not one per report.
+        wait(600);
+        grbl.reject = "G43.1";
+        s->applyToolLengthOffset(1.5);
+        wait(3000);
+        check(grbl.count("G43.1") <= 4, "a refused G43.1 is not retried endlessly");
     }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);

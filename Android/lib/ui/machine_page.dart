@@ -35,9 +35,10 @@ class _MachinePageState extends State<MachinePage> {
   }
 
   String? _targetMachine(Computer c) {
+    // The machine the computer uses now, unless one was picked on this page:
+    // the last send's machine went stale once someone switched machines.
     final ms = c.info?.machines ?? const [];
-    final last = app.lastTarget.split('/');
-    final want = _machine ?? (last.length > 1 && last.first == c.desktop.id ? last[1] : null);
+    final want = _machine;
     return ms.any((m) => m.id == want) ? want : c.info?.activeMachine;
   }
 
@@ -173,6 +174,7 @@ class _MachinePageState extends State<MachinePage> {
                   : () async {
                       try {
                         await app.selectMachine(c, m.id);
+                        if (mounted) setState(() => _machine = m.id);
                         widget.onStatus('${c.name} now uses ${m.name}');
                       } catch (e) {
                         widget.onStatus('Could not switch: $e');

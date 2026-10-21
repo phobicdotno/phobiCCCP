@@ -76,6 +76,9 @@
   - Constraints that could only hold by shrinking a circle, rectangle or polygon to nothing
     (Tangent then Concentric on two circles, a rectangle's opposite corners made coincident)
     were accepted and the shape vanished; they show as a conflict now.
+  - A tool switch or a selection change (Ctrl+A) during a node drag left the dragged shape
+    drawn on the item while the design kept the old one. Undo during a resize drag no longer
+    lands a stale resize on release (it also cleared the redo step).
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
@@ -109,6 +112,9 @@
     controller refuse the tool length offset, so the next job cut that far off in Z. Jogs are
     refused while homing, and a refused offset is sent again once the controller is idle.
   - A tool length measured on one machine was sent again to the next after a machine switch.
+  - Initialize on a controller that refuses homing ($22=0) left every jog refused "while
+    homing" until Stop or a disconnect. A tool length offset the controller keeps refusing
+    is tried three times, then reported, instead of at every status report.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
@@ -145,6 +151,8 @@
     tiles under a mangled name, or failed; the name is kept. Names with "%1" to "%9" also show
     as typed in labels and messages (tool library, pad copies, notes and errors), and a pad
     toolpath with such a name is no longer dropped.
+  - Opening a file from the command line after a crash could have the recovery copy swapped in
+    halfway, under the file's name. The recovery is offered once the open is done.
   - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
     it unsaved; it saves (and stays read-only, also when run as root).
 - **Pad link:**
@@ -164,6 +172,8 @@
     and the copies made after that are still known to be made from each other.
   - A design sent by another computer no longer warns that the pad is old.
   - The pad shows its real version (it said 1.2.3).
+  - Start on the pad's Machine page went to the machine of the last send, not the one just
+    picked there; it uses the machine the computer has in use.
 
 ## v1.3.1 (build 91) — 2026-10-20
 

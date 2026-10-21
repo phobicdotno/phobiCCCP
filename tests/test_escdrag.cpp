@@ -5,6 +5,8 @@
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include <QApplication>
+#include <QGraphicsPathItem>
+#include <QGraphicsScene>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTest>
@@ -19,6 +21,15 @@ static void check(bool ok, const char *what)
     std::printf("%s %s\n", ok ? "ok  " : "FAIL", what);
     if (!ok)
         ++g_fail;
+}
+
+static QRectF itemRect(c2d::Canvas *c, const QString &id)
+{
+    for (QGraphicsItem *it : c->scene()->items())
+        if (it->data(0).toString() == id)
+            if (auto *p = qgraphicsitem_cast<QGraphicsPathItem *>(it))
+                return p->mapToScene(p->path()).boundingRect();
+    return {};
 }
 
 static void run(const QString &mode)
@@ -62,6 +73,44 @@ static void run(const QString &mode)
         check(std::abs(doc.elementById(c.id)->raw.value("radius").toDouble() - 20) < 1e-6 && canvas.undoStack()->count() == 0,
               "Escape mid resize drag: the resize is cancelled");
     }
+    else if (mode == "nodetool" || mode == "nodesel") {
+        // Leaving the drag another way (a tool key, Ctrl+A) must not leave
+        // the dragged shape drawn on the item.
+        const c2d::Element p = c2d::Element::makePath({{100, 100}, {140, 100}, {140, 140}}, true, doc.defaultLayer());
+        const c2d::Element q = c2d::Element::makeCircle({60, 60}, 10, doc.defaultLayer());
+        doc.addElement(p); doc.addElement(q);
+        canvas.rebuild();
+        canvas.setTool(c2d::Canvas::NodeEdit);
+        canvas.selectElements({p.id});
+        QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&canvas, {140, 140}));
+        QTest::mouseMove(canvas.viewport(), vp(&canvas, {160, 160}));
+        if (mode == "nodetool")
+            canvas.setTool(c2d::Canvas::Select);
+        else
+            canvas.selectElements({p.id, q.id});
+        QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&canvas, {160, 160}));
+        const QRectF d = doc.elementById(p.id)->painterPath.boundingRect();
+        const QRectF i = itemRect(&canvas, p.id);
+        check(std::abs(d.right() - i.right()) < 0.01 && std::abs(d.bottom() - i.bottom()) < 0.01,
+              mode == "nodetool" ? "tool switch mid node drag: the item shows the element's own path"
+                                 : "selection change mid node drag: the item shows the element's own path");
+    } else if (mode == "resizeundo") {
+        const c2d::Element c = c2d::Element::makeCircle({60, 100}, 20, doc.defaultLayer());
+        doc.addElement(c);
+        canvas.rebuild();
+        canvas.setTool(c2d::Canvas::Select);
+        canvas.moveElementBy(c.id, 40, 0);
+        canvas.selectElements({c.id});
+        QTest::mousePress(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&canvas, {120, 100}));
+        QTest::mouseMove(canvas.viewport(), vp(&canvas, {130, 100}));
+        canvas.undoStack()->undo();
+        QTest::keyClick(&canvas, Qt::Key_Escape);
+        QTest::mouseMove(canvas.viewport(), vp(&canvas, {140, 100}));
+        QTest::mouseRelease(canvas.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&canvas, {140, 100}));
+        const c2d::Element *e = doc.elementById(c.id);
+        check(std::abs(e->raw.value("radius").toDouble() - 20) < 1e-6 && canvas.undoStack()->canRedo(),
+              "undo mid resize drag: no stale resize lands, the redo step stays");
+    }
     else if (mode == "concentric") {
         c2d::Element a = c2d::Element::makeCircle({100, 100}, 5, doc.defaultLayer());
         c2d::Element b = c2d::Element::makeCircle({130, 100}, 8, doc.defaultLayer());
@@ -86,7 +135,7 @@ int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
-    for (const char *m : {"node", "resize", "concentric"})
+    for (const char *m : {"node", "resize", "concentric", "nodetool", "nodesel", "resizeundo"})
         run(QString::fromLatin1(m));
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;
