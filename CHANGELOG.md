@@ -52,6 +52,8 @@
   - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
   - A V-carve starting deeper than the pocket floor under it measured the room for its cone at
     that floor, not at its start depth, so the cone and shank could cut into the pocket's wall.
+  - A V-carve over an uncut island of a pocket (a boss left standing under the letter) took the
+    pocket's floor as its stock top, so its first pass went through the island full depth.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
@@ -91,6 +93,11 @@
     it in place; it goes back now.
   - In an SVG with a width but no viewBox, sizes in % came out against 100 px, not the width;
     and a preserveAspectRatio starting with "defer" placed the drawing off to one side.
+  - The Area tool round a shape whose own ends nearly meet (an O drawn as one outline with a hair
+    slit, a horseshoe whose tips almost touch) selected that shape, so a pocket also cut its
+    counter or room; the face is added as its own closed path now.
+  - Offset of an open path whose last node sits on its first left its last side unstroked.
+  - An SVG symbol drawn with `<use>` under a root with only a width came in shifted right.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
@@ -134,6 +141,8 @@
     rapid and spindle overrides back at 100 % (they carried over from the job before).
   - Switching to a machine profile with a different BitZero plate kept the old plate's
     settings in the BitZero panel until the program was restarted.
+  - A pad switching the machine while Preferences was open let OK write the old machine's size
+    into the new one; the pad is told to try again once the window is closed.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
@@ -184,6 +193,9 @@
   - Tab width took up to 500 mm and a new cutout started at 127 mm, but tabs are cut at most
     30 mm wide; the field stops at 30 and a new cutout starts at 12.
   - The setup sheet left a cutout's break-through out of its depth.
+  - Depth fields in the toolpath settings kept 2 decimals (3.175 was saved as 3.17); they keep 3.
+  - A thread's Passes took up to 50 and the Adaptive ramp angle up to 45°, but the export cuts at
+    most 20 passes and ramps at 0.5 to 15°; the fields stop there.
 - **Pad link:**
   - A pad design cut with any bit but #201 counted as having toolpath settings made on the
     computer after its first Save there, so every later pad edit went to a "(pad)" copy. The
@@ -210,6 +222,9 @@
   - The pad's Area fill no longer joined a shape's own nearly touching ends (a horseshoe whose
     tips almost meet, an O drawn as one outline), so it filled the wrong piece; and a tap on a
     design with many shapes froze the pad for seconds.
+  - A tap with the Area tool on one big outline (thousands of points) froze the pad for seconds.
+  - Tapping the pad's End depth field and leaving it changed 3.175 to 3.17, so a profile no
+    longer cut through; a field left as it was keeps its value, and End shows 3 decimals.
 
 ## v1.3.1 (build 91) — 2026-10-20
 

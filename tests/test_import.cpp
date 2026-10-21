@@ -455,6 +455,19 @@ int main(int argc, char **argv)
             };
             check(std::abs(left("defer xMinYMin meet") - left("xMinYMin meet")) < 1e-6,
                   "svg: preserveAspectRatio 'defer' is skipped");
+            // A symbol <use>d under a root with only a width stays at 0, not
+            // centred in a strip as wide as the root.
+            auto useLeft = [&](const char *root) {
+                const c2d::ImportResult u = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'") + root
+                        + "><symbol id='s' viewBox='0 0 10 10'><rect width='10' height='10'/></symbol>"
+                          "<use xlink:href='#s'/><rect x='0' y='0' width='1' height='1'/></svg>",
+                    opts(0, 0), QStringLiteral("use"));
+                return u.ok ? u.bounds.width() : -1.0;
+            };
+            // The 1 px rect at 0 pins the left edge: the width is the symbol's reach.
+            check(std::abs(useLeft(" width='100mm'") - useLeft("")) < 1e-6,
+                  "svg: a symbol under a width-only root is not shifted");
         }
         {
             // <use> places what it refers to (pdftocairo's text, clones).

@@ -868,7 +868,10 @@ QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, doub
     svgUserLength(at.value(QLatin1String("y")), vpH, &y);
     QTransform vb;
     if (def.viewBox.isValid()) {
-        double w = vpW > 0 ? vpW : def.viewBox.width(), h = vpH > 0 ? vpH : def.viewBox.height();
+        // The viewport only when both sides are known: a width alone fitted
+        // the symbol into a wide strip and centred it.
+        const bool vp = vpW > 0 && vpH > 0;
+        double w = vp ? vpW : def.viewBox.width(), h = vp ? vpH : def.viewBox.height();
         svgUserLength(at.value(QLatin1String("width")), vpW, &w);
         svgUserLength(at.value(QLatin1String("height")), vpH, &h);
         if (w > 0 && h > 0)

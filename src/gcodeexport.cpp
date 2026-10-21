@@ -3464,7 +3464,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                             for (const Cleared &o : cleared)
                                 if (o.zBot <= c.zBot + 1e-6)
                                     regs << o.foot;
-                            if (unionRegions(regs).contains(need))
+                            // Clipper, not QPainterPath::contains(): that missed
+                            // an uncut island standing wholly inside the letter.
+                            double left = 0;
+                            for (const QPolygonF &g : subtractRegion(need, unionRegions(regs)).toSubpathPolygons())
+                                left += std::fabs(vec::ringArea(g));
+                            if (left < 0.01)
                                 top = cand;
                         }
                     }

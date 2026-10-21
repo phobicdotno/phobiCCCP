@@ -276,7 +276,7 @@ int main(int argc, char *argv[])
     {
         QJsonObject jt{{"type", "thread_toolpath"}, {"uuid", "{th}"}, {"name", "Thread"},
                        {"enabled", true}, {"start_depth", "-0.000"}, {"end_depth", "-5.000"},
-                       {"pitch", 1.0}, {"speeds", speeds}, {"tool", tool}};
+                       {"pitch", 1.0}, {"passes", 2}, {"speeds", speeds}, {"tool", tool}};
         form.setToolpath("{th}", "thread_toolpath", jt);
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         app.processEvents();
@@ -297,6 +297,23 @@ int main(int argc, char *argv[])
         app.processEvents();
         auto *tw = editorFor<QDoubleSpinBox>(&form, "tab_width");
         check(tw && tw->maximum() == 30.0 && tw->decimals() == 3, "precision: tab width stops at 30 mm, 3 decimals");
+        auto *cd = editorFor<QDoubleSpinBox>(&form, "cut_depth");
+        check(cd && cd->decimals() == 3, "precision: depths keep 3 decimals (3.175 stayed 3.17)");
+
+        form.setToolpath("{th}", "thread_toolpath", jt);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *passes = editorFor<QSpinBox>(&form, "passes");
+        check(passes && passes->maximum() == 20, "thread passes stop at the 20 the export cuts");
+
+        QJsonObject ja{{"type", "adaptive_toolpath"}, {"uuid", "{ad}"}, {"name", "Adaptive"},
+                       {"enabled", true}, {"start_depth", "-0.000"}, {"end_depth", "-5.000"},
+                       {"ramp_angle", 2.0}, {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{ad}", "adaptive_toolpath", ja);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *ramp = editorFor<QDoubleSpinBox>(&form, "ramp_angle");
+        check(ramp && ramp->maximum() == 15.0 && ramp->minimum() == 0.5, "adaptive ramp angle is 0.5 to 15");
     }
 
     std::printf("test_toolpathform: %d checks OK\n", g_checks);

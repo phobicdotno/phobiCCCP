@@ -2968,6 +2968,11 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
         // Opening it would swap the design under a dialog or an export.
         reply = padError(QStringLiteral("%1 is busy with the open design; try again shortly")
                              .arg(QSysInfo::machineHostName()));
+    } else if (op == QLatin1String("machine") && docHeld()) {
+        // Preferences (or an export) holds the old machine's settings and
+        // would write them into the new one on OK.
+        reply = padError(QStringLiteral("%1 has a window open; try again shortly")
+                             .arg(QSysInfo::machineHostName()));
     } else if (op == QLatin1String("info")) {
         reply = padInfo();
         // A pad's sync round says who it is, so Send to pad… can list it,

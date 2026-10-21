@@ -389,7 +389,7 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     };
     auto depth = [](const QString &label, const QString &tip = {}) {
         F f; f.card = QStringLiteral("depth"); f.label = label; f.kind = F::Depth;
-        f.unit = QStringLiteral("mm"); f.max = 1000; f.tip = tip; return f;
+        f.unit = QStringLiteral("mm"); f.max = 1000; f.tip = tip; f.decimals = 3; return f;
     };
     auto deg = [](const QString &card, const QString &label, double min, double max) {
         F f; f.card = card; f.label = label; f.kind = F::Number; f.unit = QStringLiteral("°");
@@ -462,7 +462,7 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     }
     {
         F f; f.card = QStringLiteral("cut"); f.label = QStringLiteral("Passes"); f.kind = F::Int;
-        f.min = 1; f.max = 50; add(QStringLiteral("passes"), f);
+        f.min = 1; f.max = 20; add(QStringLiteral("passes"), f); // the export cuts at most 20
     }
     add(QStringLiteral("left_hand"), sw(QStringLiteral("cut"), QStringLiteral("Left-hand thread")));
     add(QStringLiteral("length"), mm(QStringLiteral("cut"), QStringLiteral("Slot length"), 500));
@@ -496,7 +496,11 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
 
     // Entry
     add(QStringLiteral("enable_ramping"), sw(QStringLiteral("entry"), QStringLiteral("Ramp in")));
-    add(QStringLiteral("ramp_angle"), deg(QStringLiteral("entry"), QStringLiteral("Ramp angle"), 0, 45));
+    // Adaptive ramps between 0.5° and 15°, whatever is set.
+    if (type == QLatin1String("adaptive_toolpath"))
+        add(QStringLiteral("ramp_angle"), deg(QStringLiteral("entry"), QStringLiteral("Ramp angle"), 0.5, 15));
+    else
+        add(QStringLiteral("ramp_angle"), deg(QStringLiteral("entry"), QStringLiteral("Ramp angle"), 0, 45));
     add(QStringLiteral("helix_entry"), sw(QStringLiteral("entry"), QStringLiteral("Helix in")));
     add(QStringLiteral("helix_diameter"), enabledBy(mm(QStringLiteral("entry"), QStringLiteral("Helix Ø"), 200),
                                                     QStringLiteral("helix_entry")));

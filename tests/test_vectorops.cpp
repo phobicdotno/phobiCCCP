@@ -682,6 +682,17 @@ int main(int argc, char **argv)
               "fill: one corner beside an inscribed circle");
     }
 
+    {
+        // An open path ending on its start (a snapped last click) is stroked
+        // along its last side too.
+        const Element open = Element::makePath({{0, 0}, {10, 0}, {5, 8}, {0, 0}}, false, layer);
+        QPainterPath all;
+        all.setFillRule(Qt::OddEvenFill);
+        for (const Element &e : vec::offsetElements({open}, 1.0))
+            all.addPath(e.painterPath);
+        check(all.contains(QPointF(2.5, 4.0)), "offset: an open path ending on its start strokes its last side");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

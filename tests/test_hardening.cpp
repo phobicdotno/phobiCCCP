@@ -1220,6 +1220,27 @@ int main(int argc, char *argv[])
         const c2d::GcodeResult shg = c2d::exportGcode(sh.doc);
         check(!shg.skipped.isEmpty() || !shg.notes.isEmpty(),
               "vcarve: a floor shallower than the start depth still needs room for the cone at Z0");
+        // An uncut island inside the letter's reach is not floor: a pocket
+        // round a 1.5 mm boss, an 8 mm square V-carved over the boss.
+        Rig il;
+        const c2d::Element ilArea = c2d::Element::makeRectangle({50, 50}, 40, 40, layer);
+        const c2d::Element ilBoss = c2d::Element::makeCircle({50, 50}, 1.5, layer);
+        const c2d::Element ilLetter = c2d::Element::makeRectangle({50, 50}, 8, 8, layer);
+        il.addShape(ilArea);
+        il.addShape(ilBoss);
+        il.addShape(ilLetter);
+        il.addToolpath("pocket_toolpath", {{"end_depth", "3.000"}, {"uuid", "{tp-0}"},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", ilArea.id}},
+                                                                   QJsonObject{{"uuid", ilBoss.id}}}}});
+        il.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "3.000"}, {"end_depth", "6.000"},
+                                                    {"stepdown", 1.0},
+                                                    {"tool", QJsonObject{{"diameter", 6.0}, {"number", 301},
+                                                                         {"angle", 60.0}, {"type", 2}}},
+                                                    {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", ilLetter.id}}}}});
+        const c2d::GcodeResult ilg = c2d::exportGcode(il.doc);
+        check(!ilg.skipped.isEmpty() || !ilg.notes.isEmpty(),
+              "vcarve: an uncut island under the letter is not a floor");
         // A faced panel's floor counts like a pocket's.
         Rig fc;
         const c2d::Element faceArea = c2d::Element::makeRectangle({50, 50}, 80, 60, layer);

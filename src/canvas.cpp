@@ -575,8 +575,22 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
                 int own = 0;
                 for (const QPolygonF &g : shape.toSubpathPolygons())
                     own += g.size() >= 3 ? 1 : 0;
-                if (f.size() - 1 == own)
+                // And only when the island's own even-odd region (what a
+                // toolpath cuts) fills the hole: a one-ring "O" with a hair
+                // slit, or a horseshoe whose tips nearly meet, closes up as a
+                // hole here, but selecting it would cut its counter or room.
+                double ownArea = 0, holeArea = 0, perim = 0;
+                for (const QPolygonF &g : vec::offsetRings({shape}, {}, 0))
+                    ownArea += vec::ringArea(g);
+                for (const QPolygonF &g : f.mid(1)) {
+                    holeArea += std::fabs(vec::ringArea(g));
+                    for (int i = 0; i < g.size(); ++i)
+                        perim += QLineF(g.at(i), g.at((i + 1) % g.size())).length();
+                }
+                if (f.size() - 1 == own && std::fabs(std::fabs(ownArea) - holeArea) <= perim * 0.02)
                     back = f.mid(1);
+                else
+                    return false;
             } else {
                 const QVector<QPolygonF> in = vec::offsetRings({shape}, {}, -0.01);
                 back = in.isEmpty() ? in : vec::offsetRings({pathOf(in)}, {}, 0.01);
