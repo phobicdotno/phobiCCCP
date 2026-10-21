@@ -20,6 +20,11 @@
     note; each part now ends with a lap round where the tool can reach.
   - Adaptive on a groove round a centred island (a ring channel round a boss) entered with
     its helix inside the island and left the groove's middle uncut; it enters in the groove.
+  - Adaptive started with a rapid across to X0 Y0 before its first cut; it goes straight to
+    its entry now.
+  - V-carve with a flat or ball bit cut straight down past the walls; it asks for a V-bit,
+    as 2D Chamfer does. 2D Chamfer no longer takes a ball bit with an angle on file, and a
+    bevel wider than the V-bit's cone (which the shank would cut) is refused with a note.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
@@ -35,9 +40,11 @@
   - A rotated DXF block array (MINSERT) ran along X instead of turning with the insert.
   - Extend, and the tangent arc's start, went along the chord off a curve whose end has no
     handle of its own (an S after a line); they follow the curve now.
-  - The Area tool took the whole shape when a small notch overlapped it (anything under 0.2%
-    of a big shape's area); only a sliver along the outline counts as the same shape now.
-    The pad's Area tool has the same rule.
+  - The Area tool took the whole shape when a small notch overlapped it (a few mm on a table
+    or a sheet); the face counts as the shape only when their corners lie on each other's
+    outline. The pad's Area tool has the same rule.
+  - Break and Convert to paths on text left the extra pieces out of the shape's group and
+    dropped construction from them.
   - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
@@ -52,7 +59,8 @@
   - A "rise" to safe Z no longer moves down when the spindle already stands higher (safe Z set
     below a tall job's retract height plunged at the last X Y at the end of the job).
     The end-of-job rise waits until the program's own last retract has run, and a tool change
-    parks at the top.
+    parks at the top. Park, Go to X0 Y0 and Measure are refused while that rise is still
+    waiting (they moved down from the job's last retract).
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -70,9 +78,11 @@
   - A Send window refused its own design after a pad edit reopened it by its real path.
   - A design of exactly 12 MB passed the size check and then failed as "request too long".
   - A pad's edit of a Carbide Create file reset its retract height to 2.54 mm (and its file
-    permissions); both are kept now.
+    permissions); both are kept now, with tiling and the other job settings, and a copy
+    made from a pad edit keeps them too.
   - A pad's edit of another design, arriving while a number was being typed, cut the number
-    short ("2" of "2.5"); the typing is left alone.
+    short ("2" of "2.5"); the typing is left alone. Enter on a field left unchanged no longer
+    counts as typing, so the pad's edit is taken.
 - **Pad link:**
   - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
     identity, and the pad's id on the computer is its own id in the versions.

@@ -627,20 +627,78 @@ int main(int argc, char **argv)
         check(!down, "descendlive: the end-of-job rise never moves Z down from the job's retract");
     }
 
-    if (mode == "tlo") {
-        // Machine A: a tool measured 12 mm longer than the reference.
-        s->applyToolLengthOffset(12.0);
+    if (mode == "tc") {
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_bsSafeZ->setValue(-30.0);
+        grbl.mz = -40;
         wait(600);
-        // Switch to machine B (same port here), which has no BitSetter.
         grbl.events.clear();
-        QString why;
-        panel.reloadMachine(&why);
-        wait(300);
-        grbl.send("\r\nGrbl 1.1h ['$' for help]\r\n");   // the board reboots on port open (DTR)
-        wait(2500);
-        std::printf("offset label on machine B: %s\n", qPrintable(panel.m_tloLabel->text()));
+        seen.clear();
+        answer = [&](const Seen &v) {
+            std::printf("prompt: %s\n", qPrintable(v.headline));
+            return QStringLiteral("Measure and continue");
+        };
+        panel.m_endOfJobPending = true;
+        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G1X5F500"),
+                        QStringLiteral("M0 ;T2"), QStringLiteral("M3S1000"), QStringLiteral("G1X6F500")});
+        spin(8000, [&] { return !s->isStreaming(); });
+        wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
-        check(grbl.count("G43.1 Z12") == 0, "tlo: machine A's tool offset is not applied on machine B");
+        check(seen.size() == 1, "tc: one prompt");
+        check(!s->isStreaming(), "tc: job finished");
+        check(grbl.indexOf("G43.1 Z2") >= 0, "tc: offset applied");
+        check(grbl.indexOf("G1X6") > grbl.indexOf("G43.1 Z2"), "tc: rest after offset");
+        check(grbl.indexOf("M5", grbl.indexOf("G1X6")) > 0, "tc: spindle off at end");
+    }
+
+    if (mode == "holdend") {
+        panel.m_endOfJobPending = true;
+        grbl.running = true;
+        wait(300);
+        grbl.events.clear();
+        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+        spin(2000, [&] { return !s->isStreaming(); });
+        panel.m_pauseBtn->click();          // hold in the last seconds
+        wait(300);
+        grbl.running = false;               // planner would be done, but held
+        wait(1500);
+        check(grbl.indexOf("G53 G0 Z") < 0, "holdend: no rise while held");
+        std::printf("pause button: %s\n", qPrintable(panel.m_pauseBtn->text()));
+        panel.m_pauseBtn->click();          // resume
+        wait(1500);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(grbl.indexOf("G53 G0 Z") >= 0 && grbl.indexOf("M5", grbl.indexOf("G53 G0 Z")) >= 0,
+              "holdend: rise and M5 after Resume");
+    }
+
+    if (mode == "parkend" || mode == "gotoend" || mode == "measureend") {
+        // As descendlive: safe Z -30, the job cuts at machine Z -40 and its
+        // last line retracts to Z -10 (tall board). Every line is acked, the
+        // planner still runs them (Run). The operator presses Park (or Go to
+        // X0 Y0 / Measure bit) as soon as the log says "program finished".
+        panel.m_bsSafeZ->setValue(-30.0);
+        panel.m_bsEnabled->setChecked(true);
+        grbl.mz = -40;
+        wait(600);
+        grbl.events.clear();
+        panel.m_endOfJobPending = true;
+        grbl.running = true;
+        s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+        spin(2000, [&] { return !s->isStreaming(); });
+        if (mode == "parkend") panel.park();
+        else if (mode == "gotoend") panel.goToXY0();
+        else panel.measureTool(c2d::MachinePanel::Phase::MeasureManual);
+        QTimer::singleShot(500, [&] { grbl.mz = -10; grbl.running = false; });
+        wait(2500);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        bool down = false;
+        for (const QByteArray &e : grbl.events)
+            if (e.startsWith("G53 G0 Z") && e.mid(8).toDouble() < -10 - 1e-9)
+                down = true;
+        check(!down, "parkend: no move down from the job's final retract");
     }
 
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");

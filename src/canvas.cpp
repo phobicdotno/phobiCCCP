@@ -551,12 +551,6 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
         }
         return r;
     };
-    auto area = [](const QVector<QPolygonF> &rings) {
-        double a = 0;
-        for (const QPolygonF &g : rings)
-            a += vec::ringArea(g);
-        return std::fabs(a);
-    };
     // Same region: what is in one and not the other is a sliver at most.
     auto same = [&](const QPainterPath &a, const QPainterPath &b) {
         // A pocket shape with an island inside is two rings; a lone outline
@@ -572,16 +566,38 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
         if (!a.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(b.boundingRect())
             || !b.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(a.boundingRect()))
             return false;
-        const double diff = area(vec::booleanRings({a}, {b}, vec::BoolOp::Subtract))
-                            + area(vec::booleanRings({b}, {a}, vec::BoolOp::Subtract));
-        // A sliver along the outline (rounding, flattening): 0.02 mm of its
-        // length. A share of the area let a notch of 0.2% of a big shape
-        // (22 x 22 mm on a 600 x 400 table) count as the whole shape.
-        double perimeter = 0;
-        for (const QPolygonF &g : a.toSubpathPolygons())
-            for (int i = 0; i + 1 < g.size(); ++i)
-                perimeter += QLineF(g.at(i), g.at(i + 1)).length();
-        return diff <= 0.02 * perimeter + 0.01;
+        // Every corner of each lies on the other's outline. An area rule
+        // (even 0.02 mm per mm of outline) let a notch of a few mm on a big
+        // shape count as the whole shape; a notch's corners are off the
+        // outline by its own size.
+        auto segDist = [](const QPointF &p, const QPointF &s, const QPointF &e) {
+            const QPointF d = e - s;
+            const double l2 = QPointF::dotProduct(d, d);
+            const double t = l2 > 0 ? std::clamp(QPointF::dotProduct(p - s, d) / l2, 0.0, 1.0) : 0.0;
+            return QLineF(p, s + t * d).length();
+        };
+        // Qt flattens curves for 1-unit pixels; in mm that is a coarse
+        // polygon (a 5 mm circle off its own outline by more than 0.1 mm).
+        auto fine = [](const QPainterPath &p) {
+            QList<QPolygonF> out = p.toSubpathPolygons(QTransform::fromScale(100, 100));
+            for (QPolygonF &g : out)
+                g = QTransform::fromScale(0.01, 0.01).map(g);
+            return out;
+        };
+        auto near = [&segDist, &fine](const QPainterPath &from, const QPainterPath &to) {
+            const QList<QPolygonF> tg = fine(to);
+            for (const QPolygonF &g : fine(from))
+                for (const QPointF &v : g) {
+                    double best = 1e18;
+                    for (const QPolygonF &h : tg)
+                        for (int i = 0; i + 1 < h.size(); ++i)
+                            best = std::min(best, segDist(v, h.at(i), h.at(i + 1)));
+                    if (best > 0.1)
+                        return false;
+                }
+            return true;
+        };
+        return near(a, b) && near(b, a);
     };
     auto keep = [&ids](const QString &id) {
         if (!ids.contains(id))
@@ -1842,9 +1858,8 @@ void Canvas::modifyAt(const QPointF &q)
         }
         QVector<Element> after;
         after.append(Element::withPathModel(before, parts.first()));
-        const QJsonObject layer = before.raw.value("layer").toObject();
         for (int i = 1; i < parts.size(); ++i)
-            after.append(Element::makeBezierPath(parts.at(i), layer));
+            after.append(Element::pieceOf(before, parts.at(i)));
         QHash<QString, QStringList> piecesOf;
         for (const Element &e : after)
             piecesOf[before.id] << e.id;

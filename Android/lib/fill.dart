@@ -219,7 +219,7 @@ bool _onSeg(_V a, _V b, _V p) =>
     p.$2 >= math.min(a.$2, b.$2) &&
     p.$2 <= math.max(a.$2, b.$2);
 
-/// The same outline as [ring], to within a sliver: same box and same area.
+/// The same outline as [ring], to within a sliver: same box, corners on each other's outline.
 bool sameRing(List<Pt> a, List<Pt> b) {
   List<double> box(List<Pt> r) => [
     r.map((p) => p.$1).reduce(math.min),
@@ -231,15 +231,28 @@ bool sameRing(List<Pt> a, List<Pt> b) {
   for (var i = 0; i < 4; i++) {
     if ((ba[i] - bb[i]).abs() > 0.05) return false;
   }
-  // A sliver along the outline (rounding, flattening): 0.02 mm of its
-  // length. A share of the area let a notch of 0.2% of a big shape count as
-  // the whole shape. The same rule as the desktop's Area tool.
-  var perimeter = 0.0;
-  for (var i = 0; i < a.length; i++) {
-    final n = a[(i + 1) % a.length];
-    final dx = n.$1 - a[i].$1, dy = n.$2 - a[i].$2;
-    perimeter += math.sqrt(dx * dx + dy * dy);
+  // Every corner of each lies on the other's outline. An area rule let a
+  // notch of a few mm on a big shape count as the whole shape; a notch's
+  // corners are off the outline by its own size. The same rule as the
+  // desktop's Area tool.
+  return _near(a, b) && _near(b, a);
+}
+
+double _segDist(Pt p, Pt s, Pt e) {
+  final dx = e.$1 - s.$1, dy = e.$2 - s.$2;
+  final l2 = dx * dx + dy * dy;
+  final t = l2 > 0 ? (((p.$1 - s.$1) * dx + (p.$2 - s.$2) * dy) / l2).clamp(0.0, 1.0) : 0.0;
+  final x = s.$1 + t * dx - p.$1, y = s.$2 + t * dy - p.$2;
+  return math.sqrt(x * x + y * y);
+}
+
+bool _near(List<Pt> from, List<Pt> to) {
+  for (final v in from) {
+    var best = double.infinity;
+    for (var i = 0; i < to.length; i++) {
+      best = math.min(best, _segDist(v, to[i], to[(i + 1) % to.length]));
+    }
+    if (best > 0.1) return false;
   }
-  final aa = ringArea(a).abs(), ab = ringArea(b).abs();
-  return (aa - ab).abs() <= 0.02 * perimeter + 0.01;
+  return true;
 }

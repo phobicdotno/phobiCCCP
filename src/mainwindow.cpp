@@ -1334,6 +1334,21 @@ MainWindow::MainWindow(QWidget *parent)
     // Come back up in the mode the shop PC was left in.
     const int saved = QSettings().value(QStringLiteral("ui/mode"), 0).toInt();
     setMode(MainWindow::Mode(qBound(0, saved, 3)), false);
+    // A field's "modified" flag (typingPending) stays set after Enter when
+    // the text did not change; clear it once the edit is finished. Hooked
+    // on first focus, so fields made later (toolpath forms) are covered.
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget *, QWidget *now) {
+        if (!now || !isAncestorOf(now))
+            return;
+        auto *le = qobject_cast<QLineEdit *>(now);
+        if (!le)
+            if (auto *sb = qobject_cast<QAbstractSpinBox *>(now))
+                le = sb->findChild<QLineEdit *>();
+        if (!le || le->property("modifiedHooked").toBool())
+            return;
+        le->setProperty("modifiedHooked", true);
+        connect(le, &QLineEdit::editingFinished, le, [le] { le->setModified(false); });
+    });
 }
 
 // [ + ]: square brackets with a plus inside, the full-screen toggle; while
@@ -2287,8 +2302,10 @@ bool MainWindow::typingPending() const
     QWidget *f = QApplication::focusWidget();
     if (!f || !isAncestorOf(f))
         return false;
-    if (f->property("typed").toBool())
-        return true;
+    // Fields that track it themselves (the toolpath form) say so exactly.
+    const QVariant typed = f->property("typed");
+    if (typed.isValid())
+        return typed.toBool();
     auto *le = qobject_cast<QLineEdit *>(f);
     if (!le)
         if (auto *sb = qobject_cast<QAbstractSpinBox *>(f))
@@ -2807,9 +2824,10 @@ QString padCopyPath(const QString &path)
 
 // Write the pad design `d` to `path`, built beside it and swapped in, so a
 // failure leaves what is there alone.
-bool buildPadFile(const QJsonObject &d, const QString &path, QString *err)
+bool buildPadFile(const QJsonObject &d, const QString &path, QString *err,
+                  const QString &keepFrom = QString())
 {
-    return padlink::rebuildDocument(d, path, err);
+    return padlink::rebuildDocument(d, path, err, keepFrom);
 }
 
 } // namespace
@@ -3463,7 +3481,7 @@ void MainWindow::padDesignChanged(const QString &id)
                 continue;
             }
             const QString copy = padCopyPath(path);
-            if (copy.isEmpty() || !buildPadFile(d, copy, &err)) {
+            if (copy.isEmpty() || !buildPadFile(d, copy, &err, path)) {
                 statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; %2 %3, and the pad's version "
                                                         "could not be made beside it: %4")
                                              .arg(name, file, why, err), 10000);

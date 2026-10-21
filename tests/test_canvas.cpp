@@ -449,7 +449,11 @@ int main(int argc, char *argv[])
         cv.centerOn(QPointF(50, 50));
         QUndoStack *u = cv.undoStack();
         const QJsonObject layer = d2.defaultLayer();
-        const c2d::Element h = c2d::Element::makePath({{0, 50}, {100, 50}}, false, layer);
+        // A construction line in a group: every broken piece stays both.
+        QJsonObject hj = c2d::Element::makePath({{0, 50}, {100, 50}}, false, layer).raw;
+        hj.insert("construction", true);
+        hj.insert("group_id", "g-break");
+        const c2d::Element h = c2d::Element::fromJson(hj);
         const c2d::Element v1 = c2d::Element::makePath({{30, 0}, {30, 100}}, false, layer);
         const c2d::Element v2 = c2d::Element::makePath({{70, 0}, {70, 100}}, false, layer);
         const c2d::Element shortLine = c2d::Element::makePath({{0, 20}, {20, 20}}, false, layer);
@@ -470,6 +474,10 @@ int main(int argc, char *argv[])
         cv.setTool(c2d::Canvas::Break);
         click(&cv, {50, 50});
         check(d2.elements().size() == 6 && u->count() == 1, "break makes three pieces of the line");
+        int kept = 0;
+        for (const c2d::Element &e : d2.elements())
+            kept += c2d::Element::isConstruction(e) && e.raw.value("group_id").toString() == "g-break";
+        check(kept == 3, "broken pieces keep construction and the group");
         u->undo();
         check(d2.elements().size() == 4, "undo break");
 

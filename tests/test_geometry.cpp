@@ -1312,6 +1312,31 @@ int main(int argc, char *argv[])
         const c2d::GcodeResult gf = c2d::exportGcode(flat.doc);
         check(gf.done.isEmpty() && gf.skipped.size() == 1 && gf.skipped.first().contains("V-bit"),
               "chamfer with an end mill is refused");
+        // A ball bit with an angle on file is still no V-bit; a bevel deeper
+        // than the cone would be cut by the shank.
+        QJsonObject ball = vbit;
+        ball.insert("type", 1);
+        Rig rb;
+        rb.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        rb.addToolpath("chamfer_toolpath", {{"tool", ball}});
+        check(c2d::exportGcode(rb.doc).done.isEmpty(), "chamfer with a ball bit is refused");
+        Rig rw;
+        rw.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        rw.addToolpath("chamfer_toolpath", {{"chamfer_width", 6.0}, {"tip_offset", 0.5}, {"tool", vbit}});
+        const c2d::GcodeResult gw = c2d::exportGcode(rw.doc);
+        check(gw.done.isEmpty() && gw.skipped.size() == 1 && gw.skipped.first().contains("radius"),
+              "chamfer wider than the V-bit is refused");
+        // V-carve with a flat end mill: refused, not carved past the walls.
+        QJsonObject em;
+        em.insert("diameter", 6.35);
+        em.insert("number", 202);
+        em.insert("type", 0);
+        Rig rv;
+        rv.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        rv.addToolpath("advanced_vcarve_toolpath", {{"tool", em}});
+        const c2d::GcodeResult gv = c2d::exportGcode(rv.doc);
+        check(gv.done.isEmpty() && gv.skipped.size() == 1 && gv.skipped.first().contains("V-bit"),
+              "v-carve with an end mill is refused");
     }
 
     // --- adaptive: helix entry, passes repeated per level, inside the pocket --
@@ -1332,6 +1357,13 @@ int main(int argc, char *argv[])
         check(bb.width() > 60 - 2 * R - 0.1 && bb.height() > 40 - 2 * R - 0.1,
               "adaptive reaches the walls");
         check(approx(minZ, -6, 1e-6), "adaptive depth");
+        bool origin = false;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc)
+                break;
+            origin = origin || (op.kind == c2d::Op::Rapid && std::fabs(op.x) < 1e-9 && std::fabs(op.y) < 1e-9);
+        }
+        check(!origin, "adaptive does not rapid to X0 Y0 before its first cut");
         // Two levels, each entered on a helix that sinks gently.
         int helixArcs = 0;
         bool gentle = true;

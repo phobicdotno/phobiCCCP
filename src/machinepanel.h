@@ -291,6 +291,8 @@ private:
     double switchClearance() const;
     double safeZ() const;
     double riseZ() const;
+    bool endRiseWaiting() const;
+    bool jobWindingDown(const QString &what);
     QString m_unhomedWhy = QStringLiteral("not connected");
     QString m_lastLimitPins;
     bool m_limitWarned = false;
@@ -308,6 +310,7 @@ private:
     bool m_holdSeen = false;
     QElapsedTimer m_heldClock;
     void setHeld(bool held);             // m_held and the pause button
+    bool m_endRisePending = false;       // the end-of-job rise waits for Idle
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
     QProgressBar *m_progress;
     QPlainTextEdit *m_console;

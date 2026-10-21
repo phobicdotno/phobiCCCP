@@ -1855,6 +1855,10 @@ public:
 
     void retract()
     {
+        // Nothing cut yet: the emitter starts at X0 Y0, and a retract there
+        // would rapid the bit across to the origin before the first move.
+        if (m_ops.isEmpty())
+            return;
         m_ops.append(Op::rapid(m_x, m_y, m_safeZ));
     }
 
@@ -3143,14 +3147,20 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // side "outside" bevels a part's outer edge (tip outside the
             // closed vectors), "inside" a hole's or pocket's rim. Open
             // vectors are traced as they are.
-            const double bitAngle = numOr(tool.value("angle"), 0);
-            if (!(bitAngle > 0)) {
+            const ToolGeom vg = toolGeomOf(tool);
+            if (vg.kind != ToolGeom::VBit) {
                 res.skipped << QStringLiteral("%1 (needs a V-bit)").arg(name);
                 continue;
             }
-            const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 170.0) / 2));
+            const double halfTan = qTan(qDegreesToRadians(qBound(10.0, vg.angle, 170.0) / 2));
             const double width = qMax(0.0, numOr(j.value("chamfer_width"), 1.0));
             const double tip = qMax(0.0, numOr(j.value("tip_offset"), 0.5));
+            // Deeper than the cone, the bevel would be cut by the shank.
+            if (width + tip > vg.radius() + 1e-6) {
+                res.skipped << QStringLiteral("%1 (chamfer width + tip offset %2 mm is more than the V-bit's radius %3 mm)")
+                                   .arg(name).arg(width + tip, 0, 'f', 2).arg(vg.radius(), 0, 'f', 2);
+                continue;
+            }
             const bool inside = j.value("side").toString() == QLatin1String("inside");
             cp.zBot = cp.zTop - (width + tip) / halfTan;
             QVector<const Element *> closedEls;
@@ -3321,7 +3331,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 }
             }
         } else if (vcarve) {
-            const double bitAngle = numOr(tool.value("angle"), 60);
+            // A flat or ball bit cuts straight down past the walls the depth
+            // follows; only a V-bit's cone fits them. A tool with no type
+            // given is taken as a 60-degree V-bit, as before.
+            const ToolGeom vg = toolGeomOf(tool);
+            if (tool.contains(QLatin1String("type")) && vg.kind != ToolGeom::VBit) {
+                res.skipped << QStringLiteral("%1 (needs a V-bit)").arg(name);
+                continue;
+            }
+            const double bitAngle = vg.kind == ToolGeom::VBit ? vg.angle : 60.0;
             const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 179.0) / 2));
             const double stepover = qMax(0.05, numOr(j.value("stepover"), 0.2));
             const QPainterPath region = regionOf(elems);   // fine; spurs are pruned in medialAxis()

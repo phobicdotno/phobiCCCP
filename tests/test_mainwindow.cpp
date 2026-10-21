@@ -264,6 +264,37 @@ int main(int argc, char *argv[])
         w.m_canvas->selectAreaAt(ti->sceneBoundingRect().center(), false);
         check(int(d.elements().size()) == before + 1, "area notch: the face is added, not the whole shape taken");
     }
+    // Smaller notches too (a few mm on an edge or corner), and a plain shape
+    // is still the whole shape.
+    {
+        struct Case { const char *name; QPointF at; bool circle; double size; bool notched; };
+        const Case cases[] = {
+            {"8 mm square on an edge", {300, 200}, false, 8, true},
+            {"12 mm square on a corner", {600, 400}, false, 12, true},
+            {"10 mm circle on an edge", {300, 200}, true, 10, true},
+            {"no notch", {0, 0}, false, 0, false},
+        };
+        double y = 3000;
+        for (const Case &c : cases) {
+            const c2d::Element t = c2d::Element::makeRectangle({1300, y + 200}, 600, 400, d.defaultLayer());
+            d.addElement(t);
+            if (c.notched) {
+                // c.at is from the table's lower-left; an edge notch sits on y = 0.
+                const QPointF ctr(1000 + c.at.x(), y + (c.at.y() == 200 ? 0 : c.at.y()));
+                d.addElement(c.circle ? c2d::Element::makeCircle(ctr, c.size / 2, d.defaultLayer())
+                                      : c2d::Element::makeRectangle(ctr, c.size, c.size, d.defaultLayer()));
+            }
+            w.m_canvas->setDocument(&d);
+            QApplication::processEvents();
+            const int before = int(d.elements().size());
+            QGraphicsItem *ti = w.m_canvas->itemFor(t.id);
+            check(ti, "area notch: the table is drawn");
+            w.m_canvas->selectAreaAt(ti->sceneBoundingRect().center(), false);
+            std::fprintf(stderr, "area notch %s: %d -> %d\n", c.name, before, int(d.elements().size()));
+            check(int(d.elements().size()) == before + (c.notched ? 1 : 0), c.name);
+            y += 1000;
+        }
+    }
 
     // A Send-to dialog sends the design it was opened for: a different one
     // opened under it meanwhile is refused, not sent under the old name.

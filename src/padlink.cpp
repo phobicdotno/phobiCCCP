@@ -1,6 +1,7 @@
 #include "padlink.h"
 
 #include "c2ddocument.h"
+#include "parametric.h"
 #include "element.h"
 #include "toollibrary.h"
 #include "toolpathfactory.h"
@@ -349,7 +350,7 @@ const QStringList &ignoredToolpathKeys()
 
 } // namespace
 
-bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err)
+bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err, const QString &keepFrom)
 {
     const QString tmp = path + QStringLiteral(".pad-new");
     QStringList notes;
@@ -357,26 +358,37 @@ bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err)
         QFile::remove(tmp);
         return false;
     }
+    // What the pad design does not carry is kept from the file it replaces
+    // (or sits beside): every setting but the stock, material and toolpath
+    // count the design sets, and the constraints, which name its old
+    // geometry. So a retract height raised to clear clamps, the tiling and
+    // the display units survive a pad's edit. And the file's permissions (a
+    // shared, group-writable file stays so).
+    const QString source = keepFrom.isEmpty() ? path : keepFrom;
+    if (QFileInfo::exists(source)) {
+        static const QStringList fromDesign = {
+            QStringLiteral("width"), QStringLiteral("height"), QStringLiteral("thickness"),
+            QStringLiteral("material"), QStringLiteral("num_toolpaths"), Parametric::paramKey()};
+        Document before;
+        if (before.load(source)) {
+            const QHash<QString, QString> &params = before.params();
+            for (auto it = params.cbegin(); it != params.cend(); ++it) {
+                if (fromDesign.contains(it.key()))
+                    continue;
+                if (!Document::writeParam(tmp, it.key(), it.value(), err)) {
+                    QFile::remove(tmp);
+                    return false;
+                }
+            }
+        }
+        QFile::setPermissions(tmp, QFile::permissions(source));
+    }
     if (!QFileInfo::exists(path)) {
         if (QFile::rename(tmp, path))
             return true;
         QFile::remove(tmp);
         if (err) *err = QStringLiteral("could not write %1").arg(path);
         return false;
-    }
-    // What the pad design does not carry is kept from the file it replaces:
-    // the retract height (raised to clear clamps) and the file's permissions
-    // (a shared, group-writable file stays so).
-    {
-        Document before;
-        if (before.load(path)) {
-            const QString retract = before.params().value(QStringLiteral("retract"));
-            if (!retract.isEmpty() && !Document::writeParam(tmp, QStringLiteral("retract"), retract, err)) {
-                QFile::remove(tmp);
-                return false;
-            }
-        }
-        QFile::setPermissions(tmp, QFile::permissions(path));
     }
     // The old file is moved aside, not deleted, until the new one is in.
     const QString old = path + QStringLiteral(".pad-old");

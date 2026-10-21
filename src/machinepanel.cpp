@@ -1209,7 +1209,9 @@ MachinePanel::MachinePanel(QWidget *parent)
             // Once the machine stands still: the last lines are acked when
             // planned, so the position read now is from before the program's
             // own final retract, and a rise from it could go down.
+            m_endRisePending = true;
             whenIdle([this] {
+                m_endRisePending = false;
                 m_grbl->startMacro({QStringLiteral("G90"),
                                     QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
                                     QStringLiteral("M5")});
@@ -1662,6 +1664,10 @@ void MachinePanel::bitZeroBegin()
     }
     if (!requireHomed(QStringLiteral("BitZero probing")))
         return;
+    if (endRiseWaiting()) {
+        log(QStringLiteral("!! BitZero: the job is still finishing — wait until the machine stands still"));
+        return;
+    }
     if (!m_grbl->canSendCommand()) {
         log(QStringLiteral("!! busy — cannot probe now"));
         return;
@@ -2660,6 +2666,7 @@ bool MachinePanel::isBusy() const
     // A surface map waiting for the plate counts: the operator's hand and
     // the plate are under the tool.
     return m_grbl->isStreaming() || m_grbl->isMacroRunning() || m_phase != Phase::Idle
+        || endRiseWaiting()
         || (m_mapper && m_mapper->isRunning())
         || st == QLatin1String("Run") || st == QLatin1String("Jog")
         || st.startsWith(QLatin1String("Home")) || st.startsWith(QLatin1String("Hold"));
@@ -2764,6 +2771,8 @@ void MachinePanel::initializeMachine()
 // the front end stop is never touched.
 void MachinePanel::park()
 {
+    if (jobWindingDown(QStringLiteral("Park")))
+        return;
     if (!m_grbl->canSendCommand()) {
         log(QStringLiteral("!! busy — cannot park now"));
         return;
@@ -2818,6 +2827,23 @@ void MachinePanel::whenIdle(std::function<void()> fn)
 }
 
 // ---- zero / go ---------------------------------------------------------------
+
+// A job's last lines are still running, or its end-of-job rise has not been
+// sent yet: a move now would start from where the program has not left the
+// tool, with the spindle on.
+bool MachinePanel::endRiseWaiting() const
+{
+    return m_endRisePending && m_onIdle;
+}
+
+bool MachinePanel::jobWindingDown(const QString &what)
+{
+    const QString &st = m_machineState;
+    if (!endRiseWaiting() && st != QLatin1String("Run") && !st.startsWith(QLatin1String("Hold")))
+        return false;
+    log(QStringLiteral("!! %1: the job is still finishing — wait until the machine stands still").arg(what));
+    return true;
+}
 
 bool MachinePanel::standingStill() const
 {
@@ -2914,6 +2940,8 @@ void MachinePanel::zero(const QString &axes)
 
 void MachinePanel::goToXY0()
 {
+    if (jobWindingDown(QStringLiteral("Go to X0 Y0")))
+        return;
     if (!m_grbl->canSendCommand())
         return;
     if (!requireHomed(QStringLiteral("Go to X0 Y0")))
@@ -2946,6 +2974,8 @@ void MachinePanel::measureTool(Phase why)
         log(QStringLiteral("!! BitSetter is disabled — enable it and set the button position"));
         return;
     }
+    if (why == Phase::MeasureManual && jobWindingDown(QStringLiteral("Measure")))
+        return;
     if (!m_grbl->canSendCommand()) {
         log(QStringLiteral("!! busy — cannot probe now"));
         return;

@@ -818,6 +818,15 @@ Element Element::withPathModel(const Element &src, const PathModel &model)
     return fromJson(o);
 }
 
+Element Element::pieceOf(const Element &src, const PathModel &model)
+{
+    Element e = makeBezierPath(model, src.raw.value("layer").toObject());
+    QJsonObject o = e.raw;
+    o.insert("group_id", src.raw.value("group_id"));
+    copySketchFlags(o, src.raw);
+    return fromJson(o);
+}
+
 QVector<Element> Element::toPaths(const Element &src)
 {
     QVector<Element> out;
@@ -847,7 +856,9 @@ QVector<Element> Element::toPaths(const Element &src)
         if (s.nodes.size() < 3)
             continue;
         m.subs.append(s);
-        Element e = makeBezierPath(m, src.raw.value("layer").toObject());
+        // Every piece stays in the group and keeps construction; only the
+        // first keeps the id and the tabs.
+        Element e = pieceOf(src, m);
         if (first) {
             QJsonObject o = e.raw;
             o.insert("id", src.raw.value("id"));

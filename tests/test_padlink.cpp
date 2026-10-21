@@ -174,7 +174,8 @@ static void testPadFixture(const QString &dir)
 }
 
 // A pad's edit rebuilds the linked file, keeping what the pad design does
-// not carry: the retract height a Carbide Create file raised (clamps).
+// not carry: the retract height a Carbide Create file raised (clamps), the
+// tiling.
 static void testRebuildKeepsRetract(const QString &dir)
 {
     QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
@@ -184,10 +185,14 @@ static void testRebuildKeepsRetract(const QString &dir)
     QString err;
     check(padlink::buildDocument(d, path, nullptr, &err), "retract fixture builds");
     check(Document::writeParam(path, "retract", "10", &err), "retract raised to 10 mm");
+    check(Document::writeParam(path, "tiling_enabled", "1", &err)
+              && Document::writeParam(path, "tile_height", "300", &err), "tiling set");
     check(padlink::rebuildDocument(d, path, &err), "a pad's edit rebuilds the file");
     Document doc;
     doc.load(path, &err);
     check(doc.params().value("retract") == QLatin1String("10"), "the rebuilt file keeps its retract height");
+    check(doc.params().value("tiling_enabled") == QLatin1String("1")
+              && doc.params().value("tile_height") == QLatin1String("300"), "and its tiling");
 }
 
 // A design from a pad, saved here, goes back to the pads unchanged; once

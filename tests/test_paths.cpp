@@ -372,6 +372,13 @@ int main(int argc, char *argv[])
               && glyphs.first().id == t.id && glyphs.at(1).id != t.id,
               "text converts to one path per contour");
         check(c2d::Element::pathModel(glyphs.first()).subs.first().closed, "glyph paths are closed");
+        QJsonObject tg = t.raw;
+        tg.insert("construction", true);
+        tg.insert("group_id", "g-text");
+        bool allKept = true;
+        for (const c2d::Element &g : c2d::Element::toPaths(c2d::Element::fromJson(tg)))
+            allKept = allKept && c2d::Element::isConstruction(g) && g.raw.value("group_id").toString() == "g-text";
+        check(allKept, "every glyph path keeps construction and the group");
     }
 
     // --- optional: write a specimen document --------------------------------------
