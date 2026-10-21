@@ -560,7 +560,9 @@ double SubPath::closest(const QPointF &pt, int *seg, double *t) const
             if (d < sBest) { sBest = d; sT = tt; }
         }
         double lo = qMax(0.0, sT - 1.0 / N), hi = qMin(1.0, sT + 1.0 / N);
-        for (int it = 0; it < 24; ++it) {
+        // 60 steps: at 24 the parameter was off by ~1e-6, and Trim's test
+        // for a line's end resting on the curve (1e-5 mm) missed it.
+        for (int it = 0; it < 60; ++it) {
             const double m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
             if (QLineF(pt, pointAt(s, m1)).length() < QLineF(pt, pointAt(s, m2)).length())
                 hi = m2;

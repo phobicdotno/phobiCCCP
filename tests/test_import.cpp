@@ -475,6 +475,24 @@ int main(int argc, char **argv)
                 "viewBox='0 0 10 10'><rect width='10' height='10'/></svg></defs><use xlink:href='#n' x='50'/></svg>",
                 opts(0, 0), QStringLiteral("nested"));
             check(ns.ok && std::abs(ns.bounds.width() - 20) < 0.01, "svg: a used nested svg keeps its size");
+            auto usedW = [&](const char *body) {
+                const c2d::ImportResult u = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "
+                               "width='100mm' height='100mm' viewBox='0 0 100 100'>") + body + "</svg>",
+                    opts(0, 0), QStringLiteral("nested"));
+                return u.ok ? u.bounds.width() : -1.0;
+            };
+            // % inside it is of its own viewport, also nested in nested...
+            check(std::abs(usedW("<defs><svg id='n' x='10' y='10' width='20' height='20' viewBox='0 0 10 10'>"
+                                 "<rect width='100%' height='100%'/></svg></defs><use xlink:href='#n'/>") - 20) < 0.01,
+                  "svg: % lengths in a used nested svg are of its viewport");
+            check(std::abs(usedW("<defs><svg id='o' width='50' height='50' viewBox='0 0 10 10'><svg viewBox='0 0 1 1'>"
+                                 "<rect width='1' height='1'/></svg></svg></defs><use xlink:href='#o'/>") - 50) < 0.01,
+                  "svg: a used svg nested in a nested svg");
+            // ...and the <use>'s width and height resize it.
+            check(std::abs(usedW("<defs><svg id='q' width='20' height='20' viewBox='0 0 10 10'><rect width='10' "
+                                 "height='10'/></svg></defs><use xlink:href='#q' width='40' height='40'/>") - 40) < 0.01,
+                  "svg: a use's width and height resize a nested svg");
         }
         {
             // <use> places what it refers to (pdftocairo's text, clones).

@@ -106,6 +106,10 @@
   - The Area tool round text with no counters ("TL", "i") added copies of the letters as new
     paths; it selects the text.
   - An SVG `<use>` of a nested `<svg>` left out that svg's position, size and viewBox.
+  - Trim and Break still missed most lines Extended onto a circle (the point search was too
+    coarse), and a line ending on a shape from inside left an invisible sliver behind.
+  - In an SVG, a nested `<svg>` drawn through `<use>` sized % lengths by the page, not by
+    itself, and ignored the `<use>`'s width and height.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
@@ -206,6 +210,9 @@
     most 20 passes and ramps at 0.5 to 15°; the fields stop there.
   - Export G-code suggested the cache's scratch name ("untitled-6829.nc") for a design opened
     from a DXF or SVG, and no folder; it suggests the source's name beside it.
+  - Restart now after changing the GUI scale came back at the old scale.
+  - With Preview turned off while it was updating, "Updating preview…" stayed on the status
+    line for good.
 - **Pad link:**
   - A pad design cut with any bit but #201 counted as having toolpath settings made on the
     computer after its first Save there, so every later pad edit went to a "(pad)" copy. The
@@ -237,6 +244,9 @@
     longer cut through; a field left as it was keeps its value, and End shows 3 decimals.
   - Typing a number into a pad field and pressing Done put the old value back when the old one
     had more decimals than the field shows.
+  - The pad's Open dialog opened the copy it showed when it was opened: when a newer copy synced
+    in meanwhile, the first edit was dropped while the status said it was done. Designs deleted
+    elsewhere while it was open broke its list.
 
 ## v1.3.1 (build 91) — 2026-10-20
 

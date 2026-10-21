@@ -571,12 +571,20 @@ int main(int argc, char *argv[])
     // GUI scale from Settings. It has to be in the environment before
     // QApplication exists; an explicit QT_SCALE_FACTOR wins, and the CLI
     // modes (--shot included) always render at 100 %.
+    // A scale this program set itself (inherited by the copy a Settings
+    // restart starts) is not an explicit one: it kept the old scale.
+    if (!qEnvironmentVariableIsEmpty("PHOBICCCP_SCALE_SET")) {
+        qunsetenv("QT_SCALE_FACTOR");
+        qunsetenv("PHOBICCCP_SCALE_SET");
+    }
     if (!(argc > 1 && QByteArray(argv[1]).startsWith("--"))
         && qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
         QSettings s(QStringLiteral("phobicdotno"), QStringLiteral("phobiCCCP"));
         const int pct = c2d::appsettings::uiScalePercent(s);
-        if (pct != 100)
+        if (pct != 100) {
             qputenv("QT_SCALE_FACTOR", QByteArray::number(pct / 100.0));
+            qputenv("PHOBICCCP_SCALE_SET", "1");
+        }
     }
     // Register with AT-SPI whatever the desktop's accessibility switch says,
     // so an on-screen keyboard in auto-show mode (Onboard) pops up when a

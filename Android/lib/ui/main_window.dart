@@ -440,19 +440,22 @@ class _MainWindowState extends State<MainWindow> {
   }
 
   Future<void> _openDialog() async {
-    final d = await showPDialog<Design>(context,
+    // One copy for the count and the cards: a sync replacing the list while
+    // the dialog is up (designs deleted elsewhere) indexed past its end.
+    final list = List.of(app.designs);
+    final picked = await showPDialog<Design>(context,
         title: 'Open',
         width: 760,
         content: SizedBox(
           height: 480,
-          child: app.designs.isEmpty
+          child: list.isEmpty
               ? const Center(child: Text('No designs yet. File › New makes one.', style: TextStyle(color: C.sub)))
               : GridView.builder(
                   gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
                       maxCrossAxisExtent: 240, mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 1.15),
-                  itemCount: app.designs.length,
+                  itemCount: list.length,
                   itemBuilder: (ctx, i) {
-                    final x = app.designs[i];
+                    final x = list[i];
                     final cur = x.id == _d?.id;
                     return InkWell(
                       onTap: () => Navigator.pop(ctx, x),
@@ -480,6 +483,9 @@ class _MainWindowState extends State<MainWindow> {
                 ),
         ),
         actions: (ctx) => [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))]);
+    // The design as stored now: a sync may have brought a newer copy while
+    // the dialog was up, and editing the older one would be refused.
+    final d = picked == null ? null : app.design(picked.id) ?? picked;
     if (d != null) {
       setState(() => _open(d));
       _say(d.desktopOnly.isEmpty ? 'Opened “${d.name}”' : 'Opened “${d.name}” · ${_copyWords(d)}');

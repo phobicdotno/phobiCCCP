@@ -857,6 +857,11 @@ struct SvgDef {
     QPainterPath path;
     QRectF viewBox;   // a <symbol>'s, fitted into the <use>'s width x height
     QString aspect;
+    // A nested <svg>: path is its content, unplaced; placed at `at`, sized
+    // `size` (a <use>'s width and height replace it), its viewBox fitted in.
+    bool nested = false;
+    QPointF at;
+    QSizeF size;
 };
 
 // Where a <use> draws what it refers to: a symbol's viewBox fitted into the
@@ -867,6 +872,15 @@ QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, doub
     svgUserLength(at.value(QLatin1String("x")), vpW, &x);
     svgUserLength(at.value(QLatin1String("y")), vpH, &y);
     QTransform vb;
+    if (def.nested) {
+        double w = def.size.width(), h = def.size.height();
+        svgUserLength(at.value(QLatin1String("width")), vpW, &w);
+        svgUserLength(at.value(QLatin1String("height")), vpH, &h);
+        if (def.viewBox.isValid() && w > 0 && h > 0)
+            vb = svgViewBoxTransform(def.viewBox.x(), def.viewBox.y(), def.viewBox.width(),
+                                     def.viewBox.height(), w, h, def.aspect);
+        return (vb * QTransform::fromTranslate(def.at.x() + x, def.at.y() + y)).map(def.path);
+    }
     if (def.viewBox.isValid()) {
         // The viewport only when both sides are known: a width alone fitted
         // the symbol into a wide strip and centred it.
@@ -882,7 +896,7 @@ QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, doub
 }
 
 QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString> &hiddenClasses,
-                                      double vpW, double vpH)
+                                      double rootW, double rootH)
 {
     // Clip paths, masks, patterns, markers and nested definitions draw
     // nothing where they stand: their ids are kept, their paths are not part
@@ -892,7 +906,9 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
         QStringLiteral("mask"), QStringLiteral("pattern"), QStringLiteral("marker")};
     QHash<QString, SvgDef> defs;
     struct Frame { QString id; QTransform own; QPainterPath path; bool hidden = false;
-                   QRectF viewBox; QString aspect; bool noDraw = false; };
+                   QRectF viewBox; QString aspect; bool noDraw = false;
+                   double vw = 0, vh = 0;   // the viewport its children's % lengths use
+                   bool nested = false; QPointF at; QSizeF size; };
     // Two passes: the second sees what the first found, so a <use> of
     // something defined further down (a symbol after the group using it)
     // resolves too.
@@ -911,6 +927,11 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                 Frame f{at.value(QLatin1String("id")).toString(),
                         parseSvgTransform(at.value(QLatin1String("transform")).toString()), {},
                         svgHidden(at, hiddenClasses), {}, {}, noDraw.contains(xml.name().toString())};
+                // Lengths in % are of the nearest viewport: a nested <svg>'s.
+                const double vpW = stack.isEmpty() ? rootW : stack.last().vw;
+                const double vpH = stack.isEmpty() ? rootH : stack.last().vh;
+                f.vw = vpW;
+                f.vh = vpH;
                 if (xml.name() == QLatin1String("use")) {
                     const QString href = svgHref(at);
                     const auto here = defs.constFind(href), before = earlier.constFind(href);
@@ -943,9 +964,16 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                     double a[4];
                     bool vb = true;
                     for (double &v : a) vb = vb && sc.number(&v);
-                    if (vb && a[2] > 0 && a[3] > 0 && w > 0 && h > 0)
-                        vp = svgViewBoxTransform(a[0], a[1], a[2], a[3], w, h,
-                                                 at.value(QLatin1String("preserveAspectRatio")));
+                    f.aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
+                    if (vb && a[2] > 0 && a[3] > 0 && w > 0 && h > 0) {
+                        vp = svgViewBoxTransform(a[0], a[1], a[2], a[3], w, h, f.aspect);
+                        f.viewBox = QRectF(a[0], a[1], a[2], a[3]);
+                    }
+                    f.vw = f.viewBox.isValid() ? a[2] : w;
+                    f.vh = f.viewBox.isValid() ? a[3] : h;
+                    f.nested = true;
+                    f.at = QPointF(x, y);
+                    f.size = QSizeF(w, h);
                     f.own = vp * QTransform::fromTranslate(x, y) * f.own;
                 }
                 stack.append(f);
@@ -954,7 +982,9 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                 if (f.hidden)
                     continue;   // display:none draws nothing, through a <use> either
                 const QPainterPath mapped = f.own.map(f.path);
-                if (!f.id.isEmpty() && !mapped.isEmpty())
+                if (f.nested && !f.id.isEmpty() && !f.path.isEmpty())
+                    defs.insert(f.id, SvgDef{f.path, f.viewBox, f.aspect, true, f.at, f.size});
+                else if (!f.id.isEmpty() && !mapped.isEmpty())
                     defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
                 if (!stack.isEmpty() && !mapped.isEmpty() && !f.noDraw)
                     stack.last().path.addPath(mapped);

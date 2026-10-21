@@ -1960,6 +1960,9 @@ void MainWindow::startPreviewRun()
         run->thread = nullptr;
         if (m_previewRun == run)
             m_previewRun.reset();
+        // With Preview off nothing else replaces it, and it stayed for good.
+        if (statusBar()->currentMessage() == QStringLiteral("Updating preview…"))
+            statusBar()->clearMessage();
         if (run->gen == m_previewGen && !run->cancel.load() && !run->result.cancelled) {
             m_previewServed = run->gen;
             applyPreview(run->result, m_previewAct->isChecked());

@@ -28,6 +28,7 @@
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QStatusBar>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QUndoStack>
@@ -317,6 +318,20 @@ int main(int argc, char *argv[])
         w.m_updateStep = std::make_shared<bool>(true);
         check(!w.close() && w.isVisible(), "update step: close refused");
         w.m_updateStep.reset();
+    }
+
+    // A preview run that ends with Preview off leaves no "Updating
+    // preview…" behind: nothing else would replace it.
+    {
+        const bool was = w.m_previewAct->isChecked();
+        w.m_previewAct->setChecked(false);
+        ++w.m_previewGen;
+        w.startPreviewRun();
+        QTest::qWaitFor([&] { return !w.m_previewRun; }, 30000);
+        QApplication::processEvents();
+        check(w.statusBar()->currentMessage() != QStringLiteral("Updating preview…"),
+              "preview: the status line is cleared when a run ends with Preview off");
+        w.m_previewAct->setChecked(was);
     }
 
     // Export G-code is offered beside the file an untitled design came
