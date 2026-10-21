@@ -1033,9 +1033,11 @@ struct CutParams {
 // Ring-fill a centre region: concentric insets every `stepover`, innermost
 // first, as one job (a firstDelta of 0 starts on the region's own boundary —
 // used for rest regions, already in centre space). Returns false when the
-// ring count ran into its bound with region still left to fill.
+// ring count ran into its bound with region still left to fill. With the
+// tool radius given, a stepover past it gets one more ring where the last
+// inset left a middle the tool does not reach.
 static bool ringFillJob(const QPainterPath &area, double firstDelta, double stepover,
-                        QList<Job> &jobs)
+                        QList<Job> &jobs, double toolR = 0)
 {
     Job job;
     QList<QList<QPolygonF>> shells;
@@ -1064,8 +1066,20 @@ static bool ringFillJob(const QPainterPath &area, double firstDelta, double step
         } else {
             s = insetRings(area, delta);
         }
-        if (s.isEmpty())
+        if (s.isEmpty()) {
+            // The deepest point lies short of `delta`; the last ring reaches
+            // its inset plus a radius. A ring at delta - 0.9 radius reaches
+            // past it (a 4.5 mm stepover on a 6.35 mm bit left a 2.5 mm rib
+            // along a pocket's middle).
+            const double last = delta - stepover;
+            const double fill = delta - 0.9 * toolR;
+            if (toolR > 0 && !shells.isEmpty() && fill > last + 0.05 && last + toolR < delta) {
+                const QList<QPolygonF> m = insetRings(area, fill);
+                if (!m.isEmpty())
+                    shells.append(m);
+            }
             break;
+        }
         shells.append(s);
         delta += stepover;
     }
@@ -2440,7 +2454,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 for (const RoughLevel &lv : roughLevels(*hm, p3, boundary, watch)) {
                     QList<Job> jobs;
                     for (const QPainterPath &comp : components(lv.region))
-                        capped |= !ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs);
+                        capped |= !ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs, r);
                     CutParams lcp = cp;
                     lcp.zTop = lv.z + p3.stepdown;
                     lcp.zBot = lv.z;
@@ -2681,7 +2695,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 // The first (smallest-bite) pass radius must leave room.
                 const double first = external ? R + toolR - td / passes
                                               : R - toolR - td + td / passes;
-                if (!external && first < 0.05) {
+                // An internal one plunges at the centre: a cutter wider than
+                // the minor diameter would shave every crest.
+                if (!external && (first < 0.05 || toolR > R - td - 0.05)) {
                     ++tooSmall;
                     continue;
                 }
@@ -3683,12 +3699,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             for (const QPainterPath &comp : components(regionOf(elems))) {
                 if (useRest) {
                     for (const QPainterPath &rc : restRegions(comp, toolR, prevR, leave)) {
-                        capped |= !ringFillJob(rc, 0.0, stepover, jobs);
+                        capped |= !ringFillJob(rc, 0.0, stepover, jobs, toolR);
                         pocketMine << rc;
                     }
                 } else {
                     const int before = jobs.size();
-                    capped |= !ringFillJob(comp, toolR + leave, stepover, jobs);
+                    capped |= !ringFillJob(comp, toolR + leave, stepover, jobs, toolR);
                     pocketMine << regionFromRings(insetRings(comp, toolR + leave));
                     if (helix && jobs.size() > before)
                         addHelix(jobs.last(), insetRings(comp, toolR + leave), helixWant, helixAngle);
@@ -3770,7 +3786,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                             bandLinks << linkInside(bands.at(b).centres);
                             for (const QPainterPath &rc : components(bands.at(b).centres)) {
                                 const int before = banded.size();
-                                ringFillJob(rc, 0.0, pocketStep, banded);
+                                ringFillJob(rc, 0.0, pocketStep, banded, toolR);
                                 if (helix && banded.size() > before)
                                     addHelix(banded.last(), insetRings(rc, 0.0), helixWant, helixAngle);
                                 for (int k = before; k < banded.size(); ++k) {

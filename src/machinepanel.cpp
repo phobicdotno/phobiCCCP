@@ -1670,6 +1670,8 @@ void MachinePanel::bitZeroBegin()
         log(QStringLiteral("!! BitZero: the job is still finishing — wait until the machine stands still"));
         return;
     }
+    if (!m_grbl->isStreaming() && movingStill(QStringLiteral("BitZero")))
+        return;
     if (!m_grbl->canSendCommand()) {
         log(QStringLiteral("!! busy — cannot probe now"));
         return;
@@ -2811,6 +2813,8 @@ void MachinePanel::park()
         return;
     if (!requireHomed(QStringLiteral("Park")))
         return;
+    if (movingStill(QStringLiteral("Park")))
+        return;
     QSettings st;
     const auto machine = appsettings::machine(st);
     constexpr double kMargin = 5.0;
@@ -2880,6 +2884,17 @@ bool MachinePanel::standingStill() const
 {
     return m_machineState == QLatin1String("Idle") && m_grbl->pendingCommands() == 0
            && m_deferredJogs.isEmpty() && !m_jogCancelTimer && m_statusSeq >= m_moveFreshAfter;
+}
+
+// GRBL refuses G-code while a jog runs (error:9), and a tap just sent still
+// reads Idle until the next report: say so instead of a bare error, or a
+// "no contact" from a probe that never ran.
+bool MachinePanel::movingStill(const QString &what)
+{
+    if (standingStill())
+        return false;
+    log(QStringLiteral("!! %1 refused: %2 — wait until it stands still").arg(what, stillMovingWhy()));
+    return true;
 }
 
 QString MachinePanel::stillMovingWhy() const
@@ -3002,6 +3017,8 @@ void MachinePanel::goToXY0()
         return;
     if (!requireHomed(QStringLiteral("Go to X0 Y0")))
         return;
+    if (movingStill(QStringLiteral("Go to X0 Y0")))
+        return;
     m_phase = Phase::GoToZero;
     m_grbl->startMacro({QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
@@ -3029,6 +3046,8 @@ void MachinePanel::measureTool(Phase why)
         log(QStringLiteral("!! busy — cannot probe now"));
         return;
     }
+    if (why == Phase::MeasureManual && movingStill(QStringLiteral("Measure")))
+        return;
     m_phase = why;
     const MachineStatus st = m_grbl->status();
     // Manual measurements return to where the tool was; after a tool change
@@ -3278,9 +3297,17 @@ void MachinePanel::rehearseToolChange()
     }
     // Held (Hold:0 with nothing moving) counts as busy: the rehearsal would
     // park behind the hold and never get to the prompt.
+    // A jog tap just sent still reads Idle: the first line would be refused
+    // (error:9) and the rehearsal stopped with a reset.
     auto busy = [this] {
-        return isBusy() || m_held || m_grbl->isStreaming() || !m_grbl->canSendCommand()
-               || m_machineState != QLatin1String("Idle") || !m_homed;
+        if (isBusy() || m_held || m_grbl->isStreaming() || !m_grbl->canSendCommand()
+            || m_machineState != QLatin1String("Idle") || !m_homed)
+            return true;
+        if (!standingStill()) {
+            log(QStringLiteral("!! %1 — wait until it stands still").arg(stillMovingWhy()));
+            return true;
+        }
+        return false;
     };
     if (busy()) {
         log(QStringLiteral("!! busy — cannot rehearse a tool change now"));

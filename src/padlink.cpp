@@ -566,8 +566,18 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
     d.insert(QStringLiteral("shapes"), shapes);
 
     QJsonArray toolpaths;
+    // Files built before sizeToTool() sized the lead-in, rest and helix from
+    // #201 or an earlier toolpath's bit: those sizes are what the pad built,
+    // not settings made here.
+    QList<double> oldSizes;
+    if (const LibraryTool *t201 = lib.byNumber(201))
+        oldSizes << t201->diameter;
     for (const Toolpath &t : doc.toolpaths()) {
         const QString type = t.json.value(QStringLiteral("type")).toString();
+        const double thisDia = t.json.value(QStringLiteral("tool")).toObject().value(QStringLiteral("diameter")).toDouble();
+        const QList<double> earlierSizes = oldSizes;
+        if (thisDia > 0)
+            oldSizes << thisDia;
         const QString kind = type == QLatin1String("contour")           ? QStringLiteral("profile")
                            : type == QLatin1String("pocket_toolpath")   ? QStringLiteral("pocket")
                            : type == QLatin1String("drilling_toolpath") ? QStringLiteral("drill")
@@ -617,6 +627,16 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             j.insert(QStringLiteral("ofset_dir"), dir);
         j.insert(QStringLiteral("enabled"), t.json.value(QStringLiteral("enabled")).toBool(true));
         QJsonObject have = t.json;
+        auto oldBuild = [&](const QString &k, double scale) {
+            if (!have.contains(k) || !j.contains(k))
+                return;
+            for (double d : earlierSizes)
+                if (std::abs(have.value(k).toDouble() - d * scale) < 1e-6)
+                    j.insert(k, have.value(k));
+        };
+        oldBuild(QStringLiteral("lead_radius"), 0.5);
+        oldBuild(QStringLiteral("rest_diameter"), 1.0);
+        oldBuild(QStringLiteral("helix_diameter"), 1.0);
         for (const QString &k : ignoredToolpathKeys()) {
             have.remove(k);
             j.remove(k);

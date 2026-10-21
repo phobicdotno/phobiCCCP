@@ -1491,7 +1491,7 @@ int main(int argc, char *argv[])
         } else {
             QSaveFile f(out);
             f.setDirectWriteFallback(true);
-            ok = f.open(QIODevice::WriteOnly | QIODevice::Text) && f.write(bytes) == bytes.size() && f.commit();
+            ok = f.open(QIODevice::WriteOnly | QIODevice::Text) && f.write(bytes) == bytes.size() && c2d::commitKeepingMode(f);
             why = f.errorString();
         }
         if (!ok) {

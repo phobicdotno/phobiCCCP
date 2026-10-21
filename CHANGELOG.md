@@ -35,7 +35,11 @@
     Adaptive, Circular, Bore and Face do too. Per pass 0 on a V-carve is still one pass.
   - A keyhole or thread crossing a tile line was finished in the next tile through solid wood
     (the keyhole bit lifted out through the neck); the tiled export is refused, naming it.
-    An internal thread is judged by its hole (it was refused well inside one tile).
+    An internal thread is judged by where its tool goes (it was refused well inside one tile).
+  - A pocket with a stepover past the tool radius (60 to 75 % of the bit) could leave a rib of
+    full height along its middle, or a pin in a round pocket; one more lap cuts it.
+  - An internal thread took a thread mill wider than the hole's minor diameter and shaved the
+    crests where it plunges at the centre; such a hole is left out as too small.
   - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
@@ -89,7 +93,9 @@
     was refused by the controller while the log said it was set. Taps are dropped while a
     step waits for the machine to stand still, and a start sent from a pad then is refused.
     So is a start (from the pad or Run) sent right after a jog tap, before the controller
-    reports the jog (the job's first lines were refused and the job stopped).
+    reports the jog (the job's first lines were refused and the job stopped). Rehearse tool
+    change, Park, Go to X0 Y0, Measure and BitZero wait for it the same way, with the reason,
+    instead of failing with error:9 or a misleading "no contact".
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -122,12 +128,14 @@
   - A G-code export that failed part-way (a full disk, a pulled stick) left a cut-off program
     in place of the previous one; the old file stays until the new one is complete, for tiled
     and command-line exports too (--export to /dev/stdout or a pipe still writes straight).
+    A read-only program stays read-only when exported over.
   - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
     it unsaved; it saves (and stays read-only, also when run as root).
 - **Pad link:**
   - A pad design cut with any bit but #201 counted as having toolpath settings made on the
     computer after its first Save there, so every later pad edit went to a "(pad)" copy. The
-    lead-in, rest and helix sizes now follow the pad's bit both ways.
+    lead-in, rest and helix sizes now follow the pad's bit both ways (files made before keep
+    taking pad edits too).
   - Send and start from a pad cut the rest of a design when a toolpath could not be made (a
     V-bit in a pocket), freeing the part before it. Such a start is refused with the reason,
     the pad warns before sending, and a pocket or profile never gets a V-bit by default.

@@ -885,7 +885,10 @@ int main(int argc, char **argv)
         });
         grbl.ackJogs = false;
         s->sendCommand(QStringLiteral("$J=G91 X-1.000 F1000"));   // never answered
-        button(QStringLiteral("Park front right"))->click();
+        // The Park button now refuses while a jog is unanswered; its macro
+        // queued straight on the streamer is the case this covers.
+        s->startMacro({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-5.000"),
+                       QStringLiteral("G53 G0 X-5.000 Y-5.000")});
         wait(200);
         check(s->pendingCommands() == 1 && s->isMacroRunning(), "alarm answer: park waits behind the jog");
         grbl.locked = true;

@@ -114,6 +114,7 @@ private:
     // unanswered and no jog waiting: GRBL refuses G-code while jogging
     // (error:9), so zeroing and resuming wait for this.
     bool standingStill() const;
+    bool movingStill(const QString &what);   // logs and returns true when not standing still
     QString stillMovingWhy() const;
     // Zeroing is refused while a program runs: a bumped pad button would
     // shift the rest of the job. The one exception is Z during a tool-change

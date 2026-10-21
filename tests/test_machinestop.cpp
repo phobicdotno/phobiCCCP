@@ -967,6 +967,71 @@ int main(int argc, char **argv)
         check(!started && !s->isStreaming(), "a start right after a jog tap is refused");
         wait(1500);
     }
+    // Round 16: a settled machine starts; Rehearse, Park, Go to, Measure and
+    // BitZero refuse during a tap with the reason, not error:9.
+    if (mode == "jogsettle" || mode == "jogsettlerun" || mode == "rerun") {
+        grbl.jogMs = 300;
+        wait(600);
+        if (mode == "rerun") {
+            panel.m_endOfJobPending = true;
+            s->startStream({QStringLiteral("G21"), QStringLiteral("G1X5F500"), QStringLiteral("G0Z-5")});
+            spin(8000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+            std::printf("after job: state %s pending %d busy %d\n", qPrintable(panel.m_machineState), s->pendingCommands(), panel.isBusy());
+        } else {
+            panel.m_step->setCurrentIndex(panel.m_step->count() - 1);
+            padPress(4);
+            wait(1500);
+        }
+        std::printf("still %d state %s pending %d\n", panel.standingStill(), qPrintable(panel.m_machineState), s->pendingCommands());
+        bool started = false;
+        QString why;
+        if (mode == "jogsettlerun") {
+            answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+            started = panel.runProgram();
+        } else {
+            started = panel.startFromRemote(&why);
+        }
+        std::printf("start after settle: %d (%s) streaming %d\n", started, qPrintable(why), s->isStreaming());
+        check(started && s->isStreaming(), "a start after the machine settled is accepted");
+        s->stopStream();
+        wait(800);
+    }
+    if (mode == "rehtap" || mode == "parktap" || mode == "bzjog" || mode == "measuretap" || mode == "gototap") {
+        grbl.jogMs = 800;
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::ZOnly)->click();
+        wait(600);
+        panel.m_step->setCurrentIndex(panel.m_step->count() - 1);
+        grbl.events.clear();
+        answer = [&](const Seen &v) {
+            std::printf("prompt: %s | %s\n", qPrintable(v.headline), qPrintable(v.body.left(120)));
+            if (v.headline.contains("Start the rehearsal")) { padPress(4); return QStringLiteral("Start rehearsal"); }
+            if (v.headline.startsWith("Insert tool")) return QStringLiteral("Measure and continue");
+            return QStringLiteral("OK");
+        };
+        if (mode == "rehtap") panel.rehearseToolChange();
+        else {
+            padPress(4);
+            if (mode == "parktap") panel.park();
+            else if (mode == "bzjog") panel.bitZeroBegin();
+            else if (mode == "gototap") panel.goToXY0();
+            else panel.measureTool(c2d::MachinePanel::Phase::MeasureManual);
+        }
+        wait(4000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+            std::printf("LOG:\n%s\n", qPrintable(t->toPlainText().right(1500)));
+        QString logText;
+        for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+            logText += t->toPlainText();
+        check(!logText.contains("error:9") && logText.contains("stands still"),
+              "refused with the reason while a jog tap still moves");
+    }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();

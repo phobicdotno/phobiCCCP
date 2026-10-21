@@ -1805,7 +1805,7 @@ void MainWindow::onExportGcode()
         return;
     }
     const QByteArray bytes = r.gcode.toUtf8();
-    if (f.write(bytes) != bytes.size() || !f.commit()) {
+    if (f.write(bytes) != bytes.size() || !commitKeepingMode(f)) {
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
     }

@@ -887,6 +887,28 @@ static void testOtherBitRoundTrip(const QString &dir)
         QStringList lost;
         padlink::designFromDocument(path, d, &lost, &err);
         check(lost.isEmpty(), "other bit: nothing lost on the way back");
+        if (tool == 201)
+            continue;
+        // A file built before the sizes followed the bit: #201's lead-in and
+        // rest, as the pad built them, are not settings made here; a lead-in
+        // typed here still is.
+        for (double lead : {201.0, 7.0}) {
+            Document doc;
+            doc.load(path, &err);
+            for (Toolpath t : doc.toolpaths()) {
+                if (t.json.contains("lead_radius"))
+                    t.json.insert("lead_radius", lead == 201.0 ? 3.175 : lead);
+                if (t.json.contains("rest_diameter"))
+                    t.json.insert("rest_diameter", 6.35);
+                doc.replaceToolpath(t);
+            }
+            doc.save(path, &err);
+            lost.clear();
+            padlink::designFromDocument(path, d, &lost, &err);
+            check(lead == 201.0 ? lost.isEmpty() : !lost.isEmpty(),
+                  lead == 201.0 ? "other bit: an older file's #201 sizes are not settings made here"
+                                : "other bit: a lead-in typed here still is");
+        }
     }
 }
 

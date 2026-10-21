@@ -5,6 +5,8 @@
 #include <QStringList>
 #include <QVector>
 
+class QSaveFile;
+
 // Toolpath tiling: a job taller (in Y) than the machine is cut as several
 // programs, the stock being slid forward by one tile height between them.
 //
@@ -47,6 +49,11 @@ struct TiledExport {
 
 // Export the document and write <outBase>_tile1.nc, _tile2.nc, ... .
 // tileHeight <= 0 means the document's `tile_height` param (508 mm default).
+// QSaveFile::commit() that keeps a file's mode: Qt copies the old file's
+// permissions with the bits for this process (root may always write), so a
+// read-only program came out writable.
+bool commitKeepingMode(QSaveFile &f);
+
 TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight = 0,
                         const ExportWatch *watch = nullptr,
                         const HeightModel *relief = nullptr);

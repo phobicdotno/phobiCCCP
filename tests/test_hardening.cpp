@@ -908,6 +908,50 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A pocket at a stepover past the tool radius left a rib along its middle
+    // (the last ring a stepover short of the centre line, the tool reaching
+    // only its radius); every width gets its middle cut now.
+    {
+        auto nearestFloorCut = [](const QVector<c2d::Op> &ops, QPointF p) {
+            double best = 1e18, px = 0, py = 0, pz = 0;
+            for (const c2d::Op &o : ops) {
+                if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && std::max(pz, o.z) <= -2.0 + 1e-6) {
+                    const QPointF a(px, py), d = QPointF(o.x, o.y) - a;
+                    const double L2 = QPointF::dotProduct(d, d);
+                    const double t = L2 > 0 ? std::clamp(QPointF::dotProduct(p - a, d) / L2, 0.0, 1.0) : 0;
+                    best = std::min(best, QLineF(p, a + t * d).length());
+                }
+                if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc || o.kind == c2d::Op::Rapid) {
+                    px = o.x; py = o.y; pz = o.z;
+                }
+            }
+            return best;
+        };
+        int ribs = 0;
+        for (double so : {4.0, 4.5, 5.0})
+            for (double w = 10; w <= 60; w += 0.5) {
+                Rig r;
+                r.addShape(c2d::Element::makeRectangle({100, 50}, 150, w, layer));
+                r.addToolpath("pocket_toolpath", {{"stepover", so}});
+                const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+                if (nearestFloorCut(g.ops, QPointF(100, 50)) > 3.175 + 0.01)
+                    ++ribs;
+            }
+        check(ribs == 0, "pocket: a stepover past the radius still cuts the middle");
+    }
+
+    // An internal thread plunges at the hole's centre: a mill wider than the
+    // minor diameter (M14x2, 12 mm) is refused, not run shaving the crests.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({40, 40}, 7, layer));
+        r.addToolpath("thread_toolpath", {{"pitch", 2.0}, {"side", "internal"}, {"end_depth", "10.000"},
+                                          {"tool", QJsonObject{{"diameter", 12.0}, {"number", 201}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.isEmpty() && g.skipped.join(" ").contains("too small"),
+              "thread: an internal thread mill wider than the minor diameter is refused");
+    }
+
     // -----------------------------------------------------------------------
     // Texture over a big sheet. The generator used to sample the region every
     // 0.5 mm along the diagonal for every hatch line, so its cost grew with

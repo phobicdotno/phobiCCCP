@@ -4,6 +4,7 @@
 #include "gcodeexport.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QSaveFile>
 #include <memory>
 #include <QJsonArray>
@@ -11,6 +12,19 @@
 #include <cmath>
 
 namespace c2d {
+
+bool commitKeepingMode(QSaveFile &f)
+{
+    const QFileInfo fi(f.fileName());
+    const bool existed = fi.exists() && fi.isFile();
+    const QFileDevice::Permissions perms = QFile::permissions(f.fileName())
+        & ~(QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser);
+    if (!f.commit())
+        return false;
+    if (existed)
+        QFile::setPermissions(f.fileName(), perms);
+    return true;
+}
 
 namespace {
 
@@ -512,12 +526,17 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
                 y1 = qMax(cy, cy + dy);
             } else {
                 // The thread's laps and its way out beside the wall.
-                // An internal one stays in its hole (the thread's depth past it
-                // at most).
+                // An internal one keeps the tool centre within the hole's
+                // radius less the tool's.
                 const QRectF b = e->painterPath.boundingRect();
-                const double m = j.value("side").toString() == QLatin1String("external") ? 2 * toolR + 1 : 1.0;
-                y0 = b.top() - m;
-                y1 = b.bottom() + m;
+                if (j.value("side").toString() == QLatin1String("external")) {
+                    y0 = b.top() - 2 * toolR - 1;
+                    y1 = b.bottom() + 2 * toolR + 1;
+                } else {
+                    const double reach = qMax(0.0, b.height() / 2 - toolR) + 0.01;
+                    y0 = b.center().y() - reach;
+                    y1 = b.center().y() + reach;
+                }
             }
             if (tileOf(y0) != tileOf(y1)) {
                 r.error = QStringLiteral("%1 crosses a tile line (every %2 mm): a keyhole or thread "
@@ -562,7 +581,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.gcode << gcode;
     }
     for (const auto &f : staged) {
-        if (!f->commit()) {
+        if (!commitKeepingMode(*f)) {
             r.error = QStringLiteral("%1: %2").arg(f->fileName(), f->errorString());
             r.files.clear();
             r.gcode.clear();
