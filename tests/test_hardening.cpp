@@ -950,6 +950,17 @@ int main(int argc, char *argv[])
                     ++ribs;
             }
         check(ribs == 0, "pocket: a stepover past the radius still cuts the middle");
+        // The narrow arm of an L runs out while the body goes on: its middle
+        // is cut too.
+        for (double arm : {14.0, 15.0}) {
+            Rig r;
+            r.addShape(c2d::Element::makePath({{0, 0}, {100, 0}, {100, 40}, {25 + arm, 40}, {25 + arm, 100},
+                                               {25, 100}, {25, 40}, {0, 40}}, true, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 4.5}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(nearestFloorCut(g.ops, QPointF(25 + arm / 2, 70)) <= 3.175 + 0.01,
+                  "pocket: the narrow arm of an L gets its middle cut");
+        }
     }
 
     // An internal thread plunges at the hole's centre: a mill wider than the

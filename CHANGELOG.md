@@ -37,7 +37,8 @@
     (the keyhole bit lifted out through the neck); the tiled export is refused, naming it.
     An internal thread is judged by where its tool goes (it was refused well inside one tile).
   - A pocket with a stepover past the tool radius (60 to 75 % of the bit) could leave a rib of
-    full height along its middle, or a pin in a round pocket; one more lap cuts it.
+    full height along its middle, or a pin in a round pocket, also in a narrower arm or a
+    channel beside an island; laps are added where the rings left something uncut.
   - An internal thread took a thread mill wider than the hole's minor diameter and shaved the
     crests where it plunges at the centre; such a hole is left out as too small.
   - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.

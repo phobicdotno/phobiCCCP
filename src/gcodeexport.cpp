@@ -1087,6 +1087,24 @@ static bool ringFillJob(const QPainterPath &area, double firstDelta, double step
         job.rings.append(shells.at(k));
     if (!job.rings.isEmpty())
         jobs.append(job);
+    // A branch that runs out while the rest goes on (the arm of an L, a
+    // channel beside an island) can keep a rib the check above never sees:
+    // fill what the rings' sweep leaves of the centre region. Only a
+    // stepover past the radius can leave one.
+    if (toolR > 0 && stepover > 0.95 * toolR && !shells.isEmpty()) {
+        QPainterPath centre;
+        centre.setFillRule(Qt::OddEvenFill);
+        for (const QPolygonF &g : shells.first()) {
+            centre.addPolygon(g);
+            centre.closeSubpath();
+        }
+        const QPainterPath left = subtractRegion(centre, sweptRegion(job.rings, toolR));
+        for (const QPainterPath &comp : components(left)) {
+            if (insetRings(comp, 0.02).isEmpty())
+                continue;            // a sliver the tool all but reaches
+            full &= ringFillJob(comp, 0.0, stepover, jobs);
+        }
+    }
     return full;
 }
 
