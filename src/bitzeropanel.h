@@ -70,6 +70,9 @@ public:
     void setContact(bool closed, bool known);   // live probe-pin state
     void setBusy(bool on);                      // a probe sequence is running
     void setConnected(bool on);
+    // Read the settings again: after a machine switch they are the other
+    // machine's (plate, thickness, spots, mode, map grid).
+    void reload();
 
 signals:
     void beginRequested();

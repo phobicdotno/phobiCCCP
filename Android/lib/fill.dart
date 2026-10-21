@@ -86,10 +86,26 @@ typedef _V = (int, int);
 // within microns of each other).
 List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
   final out = <(_V, _V, int)>[];
+  final box = [for (final r in rings) [r.map((p) => p.$1).reduce(math.min) - _touch, r.map((p) => p.$2).reduce(math.min) - _touch, r.map((p) => p.$1).reduce(math.max) + _touch, r.map((p) => p.$2).reduce(math.max) + _touch]];
+  // Arc length along each ring to each vertex: a ring's own edges count as
+  // another shape's once they are more than 3 touch widths away along it.
+  final arc = [
+    for (final r in rings)
+      () {
+        final l = <double>[0];
+        for (var k = 1; k <= r.length; k++) {
+          final a = r[k - 1], b = r[k % r.length];
+          l.add(l.last + math.sqrt(((b.$1 - a.$1) * (b.$1 - a.$1) + (b.$2 - a.$2) * (b.$2 - a.$2)).toDouble()));
+        }
+        return l;
+      }()
+  ];
   for (var ri = 0; ri < rings.length; ri++) {
-    for (final p in rings[ri]) {
+    for (var pi = 0; pi < rings[ri].length; pi++) {
+      final p = rings[ri][pi];
       for (var rj = 0; rj < rings.length; rj++) {
-        if (rj == ri) continue;
+        final bx = box[rj];
+        if (p.$1 < bx[0] || p.$1 > bx[2] || p.$2 < bx[1] || p.$2 > bx[3]) continue;
         final r = rings[rj];
         var best = double.infinity;
         var bestSeg = -1;
@@ -97,6 +113,11 @@ List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
         for (var k = 0; k < r.length; k++) {
           final a = r[k], b = r[(k + 1) % r.length];
           if (a == b || edgeOf[rj][k] < 0) continue;
+          if (rj == ri) {
+            final L = arc[ri].last;
+            double along(int i, int j) { final d = (arc[ri][i] - arc[ri][j]).abs(); return math.min(d, L - d); }
+            if (math.min(along(pi, k), along(pi, k + 1)) < 3 * _touch) continue;
+          }
           if (p.$1 < math.min(a.$1, b.$1) - _touch || p.$1 > math.max(a.$1, b.$1) + _touch) continue;
           if (p.$2 < math.min(a.$2, b.$2) - _touch || p.$2 > math.max(a.$2, b.$2) + _touch) continue;
           final dx = (b.$1 - a.$1).toDouble(), dy = (b.$2 - a.$2).toDouble();

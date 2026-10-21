@@ -2021,6 +2021,14 @@ int main(int argc, char *argv[])
         p.addToolpath("contour", {{"name", "Cut 50%3 deep"}, {"ofset_dir", 1}});
         check(c2d::setupSheetHtml(p.doc, QStringLiteral("Job")).contains("Cut 50%3 deep"),
               "setup sheet: a % placeholder in a name is kept as written");
+
+        // A cutout's Depth counts its break-through, like the program's min Z.
+        Rig c;
+        c.addShape(c2d::Element::makeRectangle({40, 30}, 40, 20, layer));
+        c.addToolpath("cutout", {{"name", "Free"}, {"cut_depth", "12.000"}, {"break_through", "0.500"},
+                                 {"ignore_tabs", true}});
+        check(c2d::setupSheetHtml(c.doc, QStringLiteral("Job")).contains("<td class=\"n\">12.50</td>"),
+              "setup sheet: cutout depth includes break-through");
     }
 
     // --- the factory makes all four with working defaults --------------------

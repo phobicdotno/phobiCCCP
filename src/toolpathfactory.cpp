@@ -329,7 +329,7 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("slot_depth_per_pass"), 0);
         j.insert(QStringLiteral("stock_to_leave"), 0);
         j.insert(QStringLiteral("tab_height"), 6.35);
-        j.insert(QStringLiteral("tab_width"), 127);
+        j.insert(QStringLiteral("tab_width"), 12); // the export caps tabs at 30 mm
     } else if (engrave) {
         // phobiCCCP-only type. mode: "outline" traces the vectors with no
         // offset, "fill" hatches closed regions (inset by the tool radius)

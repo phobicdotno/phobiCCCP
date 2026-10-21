@@ -271,6 +271,34 @@ int main(int argc, char *argv[])
         check(n->value() == 1, "step: the focused int field shows the undone value");
     }
 
+    // mm fields keep 3 decimals (a typed 3.175 stayed 3.18), Pitch keeps 4,
+    // and tab width stops at the 30 mm the export cuts.
+    {
+        QJsonObject jt{{"type", "thread_toolpath"}, {"uuid", "{th}"}, {"name", "Thread"},
+                       {"enabled", true}, {"start_depth", "-0.000"}, {"end_depth", "-5.000"},
+                       {"pitch", 1.0}, {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{th}", "thread_toolpath", jt);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *pitch = editorFor<QDoubleSpinBox>(&form, "pitch");
+        check(pitch && pitch->decimals() == 4, "precision: pitch has 4 decimals");
+        pitch->setFocus();
+        pitch->selectAll();
+        QTest::keyClicks(pitch, QStringLiteral("1.5875"));
+        QTest::keyClick(pitch, Qt::Key_Return);
+        app.processEvents();
+        check(std::fabs(last.value("pitch").toDouble() - 1.5875) < 1e-9, "precision: typed pitch 1.5875 is kept");
+
+        QJsonObject jc{{"type", "cutout"}, {"uuid", "{co}"}, {"name", "Cutout"}, {"enabled", true},
+                       {"cut_depth", "12.000"}, {"depth_per_pass", 2.0}, {"ignore_tabs", false},
+                       {"tab_height", 3.0}, {"tab_width", 12.0}, {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{co}", "cutout", jc);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *tw = editorFor<QDoubleSpinBox>(&form, "tab_width");
+        check(tw && tw->maximum() == 30.0 && tw->decimals() == 3, "precision: tab width stops at 30 mm, 3 decimals");
+    }
+
     std::printf("test_toolpathform: %d checks OK\n", g_checks);
     return 0;
 }

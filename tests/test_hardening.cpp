@@ -1200,6 +1200,26 @@ int main(int argc, char *argv[])
         const c2d::GcodeResult ng = c2d::exportGcode(nw.doc);
         check(!ng.skipped.isEmpty() || !ng.notes.isEmpty(),
               "vcarve: a pocket floor too narrow for the cone around the letter does not count");
+        // A floor shallower than the start depth: the cone is still as wide
+        // at Z0 as from the start depth, so a slot 0.7 mm wider than the
+        // letter each side, pocketed only 1 mm deep, does not let a 4 mm
+        // start through.
+        Rig sh;
+        const c2d::Element shSlot = c2d::Element::makeRectangle({50, 50}, 3.4, 32, layer);
+        const c2d::Element shLetter = c2d::Element::makeRectangle({50, 50}, 2, 30, layer);
+        sh.addShape(shSlot);
+        sh.addShape(shLetter);
+        sh.addToolpath("pocket_toolpath", {{"end_depth", "1.000"}, {"uuid", "{tp-0}"},
+                                           {"tool", QJsonObject{{"diameter", 1.0}, {"number", 202}}},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", shSlot.id}}}}});
+        sh.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "4.000"}, {"end_depth", "10.000"},
+                                                    {"tool", QJsonObject{{"diameter", 6.0}, {"number", 301},
+                                                                         {"angle", 60.0}, {"type", 2}}},
+                                                    {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", shLetter.id}}}}});
+        const c2d::GcodeResult shg = c2d::exportGcode(sh.doc);
+        check(!shg.skipped.isEmpty() || !shg.notes.isEmpty(),
+              "vcarve: a floor shallower than the start depth still needs room for the cone at Z0");
         // A faced panel's floor counts like a pocket's.
         Rig fc;
         const c2d::Element faceArea = c2d::Element::makeRectangle({50, 50}, 80, 60, layer);

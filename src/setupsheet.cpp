@@ -255,7 +255,8 @@ QString setupSheetHtml(const Document &doc, const QString &title)
         const QJsonObject tool = j.value("tool").toObject();
         const bool cutout = t.type == QLatin1String("cutout");
         const QString depth = cutout
-            ? mm(numOr(j.value("cut_depth"), 0))
+            // break-through included: the sheet must match the program's min Z.
+            ? mm(std::fabs(numOr(j.value("cut_depth"), 0)) + std::fabs(numOr(j.value("break_through"), 0)))
             : QStringLiteral("%1 → %2").arg(depthText(j.value("start_depth")),
                                              depthText(j.value("end_depth")));
         const QJsonValue sd = j.value(cutout ? "depth_per_pass" : "stepdown");

@@ -710,7 +710,9 @@ bool svgUserLength(QStringView text, double ref, double *out)
 QTransform svgViewBoxTransform(double vx, double vy, double vw, double vh,
                                double w, double h, QStringView par)
 {
-    const QStringList words = par.trimmed().toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    QStringList words = par.trimmed().toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.value(0) == QLatin1String("defer"))   // only for <image>; the alignment follows
+        words.removeFirst();
     const QString align = words.value(0, QStringLiteral("xMidYMid"));
     const bool slice = words.value(1) == QLatin1String("slice");
     double sx = w / vw, sy = h / vh, tx = 0, ty = 0;
@@ -1000,7 +1002,12 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
                 Ctx root{QTransform(), false};
                 if (vw > 0 && vh > 0) { root.vpW = vw; root.vpH = vh; }
-                else if (wMm > 0 && hMm > 0) { root.vpW = wMm / (25.4 / 96); root.vpH = hMm / (25.4 / 96); }
+                else {
+                    // Each axis from its own length: a width alone still
+                    // sizes width percentages (they fell back to px).
+                    if (wMm > 0) root.vpW = wMm / (25.4 / 96);
+                    if (hMm > 0) root.vpH = hMm / (25.4 / 96);
+                }
                 stack.append(root);
                 continue;
             }

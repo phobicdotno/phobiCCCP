@@ -3629,6 +3629,10 @@ bool MachinePanel::reloadMachine(QString *why)
     if (port.isEmpty())
         m_ports->setEditText(QString());
     loadSettings();
+    // The BitZero page read its settings once: on the new machine it probed
+    // with the old one's plate numbers, and the next edit saved them over.
+    if (m_bzPanel)
+        m_bzPanel->reload();
     {
         const SurfaceMap saved = SurfaceMap::fromJson(
             QSettings().value(QStringLiteral("machine/heightmap/map")).toString());

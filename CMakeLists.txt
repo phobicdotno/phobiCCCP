@@ -389,6 +389,12 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     set_tests_properties(machine PROPERTIES SKIP_RETURN_CODE 77)
     # Cancel job / Disconnect while the hold settles: a Stop in the wait, and
     # the job's last lines answered in it.
+    # A machine switch reloads the BitZero page's plate settings.
+    add_executable(test_bzprofile tests/test_bzprofile.cpp src/machinepanel.cpp src/shopdialog.cpp
+                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
+                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
+    target_link_libraries(test_bzprofile PRIVATE phobicccp_core Qt6::Widgets)
+    add_test(NAME bzprofile COMMAND test_bzprofile)
     add_executable(test_machinestop tests/test_machinestop.cpp src/machinepanel.cpp src/shopdialog.cpp
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)

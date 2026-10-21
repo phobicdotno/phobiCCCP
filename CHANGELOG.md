@@ -50,6 +50,8 @@
   - An internal thread took a thread mill wider than the hole's minor diameter and shaved the
     crests where it plunges at the centre; such a hole is left out as too small.
   - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
+  - A V-carve starting deeper than the pocket floor under it measured the room for its cone at
+    that floor, not at its start depth, so the cone and shank could cut into the pocket's wall.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
     letter spacing or on an arc; each letter moves with its marks now.
@@ -87,6 +89,8 @@
     lands a stale resize on release (it also cleared the redo step).
   - A tool key pressed during a Select drag left the shape drawn moved while the design kept
     it in place; it goes back now.
+  - In an SVG with a width but no viewBox, sizes in % came out against 100 px, not the width;
+    and a preserveAspectRatio starting with "defer" placed the drawing off to one side.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
@@ -128,6 +132,8 @@
     surface map or Air cut is switched on at the computer (an old map bent the new design's
     depths; an air cut was reported as "cutting started"). Every job starts with the feed,
     rapid and spindle overrides back at 100 % (they carried over from the job before).
+  - Switching to a machine profile with a different BitZero plate kept the old plate's
+    settings in the BitZero panel until the program was restarted.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
     running forever in the background.
@@ -173,6 +179,11 @@
     default fit instead of down; it now fits the board both ways.
   - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
     it unsaved; it saves (and stays read-only, also when run as root).
+  - Toolpath settings in mm kept only 2 decimals, so a typed 3.175 was saved as 3.18; they keep
+    3, and a thread's Pitch keeps 4.
+  - Tab width took up to 500 mm and a new cutout started at 127 mm, but tabs are cut at most
+    30 mm wide; the field stops at 30 and a new cutout starts at 12.
+  - The setup sheet left a cutout's break-through out of its depth.
 - **Pad link:**
   - A pad design cut with any bit but #201 counted as having toolpath settings made on the
     computer after its first Save there, so every later pad edit went to a "(pad)" copy. The
@@ -196,6 +207,9 @@
   - The pad's Area fill joined pieces through a circle touching a side (a circle in a panel's
     corner filled the whole panel, not the nook), and filled a window framed by shapes that is
     inside none of them; it fills what the computer fills, also where outlines nearly coincide.
+  - The pad's Area fill no longer joined a shape's own nearly touching ends (a horseshoe whose
+    tips almost meet, an O drawn as one outline), so it filled the wrong piece; and a tap on a
+    design with many shapes froze the pad for seconds.
 
 ## v1.3.1 (build 91) — 2026-10-20
 

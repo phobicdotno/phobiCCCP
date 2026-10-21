@@ -3455,7 +3455,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                 continue;
                             // The cone (or the shank, at most) widens past the
                             // shape between that floor and Z0: that ring must be air too.
-                            const double grow = qMin(vg.radius(), -cand * halfTan);
+                            // It meets the shape's edge at the start depth, so it is
+                            // that much wider at Z0 however high the floor is.
+                            const double grow = qMin(vg.radius(), -cp.zTop * halfTan);
                             const QPainterPath need = grow > 0.05
                                 ? regionFromRings(outsetRings(core, grow)) : core;
                             QList<QPainterPath> regs;

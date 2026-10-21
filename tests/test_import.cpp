@@ -440,6 +440,23 @@ int main(int argc, char **argv)
             }
         }
         {
+            // A percentage with only a width on the root is of that width;
+            // "defer" before the alignment does not centre the drawing.
+            const c2d::ImportResult p = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='100mm'><rect width='100%' height='10'/></svg>",
+                opts(0, 0), QStringLiteral("pct"));
+            check(p.ok && std::abs(p.bounds.width() - 100) < 0.01, "svg: a width percentage with only a root width");
+            auto left = [&](const char *par) {
+                const c2d::ImportResult d = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='100mm' viewBox='0 0 10 10' "
+                               "preserveAspectRatio='") + par + "'><rect width='10' height='10'/></svg>",
+                    opts(0, 0), QStringLiteral("defer"));
+                return d.ok ? d.bounds.left() : -1.0;
+            };
+            check(std::abs(left("defer xMinYMin meet") - left("xMinYMin meet")) < 1e-6,
+                  "svg: preserveAspectRatio 'defer' is skipped");
+        }
+        {
             // <use> places what it refers to (pdftocairo's text, clones).
             const c2d::ImportResult u = c2d::importSvgData(
                 "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "
