@@ -1199,8 +1199,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         // was reset, which ends any hold.
         if (ok && (wasHeld || m_machineState.startsWith(QLatin1String("Hold"))))
             setHeld(true);
+        // From the event loop: this runs inside the serial read, and the
+        // summary's dialog would stop status and alarms being read.
         if (rehearsal)
-            finishRehearsal(ok, measured);
+            QTimer::singleShot(0, this, [this, ok, measured] { finishRehearsal(ok, measured); });
         // A finished job: retract to the top of Z, then stop the spindle,
         // the way Carbide Motion ends a run. A stopped one was reset, which
         // already killed the spindle.
@@ -2612,7 +2614,13 @@ void MachinePanel::onStatus(const MachineStatus &st)
         if (settled)
             m_jogPlanValid = false;          // the next jog starts from this report
         m_jogSeedOk = settled && m_statusSeq >= m_jogFreshAfter;
-        if (!m_deferredJogs.isEmpty() && m_jogSeedOk && !m_jogCancelTimer
+        if (!m_deferredJogs.isEmpty() && m_onIdle) {
+            // A step waits for the machine to stand still (BitZero's zero,
+            // the end-of-job rise): a jog sent now locks out its G-code
+            // (error:9), or moves the spot it is about to zero.
+            m_deferredJogs.clear();
+            log(QStringLiteral("jog tap dropped: a step is waiting for the machine to stand still"));
+        } else if (!m_deferredJogs.isEmpty() && m_jogSeedOk && !m_jogCancelTimer
             && m_grbl->canSendCommand()) {
             const QVector<PendingJog> taps = std::exchange(m_deferredJogs, {});
             for (const PendingJog &j : taps)
@@ -2656,6 +2664,11 @@ void MachinePanel::onStatus(const MachineStatus &st)
                 m_idlePosted = false;
                 if (!m_onIdle || seq != m_idleSeq)
                     return;
+                // Something moved it since the report (a jog): wait again.
+                if (!standingStill()) {
+                    m_lastState.clear();
+                    return;
+                }
                 auto fn = std::move(m_onIdle);
                 m_onIdle = nullptr;
                 fn();
@@ -3372,6 +3385,12 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     }
     if (r.done.isEmpty())
         return refuse(QStringLiteral("No exportable toolpaths."));
+    // A toolpath left out (a V-bit in a pocket, a depth it cannot reach)
+    // and the rest cut anyway can free the part before it: from a pad,
+    // where nobody sees the list, that start is refused.
+    if (remote && !r.skipped.isEmpty())
+        return refuse(QStringLiteral("Some toolpaths cannot be cut: %1.").arg(r.skipped.join(QStringLiteral(", "))),
+                      QStringLiteral("Fix or turn them off, then send again."));
     // Surface map: every Z follows the measured surface. Applied to the
     // operations and posted again, so feeds are cut up along the way.
     QVector<Op> ops = r.ops;
@@ -3433,6 +3452,8 @@ bool MachinePanel::runProgram(QString *remoteWhy)
                                  : QString());
     if (const QString w = toolReuseWarning(ops); !w.isEmpty())
         ask.body += QStringLiteral("\n\n\u26a0 ") + w;
+    if (!r.skipped.isEmpty())
+        ask.body += QStringLiteral("\n\n\u26a0 Left out (not cut): %1").arg(r.skipped.join(QStringLiteral(", ")));
     if (useMap) {
         ask.body += QStringLiteral("\n\nSurface map on: Z follows the measured surface (%1).")
                         .arg(m_map.summary());

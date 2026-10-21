@@ -707,6 +707,10 @@ class Tool {
   final List<String> materials;
   const Tool(
       {required this.number, required this.name, this.kind = '', this.diameter = 0, this.angle = 0, this.flutes = 0, this.materials = const []});
+
+  /// A pointed bit (V-bit, engraver, any tool with an angle but a ball), as
+  /// phobiCCCP's export reads it.
+  bool get isVee => kind == 'vbit' || kind == 'engraver' || (angle > 0 && kind != 'ball');
   factory Tool.fromJson(Map<String, Object?> j) => Tool(
         number: _i(j['number']),
         name: _s(j['name']),
@@ -764,6 +768,7 @@ class ToolLibrary {
   }
 
   /// A sensible first tool for a kind of toolpath, from what there is for the material.
+  /// Never a V-bit for a pocket or profile: phobiCCCP leaves those out.
   int? defaultTool(String material, String type) {
     final have = toolsFor(material);
     final wanted = type == 'engrave' ? ['engraver', 'vbit', 'endmill'] : ['endmill', 'ball'];
@@ -772,7 +777,8 @@ class ToolLibrary {
         if (t.kind == k) return t.number;
       }
     }
-    return have.isEmpty ? null : have.first.number;
+    final usable = type == 'engrave' ? have : have.where((t) => !t.isVee);
+    return usable.isEmpty ? null : usable.first.number;
   }
 }
 

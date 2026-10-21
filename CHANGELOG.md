@@ -32,6 +32,9 @@
     flat clearing both step down from the stock top now.
   - Pocket, Cutout and offset Contours accepted a V-bit and kept it a whole radius off the
     vectors, so the part came out oversize; they ask for an end mill (on-the-line is fine).
+    Adaptive, Circular, Bore and Face do too. Per pass 0 on a V-carve is still one pass.
+  - A keyhole or thread crossing a tile line was finished in the next tile through solid wood
+    (the keyhole bit lifted out through the neck); the tiled export is refused, naming it.
   - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
 - **Drawing:**
   - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
@@ -54,7 +57,8 @@
   - Break and Convert to paths on text left the extra pieces out of the shape's group and
     dropped construction from them.
   - The Area tool copied a shape with sharp tips (under about 20 degrees) instead of selecting
-    it, as a lone shape or as an island in a pocket.
+    it, as a lone shape or as an island in a pocket (hair-thin islands too).
+  - Pattern on path with a spacing round a closed path put the last copy on the original.
   - A DXF saved with a byte-order mark failed to import.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
@@ -76,7 +80,11 @@
     BitSetter on check, as Measure bit does, that the machine is homed and the button inside
     the travel before they go to measure.
   - While the tool-change prompt was open the panel read nothing from the controller: no
-    position, no alarms, and pad jogs refused. It keeps listening now.
+    position, no alarms, and pad jogs refused. It keeps listening now, and so does the
+    rehearsal's summary.
+  - A pad jog tap during BitZero went out just before its zero, so the zero (and the rise)
+    was refused by the controller while the log said it was set. Taps are dropped while a
+    step waits for the machine to stand still.
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -102,8 +110,15 @@
   - A number typed in a toolpath (no Enter) undid Assign selected vectors, was lost when the
     toolpath's on/off box was clicked, and went to the original instead of the copy on Duplicate.
     It was also lost on a new toolpath from the toolbar, and a typed Properties value was lost
-    when a Vectors toolbar action (Mirror, ...) was clicked.
+    when a Vectors toolbar action (Mirror, ...) was clicked. A pad's edit arriving as Save
+    committed a typed number reloaded the design and lost the number.
+  - Two unnamed machines could both be called "Machine 3", and Remove other machine then
+    removed the wrong one.
 - **Pad link:**
+  - Send and start from a pad cut the rest of a design when a toolpath could not be made (a
+    V-bit in a pocket), freeing the part before it. Such a start is refused with the reason,
+    the pad warns before sending, and a pocket or profile never gets a V-bit by default.
+    Run on the computer lists what is left out.
   - A Carbide Create file with layers or groups lost them when a pad edited it; they are now
     named as something the pad does not hold, so the pad's edit is kept as a copy beside it.
   - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one

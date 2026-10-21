@@ -4,6 +4,7 @@
 #include "gcodeexport.h"
 
 #include <QFile>
+#include <QJsonArray>
 #include <QtMath>
 #include <cmath>
 
@@ -470,6 +471,31 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
     if (r.tileHeight <= 0)
         r.tileHeight = 508.0;
     const double safeZ = documentSafeZ(doc);
+
+    // A keyhole slot or a thread mill cut in two tiles comes back in through
+    // solid wood (the keyhole bit ramps down, then lifts out through the
+    // neck): such a job must sit in one tile.
+    for (const Toolpath &t : doc.toolpaths()) {
+        const QJsonObject &j = t.json;
+        const bool keyhole = t.type == QLatin1String("keyhole_toolpath");
+        if (!j.value("enabled").toBool(true) || !(keyhole || t.type == QLatin1String("thread_toolpath")))
+            continue;
+        const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
+        const double reach = toolR + (keyhole ? std::fabs(j.value("length").toDouble(12.7)) : 0.0);
+        for (const QJsonValue &v : j.value("elements").toArray()) {
+            const Element *e = doc.elementById(v.toObject().value("uuid").toString());
+            if (!e)
+                continue;
+            const QRectF b = e->painterPath.boundingRect();
+            auto tileOf = [&](double y) { return qMax(0, int(std::floor(y / r.tileHeight))); };
+            if (tileOf(b.top() - reach) != tileOf(b.bottom() + reach)) {
+                r.error = QStringLiteral("%1 crosses a tile line (every %2 mm): a keyhole or thread "
+                                         "must be cut within one tile. Move it or change the tile height.")
+                              .arg(j.value("name").toString()).arg(r.tileHeight, 0, 'f', 1);
+                return r;
+            }
+        }
+    }
 
     const GcodeResult g = exportGcode(doc, watch, relief);
     r.done = g.done;

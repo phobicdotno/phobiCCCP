@@ -865,6 +865,22 @@ int main(int argc, char *argv[])
               "stale: a leftover tile past the end is reported, not silently left");
     }
 
+    // A keyhole across a tile line would be finished in the next tile through
+    // solid wood: the tiled export is refused; within one tile it goes ahead.
+    {
+        QTemporaryDir d;
+        for (const double y : {20.0, 5.0}) {
+            Rig r;
+            r.addShape(c2d::Element::makePoint({40, y}, layer));
+            r.addToolpath("keyhole_toolpath", {{"angle", 90}, {"length", 12.7}, {"end_depth", "9.000"}});
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("k")), 25.0);
+            if (y == 20.0)
+                check(te.error.contains("tile line"), "tiling: a keyhole across a tile line is refused");
+            else
+                check(te.error.isEmpty(), "tiling: a keyhole inside one tile is exported");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Texture over a big sheet. The generator used to sample the region every
     // 0.5 mm along the diagonal for every hatch line, so its cost grew with

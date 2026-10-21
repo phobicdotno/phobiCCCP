@@ -3497,7 +3497,9 @@ void MainWindow::padDesignChanged(const QString &id)
         // A number being typed (not committed yet) is an unsaved change too.
         // Not committed here: taking the focus away mid-number would keep
         // half of it ("2" of "2.5").
-        if (open && (m_dirty || typingPending() || m_machine->isBusy())) {
+        // m_holdDoc: inside commitEdits (Save, Export, close, ...), a value
+        // just committed may still be on its way into the document.
+        if (open && (m_dirty || typingPending() || m_holdDoc > 0 || m_machine->isBusy())) {
             statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; save or finish %2 first, "
                                                     "then send it again from the pad")
                                          .arg(name, file), 10000);
@@ -3603,7 +3605,14 @@ void MainWindow::rebuildMachineMenu()
         QStringList names;
         QStringList ids;
         for (const auto &p : machineprofiles::list(s))
-            if (p.id != active) { names << p.name; ids << p.id; }
+            if (p.id != active) {
+                // Labels unique, so the pick maps back to one machine.
+                QString label = p.name;
+                for (int n = 2; names.contains(label); ++n)
+                    label = QStringLiteral("%1 (%2)").arg(p.name).arg(n);
+                names << label;
+                ids << p.id;
+            }
         bool ok = false;
         const QString pick = QInputDialog::getItem(this, QStringLiteral("Remove machine"),
             QStringLiteral("Forget this machine and its settings:"), names, 0, false, &ok);

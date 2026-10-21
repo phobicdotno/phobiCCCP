@@ -837,6 +837,78 @@ int main(int argc, char **argv)
                     during, dro0, dro1, sentJogs);
         check(during >= 3, "r12deaf: status keeps coming in while the tool prompt is open");
     }
+    if (mode == "rehdeaf") {
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        int during = -1, j0 = 0, jDuring = -1;
+        answer = [&](const Seen &v) {
+            std::printf("prompt: %s\n", qPrintable(v.headline));
+            if (v.headline.contains("Start the rehearsal")) return QStringLiteral("Start rehearsal");
+            if (v.headline.contains("Rehearsal")) {
+                if (v.headline.contains("change the tool")) return QStringLiteral("Measure and continue");
+                const int r0 = reports;
+                QElapsedTimer t; t.start();
+                while (t.elapsed() < 1500) QApplication::processEvents(QEventLoop::AllEvents, 20);
+                during = reports - r0;
+                j0 = grbl.count("$J=");
+                for (int k = 0; k < 4; ++k) {
+                    padPress(4);
+                    QElapsedTimer u; u.start();
+                    while (u.elapsed() < 300) QApplication::processEvents(QEventLoop::AllEvents, 20);
+                }
+                jDuring = grbl.count("$J=") - j0;
+                return QStringLiteral("OK");
+            }
+            return QStringLiteral("OK");
+        };
+        panel.rehearseToolChange();
+        spin(15000, [&] { return during >= 0; });
+        wait(500);
+        wait(1500);
+        std::printf("r13: status reports during 1.5 s of the rehearsal summary: %d; pad jogs sent while open %d, total after close %d\n", during, jDuring, grbl.count("$J=") - j0);
+        for (int i = grbl.indexOf("$J="); i >= 0 && i < grbl.events.size(); ++i) std::printf("  ev: %s\n", grbl.events.at(i).constData());
+        check(during >= 3, "r13rehdeaf: status keeps coming while the rehearsal summary is open");
+    }
+    if (mode == "bztap") {
+        // BitZero Z only, BitSetter off. The operator taps Z+ on the pad
+        // while the plate probe runs.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::ZOnly)->click();
+        grbl.probeZ = -40;
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        QTimer::singleShot(30, [&] { padPress(5); });
+        wait(4000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        const int g10 = grbl.indexOf("G10 L20");
+        const int jog = grbl.indexOf("$J=");
+        std::printf("r13bztap: jog at %d, G10 at %d\n", jog, g10);
+        check(!(jog >= 0 && g10 > jog), "r13bztap: no jog goes out between the probe and BitZero's zero");
+    }
+    if (mode == "endtap") {
+        // A job ends (all acked, planner still running); the operator taps
+        // Z+ on the pad before the machine stands still.
+        panel.m_endOfJobPending = true;
+        grbl.running = true;
+        wait(300);
+        grbl.events.clear();
+        s->startStream({QStringLiteral("M3S10000"), QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+        spin(2000, [&] { return !s->isStreaming(); });
+        wait(300);
+        padPress(5);
+        wait(300);
+        grbl.running = false;
+        wait(3000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        const int m5 = grbl.indexOf("M5");
+        std::printf("r13endtap: jog at %d, rise at %d, M5 at %d\n", grbl.indexOf("$J="), grbl.indexOf("G53 G0 Z"), m5);
+        check(m5 >= 0, "r13endtap: the spindle is stopped at the end of the job");
+    }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);
     answerer.stop();

@@ -777,9 +777,15 @@ QVector<QTransform> pathTransforms(const QPainterPath &path, int count, double s
                        : closed ? total * i / count : total * i / (count - 1);
         if (s > total + 1e-9)
             break;
+        // Round a closed path back at the start: a copy there would sit on
+        // the original (stacked vectors cancel in a pocket).
+        if (closed && s > total - 0.01)
+            break;
         QPointF p;
         double d = 0;
         at(s, &p, &d);
+        if (closed && QLineF(p, p0).length() < 0.05)
+            break;
         QTransform t;
         t.translate(p.x(), p.y());
         if (orient)

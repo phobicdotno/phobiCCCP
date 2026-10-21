@@ -94,6 +94,10 @@ class _SendDialogState extends State<SendDialog> {
         out.add('${t.name}: T${t.tool} is not in its tool library');
       } else if (!tool.materials.contains(material)) {
         out.add('${t.name}: T${t.tool} has no feeds for ${lib.materialName(material)} there');
+      } else if (tool.isVee && (t.type == 'pocket' || (t.type == 'profile' && t.side != 'on'))) {
+        // phobiCCCP leaves these out: an offset is a tool radius, far wider
+        // than a V-bit cuts (src/gcodeexport.cpp).
+        out.add('${t.name}: T${t.tool} is a V-bit; ${t.type == 'pocket' ? 'a pocket' : 'an inside or outside profile'} needs an end mill');
       }
     }
     return out;

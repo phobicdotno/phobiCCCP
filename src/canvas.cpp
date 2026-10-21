@@ -561,9 +561,20 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
         QPainterPath b = shape;
         if (a.boundingRect().adjusted(-1, -1, 1, 1).contains(shape.boundingRect())
             && shape.boundingRect().adjusted(-1, -1, 1, 1).contains(a.boundingRect())) {
-            const double d = hole ? -0.01 : 0.01;
-            const QVector<QPolygonF> in = vec::offsetRings({shape}, {}, -d);
-            const QVector<QPolygonF> back = in.isEmpty() ? in : vec::offsetRings({pathOf(in)}, {}, d);
+            QVector<QPolygonF> back;
+            if (hole) {
+                // The island as fillFace() makes a hole of it: the face of a
+                // box around it, holes only - the very same pipeline, so a
+                // hair-thin tip loses exactly what it lost in the face.
+                const QRectF box = shape.boundingRect().adjusted(-10, -10, 10, 10);
+                QPainterPath frame;
+                frame.addRect(box);
+                const QVector<QPolygonF> f = vec::fillFace({frame, shape}, box.topLeft() + QPointF(5, 5));
+                back = f.mid(1);
+            } else {
+                const QVector<QPolygonF> in = vec::offsetRings({shape}, {}, -0.01);
+                back = in.isEmpty() ? in : vec::offsetRings({pathOf(in)}, {}, 0.01);
+            }
             if (!back.isEmpty())
                 b = pathOf(back);
         }

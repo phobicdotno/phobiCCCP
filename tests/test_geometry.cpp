@@ -1393,6 +1393,13 @@ int main(int argc, char *argv[])
                     break;
                 }
             check(firstCut > -1.0 - 1e-6, "v-carve's carving pass takes one Per pass at a time too");
+            // Per pass 0 on file: one pass, as before (not 0.05 mm steps).
+            Rig r0;
+            r0.addShape(c2d::Element::makeRectangle({30, 30}, 6, 40, layer));
+            r0.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", "5.000"},
+                                                        {"stepdown", 0.0}, {"tool", v60}});
+            const c2d::GcodeResult g0 = c2d::exportGcode(r0.doc);
+            check(g0.done.size() == 1 && g0.ops.size() < 2000, "v-carve with Per pass 0 is one pass");
         }
         // Offset toolpaths with a V-bit: offset by its radius, the part came
         // out oversize. Refused; on the line it is fine.
@@ -1409,6 +1416,14 @@ int main(int argc, char *argv[])
             rl.addShape(c2d::Element::makeRectangle({30, 30}, 40, 40, layer));
             rl.addToolpath("contour", {{"ofset_dir", 0}, {"tool", vbit}});
             check(c2d::exportGcode(rl.doc).done.size() == 1, "a contour on the line with a V-bit is fine");
+            for (const char *type : {"adaptive_toolpath", "face_toolpath", "bore_toolpath", "circular_toolpath"}) {
+                Rig ra;
+                ra.addShape(c2d::Element::makeCircle({50, 50}, 20, layer));
+                ra.addToolpath(type, {{"tool", vbit}});
+                const c2d::GcodeResult ga = c2d::exportGcode(ra.doc);
+                check(ga.done.isEmpty() && !ga.skipped.isEmpty() && ga.skipped.first().contains("end mill"),
+                      "adaptive, face, bore and circular refuse a V-bit");
+            }
         }
     }
 

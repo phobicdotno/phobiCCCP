@@ -2322,7 +2322,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         // An offset is a tool radius off the vectors; a V-bit cuts far
         // narrower than its radius at a shallow depth, so the part came out
         // oversize (a pocket undersize, with strips left between the rings).
-        if ((pocket || cutout || (contour && j.value("ofset_dir").toInt(0) != 0))
+        if ((pocket || cutout || adaptive || circular || bore || face
+             || (contour && j.value("ofset_dir").toInt(0) != 0))
             && toolGeomOf(tool).kind == ToolGeom::VBit) {
             res.skipped << QStringLiteral("%1 (needs an end mill: a V-bit only follows the line)").arg(name);
             continue;
@@ -3422,7 +3423,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         double deepest = 0;
                         for (const VPoint &v : ch)
                             deepest = qMin(deepest, zOf(v));
-                        const double step = cp.stepdown > 1e-6 ? cp.stepdown : 1e9;
+                        // No Per pass on file (0): one pass, as before.
+                        const double step = numOr(j.value("stepdown"), 1.0) > 1e-6 ? cp.stepdown : 1e9;
                         double level = 0;
                         do {
                             level = qMax(deepest, level - step);
