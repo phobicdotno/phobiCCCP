@@ -103,7 +103,7 @@ struct FakeGrbl {
     bool hangDwell = false;
     bool ackJogs = true;
     bool holdAcks = false;
-    bool homeOkLate = false, pendingHomeOk = false;
+    bool homeOkLate = false, pendingHomeOk = false; QList<QByteArray> queued;
     int heldOks = 0;
     QByteArray reject;
     QByteArray alarmOn;
@@ -145,7 +145,9 @@ struct FakeGrbl {
                                   && (homeClock.elapsed() < 300 || homeReports > 0);
                 if (home && homeReports > 0)
                     --homeReports;
-                if (pendingHomeOk && !home) { pendingHomeOk = false; send("ok\r\n<Idle|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz) + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n"); continue; }
+                if (pendingHomeOk && !home) { pendingHomeOk = false; send("ok\r\n<Idle|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz) + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n");
+                    for (const QByteArray &q : std::exchange(queued, {})) { if (q.startsWith("$J=")) jogClock.start(); send(q.startsWith("$J=") || !jogging() ? "ok\r\n" : "error:9\r\n"); }
+                    continue; }
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : running ? "Run" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
                      + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:0.000,0.000,0.000>\r\n");
@@ -176,6 +178,7 @@ struct FakeGrbl {
                 send("\r\nGrbl 1.1h ['$' for help]\r\n");
             } else if (c == '\n') {
                 events << line;
+                if (pendingHomeOk) { queued << line; line.clear(); continue; }
                 if (locked) {                        // read by nobody
                     line.clear();
                     continue;
@@ -1046,6 +1049,38 @@ int main(int argc, char **argv)
         for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
             std::printf("LOG:\n%s\n", qPrintable(t->toPlainText().right(800)));
         check(grbl.count("G53 G0 X") == 1, "park after homing goes out (TLO re-sent after $H)");
+    }
+    if (mode == "homejog") {
+        s->applyToolLengthOffset(1.5);
+        wait(600);
+        panel.m_homed = false;
+        grbl.jogMs = 1500;
+        grbl.homeOkLate = true;
+        panel.m_step->setCurrentIndex(panel.m_step->count() - 1);
+        grbl.events.clear();
+        panel.initializeMachine();
+        wait(150);
+        panel.jogStep('X', -1);
+        wait(4000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+            std::printf("LOG:\n%s\n", qPrintable(t->toPlainText().right(1200)));
+        wait(3000);
+        std::printf("TLO app=%.3f  G43.1 sent=%d\n", s->toolLengthOffset(), grbl.count("G43.1"));
+        check(grbl.count("$J=") == 0, "a jog tapped while homing is refused");
+        check(grbl.count("G43.1") >= 1, "the tool offset goes out after homing");
+    }
+    if (mode == "tloretry") {
+        // A G43.1 the controller refuses is sent again once it is Idle.
+        wait(600);
+        grbl.reject = "G43.1";
+        s->applyToolLengthOffset(1.5);
+        wait(400);
+        const int refused = grbl.count("G43.1");
+        grbl.reject.clear();
+        wait(1500);
+        std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G43.1"));
+        check(refused >= 1 && grbl.count("G43.1") > refused, "a refused tool offset is sent again");
     }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);

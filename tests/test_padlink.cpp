@@ -893,9 +893,10 @@ static void testOtherBitRoundTrip(const QString &dir)
         // rest, as the pad built them, are not settings made here; a lead-in
         // typed here still is.
         for (double lead : {201.0, 7.0}) {
+            // Built before the mark: take it out of the file.
+            check(Document::writeParam(path, "pad_sizing", QString(), &err), "other bit: mark cleared");
             Document doc;
             doc.load(path, &err);
-            doc.setParam("pad_sizing", QString());   // built before the mark
             for (Toolpath t : doc.toolpaths()) {
                 if (t.json.contains("lead_radius"))
                     t.json.insert("lead_radius", lead == 201.0 ? 3.175 : lead);
@@ -909,20 +910,20 @@ static void testOtherBitRoundTrip(const QString &dir)
                                 : "other bit: a lead-in typed here still is");
         }
         // In a file built with the mark, the same #201 sizes are a desktop
-        // edit (a 2x helix on a 1/8" bit) and fork rather than be undone.
+        // edit (the first toolpath's lead-in at #201's) and fork rather than
+        // be undone.
         {
             check(padlink::buildDocument(d, path, nullptr, &err), "other bit: rebuilt");
             Document doc;
             doc.load(path, &err);
-            for (Toolpath t : doc.toolpaths()) {
-                if (t.json.contains("helix_diameter"))
-                    t.json.insert("helix_diameter", 6.35);
-                doc.replaceToolpath(t);
-            }
+            check(doc.params().value("pad_sizing") == "bit", "other bit: the file carries the sizing mark");
+            Toolpath t = doc.toolpaths().first();
+            t.json.insert("lead_radius", 3.175);
+            doc.replaceToolpath(t);
             doc.save(path, &err);
             lost.clear();
             padlink::designFromDocument(path, d, &lost, &err);
-            check(!lost.isEmpty(), "other bit: a helix set here to #201's size is a setting made here");
+            check(!lost.isEmpty(), "other bit: a lead-in set here to #201's size is a setting made here");
         }
     }
 }

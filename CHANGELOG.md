@@ -68,6 +68,11 @@
   - A DXF saved with a byte-order mark failed to import.
   - A closed path of a single curve from an SVG or PDF (a teardrop) vanished on Rotate, Mirror,
     Scale, node edits, Break, Trim or Extend.
+  - Escape pressed while dragging a node crashed the program; it now cancels the drag. Escape
+    or a tool switch during a resize-handle drag cancels the resize too (it landed on release).
+  - Constraints that could only hold by shrinking a circle, rectangle or polygon to nothing
+    (Tangent then Concentric on two circles, a rectangle's opposite corners made coincident)
+    were accepted and the shape vanished; they show as a conflict now.
 - **Machine:**
   - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
     afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
@@ -97,6 +102,9 @@
     reports the jog (the job's first lines were refused and the job stopped). Rehearse tool
     change, Park, Go to X0 Y0, Measure and BitZero wait for it the same way, with the reason,
     instead of failing with error:9 or a misleading "no contact".
+  - A jog tapped while the machine homed ran after homing without travel limits, and made the
+    controller refuse the tool length offset, so the next job cut that far off in Z. Jogs are
+    refused while homing, and a refused offset is sent again once the controller is idle.
   - A tool length measured on one machine was sent again to the next after a machine switch.
 - **Panels:**
   - Closing the window just as an export started (Simulate, Export, Run) left the program
@@ -131,7 +139,9 @@
     and command-line exports too (--export to /dev/stdout or a pipe still writes straight).
     A read-only program stays read-only when exported over.
   - A tiled export whose name or folder held "%2" (a browser-saved "Sign%2C v2") wrote the
-    tiles under a mangled name, or failed; the name is kept.
+    tiles under a mangled name, or failed; the name is kept. Names with "%1" to "%9" also show
+    as typed in labels and messages (tool library, pad copies, notes and errors), and a pad
+    toolpath with such a name is no longer dropped.
   - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
     it unsaved; it saves (and stays read-only, also when run as root).
 - **Pad link:**

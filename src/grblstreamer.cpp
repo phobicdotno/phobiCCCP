@@ -569,7 +569,7 @@ void GrblStreamer::applyToolLengthOffset(double mm)
 
 void GrblStreamer::flushTlo()
 {
-    if (!m_tloPending || !canSendCommand())
+    if (!m_tloPending || m_tloWaitIdle || !canSendCommand())
         return;                                 // busy: sent when the line frees up
     m_tloPending = false;
     ++m_adhocPending;
@@ -666,6 +666,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         st.valid = true;
         m_status = st;
+        if (m_tloWaitIdle && st.state == QLatin1String("Idle")) {
+            m_tloWaitIdle = false;
+            flushTlo();
+        }
         // An ad-hoc line that is still unanswered while the controller sits
         // Idle for seconds was never received (typical right after a DTR
         // reset). Without this every stream and macro would wait forever.
@@ -775,6 +779,13 @@ void GrblStreamer::handleLine(const QByteArray &line)
         // Unlock and homing both leave GRBL without the G43.1 it had.
         if (ok && (sent == QLatin1String("$X") || sent == QLatin1String("$H")) && m_tlo != 0.0)
             m_tloPending = true;
+        // A refused G43.1 (error:9 while a jog still runs) left the controller
+        // without the offset the panel shows: the next job cut that far off.
+        // Sent again once the controller reports Idle.
+        if (err && sent == QLatin1String("G43.1")) {
+            m_tloPending = true;
+            m_tloWaitIdle = true;
+        }
         emit commandAnswered(sent, ok);
         if (m_adhocPending == 0) {
             flushTlo();

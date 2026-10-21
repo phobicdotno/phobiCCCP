@@ -1088,7 +1088,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     }
     if (xml.hasError()) {
         res.error = QStringLiteral("%1: XML error at line %2: %3")
-                        .arg(sourceName).arg(xml.lineNumber()).arg(xml.errorString());
+                        .arg(sourceName, QString::number(xml.lineNumber()), xml.errorString());
         return res;
     }
     if (!rootSeen) {
@@ -1587,7 +1587,7 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
             bool ok = false;
             const int code = lines.at(i).trimmed().toInt(&ok);
             if (!ok) {
-                res.error = QStringLiteral("%1: bad group code at line %2").arg(sourceName).arg(i + 1);
+                res.error = QStringLiteral("%1: bad group code at line %2").arg(sourceName, QString::number(i + 1));
                 return res;
             }
             QString v = lines.at(i + 1);
@@ -1983,9 +1983,7 @@ ImportResult importFile(const QString &path, const ImportOptions &opt)
     // help: it only starts counting once the whole file has been parsed.
     if (f.size() > kMaxImportBytes) {
         res.error = QStringLiteral("%1 is %2 MB; the import limit is %3 MB")
-                        .arg(QFileInfo(path).fileName())
-                        .arg(f.size() / (1024 * 1024))
-                        .arg(kMaxImportBytes / (1024 * 1024));
+                        .arg(QFileInfo(path).fileName(), QString::number(f.size() / (1024 * 1024)), QString::number(kMaxImportBytes / (1024 * 1024)));
         return res;
     }
     const QString name = QFileInfo(path).fileName();

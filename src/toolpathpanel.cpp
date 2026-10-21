@@ -813,9 +813,7 @@ void ToolpathPanel::createInlayMale()
                        "start depth %3 mm short of the pocket's depth.\n\nCarve it in the second piece, "
                        "flip that piece face-down into the female, glue, then "
                        "plane the ~%3 mm proud surface flush.")
-            .arg(j.value("name").toString())
-            .arg(margin, 0, 'f', 1)
-            .arg(gap, 0, 'f', 2));
+            .arg(j.value("name").toString(), QString::number(margin, 'f', 1), QString::number(gap, 'f', 2)));
 }
 
 // ---- list / editor -------------------------------------------------------

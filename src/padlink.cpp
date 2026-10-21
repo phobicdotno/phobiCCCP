@@ -298,7 +298,7 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         const int number = int(t.value(QStringLiteral("tool")).toDouble());
         const LibraryTool *tool = lib.byNumber(number);
         if (!tool)
-            return fail(QStringLiteral("toolpath %1: tool #%2 is not in the tool library").arg(name).arg(number));
+            return fail(QStringLiteral("toolpath %1: tool #%2 is not in the tool library").arg(name, QString::number(number)));
         const ToolFeeds *feeds = tool->feedsFor(material);
         if (!feeds || !feeds->valid())
             return fail(QStringLiteral("toolpath %1: %2 has no feeds and speeds for %3")
@@ -323,14 +323,15 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         j.insert(QStringLiteral("enabled"), t.value(QStringLiteral("enabled")).toBool(true));
         if (depth > thickness && notes)
             *notes << QStringLiteral("toolpath %1 goes %2 mm deeper than the stock")
-                          .arg(name).arg(depth - thickness, 0, 'f', 2);
+                          .arg(name, QString::number(depth - thickness, 'f', 2));
         tp.json = j;
         doc.addToolpath(tp);
     }
     // Lead-in, rest and helix follow each toolpath's own bit (sizeToTool);
     // files without this mark were built before that.
-    doc.setParam(QStringLiteral("pad_sizing"), QStringLiteral("bit"));
-    if (!doc.save(c2dPath, &err))
+    // (save() writes shapes and toolpaths, not params: written after it.)
+    if (!doc.save(c2dPath, &err)
+        || !Document::writeParam(c2dPath, QStringLiteral("pad_sizing"), QStringLiteral("bit"), &err))
         return fail(err);
     return true;
 }
@@ -657,9 +658,9 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
     // above with none: not added again, or every save would add a copy.
     auto key = [](const QJsonObject &t) {
         return QStringLiteral("%1\n%2\n%3\n%4")
-            .arg(t.value(QStringLiteral("name")).toString(), t.value(QStringLiteral("type")).toString())
-            .arg(t.value(QStringLiteral("tool")).toInt())
-            .arg(t.value(QStringLiteral("depth")).toDouble());
+            .arg(t.value(QStringLiteral("name")).toString(), t.value(QStringLiteral("type")).toString(),
+                 QString::number(t.value(QStringLiteral("tool")).toInt()),
+                 QString::number(t.value(QStringLiteral("depth")).toDouble()));
     };
     QSet<QString> emptyHere;
     for (const QJsonValue &v : std::as_const(toolpaths))

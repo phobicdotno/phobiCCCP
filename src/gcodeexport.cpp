@@ -2455,7 +2455,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             }
             if (belems.size() < refd.size())
                 res.notes << QStringLiteral("%1: %2 open vector(s) ignored")
-                                 .arg(name).arg(refd.size() - belems.size());
+                                 .arg(name, QString::number(refd.size() - belems.size()));
             const QPainterPath boundary =
                 cam3dBoundary(*hm, belems.isEmpty() ? QPainterPath() : regionOf(belems),
                               p3.boundaryOffset);
@@ -2546,7 +2546,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             }
             if (closedEls.size() < elems.size()) {
                 res.notes << QStringLiteral("%1: %2 open vector(s) ignored")
-                                 .arg(name).arg(elems.size() - closedEls.size());
+                                 .arg(name, QString::number(elems.size() - closedEls.size()));
                 elems = closedEls;
             }
         }
@@ -2622,7 +2622,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             }
             if (tooSmall)
                 res.skipped << QStringLiteral("%1 (%2 circle(s) no wider than the tool)")
-                                   .arg(name).arg(tooSmall);
+                                   .arg(name, QString::number(tooSmall));
             if (holes.isEmpty()) {
                 if (!tooSmall)
                     res.skipped << QStringLiteral("%1 (no circles to bore)").arg(name);
@@ -2729,7 +2729,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             }
             if (tooSmall)
                 res.skipped << QStringLiteral("%1 (%2 circle(s) too small for the thread or tool)")
-                                   .arg(name).arg(tooSmall);
+                                   .arg(name, QString::number(tooSmall));
             if (holes.isEmpty()) {
                 if (!tooSmall)
                     res.skipped << QStringLiteral("%1 (no circles to thread)").arg(name);
@@ -2821,12 +2821,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 cuts.append(c);
             }
             if (notSlots)
-                res.skipped << QStringLiteral("%1 (%2 closed vector(s) are not slots)").arg(name).arg(notSlots);
+                res.skipped << QStringLiteral("%1 (%2 closed vector(s) are not slots)").arg(name, QString::number(notSlots));
             if (tooNarrow)
-                res.skipped << QStringLiteral("%1 (%2 slot(s) narrower than the tool)").arg(name).arg(tooNarrow);
+                res.skipped << QStringLiteral("%1 (%2 slot(s) narrower than the tool)").arg(name, QString::number(tooNarrow));
             if (tooWide)
                 res.skipped << QStringLiteral("%1 (%2 slot(s) over three tool diameters wide: pocket them)")
-                                   .arg(name).arg(tooWide);
+                                   .arg(name, QString::number(tooWide));
             if (cuts.isEmpty()) {
                 if (!notSlots && !tooNarrow && !tooWide)
                     res.skipped << QStringLiteral("%1 (no slots)").arg(name);
@@ -2910,7 +2910,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 holes.append(h);
             }
             if (tooSmall)
-                res.skipped << QStringLiteral("%1 (%2 circle(s) no wider than the tool)").arg(name).arg(tooSmall);
+                res.skipped << QStringLiteral("%1 (%2 circle(s) no wider than the tool)").arg(name, QString::number(tooSmall));
             if (holes.isEmpty()) {
                 if (!tooSmall)
                     res.skipped << QStringLiteral("%1 (no circles)").arg(name);
@@ -2989,7 +2989,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 lastPos = home;
             }
             if (crowded)
-                res.skipped << QStringLiteral("%1 (%2 boss(es) too close to another for the tool)").arg(name).arg(crowded);
+                res.skipped << QStringLiteral("%1 (%2 boss(es) too close to another for the tool)").arg(name, QString::number(crowded));
         } else if (adaptive) {
             // ADAPTIVE (phobiCCCP type, Fusion's 2D Adaptive): the closed
             // vectors cleared without the cutter ever taking much more than
@@ -3031,10 +3031,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             }
             if (plan.unreached)
                 res.skipped << QStringLiteral("%1 (%2 area(s) narrower than the tool)")
-                                   .arg(name).arg(plan.unreached);
+                                   .arg(name, QString::number(plan.unreached));
             if (plan.capped)
                 res.notes << QStringLiteral("%1: adaptive plan stopped at %2 moves, part of the area left uncut")
-                                 .arg(name).arg(adaptive::kMaxMoves);
+                                 .arg(name, QString::number(adaptive::kMaxMoves));
             if (plan.moves.isEmpty()) {
                 if (!plan.unreached)
                     res.skipped << QStringLiteral("%1 (nothing the tool fits in)").arg(name);
@@ -3074,12 +3074,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     switch (restAdjust(cleared, pts, toolR, overlap, &cp.zTop, cp.zBot, &floor)) {
                     case RestVerdict::Done:
                         res.skipped << QStringLiteral("%1 (already cut to %2 mm by the toolpaths above)")
-                                           .arg(name).arg(-floor, 0, 'f', 2);
+                                           .arg(name, QString::number(-floor, 'f', 2));
                         skipIt = true;
                         break;
                     case RestVerdict::Raised:
                         res.notes << QStringLiteral("%1: starts at %2 mm, the toolpaths above cut to %3 mm")
-                                         .arg(name).arg(-cp.zTop, 0, 'f', 2).arg(-floor, 0, 'f', 2);
+                                         .arg(name, QString::number(-cp.zTop, 'f', 2), QString::number(-floor, 'f', 2));
                         break;
                     case RestVerdict::Partial: {
                         // Only what the toolpaths above left, band by band: each
@@ -3103,7 +3103,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                             });
                             if (bp.capped)
                                 res.notes << QStringLiteral("%1: adaptive plan stopped at %2 moves, part of the area left uncut")
-                                                 .arg(name).arg(adaptive::kMaxMoves);
+                                                 .arg(name, QString::number(adaptive::kMaxMoves));
                             if (bp.moves.isEmpty())
                                 continue;
                             centres << planCentres(bp);
@@ -3114,7 +3114,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                             skipIt = true;
                         } else {
                             res.notes << QStringLiteral("%1: cuts only what the toolpaths above left (%2 depth band(s))")
-                                             .arg(name).arg(runs.size());
+                                             .arg(name, QString::number(runs.size()));
                         }
                         break;
                     }
@@ -3210,7 +3210,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // Deeper than the cone, the bevel would be cut by the shank.
             if (width + tip > vg.radius() + 1e-6) {
                 res.skipped << QStringLiteral("%1 (chamfer width + tip offset %2 mm is more than the V-bit's radius %3 mm)")
-                                   .arg(name).arg(width + tip, 0, 'f', 2).arg(vg.radius(), 0, 'f', 2);
+                                   .arg(name, QString::number(width + tip, 'f', 2), QString::number(vg.radius(), 'f', 2));
                 continue;
             }
             const bool inside = j.value("side").toString() == QLatin1String("inside");
@@ -3539,7 +3539,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     res.skipped << QStringLiteral("%1 (%2)").arg(name, why);
                     continue;
                 }
-                res.notes << QStringLiteral("%1: %2 shape(s) left uncut, %3").arg(name).arg(tooDeep).arg(why);
+                res.notes << QStringLiteral("%1: %2 shape(s) left uncut, %3").arg(name, QString::number(tooDeep), why);
             }
         } else if (engrave) {
             // ENGRAVE (phobiCCCP type, see toolpathfactory.cpp). mode
@@ -3696,7 +3696,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             if (finSkipped)
                 res.notes << QStringLiteral("%1: finishing passes skipped on %2 loop(s), "
                                             "their offsets do not stay parallel")
-                                 .arg(name).arg(finSkipped);
+                                 .arg(name, QString::number(finSkipped));
         } else { // pocket
             const double stepover = qMax(0.1, numOr(j.value("stepover"), toolR));
             cp.linkDist = qMax(2.5 * stepover, 4 * toolR);
@@ -3781,11 +3781,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 switch (restAdjust(cleared, pts, toolR, overlap, &cp.zTop, cp.zBot, &floor)) {
                 case RestVerdict::Done:
                     res.skipped << QStringLiteral("%1 (already cut to %2 mm by the toolpaths above)")
-                                       .arg(name).arg(-floor, 0, 'f', 2);
+                                       .arg(name, QString::number(-floor, 'f', 2));
                     continue;
                 case RestVerdict::Raised:
                     res.notes << QStringLiteral("%1: starts at %2 mm, the toolpaths above cut to %3 mm")
-                                     .arg(name).arg(-cp.zTop, 0, 'f', 2).arg(-floor, 0, 'f', 2);
+                                     .arg(name, QString::number(-cp.zTop, 'f', 2), QString::number(-floor, 'f', 2));
                     break;
                 case RestVerdict::Partial:
                     if (pocket) {
@@ -3819,7 +3819,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         for (const Job &job : jobs)
                             centres << job.rings;
                         res.notes << QStringLiteral("%1: cuts only what the toolpaths above left (%2 depth band(s))")
-                                         .arg(name).arg(bands.size());
+                                         .arg(name, QString::number(bands.size()));
                     } else {
                         res.notes << QStringLiteral("%1: only partly inside what the toolpaths above cut, full depth kept")
                                          .arg(name);

@@ -1389,6 +1389,13 @@ void MachinePanel::forgetJogPlan()
 
 bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
 {
+    // A jog sent while homing waits in GRBL's buffer and runs after it,
+    // unlimited (a + tap into the switch), and its answer let the tool
+    // offset go out mid-move to be refused.
+    if (m_parkAfterHome || m_homingStarted || m_machineState.startsWith(QLatin1String("Home"))) {
+        log(QStringLiteral("!! jog refused while homing"));
+        return false;
+    }
     if (m_jogCancelTimer) {
         if (defer)
             m_deferredJogs.append({axis, delta, feed});
@@ -1484,6 +1491,10 @@ void MachinePanel::beginHoldJog(char axis, int dir)
     stopHoldJog();
     if (needsInit())
         return;
+    if (m_parkAfterHome || m_homingStarted || m_machineState.startsWith(QLatin1String("Home"))) {
+        log(QStringLiteral("!! jog refused while homing"));
+        return;
+    }
     m_holdAxis = axis;
     m_holdDir = dir;
     m_holdJogging = false;

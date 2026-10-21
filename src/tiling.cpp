@@ -541,7 +541,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
             if (tileOf(y0) != tileOf(y1)) {
                 r.error = QStringLiteral("%1 crosses a tile line (every %2 mm): a keyhole or thread "
                                          "must be cut within one tile. Move it or change the tile height.")
-                              .arg(j.value("name").toString()).arg(r.tileHeight, 0, 'f', 1);
+                              .arg(j.value("name").toString(), QString::number(r.tileHeight, 'f', 1));
                 return r;
             }
         }

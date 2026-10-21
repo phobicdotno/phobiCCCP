@@ -764,7 +764,7 @@ void ModelPanel::addStl()
     ModelComponent c;
     c.kind = ModelComponent::StlMesh;
     c.data = bytes;
-    c.sourceName = QStringLiteral("%1 (%2 triangles)").arg(QFileInfo(path).fileName()).arg(tris.size());
+    c.sourceName = QStringLiteral("%1 (%2 triangles)").arg(QFileInfo(path).fileName(), QString::number(tris.size()));
     c.name = uniqueName(QStringLiteral("STL"));
     c.units = ch.units;
     c.width = ch.fitWidth ? ch.width : 0;
@@ -792,7 +792,7 @@ bool ModelPanel::addStlMesh(const QByteArray &bytes, const QString &fileName, do
     ModelComponent c;
     c.kind = ModelComponent::StlMesh;
     c.data = bytes;
-    c.sourceName = QStringLiteral("%1 (%2 triangles)").arg(fileName).arg(tris.size());
+    c.sourceName = QStringLiteral("%1 (%2 triangles)").arg(fileName, QString::number(tris.size()));
     c.name = uniqueName(QStringLiteral("STL"));
     c.units = ModelComponent::Millimetres;
     c.width = 0;

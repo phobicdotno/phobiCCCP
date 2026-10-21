@@ -2824,7 +2824,7 @@ QString padCopyPath(const QString &path)
     const QDir dir = fi.absoluteDir();
     for (int n = 1; n < 100; ++n) {
         const QString name = n == 1 ? QStringLiteral("%1 (pad).c2d").arg(fi.completeBaseName())
-                                    : QStringLiteral("%1 (pad %2).c2d").arg(fi.completeBaseName()).arg(n);
+                                    : QStringLiteral("%1 (pad %2).c2d").arg(fi.completeBaseName(), QString::number(n));
         if (!QFileInfo::exists(dir.filePath(name)))
             return dir.filePath(name);
     }

@@ -1986,6 +1986,7 @@ void Canvas::cancelDrawing()
     m_penDrag = false;
     m_splinePts.clear();
     m_arcTurn = 0;
+    m_resizing = false;           // a resize drag cancelled, not committed on release
     clearPreview();
 }
 
@@ -2639,8 +2640,16 @@ void Canvas::keyPressEvent(QKeyEvent *event)
         }
         return;
     }
-    if (m_tool == NodeEdit && event->key() == Qt::Key_Escape && m_selSub >= 0) {
+    if (m_tool == NodeEdit && event->key() == Qt::Key_Escape && (m_selSub >= 0 || m_grab != GrabNone)) {
+        // Mid-drag, Escape cancels the drag: the nodes go back to the
+        // element's own (a grab left on node -1 crashed the next move).
+        const bool dragging = m_grab != GrabNone;
+        m_grab = GrabNone;
         m_selSub = m_selNode = -1;
+        if (dragging) {
+            syncEditTarget();
+            previewModel();
+        }
         viewport()->update();
         return;
     }
