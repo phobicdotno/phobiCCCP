@@ -271,6 +271,30 @@ class _MainWindowState extends State<MainWindow> {
       _commit(next);
       _say('Area — the overlap was added as a closed path, so a toolpath cuts only this area');
     }
+    // Lettering standing in the area: on the computer its glyphs are islands
+    // of the face and get selected with it, so a pocket leaves them
+    // standing. The pad has no glyph outlines; text whose box lies wholly
+    // in the face (inside its outline, clear of its holes) is selected.
+    var crossing = 0;
+    for (final s in d.shapes) {
+      if (s.type != Shape.text) continue;
+      final b = s.bounds();
+      final corners = <Pt>[(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])];
+      final anyIn = corners.any((c) => ringContains(face.first, c));
+      if (!anyIn) continue;
+      bool inBox(Pt p) => p.$1 > b[0] && p.$1 < b[2] && p.$2 > b[1] && p.$2 < b[3];
+      final whole = corners.every((c) => ringContains(face.first, c)) &&
+          !face.first.any(inBox) &&
+          face.skip(1).every((h) => !corners.any((c) => ringContains(h, c)) && !h.any(inBox));
+      if (whole) {
+        ids.add(s.id);
+      } else if (!face.skip(1).any((h) => corners.every((c) => ringContains(h, c)))) {
+        crossing++;
+      }
+    }
+    if (crossing > 0) {
+      _say('Area — text crossing the edge of the area is not included; select it by hand if it should stay standing');
+    }
     setState(() => _sel = ids);
   }
 
@@ -486,6 +510,10 @@ class _MainWindowState extends State<MainWindow> {
     // The design as stored now: a sync may have brought a newer copy while
     // the dialog was up, and editing the older one would be refused.
     final d = picked == null ? null : app.design(picked.id) ?? picked;
+    if (d != null && d.deleted) {
+      _say('“${d.name}” was deleted on another pad or computer');
+      return;
+    }
     if (d != null) {
       setState(() => _open(d));
       _say(d.desktopOnly.isEmpty ? 'Opened “${d.name}”' : 'Opened “${d.name}” · ${_copyWords(d)}');

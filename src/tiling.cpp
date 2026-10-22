@@ -560,12 +560,27 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
             }
         }
     }
+    // exportGcode() is not the only slow part: splitting, posting and
+    // writing a big job's tiles takes seconds too. A Cancel then still
+    // drops the staged tiles uncommitted, leaving the old set as it was.
+    auto cancelled = [&](int done, int total) {
+        if (!watch || !watch->stop(done, total, QStringLiteral("tiles")))
+            return false;
+        r.error = QStringLiteral("cancelled");
+        r.files.clear();
+        r.gcode.clear();
+        return true;
+    };
+    if (cancelled(0, 1))
+        return r;
     const QVector<QVector<Op>> tiles = tileOps(g.ops, r.tileHeight, safeZ);
     // Every tile is staged and the set is moved into place only once all are
     // written: a failure part-way leaves the previous tiles as they were, not
     // a truncated tile or new tiles mixed with old ones.
     std::vector<std::unique_ptr<QSaveFile>> staged;
     for (int k = 0; k < tiles.size(); ++k) {
+        if (cancelled(k, tiles.size()))
+            return r;
         QVector<Op> ops;
         ops.append(Op::comment(QStringLiteral("tile %1/%2").arg(k + 1).arg(tiles.size())));
         ops.append(tiles.at(k));
@@ -594,6 +609,8 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.files << path;
         r.gcode << gcode;
     }
+    if (cancelled(tiles.size(), tiles.size()))
+        return r;
     for (const auto &f : staged) {
         if (!commitKeepingMode(*f)) {
             r.error = QStringLiteral("%1: %2").arg(f->fileName(), f->errorString());

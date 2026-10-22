@@ -489,6 +489,11 @@ int main(int argc, char **argv)
             check(std::abs(usedW("<defs><svg id='o' width='50' height='50' viewBox='0 0 10 10'><svg viewBox='0 0 1 1'>"
                                  "<rect width='1' height='1'/></svg></svg></defs><use xlink:href='#o'/>") - 50) < 0.01,
                   "svg: a used svg nested in a nested svg");
+            // The nested svg's own transform applies outside its viewport.
+            check(std::abs(usedW("<rect width='1' height='1'/><defs><svg id='t' transform='translate(60,0)' x='10' "
+                                 "y='10' width='20' height='20' viewBox='0 0 10 10'><rect width='10' height='10'/>"
+                                 "</svg></defs><use xlink:href='#t'/>") - 90) < 0.01,
+                  "svg: a used nested svg keeps its own transform");
             // ...and the <use>'s width and height resize it.
             check(std::abs(usedW("<defs><svg id='q' width='20' height='20' viewBox='0 0 10 10'><rect width='10' "
                                  "height='10'/></svg></defs><use xlink:href='#q' width='40' height='40'/>") - 40) < 0.01,
@@ -716,6 +721,27 @@ int main(int argc, char **argv)
         check(r.ok && r.elements.size() == 2, "HPGL: square and circle imported");
         check(r.ok && std::abs(r.bounds.width() - 70.0) < 0.1 && std::abs(r.bounds.height() - 40.0) < 0.1,
               "HPGL: 40 units per mm");
+    }
+    // HP-GL/2 lets a sign separate numbers: "400-0" is 400 then -0.
+    {
+        const c2d::ImportResult r = c2d::importHpglData("IN;PU0,0;PD400-0,400+200;PU;", opts(0, 0), "s.plt");
+        check(r.ok && std::abs(r.bounds.width() - 10.0) < 0.01 && std::abs(r.bounds.height() - 5.0) < 0.01,
+              "HPGL: a sign separates numbers");
+    }
+    // A closed fit-point spline closes along the curve, not a straight line.
+    {
+        const QByteArray dxf = "0\nSECTION\n2\nENTITIES\n0\nSPLINE\n8\n0\n70\n11\n71\n3\n"
+                               "11\n10\n21\n0\n11\n0\n21\n10\n11\n-10\n21\n0\n11\n0\n21\n-10\n"
+                               "0\nENDSEC\n0\nEOF\n";
+        const c2d::ImportResult r = c2d::importDxfData(dxf, opts(0, 0), "closedfit.dxf");
+        bool round = r.ok && r.elements.size() == 1;
+        if (round) {
+            const QPainterPath &p = r.elements.first().painterPath;
+            const QPointF c = p.boundingRect().center();
+            for (const QPointF d : {QPointF(5.5, 5.5), QPointF(5.5, -5.5), QPointF(-5.5, 5.5), QPointF(-5.5, -5.5)})
+                round = round && p.contains(c + d);
+        }
+        check(round, "dxf: a closed fit-point spline is smooth all the way round");
     }
     // DXF with bare CR line endings (old Mac exports).
     {

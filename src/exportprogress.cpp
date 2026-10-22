@@ -159,7 +159,9 @@ TiledExport exportTiledWithProgress(QWidget *parent, Document &doc, const QStrin
     runBehindDialog(parent, title, sh, [&] {
         out = exportTiled(snapshot, outBase, tileHeight, &watch, &relief);
     });
-    if (sh.cancel.load() && out.error.isEmpty())
+    // A Cancel pressed once the tiles were committed is too late: they are
+    // written, and the stale-tile warning must still be shown.
+    if (sh.cancel.load() && out.error.isEmpty() && out.files.isEmpty())
         out.error = QStringLiteral("cancelled");
     return out;
 }

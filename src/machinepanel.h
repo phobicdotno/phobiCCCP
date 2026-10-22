@@ -164,6 +164,7 @@ private:
     bool m_bzWantX = false, m_bzWantY = false, m_bzWantZ = false;
     double m_bzCx = 0, m_bzCy = 0, m_bzStockZ = 0;   // machine coords found
     double m_bzStartX = 0, m_bzStartY = 0;           // where Begin was pressed
+    double m_bzOverZ = 0;                            // V1: over the block (top + 5)
     void bitZeroAfterV1(Phase stage);
     static QStringList bitZeroSideLines(char axis, const BitZeroConfig &c, double startAbs);
     void openBitZero();

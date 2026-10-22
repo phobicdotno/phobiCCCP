@@ -1,5 +1,6 @@
 #include "element.h"
 #include <QFont>
+#include <cmath>
 #include <QFontMetricsF>
 #include <QLineF>
 #include <QJsonArray>
@@ -553,6 +554,21 @@ double SubPath::closest(const QPointF &pt, int *seg, double *t) const
     *seg = -1; *t = 0;
     const int N = 32;
     for (int s = 0; s < segmentCount(); ++s) {
+        // The segment lies inside its control points' box: one farther off
+        // than the best so far cannot beat it (Trim calls this for every
+        // open path's ends against curves of thousands of segments).
+        {
+            const PathNode &a = nodes.at(s), &b = nodes.at((s + 1) % nodes.size());
+            double x0 = a.p.x(), x1 = x0, y0 = a.p.y(), y1 = y0;
+            for (const QPointF &q : {a.out, b.in, b.p}) {
+                x0 = qMin(x0, q.x()); x1 = qMax(x1, q.x());
+                y0 = qMin(y0, q.y()); y1 = qMax(y1, q.y());
+            }
+            const double dx = qMax(0.0, qMax(x0 - pt.x(), pt.x() - x1));
+            const double dy = qMax(0.0, qMax(y0 - pt.y(), pt.y() - y1));
+            if (std::hypot(dx, dy) > best)
+                continue;
+        }
         double sBest = 1e300, sT = 0;
         for (int k = 0; k <= N; ++k) {
             const double tt = double(k) / N;

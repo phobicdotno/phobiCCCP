@@ -10,6 +10,26 @@
   - Adaptive with a Start depth hopped and entered its first level just above Start, as if the
     stock above were gone, so it rapided through wood; it starts from the stock top unless it is
     a rest band under earlier toolpaths.
+- **Machine:**
+  - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
+    beside the block below its top, and Begin again searched Z downward from there, past the
+    block toward the spoilboard. The pin now goes back up over the block and to where Begin was
+    pressed, and the message no longer talks about a bore.
+- **Export:**
+  - Cancel during a tiled export still wrote the tiles (seconds of work after the G-code is
+    made) and said "Export cancelled", hiding the note about older tiles left in the folder.
+    Cancel now drops the new tiles unwritten; once they are written, the export reports done.
+- **Drawing and import:**
+  - Trim and Break (and their hover preview) froze for seconds with many lines around a long
+    curve; the closest-point search skips segments that cannot be closer.
+  - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.
+  - DXF: a closed spline given by fit points only closed with a straight line and a kink.
+  - SVG: a `<use>` of a nested `<svg>` ignored that svg's own transform.
+- **Pad:**
+  - Open could open a design deleted on another pad or computer while the dialog was up, and
+    edits on it were saved into the deletion and lost. It now says the design was deleted.
+  - Area: lettering inside the area is selected with it, as on the computer, so a pocket leaves
+    the letters standing; text crossing the area's edge gets a note.
 
 ## v1.3.2 (build 92) — 2026-10-20
 

@@ -909,6 +909,31 @@ int main(int argc, char *argv[])
         }
     }
 
+    // Cancel after the G-code was made but while the tiles are written: none
+    // of the new tiles is committed (the old set stays whole), and the
+    // result says cancelled.
+    {
+        QTemporaryDir d;
+        Rig r;
+        r.addShape(c2d::Element::makePath({{60, 0}, {60, 100}}, false, layer));
+        r.addToolpath("contour", {{"ofset_dir", 0}});
+        const QString base = d.filePath(QStringLiteral("cx"));
+        { QFile f(base + QStringLiteral("_tile1.nc")); check(f.open(QIODevice::WriteOnly), "tile cancel: old tile");
+          f.write("(old)\n"); }
+        for (int at : {0, 2}) {
+            int seen = 0;
+            c2d::ExportWatch w;
+            w.step = [&seen, at](int, int, const QString &what) {
+                return what != QStringLiteral("tiles") || seen++ < at;
+            };
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, base, 25.0, &w);
+            QFile f(base + QStringLiteral("_tile1.nc"));
+            check(f.open(QIODevice::ReadOnly) && f.readAll() == "(old)\n" && te.error == QStringLiteral("cancelled")
+                      && te.files.isEmpty() && !QFile::exists(base + QStringLiteral("_tile2.nc")),
+                  "tile cancel: a Cancel while tiles are written commits none of them");
+        }
+    }
+
     // A base name with "%2" in it (a browser-saved "Sign%2C v2") kept it.
     {
         QTemporaryDir d;

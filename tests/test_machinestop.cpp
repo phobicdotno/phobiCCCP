@@ -112,6 +112,39 @@ struct FakeGrbl {
     bool locked = false;      // after ALARM:1: deaf until ctrl-X
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
+    // A V1 block model. Probes and G0 moves track the position.
+    bool geo = false, rel = false, noiseOnce = false;
+    double bx = -130, by = -130, topZ = -40, r = 3.175, minZ = 1e9;
+    double val(const QByteArray &l, char ax, bool &has) const {
+        const int i = l.indexOf(ax); has = i >= 0; if (!has) return 0;
+        int j = i + 1; while (j < l.size() && (l[j]=='-'||l[j]=='.'||(l[j]>='0'&&l[j]<='9'))) ++j;
+        return l.mid(i + 1, j - i - 1).toDouble(); }
+    bool geoLine(const QByteArray &l, QByteArray &reply) {
+        if (l.contains("G91")) rel = true;
+        if (l.contains("G90")) rel = false;
+        const bool g53 = l.contains("G53");
+        const bool probe = l.contains("G38.");
+        if (!probe && !l.contains("G0") && !l.contains("G1")) return false;
+        bool hx, hy, hz; const double X = val(l, 'X', hx), Y = val(l, 'Y', hy), Z = val(l, 'Z', hz);
+        double tx = mx, ty = my, tz = mz;
+        if (hx) tx = (rel && !g53) ? mx + X : X;
+        if (hy) ty = (rel && !g53) ? my + Y : Y;
+        if (hz) tz = (rel && !g53) ? mz + Z : Z;
+        if (!probe) { mx = tx; my = ty; mz = tz; minZ = qMin(minZ, mz); return true; }
+        bool hit = false; double cx = tx, cy = ty, cz = tz;
+        const bool overBlock = mx >= bx && mx <= bx + 60 && my >= by && my <= by + 60;
+        if (hz && tz < mz && overBlock && mz >= topZ && tz <= topZ) { hit = true; cz = topZ; }
+        if (hx && tx > mx && mz < topZ && my >= by && my <= by + 60) {
+            if (noiseOnce && l.contains("G38.3")) { noiseOnce = false; hit = true; cx = mx + 2; }
+            else if (mx <= bx - r && tx >= bx - r) { hit = true; cx = bx - r; }
+        }
+        if (hy && ty > my && mz < topZ && mx >= bx && mx <= bx + 60 && my <= by - r && ty >= by - r) { hit = true; cy = by - r; }
+        mx = cx; my = cy; mz = cz; minZ = qMin(minZ, mz);
+        send("[PRB:" + num(mx) + "," + num(my) + "," + num(mz) + (hit ? ":1]\r\n" : ":0]\r\n"));
+        if (!hit && l.contains("G38.2")) { send("ALARM:5\r\n"); alarm = true; reply = "ok\r\n"; }
+        events << ("AT " + num(mx) + "," + num(my) + "," + num(mz));
+        return true;
+    }
     bool running = false;
     QByteArray pins;
     double mx = -100, my = -100, mz = -30;
@@ -208,6 +241,8 @@ struct FakeGrbl {
                     alarm = false;
                 else if (alarm && !line.isEmpty() && line[0] != '$')
                     reply = "error:9\r\n";
+                else if (geo && geoLine(line, reply))
+                    ;
                 else if (line.contains("G38.2") || line.contains("G38.3"))
                     send("[PRB:" + num(mx) + "," + num(my) + "," + num(probeZ) + ":1]\r\n");
                 else if (line.startsWith("$J="))
@@ -1088,6 +1123,29 @@ int main(int argc, char **argv)
         std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G43.1"));
         check(refused >= 1 && grbl.count("G43.1") > refused, "a refused tool offset is sent again");
     }
+    if (mode == "v1miss") {
+        grbl.geo = true;
+        grbl.noiseOnce = true;            // one false contact on the X side's fast search
+        panel.m_bzPanel->m_plates->button(1)->click();     // V1
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Corner)->click();
+        wait(600);
+        const double stockTop = grbl.topZ - 22.0;
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(5000);
+        for (const QByteArray &e : grbl.events) std::printf("  1st: %s\n", e.constData());
+        std::printf("after the failed side probe: pin at X%.3f Y%.3f Z%.3f (block X %.1f..%.1f, top %.1f, stock top %.1f), busy=%d\n",
+                    grbl.mx, grbl.my, grbl.mz, grbl.bx, grbl.bx + 60, grbl.topZ, stockTop, int(panel.m_bzPanel->m_busy));
+        check(grbl.mz > grbl.topZ, "v1miss: after a failed side probe the pin goes back up over the block");
+        grbl.events.clear();
+        grbl.minZ = 1e9;
+        panel.bitZeroBegin();   // Begin again, no jog
+        wait(4000);
+        for (const QByteArray &e : grbl.events) std::printf("  2nd: %s\n", e.constData());
+        std::printf("2nd Begin: lowest pin Z %.3f = %.3f mm below the stock top\n", grbl.minZ, stockTop - grbl.minZ);
+        check(grbl.minZ >= stockTop, "v1miss: Begin again does not drive the pin below the stock top");
+    }
+
     if (mode == "homerej") {
         // A refused $H must not leave the park pending (it blocked every jog).
         wait(600);

@@ -862,6 +862,7 @@ struct SvgDef {
     bool nested = false;
     QPointF at;
     QSizeF size;
+    QTransform outer;   // the nested <svg>'s own transform, outside its viewport
 };
 
 // Where a <use> draws what it refers to: a symbol's viewBox fitted into the
@@ -879,7 +880,8 @@ QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, doub
         if (def.viewBox.isValid() && w > 0 && h > 0)
             vb = svgViewBoxTransform(def.viewBox.x(), def.viewBox.y(), def.viewBox.width(),
                                      def.viewBox.height(), w, h, def.aspect);
-        return (vb * QTransform::fromTranslate(def.at.x() + x, def.at.y() + y)).map(def.path);
+        return (vb * QTransform::fromTranslate(def.at.x(), def.at.y()) * def.outer
+                * QTransform::fromTranslate(x, y)).map(def.path);
     }
     if (def.viewBox.isValid()) {
         // The viewport only when both sides are known: a width alone fitted
@@ -908,7 +910,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
     struct Frame { QString id; QTransform own; QPainterPath path; bool hidden = false;
                    QRectF viewBox; QString aspect; bool noDraw = false;
                    double vw = 0, vh = 0;   // the viewport its children's % lengths use
-                   bool nested = false; QPointF at; QSizeF size; };
+                   bool nested = false; QPointF at; QSizeF size; QTransform outer; };
     // Two passes: the second sees what the first found, so a <use> of
     // something defined further down (a symbol after the group using it)
     // resolves too.
@@ -974,6 +976,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                     f.nested = true;
                     f.at = QPointF(x, y);
                     f.size = QSizeF(w, h);
+                    f.outer = f.own;
                     f.own = vp * QTransform::fromTranslate(x, y) * f.own;
                 }
                 stack.append(f);
@@ -983,7 +986,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                     continue;   // display:none draws nothing, through a <use> either
                 const QPainterPath mapped = f.own.map(f.path);
                 if (f.nested && !f.id.isEmpty() && !f.path.isEmpty())
-                    defs.insert(f.id, SvgDef{f.path, f.viewBox, f.aspect, true, f.at, f.size});
+                    defs.insert(f.id, SvgDef{f.path, f.viewBox, f.aspect, true, f.at, f.size, f.outer});
                 else if (!f.id.isEmpty() && !mapped.isEmpty())
                     defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
                 if (!stack.isEmpty() && !mapped.isEmpty() && !f.noDraw)
@@ -1413,12 +1416,17 @@ void splineToPath(DxfCtx &ctx, const Entity &e, const QTransform &xf)
         }
         if (f.size() < 2)
             return;              // fit-point X and Y codes did not pair up
+        // Closed: the neighbours wrap around and the last point runs back to
+        // the first along the curve, not along a straight closing line.
+        const bool wrap = closedFlag && f.size() >= 3;
+        if (wrap && QLineF(f.first(), f.last()).length() < 1e-9)
+            f.removeLast();
         QPainterPath p;
         p.moveTo(f.first());
         const int m = f.size();
-        for (int i = 0; i + 1 < m; ++i) {
-            const QPointF p0 = f.at(qMax(0, i - 1)), p1 = f.at(i), p2 = f.at(i + 1),
-                          p3 = f.at(qMin(m - 1, i + 2));
+        auto at = [&](int i) { return wrap ? f.at((i % m + m) % m) : f.at(qBound(0, i, m - 1)); };
+        for (int i = 0; i + 1 < m + (wrap ? 1 : 0); ++i) {
+            const QPointF p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
             p.cubicTo(p1 + (p2 - p0) / 6, p2 - (p3 - p1) / 6, p2);
         }
         if (closedFlag) p.closeSubpath();
@@ -1880,10 +1888,11 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
         }
         at = argEnd;
         QVector<double> nums;
-        for (const QString &n : args.split(QRegularExpression(QStringLiteral("[,\\s]+")),
-                                                    Qt::SkipEmptyParts)) {
+        // HP-GL/2 lets a sign stand in for the comma: "PD400-0,400+200".
+        static const QRegularExpression number(QStringLiteral("[+-]?(\\d+\\.?\\d*|\\.\\d+)"));
+        for (auto it = number.globalMatch(args); it.hasNext();) {
             bool ok = false;
-            const double v = n.toDouble(&ok);
+            const double v = it.next().captured(0).toDouble(&ok);
             if (ok)
                 nums << v;
         }

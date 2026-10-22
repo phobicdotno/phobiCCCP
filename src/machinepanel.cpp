@@ -1691,6 +1691,12 @@ void MachinePanel::bitZeroBegin()
         log(QStringLiteral("!! BitZero: the job is still finishing — wait until the machine stands still"));
         return;
     }
+    // A move still waiting for Idle (V1's way back over the block after a
+    // failed side probe) would go out after this probe started.
+    if (m_onIdle && !m_grbl->isStreaming()) {
+        log(QStringLiteral("!! BitZero: a move is still waiting to go out — wait until the machine stands still"));
+        return;
+    }
     if (!m_grbl->isStreaming() && movingStill(QStringLiteral("BitZero")))
         return;
     if (!m_grbl->canSendCommand()) {
@@ -1776,6 +1782,26 @@ void MachinePanel::bitZeroFail(const QString &why)
 
 void MachinePanel::bitZeroAfter(Phase stage, bool ok)
 {
+    if (!ok && m_bz.v1 && (stage == Phase::BitZeroX || stage == Phase::BitZeroY)) {
+        // A V1 side probe stops beside the block, below its top: Begin
+        // again from there would search Z downward past the block, into
+        // the stock or the spoilboard. Once unlocked, back up over the
+        // block and over to where Begin was pressed.
+        log(QStringLiteral("!! BitZero V1 probe failed: no contact on the block's %1 side. "
+                           "Check the magnet clip and that the block sits on the corner; the "
+                           "pin goes back up over the block, then Begin again")
+                .arg(stage == Phase::BitZeroX ? QStringLiteral("left") : QStringLiteral("front")));
+        m_hits.clear();
+        const double z = m_bzOverZ, x = m_bzStartX, y = m_bzStartY;
+        whenIdle([this, z, x, y] {
+            m_grbl->startMacro({QStringLiteral("G90"),
+                                QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
+                                QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
+        });
+        if (m_bzPanel)
+            m_bzPanel->setBusy(false);
+        return;
+    }
     if (!ok) {
         bitZeroFail(stage == Phase::BitZeroZ ? QStringLiteral("no contact on the plate")
                     : stage == Phase::BitZeroHome ? QStringLiteral("could not move back over the corner")
@@ -1881,6 +1907,7 @@ void MachinePanel::bitZeroAfterV1(Phase stage)
         const double over = m_bz.thickness
                             + (m_bzMode == BitZeroPanel::ZOnly ? m_bz.lipDrop : 0.0);
         m_bzStockZ = top - over;
+        m_bzOverZ = top + 5.0;   // where the plate lines leave the pin
         log(QStringLiteral("BitZero V1: block top at machine Z %1, %2 mm over the stock → stock top Z %3")
                 .arg(top, 0, 'f', 3).arg(over, 0, 'f', 2).arg(m_bzStockZ, 0, 'f', 3));
         if (m_bzWantX)
