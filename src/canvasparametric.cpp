@@ -91,9 +91,9 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
         return a.type == b.type && a.refs == b.refs && a.expr == b.expr && a.sense == b.sense && a.at == b.at;
     };
     // What the edit touches: the geometry it keeps still, what it moved,
-    // added or deleted, and what any added, changed or removed constraint
-    // is on.
-    QSet<QString> edited = keep;
+    // added or deleted (by its own id), and what any added, changed or
+    // removed constraint is on (released: its whole sketch, below).
+    QSet<QString> edited = keep, released;
     {
         QHash<QString, const Element *> before;
         for (const Element &e : was.elements())
@@ -111,16 +111,19 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
                 if (k >= 0 && same(c, y.constraints.at(k)))
                     continue;
                 for (const GeoRef &r : c.refs)
-                    edited.insert(r.id);
+                    released.insert(r.id);
             }
         };
         addRefs(now, was.parametric());
         addRefs(was.parametric(), now);
     }
     edited.remove(QString());
+    released.remove(QString());
+    released.remove(QStringLiteral("origin"));
     // Geometry joined by constraints (before or after the edit; not through
     // the origin) is one sketch: deleting the constraint that kept a red one
-    // from holding, anywhere in its sketch, lets it hold again.
+    // from holding, anywhere in its sketch, lets it hold again. A move of
+    // geometry merely tied to a red shape does not (that folded it again).
     QHash<QString, QString> parent;
     std::function<QString(const QString &)> root = [&](const QString &x) {
         const QString p = parent.value(x, x);
@@ -142,9 +145,9 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
                     parent.insert(root(r.id), root(first));
             }
         }
-    QSet<QString> editedRoots;
-    for (const QString &id : edited)
-        editedRoots.insert(root(id));
+    QSet<QString> releasedRoots;
+    for (const QString &id : released)
+        releasedRoots.insert(root(id));
     // A dimension whose value an edit changes (its parameter, a dimension
     // it is defined from) is touched; any other parameter edit is not.
     const QHash<QString, double> v0 = param::values(was, was.parametric()), v1 = param::values(was, now);
@@ -161,7 +164,7 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
             continue;
         bool hit = false;
         for (const GeoRef &r : c1.refs)
-            hit = hit || (!r.isOrigin() && editedRoots.contains(root(r.id)));
+            hit = hit || (!r.isOrigin() && (edited.contains(r.id) || releasedRoots.contains(root(r.id))));
         if (!hit)
             out.insert(uid);
     }

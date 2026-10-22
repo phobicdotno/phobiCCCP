@@ -545,6 +545,27 @@ int main(int argc, char *argv[])
                   : k == 2 ? "a red dimension is not met by folding when a parameter is added"
                            : "a red dimension is not met by folding when another parameter changes");
         }
+        // Moving a line merely tied to the red shape (Parallel to an edge)
+        // does not bring the red dimension back to fold it.
+        {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            const Element ln = Element::makePath({{100, 100}, {100, 120}}, false, layer);
+            cd.addElement(sq);
+            cd.addElement(ln);
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
+            add(cd, Constraint::Parallel, {ref(GeoRef::Line, ln.id, 0), ref(GeoRef::Line, sq.id, 1)});
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            va.rotate(180);
+            canvas->moveElementBy(ln.id, 5, 0);
+            QPointF a, b, c, e;
+            const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
+            check(lines && std::fabs(QLineF(a, b).length() - 30) < 1e-6 && std::fabs(QLineF(c, e).length() - 20) < 1e-6
+                      && param::unsatisfied(cd).size() == 1,
+                  "moving a line tied to a red shape does not fold it");
+        }
         // A red dimension left out of a solve stands in at its exact value:
         // one defined from it (d2 = d1) still holds after an unrelated edit.
         {

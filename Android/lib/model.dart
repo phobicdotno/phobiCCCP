@@ -297,6 +297,19 @@ class Shape {
       ? copyWith(points: points?.map((p) => [p[0] + dx, p[1] + dy]).toList())
       : copyWith(x: x + dx, y: y + dy);
 
+  /// How far a coordinate may be from the origin: the computer refuses a
+  /// design with anything past it (padlink.cpp).
+  static const maxCoord = 10000.0;
+
+  /// Moved by (dx, dy) mm, a path's points kept within ±[maxCoord] (a move
+  /// limited to the range can still land a hair past it in floating point).
+  Shape movedWithin(double dx, double dy) {
+    final m = moved(dx, dy);
+    if (m.type != path) return m;
+    double c(double v) => v.clamp(-maxCoord, maxCoord).toDouble();
+    return m.copyWith(points: m.points?.map((p) => [c(p[0]), c(p[1])]).toList());
+  }
+
   /// Lower-left and upper-right corner, roughly (text is guessed from its size).
   List<double> bounds() {
     switch (type) {

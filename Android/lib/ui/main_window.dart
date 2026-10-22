@@ -891,7 +891,7 @@ class _MainWindowState extends State<MainWindow> {
                   onSelect: (ids) => setState(() => _sel = ids),
                   onMove: (ids, dx, dy) => setState(() {
                     _beforeMove ??= _d;
-                    _d = _d!.copyWith(shapes: [for (final s in _d!.shapes) ids.contains(s.id) ? s.moved(dx, dy) : s]);
+                    _d = _d!.copyWith(shapes: [for (final s in _d!.shapes) ids.contains(s.id) ? s.movedWithin(dx, dy) : s]);
                   }),
                   onMoveDone: () {
                     final before = _beforeMove;

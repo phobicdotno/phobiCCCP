@@ -73,6 +73,7 @@
     now stay red and leave their shapes alone. A parameter added or changed that such a dimension
     does not use leaves it alone too, a dimension defined from a red one keeps holding, and
     deleting the constraint that blocked a red one, anywhere in its sketch, lets it hold.
+    Moving a line merely tied to such a shape (Parallel to its edge, say) no longer folds it.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
 - **Pad:**
@@ -92,7 +93,11 @@
   - With that, the computer switching machines while "Start cutting now?" was open sent and
     started the job on the other machine. It goes to the machine the question named.
   - A path's Center field could move its points past ±10000 mm; the computer then refused the
-    whole design at every sync. The field now keeps the whole path in range.
+    whole design at every sync. The field now keeps the whole path in range, to the last digit;
+    a rectangle's W and H, dragging on the canvas and drawing stay in range too, and text is
+    limited the way the computer counts it (an emoji counts twice).
+  - After a two-finger pinch, the finger left on the screen picked up and dragged the shape under
+    it, or drew a new one. It now only pans until every finger is lifted.
 
 ## v1.3.2 (build 92) — 2026-10-20
 

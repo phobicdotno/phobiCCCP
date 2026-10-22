@@ -138,6 +138,13 @@ class DesignCanvas extends StatefulWidget {
 class _DesignCanvasState extends State<DesignCanvas> {
   Size _size = const Size(1, 1);
   int _pointers = 0;
+  // Two fingers have been down since the screen was last clear: the one
+  // left after a pinch only pans, it does not select, drag or draw.
+  bool _multi = false;
+  void _lift() {
+    _pointers = math.max(0, _pointers - 1);
+    if (_pointers == 0) _multi = false;
+  }
   bool _moving = false, _moved = false;
   // What a drag moves: the parent's selection may not have caught up with the tap yet.
   Set<String> _dragIds = const {};
@@ -149,6 +156,10 @@ class _DesignCanvasState extends State<DesignCanvas> {
   StockView _view() => StockView(widget.design.stock, _size, zoom: widget.zoom.zoom, pan: widget.zoom.pan);
 
   (double, double) _snapped(double x, double y) {
+    // Nothing drawn past ±10000 mm: the computer refuses such a design.
+    const lim = Shape.maxCoord;
+    x = x.clamp(-lim, lim).toDouble();
+    y = y.clamp(-lim, lim).toDouble();
     if (!widget.snap) return (x, y);
     const g = 5.0;
     return ((x / g).roundToDouble() * g, (y / g).roundToDouble() * g);
@@ -180,7 +191,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
     _bandStart = _bandEnd = null;
     _drawStart = null;
     _draft = null;
-    if (s.pointerCount != 1) return;
+    if (s.pointerCount != 1 || _multi) return;
     final v = _view();
     final (x, y) = v.toMm(s.localFocalPoint);
     switch (widget.tool) {
@@ -208,12 +219,23 @@ class _DesignCanvasState extends State<DesignCanvas> {
 
   void _update(ScaleUpdateDetails s) {
     final v = _view();
-    if (s.pointerCount == 1 && _pointers <= 1) {
+    if (s.pointerCount == 1 && _pointers <= 1 && !_multi) {
       final (x, y) = v.toMm(s.localFocalPoint);
       widget.zoom.at((x, y));
       if (_moving) {
         final ids = _dragIds;
-        if (ids.isNotEmpty) widget.onMove(ids, s.focalPointDelta.dx / v.scale, -s.focalPointDelta.dy / v.scale);
+        if (ids.isNotEmpty) {
+          var dx = s.focalPointDelta.dx / v.scale, dy = -s.focalPointDelta.dy / v.scale;
+          // Not past ±10000 mm: the computer refuses such a design.
+          const lim = Shape.maxCoord;
+          for (final sh in widget.design.shapes) {
+            if (!ids.contains(sh.id)) continue;
+            final b = sh.bounds();
+            dx = dx.clamp(math.min(0.0, -lim - b[0]), math.max(0.0, lim - b[2])).toDouble();
+            dy = dy.clamp(math.min(0.0, -lim - b[1]), math.max(0.0, lim - b[3])).toDouble();
+          }
+          widget.onMove(ids, dx, dy);
+        }
         _moved = true;
         return;
       }
@@ -278,9 +300,11 @@ class _DesignCanvasState extends State<DesignCanvas> {
       _size = Size(box.maxWidth, box.maxHeight);
       widget.zoom.fit = StockView(widget.design.stock, _size).fit;
       return Listener(
-        onPointerDown: (_) => _pointers++,
-        onPointerUp: (_) => _pointers = math.max(0, _pointers - 1),
-        onPointerCancel: (_) => _pointers = math.max(0, _pointers - 1),
+        onPointerDown: (_) {
+          if (++_pointers > 1) _multi = true;
+        },
+        onPointerUp: (_) => _lift(),
+        onPointerCancel: (_) => _lift(),
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapUp: _tap,

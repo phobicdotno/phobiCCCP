@@ -3,10 +3,10 @@
 // (propertiespanel.cpp, toolpathpanel.cpp, toolpathform.cpp).
 
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../model.dart';
 import 'icons.dart';
@@ -65,8 +65,11 @@ class PropertiesPanel extends StatelessWidget {
             FormRow(
               'W × H',
               pair(
-                NumBox(w, (v) => onChange(s.copyWith(x: s.x + (w - v) / 2, w: v)), min: 0.01),
-                NumBox(h, (v) => onChange(s.copyWith(y: s.y + (h - v) / 2, h: v)), min: 0.01),
+                // Grown about its centre: both sides stay inside ±10000 mm.
+                NumBox(w, (v) => onChange(s.copyWith(x: s.x + (w - v) / 2, w: v)), min: 0.01,
+                    max: 2 * math.min(10000 - (s.x + w / 2), (s.x + w / 2) + 10000)),
+                NumBox(h, (v) => onChange(s.copyWith(y: s.y + (h - v) / 2, h: v)), min: 0.01,
+                    max: 2 * math.min(10000 - (s.y + h / 2), (s.y + h / 2) + 10000)),
               ),
             ),
           );
@@ -112,8 +115,8 @@ class PropertiesPanel extends StatelessWidget {
               // Every point has to stay inside ±10000 mm (padlink checkShape),
               // not just the centre: the computer refuses the whole design.
               pair(
-                NumBox(cx, (v) => onChange(s.moved(v - cx, 0)), min: -10000 + (cx - b[0]), max: 10000 - (b[2] - cx)),
-                NumBox(cy, (v) => onChange(s.moved(0, v - cy)), min: -10000 + (cy - b[1]), max: 10000 - (b[3] - cy)),
+                NumBox(cx, (v) => onChange(s.movedWithin(v - cx, 0)), min: -10000 + (cx - b[0]), max: 10000 - (b[2] - cx)),
+                NumBox(cy, (v) => onChange(s.movedWithin(0, v - cy)), min: -10000 + (cy - b[1]), max: 10000 - (b[3] - cy)),
               ),
             ),
           );
@@ -176,7 +179,7 @@ class _TextBoxState extends State<_TextBox> {
     child: TextField(
       controller: _c,
       style: const TextStyle(fontSize: 13),
-      inputFormatters: [LengthLimitingTextInputFormatter(Shape.maxText)],
+      inputFormatters: [Utf16LengthLimit(Shape.maxText)],
       onSubmitted: (t) => t.trim().isEmpty ? null : widget.onChanged(t),
       onTapOutside: (_) {
         if (_c.text.trim().isNotEmpty && _c.text != widget.value) widget.onChanged(_c.text);
