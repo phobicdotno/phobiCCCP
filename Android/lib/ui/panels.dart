@@ -109,7 +109,12 @@ class PropertiesPanel extends StatelessWidget {
           rows.add(
             FormRow(
               'Center',
-              pair(NumBox(cx, (v) => onChange(s.moved(v - cx, 0))), NumBox(cy, (v) => onChange(s.moved(0, v - cy)))),
+              // Every point has to stay inside ±10000 mm (padlink checkShape),
+              // not just the centre: the computer refuses the whole design.
+              pair(
+                NumBox(cx, (v) => onChange(s.moved(v - cx, 0)), min: -10000 + (cx - b[0]), max: 10000 - (b[2] - cx)),
+                NumBox(cy, (v) => onChange(s.moved(0, v - cy)), min: -10000 + (cy - b[1]), max: 10000 - (b[3] - cy)),
+              ),
             ),
           );
           if (s.type == Shape.path) {

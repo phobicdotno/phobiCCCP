@@ -80,28 +80,88 @@ bool stayedPut(const Element &was, const Element &now)
 
 // Constraints that were red before an edit and that the edit leaves alone:
 // the same constraint, on geometry the edit did not touch (and, for a
-// dimension driven by an expression, with the parameters unchanged). They
-// stay red rather than being met by folding the shape they are on - a
-// dimension from the origin broken by a rotation was met at the next move
-// of some other line, turning a rectangle into a triangle with no word.
-QSet<QString> inertRed(const Document &was, const Parametric &now, const QSet<QString> &editIds)
+// dimension, with its value unchanged). They stay red rather than being met
+// by folding the shape they are on - a dimension from the origin broken by
+// a rotation was met at the next move of some other line, turning a
+// rectangle into a triangle with no word.
+QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<QString> &keep)
 {
+    const Parametric &now = nowDoc.parametric();
+    auto same = [](const Constraint &a, const Constraint &b) {
+        return a.type == b.type && a.refs == b.refs && a.expr == b.expr && a.sense == b.sense && a.at == b.at;
+    };
+    // What the edit touches: the geometry it keeps still, what it moved,
+    // added or deleted, and what any added, changed or removed constraint
+    // is on.
+    QSet<QString> edited = keep;
+    {
+        QHash<QString, const Element *> before;
+        for (const Element &e : was.elements())
+            before.insert(e.id, &e);
+        for (const Element &e : nowDoc.elements()) {
+            const Element *w = before.take(e.id);
+            if (!w || !stayedPut(*w, e))
+                edited.insert(e.id);
+        }
+        for (auto it = before.cbegin(); it != before.cend(); ++it)
+            edited.insert(it.key());
+        auto addRefs = [&](const Parametric &x, const Parametric &y) {
+            for (const Constraint &c : x.constraints) {
+                const int k = y.indexOfUid(c.uid);
+                if (k >= 0 && same(c, y.constraints.at(k)))
+                    continue;
+                for (const GeoRef &r : c.refs)
+                    edited.insert(r.id);
+            }
+        };
+        addRefs(now, was.parametric());
+        addRefs(was.parametric(), now);
+    }
+    edited.remove(QString());
+    // Geometry joined by constraints (before or after the edit; not through
+    // the origin) is one sketch: deleting the constraint that kept a red one
+    // from holding, anywhere in its sketch, lets it hold again.
+    QHash<QString, QString> parent;
+    std::function<QString(const QString &)> root = [&](const QString &x) {
+        const QString p = parent.value(x, x);
+        if (p == x)
+            return x;
+        const QString r = root(p);
+        parent.insert(x, r);
+        return r;
+    };
+    for (const Parametric *pp : {&was.parametric(), &now})
+        for (const Constraint &c : pp->constraints) {
+            QString first;
+            for (const GeoRef &r : c.refs) {
+                if (r.isOrigin() || r.id.isEmpty())
+                    continue;
+                if (first.isEmpty())
+                    first = r.id;
+                else
+                    parent.insert(root(r.id), root(first));
+            }
+        }
+    QSet<QString> editedRoots;
+    for (const QString &id : edited)
+        editedRoots.insert(root(id));
+    // A dimension whose value an edit changes (its parameter, a dimension
+    // it is defined from) is touched; any other parameter edit is not.
+    const QHash<QString, double> v0 = param::values(was, was.parametric()), v1 = param::values(was, now);
     QSet<QString> out;
-    const bool paramsSame = was.parametric().params.size() == now.params.size()
-        && std::equal(now.params.begin(), now.params.end(), was.parametric().params.begin(),
-                      [](const UserParameter &a, const UserParameter &b) { return a.name == b.name && a.expr == b.expr; });
     for (const QString &uid : param::unsatisfied(was)) {
         const int a = was.parametric().indexOfUid(uid), b = now.indexOfUid(uid);
         if (a < 0 || b < 0)
             continue;
         const Constraint &c0 = was.parametric().constraints.at(a), &c1 = now.constraints.at(b);
-        if (c0.type != c1.type || c0.refs != c1.refs || c0.expr != c1.expr || c0.sense != c1.sense)
+        if (!same(c0, c1))
             continue;
-        if (c1.isDimension() && !c1.expr.trimmed().isEmpty() && !paramsSame)
+        if (c1.isDimension()
+            && (c0.name != c1.name || !v1.contains(c1.name) || std::fabs(v0.value(c0.name) - v1.value(c1.name)) > 1e-9))
             continue;
         bool hit = false;
         for (const GeoRef &r : c1.refs)
-            hit = hit || editIds.contains(r.id);
+            hit = hit || (!r.isOrigin() && editedRoots.contains(root(r.id)));
         if (!hit)
             out.insert(uid);
     }
@@ -116,12 +176,18 @@ param::SolveResult solveOmitting(Document &doc, const QSet<QString> &keep, const
 {
     if (omit.isEmpty())
         return param::solve(doc, keep, force);
+    // Dimensions take the values of their expressions first, the omitted
+    // ones too (their labels show them), as solve() does.
+    const QHash<QString, double> vals = param::values(doc, doc.parametric());
+    for (Constraint &c : doc.parametricRef().constraints)
+        if (c.isDimension() && vals.contains(c.name))
+            c.value = vals.value(c.name);
     Document part = doc;
     Parametric pp = part.parametric();
-    const QHash<QString, double> vals = param::values(doc, pp);
+    // At full precision: rounded, a dimension defined from it went red.
     for (const Constraint &c : pp.constraints)
         if (omit.contains(c.uid) && c.isDimension() && !c.name.isEmpty())
-            pp.params.append({c.name, param::formatNumber(vals.value(c.name, c.value)), QString()});
+            pp.params.append({c.name, QString::number(vals.value(c.name, c.value), 'f', 12), QString()});
     pp.constraints.erase(std::remove_if(pp.constraints.begin(), pp.constraints.end(),
                                         [&](const Constraint &c) { return omit.contains(c.uid); }),
                          pp.constraints.end());
@@ -541,7 +607,7 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
         m_doc->setParametric(p);
     }
     const QSet<QString> touchedSet(touched.begin(), touched.end());
-    const QSet<QString> inert = inertRed(before, m_doc->parametric(), touchedSet);
+    const QSet<QString> inert = inertRed(before, *m_doc, touchedSet);
     param::SolveResult r = solveOmitting(*m_doc, touchedSet, inert);
     bool partSolved = false;
     if (rigid && !r.ok) {
@@ -617,34 +683,10 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
     // shapes stay where they are unless every constraint can hold.
     // What the edit touches: the geometry it keeps still, what it moved,
     // and what any added, changed or removed constraint is on.
-    QSet<QString> editIds = keep;
-    {
-        QHash<QString, const Element *> was;
-        for (const Element &e : s0.els)
-            was.insert(e.id, &e);
-        for (const Element &e : m_doc->elements()) {
-            const Element *w = was.value(e.id);
-            if (!w || !stayedPut(*w, e))
-                editIds.insert(e.id);
-        }
-        auto addRefs = [&](const Parametric &a, const Parametric &b) {
-            for (const Constraint &c : a.constraints) {
-                const int k = b.indexOfUid(c.uid);
-                const Constraint *o = k >= 0 ? &b.constraints.at(k) : nullptr;
-                if (o && o->type == c.type && o->refs == c.refs && o->expr == c.expr && o->sense == c.sense
-                    && o->at == c.at)
-                    continue;
-                for (const GeoRef &r : c.refs)
-                    editIds.insert(r.id);
-            }
-        };
-        addRefs(m_doc->parametric(), s0.par);
-        addRefs(s0.par, m_doc->parametric());
-    }
     Document was = *m_doc;
     was.setElements(s0.els);
     was.setParametric(s0.par);
-    const QSet<QString> inert = inertRed(was, m_doc->parametric(), editIds);
+    const QSet<QString> inert = inertRed(was, *m_doc, keep);
     param::SolveResult r = solveOmitting(*m_doc, keep, inert, false);
     if (!r.ok && !allowFailing) {
         // Constraints that were red before don't block an unrelated edit;

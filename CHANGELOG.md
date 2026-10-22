@@ -51,6 +51,9 @@
   - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.
   - DXF: a closed spline given by fit points only closed with a straight line and a kink.
   - SVG: a `<use>` of a nested `<svg>` ignored that svg's own transform.
+  - HP-GL: user scaling (SC) was ignored, so a drawing in user units came in at the wrong size
+    with no word. It is mapped onto the IP points (or applied as given for type 2); SC with no
+    IP to scale into is listed as skipped.
   - Rotate by an angle other than a quarter turn squeezed a shape with Horizontal/Vertical
     constraints back onto the axes (a rectangle shrank instead of turning). Those constraints go
     with a note; a quarter turn swaps them; a shape with a Fixed point stays where it is.
@@ -62,7 +65,9 @@
     and the warning counts what is really red. A 200% x 50% scale is no longer taken for a turn.
   - A constraint left red (by a rotation, say) was met at the next, unrelated edit, such as moving
     another line, folding its shape with no word. Red constraints that an edit does not touch
-    now stay red and leave their shapes alone.
+    now stay red and leave their shapes alone. A parameter added or changed that such a dimension
+    does not use leaves it alone too, a dimension defined from a red one keeps holding, and
+    deleting the constraint that blocked a red one, anywhere in its sketch, lets it hold.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
 - **Pad:**
@@ -81,6 +86,8 @@
     until a machine is picked by hand.
   - With that, the computer switching machines while "Start cutting now?" was open sent and
     started the job on the other machine. It goes to the machine the question named.
+  - A path's Center field could move its points past ±10000 mm; the computer then refused the
+    whole design at every sync. The field now keeps the whole path in range.
 
 ## v1.3.2 (build 92) — 2026-10-20
 

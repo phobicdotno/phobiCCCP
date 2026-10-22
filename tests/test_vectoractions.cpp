@@ -505,18 +505,27 @@ int main(int argc, char *argv[])
         // A dimension a turn left red is not met at the next, unrelated edit
         // (moving another line, constraining it): the turned shape stays
         // whole and the dimension stays red.
-        for (int k = 0; k < 2; ++k) {
+        // So is adding or editing a parameter the dimension doesn't use.
+        for (int k = 0; k < 4; ++k) {
             Document cd;
             const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
             const Element ln = Element::makePath({{100, 100}, {130, 105}}, false, layer);
             cd.addElement(sq);
             cd.addElement(ln);
+            cd.parametricRef().params.append({QStringLiteral("depth"), QStringLiteral("6"), QString()});
             add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
             canvas->setDocument(&cd);
             canvas->selectIds({sq.id});
             va.rotate(180);
             if (k == 0) {
                 canvas->moveElementBy(ln.id, 5, 0);
+            } else if (k >= 2) {
+                Parametric after = cd.parametric();
+                if (k == 2)
+                    after.params.append({QStringLiteral("width"), QStringLiteral("40"), QString()});
+                else
+                    after.params.first().expr = QStringLiteral("8");
+                canvas->applyParametric(after, QStringLiteral("parameter"), false);
             } else {
                 Parametric after = cd.parametric();
                 Constraint h;
@@ -531,8 +540,51 @@ int main(int argc, char *argv[])
                                && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
             check(lines && std::fabs(QLineF(a, b).length() - 30) < 1e-6 && std::fabs(QLineF(c, e).length() - 20) < 1e-6
                       && param::unsatisfied(cd).size() == 1,
-                  k == 0 ? "a red dimension is not met by folding at the next move of another line"
-                         : "a red dimension is not met by folding when another line is constrained");
+                  k == 0   ? "a red dimension is not met by folding at the next move of another line"
+                  : k == 1 ? "a red dimension is not met by folding when another line is constrained"
+                  : k == 2 ? "a red dimension is not met by folding when a parameter is added"
+                           : "a red dimension is not met by folding when another parameter changes");
+        }
+        // A red dimension left out of a solve stands in at its exact value:
+        // one defined from it (d2 = d1) still holds after an unrelated edit.
+        {
+            Document cd;
+            const Element l1 = Element::makePath({{0, 0}, {20, 0}}, false, layer);
+            const Element l2 = Element::makePath({{0, 10}, {12.3456, 10}}, false, layer);
+            const Element l3 = Element::makePath({{0, 50}, {30, 55}}, false, layer);
+            cd.addElement(l1);
+            cd.addElement(l2);
+            cd.addElement(l3);
+            add(cd, Constraint::Fix, {ref(GeoRef::Line, l1.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, l1.id, 0)}, "12.3456");
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, l2.id, 0)}, "d1");
+            canvas->setDocument(&cd);
+            canvas->moveElementBy(l3.id, 5, 0);
+            check(param::unsatisfied(cd).size() == 1, "a dimension defined from a red one still holds");
+        }
+        // Deleting the constraint that kept a red one from holding, elsewhere
+        // in its sketch, lets it hold.
+        {
+            Document cd;
+            const Element a = Element::makePath({{0, 0}, {10, 0}}, false, layer);
+            const Element b = Element::makePath({{10, 0}, {20, 0}}, false, layer);
+            const Element c = Element::makePath({{20, 0}, {20, 3}}, false, layer);
+            cd.addElement(a);
+            cd.addElement(b);
+            cd.addElement(c);
+            add(cd, Constraint::Fix, {ref(GeoRef::Line, a.id, 0)});
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, a.id, 1), ref(GeoRef::Point, b.id, 0)});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, b.id, 0)});
+            const QString blocker = cd.parametric().constraints.last().uid;
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, b.id, 0)}, "10");
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, b.id, 1), ref(GeoRef::Point, c.id, 0)});
+            add(cd, Constraint::Vertical, {ref(GeoRef::Line, c.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, c.id, 0)}, "3");
+            add(cd, Constraint::VDistance, {GeoRef::origin(), ref(GeoRef::Point, c.id, 1)}, "8");
+            canvas->setDocument(&cd);
+            check(param::unsatisfied(cd).size() == 1, "the blocked dimension starts red");
+            canvas->deleteConstraint(blocker);
+            check(param::unsatisfied(cd).isEmpty(), "deleting what blocked a red dimension lets it hold");
         }
         // A length's label turns with its edge on a quarter turn and a mirror.
         for (int k = 0; k < 2; ++k) {

@@ -858,6 +858,21 @@ int main(int argc, char **argv)
         check(a.ok && std::abs(a.bounds.width() - 10.0) < 0.1, "HPGL IN: back to absolute coordinates");
     }
 
+    // HPGL SC user units: mapped onto IP's points (type 0), as plotter units
+    // per user unit (type 2), or noted as skipped with no IP to scale into.
+    {
+        const c2d::ImportResult r = c2d::importHpglData(
+            "IN;IP0,0,4000,4000;SC0,100,0,100;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc.plt");
+        check(r.ok && std::abs(r.bounds.width() - 100.0) < 0.1 && std::abs(r.bounds.height() - 100.0) < 0.1,
+              "HPGL SC: user units map onto IP");
+        const c2d::ImportResult f = c2d::importHpglData(
+            "IN;SC0,40,0,40,2;PU0,0;PD10,0,10,10,0,10,0,0;PU;", opts(0, 0), "sc2.plt");
+        check(f.ok && std::abs(f.bounds.width() - 10.0) < 0.1, "HPGL SC type 2: plotter units per user unit");
+        const c2d::ImportResult n = c2d::importHpglData(
+            "IN;SC0,100,0,100;PU0,0;PD100,0,100,100;PU;", opts(0, 0), "sc3.plt");
+        check(n.ok && n.skipped >= 1, "HPGL SC without IP is noted, not ignored");
+    }
+
     // HPGL label text and PE data are not commands: "Project" is not PR.
     {
         const c2d::ImportResult r = c2d::importHpglData(
