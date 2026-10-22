@@ -30,6 +30,10 @@
   - A lead-in larger than the bit on a contour with tabs cut through the slug or the far side of a
     tab (a 60 x 20 hole with an 8 mm lead lost its top tab). With tabs, a lead is now no wider than
     the bit and keeps 1.5 mm of material from the far side of the cut, smaller if need be.
+    The tabs also keep clear of the lead's sweep where it joins the loop (a lead the bit's width
+    took 2 mm off the tab beside it).
+  - A long, narrow slot with tabs (8 x 1220 mm) took over half a minute to export, minutes on a
+    full sheet, while every shorter lift was tried where even the longest leaves no bridge.
   - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
 - **Machine:**

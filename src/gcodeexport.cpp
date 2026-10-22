@@ -1029,6 +1029,9 @@ struct CutParams {
     // bit, dropping at the tab's ends, ate the bridge across the kerf from
     // both sides (a 6 mm tab with a 1/4" bit held nothing).
     double tabToolR = 0;
+    // A lead's radius, when the loop has one: its arcs sweep that far along
+    // the ring either side of the start, so the tabs keep clear of it.
+    double tabLeadR = 0;
     // Optional veto for a stay-down link (3D roughing checks it against the
     // relief); unset = any link within linkDist is taken.
     std::function<bool(const QPointF &, const QPointF &)> linkOk;
@@ -1926,7 +1929,7 @@ public:
         };
         // The pass starts at the ring's start (a plunge or ramp, a bit wide):
         // a lift reaching it had that cut through its tab.
-        const double clear = cp.tabToolR + 0.5;
+        const double clear = qMax(cp.tabToolR, cp.tabLeadR) + 0.5;
         auto room = [&](double shift) { return qMin(eMax, qMin(a + shift - clear, ringLen - clear - (b + shift))); };
         // The shortest lift at this shift that leaves a full bridge, if any.
         auto fit = [&](double shift, QLineF *l) {
@@ -1950,11 +1953,14 @@ public:
             for (double shift : {k, -k}) {
                 if (room(shift) < 0)
                     continue;
-                if (fit(shift, &l)) {
+                // The longest lift here first: when even that leaves no full
+                // bridge (a slot, the far side always near) the shorter ones
+                // are not tried - on a long ring that was minutes.
+                const double br = bridge(shift, room(shift));
+                if (br >= w + kTabSlack && fit(shift, &l)) {
                     m_tabEnds.append({l.p1(), l.p2()});
                     return;
                 }
-                const double br = bridge(shift, room(shift));
                 if (br > best + 1e-9) {
                     best = br;
                     bestShift = shift;
@@ -2243,8 +2249,12 @@ public:
         // They are placed on the ring nearest the part, the last finishing
         // ring when there is one: that ring's cut is the one that frees the
         // part, so it is the one the tab widths are measured on.
-        if (job.closed && job.rings.size() == 1)
-            placeTabs(job.finish.isEmpty() ? job.rings.first() : job.finish.last(), cp, job.edge);
+        if (job.closed && job.rings.size() == 1) {
+            CutParams at = cp;
+            if (job.lead.on)
+                at.tabLeadR = QLineF(job.lead.c, job.lead.a).length();
+            placeTabs(job.finish.isEmpty() ? job.rings.first() : job.finish.last(), at, job.edge);
+        }
         runJobRings(job, cp);
         forgetTabs();
     }

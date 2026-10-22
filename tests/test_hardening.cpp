@@ -391,6 +391,55 @@ int main(int argc, char *argv[])
               "gcode: a small part's tab stays off its corners when no lift fits");
     }
     {
+        // An 8 x 1220 slot with tabs: no lift leaves a bridge (the far side
+        // is always near), and trying every shorter lift at every slide took
+        // over half a minute; tabs on a 40 x 20 part with a 1/4" lead came
+        // within the lead's sweep of the start and lost 2 mm of their width.
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({620, 50}, 1220, 8, layer));
+        r.addToolpath("contour", {{"ofset_dir", -1},
+                                  {"end_depth", QStringLiteral("8.000")},
+                                  {"stepdown", 2.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 6.0}});
+        QElapsedTimer t;
+        t.start();
+        c2d::exportGcode(r.doc);
+        check(t.elapsed() < 5000, "gcode: a long narrow slot with tabs exports in seconds");
+
+        Rig p;
+        p.addShape(c2d::Element::makeRectangle({100, 50}, 40, 20, layer));
+        p.addToolpath("contour", {{"ofset_dir", 1},
+                                  {"end_depth", QStringLiteral("8.000")},
+                                  {"stepdown", 2.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 12.0},
+                                  {"lead_radius", 6.35}});
+        // Every lift (a run at the tab top) ends at least the lead's radius
+        // from where the lead joins the ring (the end of the first arc).
+        const QVector<c2d::Op> ops = c2d::exportGcode(p.doc).ops;
+        QPointF join, prev;
+        bool joined = false, in = false;
+        double nearest = 1e9;
+        for (const c2d::Op &o : ops) {
+            if (o.kind != c2d::Op::Feed && o.kind != c2d::Op::Rapid && o.kind != c2d::Op::Arc)
+                continue;
+            const QPointF at(o.x, o.y);
+            if (o.kind == c2d::Op::Arc && !joined) {
+                join = at;
+                joined = true;
+            }
+            const bool lift = o.kind == c2d::Op::Feed && std::fabs(o.z + 5.0) < 1e-6;
+            if (joined && lift != in)
+                nearest = std::min(nearest, QLineF(join, prev).length());
+            in = lift;
+            prev = at;
+        }
+        check(joined && nearest < 1e9 && nearest >= 6.35, "gcode: a lead's sweep keeps clear of the tabs");
+    }
+    {
         // An 8 mm lead in a 60 x 20 hole with tabs: the lead's centre line
         // came within a bit of the far wall's, so the feed back across it at
         // depth cut the tab there off the slug. Below the tab top a lead now
