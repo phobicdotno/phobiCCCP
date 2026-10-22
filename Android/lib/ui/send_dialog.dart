@@ -49,6 +49,8 @@ class SendDialog extends StatefulWidget {
 class _SendDialogState extends State<SendDialog> {
   String? _computer, _machine;
   bool _start = false, _busy = false;
+  // Picked from the list, not just the machine the computer had in use.
+  bool _machineByHand = false;
   String? _error;
 
   AppState get app => widget.app;
@@ -74,7 +76,17 @@ class _SendDialogState extends State<SendDialog> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {
+      // Follow the computer's machine in use until one is picked by hand:
+      // sending to the one in use when the dialog opened switched the
+      // computer back to it, reconnecting and losing its homing.
+      if (!_machineByHand) {
+        final c = _reachable().where((c) => c.desktop.id == _computer).firstOrNull;
+        final now = c?.info?.activeMachine;
+        if (now != null) _machine = now;
+      }
+    });
   }
 
   List<Computer> _reachable() => app.computers.where((c) => c.reachable(app.now)).toList();
@@ -167,6 +179,7 @@ class _SendDialogState extends State<SendDialog> {
                     groupValue: _computer,
                     onChanged: (v) => setState(() {
                       _computer = v;
+                      _machineByHand = false;
                       _machine = reach.where((x) => x.desktop.id == v).firstOrNull?.info?.activeMachine;
                     }),
                     child: Column(children: [
@@ -182,7 +195,10 @@ class _SendDialogState extends State<SendDialog> {
                     const Text('Machine', style: TextStyle(color: C.sub, fontSize: 12)),
                     RadioGroup<String>(
                       groupValue: _machine,
-                      onChanged: (v) => setState(() => _machine = v),
+                      onChanged: (v) => setState(() {
+                        _machine = v;
+                        _machineByHand = true;
+                      }),
                       child: Column(children: [
                         for (final m in info!.machines)
                           RadioListTile<String>(

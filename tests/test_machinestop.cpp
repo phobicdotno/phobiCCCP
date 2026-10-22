@@ -455,6 +455,8 @@ int main(int argc, char **argv)
         return {};
     };
 
+    if (qgetenv("R4MODE") == "connhold")
+        grbl.held = true;   // left in a feed hold mid-job (the USB link dropped)
     check(s->connectPort(QString::fromLatin1(name)), "connects to the fake controller");
     spin(1500, [&] { return panel.statusJson().value("homed").toBool(); });
     check(panel.statusJson().value("homed").toBool(), "homed (resumed where the last session left it)");
@@ -929,6 +931,13 @@ int main(int argc, char **argv)
         std::printf("r13: status reports during 1.5 s of the rehearsal summary: %d; pad jogs sent while open %d, total after close %d\n", during, jDuring, grbl.count("$J=") - j0);
         for (int i = grbl.indexOf("$J="); i >= 0 && i < grbl.events.size(); ++i) std::printf("  ev: %s\n", grbl.events.at(i).constData());
         check(during >= 3, "r13rehdeaf: status keeps coming while the rehearsal summary is open");
+    }
+    if (mode == "connhold") {
+        // Connected to a controller paused in a job this session never sent:
+        // its leftover moves are cleared, so no Resume can run them.
+        wait(1000);
+        check(grbl.events.contains("^X") && !grbl.held, "connhold: a held job left from before is cleared on connect");
+        check(!panel.m_machineState.startsWith(QLatin1String("Hold")), "connhold: not left in a hold");
     }
     if (mode == "maphigh") {
         // Z zeroed high (tall stock, short bit): the map's travel height,

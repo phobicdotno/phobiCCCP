@@ -22,6 +22,9 @@
     cancels that move (the position is gone).
   - A surface map with Z zeroed high (tall stock, a short bit) travelled above the top of Z,
     into the switch: a hard-limit alarm and the position lost. It is refused with what to change.
+  - Connecting to a controller left paused in a job (the link dropped, on a board that does not
+    reset when the port opens) kept that job's leftover moves; Resume ran them with nothing
+    tracking them. They are cleared on connect (the spindle stops).
 - **Updates:**
   - The "↑ Install" link stayed clickable while an install ran; a second click started a second
     fetch and build on the same checkout. It now brings the running install to the front.
@@ -43,6 +46,10 @@
   - Rotate by an angle other than a quarter turn squeezed a shape with Horizontal/Vertical
     constraints back onto the axes (a rectangle shrank instead of turning). Those constraints go
     with a note; a quarter turn swaps them; a shape with a Fixed point stays where it is.
+  - Rotate or Mirror of a shape tied to something left behind (a dimension from the origin, a
+    Horizontal to an unselected line) folded it to meet the constraint (a rectangle became a
+    triangle). The shape turns whole; what is tied to it follows, or the constraint shows red.
+    A dimension the rotation drops that expressions or toolpath fields use stays as a parameter.
 - **Pad:**
   - Open could open a design deleted on another pad or computer while the dialog was up, and
     edits on it were saved into the deletion and lost. It now says the design was deleted.
@@ -54,6 +61,9 @@
   - A shape drawn as a sync arrived could take an id the sync had just brought, so two shapes
     shared it (the computer then refused the design).
   - Area also leaves out text with accented or other non-ASCII letters (Ø, é...).
+  - The Send dialog kept the machine in use when it opened; if the computer switched machines
+    meanwhile, Send switched it back (reconnecting, losing its homing). It follows the computer
+    until a machine is picked by hand.
 
 ## v1.3.2 (build 92) — 2026-10-20
 

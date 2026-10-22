@@ -2589,6 +2589,18 @@ void MachinePanel::onStatus(const MachineStatus &st)
     // left it: still homed, no Initialize needed.
     if (m_resumeCheck && st.valid && !st.state.isEmpty()) {
         m_resumeCheck = false;
+        // Paused by a job this session never sent (the link dropped, the app
+        // restarted, on a board that does not reset when the port opens):
+        // its leftover moves are still in GRBL's buffer with the spindle on,
+        // and a Resume would run them with nothing tracking them. Clear them
+        // the way a Stop of a held job does; GRBL keeps its position.
+        if ((st.state.startsWith(QLatin1String("Hold")) || st.state.startsWith(QLatin1String("Door")))
+            && !m_grbl->isStreaming()) {
+            log(QStringLiteral("!! the controller was paused in a job this session did not send — "
+                               "clearing what is left of it (the spindle stops). Start the job again "
+                               "from here if it is to be finished"));
+            holdResetThen({});
+        }
         QSettings s;
         const QVariantList last = s.value(QStringLiteral("machine/homedAt")).toList();
         if (last.size() == 3 && !st.state.startsWith(QLatin1String("Alarm"))

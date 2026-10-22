@@ -455,6 +455,49 @@ int main(int argc, char *argv[])
                           && cd.parametric().constraints.first().type == Constraint::Vertical,
                       "a quarter turn swaps Horizontal and Vertical, all holding");
         }
+        // A dimension from the origin to a corner: turning or mirroring the
+        // shape moves it whole (the dimension shows red), it is not folded
+        // to meet the dimension.
+        for (int k = 0; k < 3; ++k) {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            cd.addElement(sq);
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            if (k == 0)
+                va.rotate(180);
+            else if (k == 1)
+                va.rotate(30);
+            else
+                va.mirror(vec::Axis::Horizontal);
+            QPointF a, b, c, e;
+            const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
+            // (a mirror numbers the nodes the other way round)
+            const double l0 = std::min(QLineF(a, b).length(), QLineF(c, e).length()),
+                         l1 = std::max(QLineF(a, b).length(), QLineF(c, e).length());
+            check(lines && std::fabs(l0 - 20) < 1e-6 && std::fabs(l1 - 30) < 1e-6,
+                  "a shape dimensioned from the origin turns or mirrors whole");
+            check(canvas->editWarning().contains(QStringLiteral("can't hold")), "and the dimension it breaks shows red");
+        }
+        // A horizontal distance turned off the axis that an expression uses
+        // lives on as a parameter: the expression keeps working.
+        {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            cd.addElement(sq);
+            add(cd, Constraint::HDistance, {ref(GeoRef::Point, sq.id, 0), ref(GeoRef::Point, sq.id, 1)}, "30");
+            const QString d1 = cd.parametric().constraints.last().name;
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, sq.id, 1)}, d1 + QStringLiteral("*2/3"));
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            va.rotate(30);
+            bool asParam = false;
+            for (const UserParameter &up : cd.parametric().params)
+                asParam |= up.name == d1;
+            check(asParam && param::unsatisfied(cd).isEmpty(), "a dropped dimension an expression uses becomes a parameter");
+        }
         {   // the edit's own warning stays in the status bar after the
             // action's "Rotated ..." / "Mirrored ..." report
             Document cd;

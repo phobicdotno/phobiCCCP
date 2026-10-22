@@ -369,7 +369,7 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
         const bool square = std::fabs(turn - quarters * 90.0) < 1e-6;
         const bool swap = square && (quarters % 2) != 0;
         Parametric p = m_doc->parametric();
-        QVector<Constraint> kept;
+        QVector<Constraint> kept, goneDims;
         bool changed = false;
         for (Constraint c : p.constraints) {
             const bool axis = c.type == Constraint::Horizontal || c.type == Constraint::Vertical
@@ -385,8 +385,11 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
             if (!square) {
                 ++axisDropped;
                 dropped << c.uid;
+                goneDims << c;
                 continue;
             }
+            // The label sits off the measured line: turn it with it.
+            c.label = QTransform(moved.m11(), moved.m12(), moved.m21(), moved.m22(), 0, 0).map(c.label);
             if (swap)
                 c.type = c.type == Constraint::Horizontal ? Constraint::Vertical
                        : c.type == Constraint::Vertical   ? Constraint::Horizontal
@@ -399,13 +402,69 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
         }
         if (changed) {
             p.constraints = kept;
+            // A dropped dimension other expressions use lives on as a user
+            // parameter of its name and value (as param::reconcile does for
+            // one on deleted geometry), or they stop working.
+            QSet<QString> asParams;
+            for (bool more = true; more;) {
+                more = false;
+                const QSet<QString> used = param::usedNames(*m_doc, p);
+                for (const Constraint &c : goneDims) {
+                    if (!c.isDimension() || c.name.isEmpty() || asParams.contains(c.name) || !used.contains(c.name))
+                        continue;
+                    UserParameter up;
+                    up.name = c.name;
+                    up.expr = c.expr.trimmed().isEmpty() ? QString::number(c.value, 'g', 12) : c.expr;
+                    up.comment = QStringLiteral("was a dimension the rotation turned off the axis");
+                    p.params << up;
+                    asParams.insert(c.name);
+                    more = true;
+                }
+            }
             m_doc->setParametric(p);
             renumbered = true;
         }
     }
     if (!dropped.isEmpty() && dropped.contains(m_selConstraint))
         selectConstraint(QString());
-    const param::SolveResult r = param::solve(*m_doc, QSet<QString>(touched.begin(), touched.end()));
+    // A rotation or mirror moves the shapes rigidly: every constraint inside
+    // them still holds, and one tying them to something left behind (a
+    // dimension from the origin, a Horizontal to an unselected line) was
+    // met by dragging single nodes - a rectangle folded into a triangle.
+    // The turned shapes are held as they are for the solve: what is tied to
+    // them follows, and what cannot hold shows red.
+    const bool rigid = !moved.isIdentity() && std::fabs(std::fabs(moved.determinant()) - 1.0) < 1e-9;
+    const Parametric beforeHold = m_doc->parametric();
+    if (rigid) {
+        Parametric p = beforeHold;
+        int n = 0;
+        for (const QString &id : touched) {
+            if (heldBack.contains(id))
+                continue;
+            for (const GeoRef &g : param::refsOf(*m_doc, id))
+                if (g.kind != GeoRef::Point) {
+                    Constraint hold;
+                    hold.type = Constraint::Fix;
+                    hold.refs = {g};
+                    hold.uid = QStringLiteral("__rigid%1").arg(n++);
+                    p.constraints.append(hold);
+                    break;
+                }
+        }
+        m_doc->setParametric(p);
+    }
+    param::SolveResult r = param::solve(*m_doc, QSet<QString>(touched.begin(), touched.end()));
+    if (rigid) {
+        Parametric p = m_doc->parametric();
+        p.constraints.erase(std::remove_if(p.constraints.begin(), p.constraints.end(),
+                                           [](const Constraint &c) { return c.uid.startsWith(QLatin1String("__rigid")); }),
+                            p.constraints.end());
+        m_doc->setParametric(p);
+        r.failing.erase(std::remove_if(r.failing.begin(), r.failing.end(),
+                                       [](const QString &u) { return u.startsWith(QLatin1String("__rigid")); }),
+                        r.failing.end());
+        r.ok = r.failing.isEmpty();
+    }
     if (!r.changed.isEmpty() || renumbered || !heldBack.isEmpty())
         m_undo->push(new SnapshotCmd(this, m_doc, s0, stateOf(m_doc), text));
     m_undo->endMacro();
