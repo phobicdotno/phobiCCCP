@@ -17,6 +17,9 @@
   - A tab narrower than the bit held nothing: the bit's own width ate it from both sides. The
     lift now runs a bit radius past each end of the tab (less on a short loop with many tabs),
     so the bridge left is the tab width you set.
+  - On small parts and holes (a loop shorter than about nine bit widths) the lifts were still cut
+    short, leaving a sliver or nothing, so the part or slug came free. The lifts may now take up
+    to 40% of the loop, and a part still too small for a 1 mm bridge gets a note.
   - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
 - **Machine:**

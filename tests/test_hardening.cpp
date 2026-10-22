@@ -132,6 +132,32 @@ static double feedLengthAt(const QVector<c2d::Op> &ops, double z, double eps = 1
     return len;
 }
 
+// The lengths of the separate feed runs at height z (tab lifts).
+static QVector<double> feedRunsAt(const QVector<c2d::Op> &ops, double z, double eps = 1e-6)
+{
+    QVector<double> runs;
+    double len = 0, px = 0, py = 0;
+    bool have = false, in = false;
+    for (const c2d::Op &o : ops) {
+        if (o.kind != c2d::Op::Feed && o.kind != c2d::Op::Rapid && o.kind != c2d::Op::Arc)
+            continue;
+        const bool at = o.kind == c2d::Op::Feed && std::fabs(o.z - z) < eps;
+        if (have && at)
+            len += QLineF(px, py, o.x, o.y).length();
+        if (in && !at) {
+            runs << len;
+            len = 0;
+        }
+        in = at && have;
+        px = o.x;
+        py = o.y;
+        have = true;
+    }
+    if (in)
+        runs << len;
+    return runs;
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -277,6 +303,32 @@ int main(int argc, char *argv[])
                                        {"ignore_tabs", true}});
         check(feedLengthAt(c2d::exportGcode(noTabs.doc).ops, -3.0) < 1e-6,
               "gcode: ignore_tabs still means no tabs");
+    }
+    {
+        // Small parts with a 1/4" bit: a 12 x 8 outside contour keeps a real
+        // bridge at each tab (the lift was capped to a third of the loop,
+        // leaving 0.3 mm); a 14 mm hole has no room and says so.
+        for (int k = 0; k < 2; ++k) {
+            Rig r;
+            if (k == 0)
+                r.addShape(c2d::Element::makeRectangle({40, 40}, 12, 8, layer));
+            else
+                r.addShape(c2d::Element::makeCircle({40, 40}, 7, layer));
+            r.addToolpath("contour", {{"ofset_dir", k == 0 ? 1 : -1},
+                                      {"end_depth", QStringLiteral("10.000")},
+                                      {"stepdown", 10.0},
+                                      {"ignore_tabs", false},
+                                      {"tab_height", 3.0},
+                                      {"tab_width", 6.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            const bool noted = g.notes.join(QLatin1Char('\n')).contains(QStringLiteral("too small for its tabs"));
+            const QVector<double> lifts = feedRunsAt(g.ops, -7.0);
+            if (k == 0)
+                check(!noted && lifts.size() >= 3 && *std::min_element(lifts.begin(), lifts.end()) > 6.35 + 1.0,
+                      "gcode: a small part's tab lifts run past the bit's width");
+            else
+                check(noted, "gcode: a hole too small for its tabs says so");
+        }
     }
     {
         // A 20 mm square cutout: three 30 mm tabs used to tile its whole

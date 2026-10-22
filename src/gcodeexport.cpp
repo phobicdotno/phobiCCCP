@@ -1760,8 +1760,10 @@ public:
             return placeTabsOnRing(ring, cp);
         const int nTabs = qBound(3, int(total / 150.0) + 3, 8);
         const double w = qMin(cp.tabWidth, total / (3.0 * nTabs));
-        if (w < 1.0)
+        if (w < 1.0) {
+            countThin(cp);
             return;
+        }
         // Ring position where the outline has been passed for h: inside a
         // step over which it grows, never on a corner arc where it stands.
         auto ringAt = [&](double h) {
@@ -1775,13 +1777,24 @@ public:
             return ss.at(k - 1) + t * (ss.at(k) - ss.at(k - 1));
         };
         const double ringLen = ss.last();
-        // Within the third of the loop tabs may take (see tabSpots).
-        const double reach = qMin(cp.tabToolR, qMax(0.0, (ringLen / (3.0 * nTabs) - w) / 2));
+        const double reach = tabReach(ringLen, nTabs, w, cp);
         for (int t = 0; t < nTabs; ++t) {
             const double c = total * (t + 0.5) / nTabs;
             m_tabEnds.append({pointAtArc(ring, qMax(0.0, ringAt(c - w / 2) - reach)),
                               pointAtArc(ring, qMin(ringLen, ringAt(c + w / 2) + reach))});
         }
+    }
+    // How far each lift runs past its tab: a bit radius, so the bridge left
+    // across the cut is the tab's width. The lifts may take up to 40% of the
+    // loop (most of it is still cut through); on a part too small for that
+    // the bridge is narrower, and one under a millimetre (or none: the slug
+    // drops free) is counted for a note.
+    double tabReach(double ringLen, int nTabs, double w, const CutParams &cp)
+    {
+        const double lift = qMin(w + 2 * cp.tabToolR, qMax(w, ringLen / (2.5 * nTabs)));
+        if (lift - 2 * cp.tabToolR < qMin(1.0, w) - 1e-9)
+            countThin(cp);
+        return qMax(0.0, (lift - w) / 2);
     }
     // No outline to measure on: tabs spaced and sized along the ring itself.
     void placeTabsOnRing(const QPolygonF &ring, const CutParams &cp)
@@ -1789,13 +1802,21 @@ public:
         QVector<double> at;
         double w = 0;
         if (tabSpots(ring, cp, &at, &w)) {
-            const double len = perimeter(ring);
-            const double reach = qMin(cp.tabToolR, qMax(0.0, (len / (3.0 * at.size()) - w) / 2));
+            const double reach = tabReach(perimeter(ring), int(at.size()), w, cp);
             for (double c : at)
                 m_tabEnds.append({pointAtArc(ring, c - w / 2 - reach), pointAtArc(ring, c + w / 2 + reach)});
+        } else if (!at.isEmpty()) {
+            countThin(cp);   // a loop too short for any tab
         }
     }
     void forgetTabs() { m_tabsPlaced = false; m_tabEnds.clear(); }
+    int thinTabs() const { return m_thinTabs; }
+    // Only where tabs are cut at all (the contour goes below their top).
+    void countThin(const CutParams &cp)
+    {
+        if (cp.tabWidth > 0.01 && cp.zBot < cp.tabTop - 1e-9)
+            ++m_thinTabs;
+    }
 
     // Whether followRing lifts over tabs on this ring at depth z.
     bool hasTabs(const QPolygonF &poly, double z, const CutParams &cp) const
@@ -2123,6 +2144,7 @@ private:
     QVector<Op> &m_ops;
     double m_safeZ, m_feed, m_plunge;
     double m_x = 0, m_y = 0;
+    int m_thinTabs = 0;          // loops whose tabs leave under 1 mm across the cut
     bool m_tabsPlaced = false;   // placeTabs: m_tabEnds holds this job's tabs
     QVector<QPair<QPointF, QPointF>> m_tabEnds;   // each tab's start and end on the ring it was placed on
 };
@@ -2293,8 +2315,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 if (!res.doneIds.contains(tpUuids.value(d.tp)))
                     res.doneIds << tpUuids.value(d.tp);
             }
+            const int thinBefore = em.thinTabs();
             em.runJob(d.job, d.cp);
             lastPos = em.pos();
+            if (em.thinTabs() > thinBefore) {
+                const QString n = QStringLiteral("%1: part too small for its tabs with this bit (under 1 mm "
+                                                 "left across the cut; it may come free)").arg(d.name);
+                if (!res.notes.contains(n))
+                    res.notes << n;
+            }
         }
         if (pendingTool.text != lastTool) {
             ops.append(pendingTool);
