@@ -165,6 +165,8 @@ private:
     double m_bzCx = 0, m_bzCy = 0, m_bzStockZ = 0;   // machine coords found
     double m_bzStartX = 0, m_bzStartY = 0;           // where Begin was pressed
     double m_bzOverZ = 0;                            // V1: over the block (top + 5)
+    quint64 m_resets = 0;                            // controller (re)starts seen
+    quint64 m_bzStageResets = 0;                     // m_resets when the stage began
     void bitZeroAfterV1(Phase stage);
     static QStringList bitZeroSideLines(char axis, const BitZeroConfig &c, double startAbs);
     void openBitZero();

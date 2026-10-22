@@ -18,7 +18,12 @@
   - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
     beside the block below its top, and Begin again searched Z downward from there, past the
     block toward the spoilboard. The pin now goes back up over the block and to where Begin was
-    pressed, and the message no longer talks about a bore.
+    pressed, and the message no longer talks about a bore. A controller reset during the probe
+    cancels that move (the position is gone).
+- **Updates:**
+  - The "↑ Install" link stayed clickable while an install ran; a second click started a second
+    fetch and build on the same checkout. It now brings the running install to the front.
+  - With sudo asking for a password and pkexec missing, the failure named sudo instead of pkexec.
 - **Export:**
   - Cancel during a tiled export still wrote the tiles (seconds of work after the G-code is
     made) and said "Export cancelled", hiding the note about older tiles left in the folder.
@@ -33,7 +38,10 @@
   - Open could open a design deleted on another pad or computer while the dialog was up, and
     edits on it were saved into the deletion and lost. It now says the design was deleted.
   - Area: lettering inside the area is selected with it, as on the computer, so a pocket leaves
-    the letters standing; text crossing the area's edge gets a note.
+    the letters standing. The pad has no letter outlines, so text near the edge or with closed
+    letters (A, O, e…) is left out with a note.
+  - Toolpath Delete, Duplicate, Move or a property edit tapped just after a sync brought another
+    device's change put the old copy back everywhere; that tap is now refused with a note.
 
 ## v1.3.2 (build 92) — 2026-10-20
 

@@ -3,6 +3,8 @@
 // 1 · Design / 2 · Toolpaths / 3 · Machine switch in the header; the tool row;
 // the drawing with its side panel and zoom bar; the status line at the bottom.
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -170,6 +172,17 @@ class _MainWindowState extends State<MainWindow> {
     return true;
   }
 
+  /// [d] (what a panel was last built from) is no longer the design on
+  /// screen: a sync replaced it before the next frame. An edit made from it
+  /// would put the old copy back everywhere, over the other device's change.
+  bool _changedUnder(Design d) {
+    final cur = _d;
+    if (cur != null && cur.id == d.id && cur.isSameCopy(d)) return false;
+    _say('The design just changed on another pad or computer; that tap was not kept');
+    setState(() {});
+    return true;
+  }
+
   void _commit(Design next, {Design? before}) {
     if (_stale()) return;
     final prev = before ?? _d;
@@ -272,28 +285,35 @@ class _MainWindowState extends State<MainWindow> {
       _say('Area — the overlap was added as a closed path, so a toolpath cuts only this area');
     }
     // Lettering standing in the area: on the computer its glyphs are islands
-    // of the face and get selected with it, so a pocket leaves them
-    // standing. The pad has no glyph outlines; text whose box lies wholly
-    // in the face (inside its outline, clear of its holes) is selected.
-    var crossing = 0;
+    // of the face, so a pocket leaves them standing. The pad has no glyph
+    // outlines, only a guess at the text's box, so it selects text only
+    // where it is sure to match: the box (widened for wide capitals and the
+    // tails of g, p, y) wholly in the face, and no letter with a closed
+    // inside (A, O, e, 8...), whose inside the computer keeps uncut and a
+    // pocket around the selected text would clear. The rest gets a note.
+    const closedLetters = 'ABDOPQRabdegopq04689#%&@';
+    var unsure = 0;
     for (final s in d.shapes) {
       if (s.type != Shape.text) continue;
-      final b = s.bounds();
+      final size = s.size ?? 10;
+      final b = [s.x, s.y - 0.3 * size, s.x + size * math.max(1, s.label?.length ?? 1), s.y + size];
       final corners = <Pt>[(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])];
-      final anyIn = corners.any((c) => ringContains(face.first, c));
-      if (!anyIn) continue;
       bool inBox(Pt p) => p.$1 > b[0] && p.$1 < b[2] && p.$2 > b[1] && p.$2 < b[3];
+      if (!corners.any((c) => ringContains(face.first, c)) && !face.first.any(inBox)) continue;
+      if (face.skip(1).any((h) => corners.every((c) => ringContains(h, c)))) continue;   // on an island
       final whole = corners.every((c) => ringContains(face.first, c)) &&
           !face.first.any(inBox) &&
           face.skip(1).every((h) => !corners.any((c) => ringContains(h, c)) && !h.any(inBox));
-      if (whole) {
+      final closed = (s.label ?? '').split('').any(closedLetters.contains);
+      if (whole && !closed) {
         ids.add(s.id);
-      } else if (!face.skip(1).any((h) => corners.every((c) => ringContains(h, c)))) {
-        crossing++;
+      } else {
+        unsure++;
       }
     }
-    if (crossing > 0) {
-      _say('Area — text crossing the edge of the area is not included; select it by hand if it should stay standing');
+    if (unsure > 0) {
+      _say('Area — $unsure text item(s) not selected: near the edge, or with closed letters '
+          '(A, O, e…) the pad cannot keep uncut. Select it by hand to keep the letters standing (their insides get cut)');
     }
     setState(() => _sel = ids);
   }
@@ -907,7 +927,10 @@ class _MainWindowState extends State<MainWindow> {
           child: PropertiesPanel(
             design: d,
             selected: _sel,
-            onChange: (s) => _commit(d.copyWith(shapes: [for (final x in d.shapes) x.id == s.id ? s : x])),
+            onChange: (s) {
+              if (_changedUnder(d)) return;
+              _commit(d.copyWith(shapes: [for (final x in d.shapes) x.id == s.id ? s : x]));
+            },
           ),
         ),
         Expanded(child: DocumentTabs(design: d, tools: app.tools, selected: _sel, onPick: (id) => setState(() => _sel = {id}))),
@@ -923,17 +946,22 @@ class _MainWindowState extends State<MainWindow> {
             selectedShapes: _sel,
             onPick: (i) => setState(() => _tp = i),
             onNew: _newToolpath,
-            onChange: _setToolpath,
+            onChange: (i, t) {
+              if (!_changedUnder(d)) _setToolpath(i, t);
+            },
             onDuplicate: (i) {
+              if (_changedUnder(d)) return;
               final t = d.toolpaths[i];
               _commit(d.copyWith(toolpaths: [...d.toolpaths, t.copyWith(name: '${t.name} copy')]));
               setState(() => _tp = d.toolpaths.length);
             },
             onDelete: (i) {
+              if (_changedUnder(d)) return;
               _commit(d.copyWith(toolpaths: [...d.toolpaths]..removeAt(i)));
               setState(() => _tp = null);
             },
             onMove: (i, to) {
+              if (_changedUnder(d)) return;
               final l = [...d.toolpaths];
               final t = l.removeAt(i);
               l.insert(to, t);

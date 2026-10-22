@@ -1,5 +1,6 @@
-// Area on a shape with lettering inside: the lettering is selected with it,
-// as on the computer, so a pocket leaves the letters standing.
+// Area on a shape with lettering inside: lettering the pad is sure about is
+// selected with it, as on the computer, so a pocket leaves it standing; text
+// near the edge or with closed letters (A, B) is left out with a note.
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -20,7 +21,8 @@ void main() {
     final settings = Settings(File('${dir.path}/s.json'));
     final a = store.save(Design(name: 'Sign', shapes: const [
       Shape(id: 'r', type: Shape.rect, x: -2000, y: -2000, w: 4000, h: 4000),
-      Shape(id: 'in', type: Shape.text, x: 1500, y: 1500, label: 'AB', size: 10),
+      Shape(id: 'in', type: Shape.text, x: 1500, y: 1500, label: 'TLW', size: 10),
+      Shape(id: 'closed', type: Shape.text, x: 1500, y: 1000, label: 'AB', size: 10),
       Shape(id: 'edge', type: Shape.text, x: 1995, y: 0, label: 'CD', size: 10),
       Shape(id: 'out', type: Shape.text, x: 2500, y: 0, label: 'EF', size: 10),
     ]), now: 1000);
@@ -33,10 +35,10 @@ void main() {
     await t.tapAt(t.getCenter(find.byType(DesignCanvas)));
     await t.pumpAndSettle();
     final texts = t.widgetList<Text>(find.byType(Text)).map((x) => x.data ?? '').toList();
-    expect(texts.any((s) => s.contains('text crossing the edge')), isTrue);
+    expect(texts.any((s) => s.contains('2 text item(s) not selected')), isTrue);
     await t.tap(find.text('Delete').first);
     await t.pumpAndSettle();
-    expect(app.design(a.id)!.shapes.map((s) => s.id).toList(), ['edge', 'out']);
+    expect(app.design(a.id)!.shapes.map((s) => s.id).toList(), ['closed', 'edge', 'out']);
     await t.pumpWidget(const SizedBox());
     app.dispose();
   });

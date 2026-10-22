@@ -1463,6 +1463,13 @@ void MainWindow::installUpdate(const QString &version)
         QDesktopServices::openUrl(QUrl(QStringLiteral("https://github.com/phobicdotno/phobiCCCP")));
         return;
     }
+    // The install dialog is not modal and the link stays: a second click
+    // started a second fetch, build and install on the same checkout.
+    if (m_updateDlg) {
+        m_updateDlg->raise();
+        m_updateDlg->activateWindow();
+        return;
+    }
     if (m_machine && m_machine->isBusy()) {
         shopTell(this, QStringLiteral("Update"), QStringLiteral("The machine is working"),
                  QStringLiteral("Install the update when the job is done: it restarts phobiCCCP."));
@@ -1483,6 +1490,7 @@ void MainWindow::installUpdate(const QString &version)
     // others pulse while they run. The log is behind "Details".
     auto *dlg = new QDialog(this, Qt::Dialog | Qt::FramelessWindowHint);   // no title bar
     dlg->setAttribute(Qt::WA_DeleteOnClose);
+    m_updateDlg = dlg;
     dlg->setWindowTitle(QStringLiteral("Installing v%1").arg(version));
     dlg->setObjectName(QStringLiteral("updateDialog"));
     dlg->setStyleSheet(QStringLiteral("#updateDialog { border: 2px solid #f2a536; border-radius: 8px; }"));
@@ -1645,7 +1653,7 @@ void MainWindow::installUpdate(const QString &version)
             }
             *stepRunning = false;
             b->setRange(0, 100);
-            head->setText(QStringLiteral("%1 failed: %2 not found").arg(s.what, s.prog));
+            head->setText(QStringLiteral("%1 failed: %2 not found").arg(s.what, fallback ? s.fallbackProg : s.prog));
             details->setChecked(true);
             closeBtn->setEnabled(true);
         });

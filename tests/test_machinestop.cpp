@@ -114,6 +114,7 @@ struct FakeGrbl {
     double probeZ = -50;
     // A V1 block model. Probes and G0 moves track the position.
     bool geo = false, rel = false, noiseOnce = false;
+    QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
     double bx = -130, by = -130, topZ = -40, r = 3.175, minZ = 1e9;
     double val(const QByteArray &l, char ax, bool &has) const {
         const int i = l.indexOf(ax); has = i >= 0; if (!has) return 0;
@@ -221,6 +222,13 @@ struct FakeGrbl {
                     continue;
                 }
                 QByteArray reply = "ok\r\n";
+                if (!rebootOn.isEmpty() && line.startsWith(rebootOn)) {
+                    rebootOn.clear();
+                    mx = my = mz = 0; alarm = true; events << "REBOOT";
+                    send("\r\nGrbl 1.1h ['$' for help]\r\n[MSG:'$H'|'$X' to unlock]\r\n");
+                    line.clear();
+                    continue;
+                }
                 if (!alarmOn.isEmpty() && line.startsWith(alarmOn)) {
                     alarmOn.clear();
                     locked = true;
@@ -1146,6 +1154,23 @@ int main(int argc, char **argv)
         check(grbl.minZ >= stockTop, "v1miss: Begin again does not drive the pin below the stock top");
     }
 
+    if (mode == "v1reboot") {
+        grbl.geo = true;
+        panel.m_bzPanel->m_plates->button(1)->click();     // V1
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Corner)->click();
+        wait(600);
+        grbl.rebootOn = "G0 Z-";          // the side stage's descent beside the block
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(3000);
+        std::printf("after reboot: onIdle pending=%d busy=%d\n", int(bool(panel.m_onIdle)), int(panel.isBusy()));
+        grbl.events.clear();
+        panel.unlock();                   // the operator unlocks the rebooted controller
+        wait(3000);
+        for (const QByteArray &e : grbl.events) std::printf("  after unlock: %s\n", e.constData());
+        std::printf("pin now at machine X%.3f Y%.3f Z%.3f (controller believed 0,0,0 after reboot)\n", grbl.mx, grbl.my, grbl.mz);
+        check(grbl.count("G53 G0") == 0, "v1reboot: nothing from before the reboot moves the machine after it");
+    }
     if (mode == "homerej") {
         // A refused $H must not leave the park pending (it blocked every jog).
         wait(600);

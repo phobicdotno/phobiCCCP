@@ -1103,6 +1103,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         // defaults for the whole session.
         if (l.startsWith(QLatin1String("Grbl "))) {
             // Nothing from before the reset moves the machine after it.
+            ++m_resets;
             m_onIdle = nullptr;
             m_deferredJogs.clear();
             stopHoldJog();
@@ -1751,6 +1752,7 @@ void MachinePanel::bitZeroBegin()
 
 void MachinePanel::bitZeroStage(Phase stage, QStringList prefix)
 {
+    m_bzStageResets = m_resets;
     m_hits.clear();
     m_phase = stage;
     QStringList lines = {QStringLiteral("G90")};
@@ -1782,7 +1784,10 @@ void MachinePanel::bitZeroFail(const QString &why)
 
 void MachinePanel::bitZeroAfter(Phase stage, bool ok)
 {
-    if (!ok && m_bz.v1 && (stage == Phase::BitZeroX || stage == Phase::BitZeroY)) {
+    // A stage ended by a controller reset reports its failure after the
+    // reset was seen: the position is gone, so nothing may move back.
+    if (!ok && m_bz.v1 && (stage == Phase::BitZeroX || stage == Phase::BitZeroY)
+        && m_resets == m_bzStageResets) {
         // A V1 side probe stops beside the block, below its top: Begin
         // again from there would search Z downward past the block, into
         // the stock or the spoilboard. Once unlocked, back up over the
@@ -1793,7 +1798,10 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
                 .arg(stage == Phase::BitZeroX ? QStringLiteral("left") : QStringLiteral("front")));
         m_hits.clear();
         const double z = m_bzOverZ, x = m_bzStartX, y = m_bzStartY;
-        whenIdle([this, z, x, y] {
+        const quint64 resets = m_resets;
+        whenIdle([this, z, x, y, resets] {
+            if (resets != m_resets || !m_homed)
+                return;
             m_grbl->startMacro({QStringLiteral("G90"),
                                 QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
                                 QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
@@ -1805,6 +1813,7 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
     if (!ok) {
         bitZeroFail(stage == Phase::BitZeroZ ? QStringLiteral("no contact on the plate")
                     : stage == Phase::BitZeroHome ? QStringLiteral("could not move back over the corner")
+                    : m_bz.v1 ? QStringLiteral("the side probe beside the block stopped")
                                                   : QStringLiteral("no contact on a bore wall"));
         return;
     }

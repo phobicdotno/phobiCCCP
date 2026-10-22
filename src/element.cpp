@@ -553,6 +553,13 @@ double SubPath::closest(const QPointF &pt, int *seg, double *t) const
     double best = 1e300;
     *seg = -1; *t = 0;
     const int N = 32;
+    // The nodes lie on the path, so the nearest node bounds the answer from
+    // the start: segments are skipped from the first one on, not only once
+    // the scan has passed the point (a curve running towards it).
+    double ub = 1e300;
+    for (const PathNode &n : nodes)
+        ub = qMin(ub, QLineF(pt, n.p).length());
+    ub *= 1 + 1e-9;
     for (int s = 0; s < segmentCount(); ++s) {
         // The segment lies inside its control points' box: one farther off
         // than the best so far cannot beat it (Trim calls this for every
@@ -566,7 +573,7 @@ double SubPath::closest(const QPointF &pt, int *seg, double *t) const
             }
             const double dx = qMax(0.0, qMax(x0 - pt.x(), pt.x() - x1));
             const double dy = qMax(0.0, qMax(y0 - pt.y(), pt.y() - y1));
-            if (std::hypot(dx, dy) > best)
+            if (std::hypot(dx, dy) > qMin(best, ub))
                 continue;
         }
         double sBest = 1e300, sT = 0;
