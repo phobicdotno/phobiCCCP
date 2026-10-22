@@ -375,6 +375,48 @@ int main(int argc, char *argv[])
               "gcode: a tab on a hole's corner keeps its width across the cut");
     }
     {
+        // A 15 x 20 outside part with 6 mm tabs: the lift budget left no
+        // shift that fit, and the fallback put a tab round a corner with a
+        // 3 mm bridge. The best shift now keeps it on an edge (5.5 mm).
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 15, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1},
+                                  {"end_depth", QStringLiteral("10.000")},
+                                  {"stepdown", 10.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 6.0}});
+        const QVector<double> chords = feedRunChordsAt(c2d::exportGcode(r.doc).ops, -7.0);
+        check(!chords.isEmpty() && *std::min_element(chords.begin(), chords.end()) >= 5.0 + 6.35,
+              "gcode: a small part's tab stays off its corners when no lift fits");
+    }
+    {
+        // An 8 mm lead in a 60 x 20 hole with tabs: the lead's centre line
+        // came within a bit of the far wall's, so the feed back across it at
+        // depth cut the tab there off the slug. Below the tab top a lead now
+        // leaves 1.5 mm between the kerfs; without tabs it keeps its radius.
+        for (const bool tabs : {true, false}) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({50, 50}, 60, 20, layer));
+            r.addToolpath("contour", {{"ofset_dir", -1},
+                                      {"end_depth", QStringLiteral("8.000")},
+                                      {"stepdown", 2.0},
+                                      {"ignore_tabs", !tabs},
+                                      {"tab_height", 3.0},
+                                      {"tab_width", 12.0},
+                                      {"lead_radius", 8.0}});
+            double maxR = 0;
+            for (const c2d::Op &o : c2d::exportGcode(r.doc).ops)
+                if (o.kind == c2d::Op::Arc && o.z < -3.0 - 1e-6)
+                    maxR = std::max(maxR, std::hypot(o.ci, o.cj));
+            if (tabs)
+                check(maxR > 0 && maxR <= 20 - 6.35 - (6.35 + 1.5) + 1e-6,
+                      "gcode: a lead in a tabbed hole stays clear of the far tab");
+            else
+                check(std::fabs(maxR - 8.0) < 1e-6, "gcode: a lead without tabs keeps its radius");
+        }
+    }
+    {
         // A 20 mm square cutout: three 30 mm tabs used to tile its whole
         // perimeter, so the "cut" never went below the tab top and the part was
         // never released - and the pass then ended with a full-depth plunge

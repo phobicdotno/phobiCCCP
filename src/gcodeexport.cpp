@@ -1506,12 +1506,43 @@ static QPolygonF startMidLongestEdge(const QPolygonF &ring)
     return out;
 }
 
+// keep > 0 (a tabbed contour cut below the tab top): the lead also stays
+// `keep` from the ring away from where it joins, so its arcs and the chord
+// back across them cut neither the slug through nor a tab's far side.
 static Job::Lead makeLead(const QPolygonF &ring, double radius,
-                          const std::function<bool(const QPointF &)> &allowed)
+                          const std::function<bool(const QPointF &)> &allowed,
+                          double keep = 0)
 {
     Job::Lead lead;
     if (ring.size() < 3 || radius <= 0.01)
         return lead;
+    QVector<double> cum(ring.size(), 0.0);
+    for (int i = 1; i < ring.size(); ++i)
+        cum[i] = cum[i - 1] + std::hypot(ring.at(i).x() - ring.at(i - 1).x(),
+                                         ring.at(i).y() - ring.at(i - 1).y());
+    const double ringLen = cum.last();
+    // Clear of the ring outside `skip` either side of the start (along it).
+    auto farFromRing = [&](const QPointF &p, double skip) {
+        for (int i = 1; i < ring.size(); ++i) {
+            if (cum[i] <= skip || cum[i - 1] >= ringLen - skip)
+                continue;
+            const QPointF a = ring.at(i - 1), d = ring.at(i) - a;
+            const double l2 = d.x() * d.x() + d.y() * d.y();
+            const double segLen = cum[i] - cum[i - 1];
+            if (l2 <= 0 || segLen <= 0)
+                continue;
+            // Only the part of the segment outside the skipped stretch.
+            const double u0 = qMax(0.0, (skip - cum[i - 1]) / segLen);
+            const double u1 = qMin(1.0, (ringLen - skip - cum[i - 1]) / segLen);
+            if (u0 > u1)
+                continue;
+            const double u = qBound(u0, QPointF::dotProduct(p - a, d) / l2, u1);
+            const QPointF q = a + d * u - p;
+            if (q.x() * q.x() + q.y() * q.y() < keep * keep)
+                return false;
+        }
+        return true;
+    };
     const QPointF s = ring.first();
     QPointF t;
     for (int i = 1; i < ring.size(); ++i) {
@@ -1552,6 +1583,17 @@ static Job::Lead makeLead(const QPolygonF &ring, double radius,
             for (int k = 1; k < across && fits; ++k)
                 fits = allowed(c + t * (r - 2 * r * k / across));
             fits = fits && allowed(c);
+            if (fits && keep > 0) {
+                // Every arc and chord point, bar the ring near the join
+                // (within the lead's reach plus `keep`, along the ring).
+                const double skip = 2 * r + keep;
+                for (int k = 0; k <= 2 * half && fits; ++k) {
+                    const double a = (k - half) * (M_PI / 2) / half;
+                    fits = farFromRing(c + (-n * std::cos(a) + t * std::sin(a)) * r, skip);
+                }
+                for (int k = 0; k <= across && fits; ++k)
+                    fits = farFromRing(c + t * (r - 2 * r * k / across), skip);
+            }
             if (fits) {
                 lead.on = true;
                 lead.c = c;
@@ -1845,29 +1887,86 @@ public:
                 best = qMin(best, toSegs(p, right));
             for (const QPointF &q : right)
                 best = qMin(best, toSegs(q, left));
-            return best - D;
+            // And the rest of the ring may pass beside the lift (the far side
+            // of a slot or an arm narrower than two bits): the tab is only
+            // what of the lift's centre line no other pass comes within a
+            // bit radius of - the longest such stretch.
+            QVector<QPointF> mid;
+            QRectF box;
+            for (double t = s0; t <= s1 + 1e-9; t += 0.25) {
+                mid << pointAt(qMin(t, s1));
+                box = box.isNull() ? QRectF(mid.last(), QSizeF(0, 0)) : box.united(QRectF(mid.last(), QSizeF(0, 0)));
+            }
+            box.adjust(-cp.tabToolR - 0.1, -cp.tabToolR - 0.1, cp.tabToolR + 0.1, cp.tabToolR + 0.1);
+            QVector<QLineF> cut;
+            for (int i = 0; i + 1 < ring.size(); ++i) {
+                const QRectF sb = QRectF(ring.at(i), ring.at(i + 1)).normalized();
+                if (!sb.adjusted(-1e-6, -1e-6, 1e-6, 1e-6).intersects(box))
+                    continue;
+                const double c0 = cum.at(i), c1 = cum.at(i + 1);
+                if (c0 < s0)
+                    cut << QLineF(ring.at(i), c1 <= s0 ? ring.at(i + 1) : pointAt(s0));
+                if (c1 > s1)
+                    cut << QLineF(c0 >= s1 ? ring.at(i) : pointAt(s1), ring.at(i + 1));
+            }
+            int run = 0, longest = 0;
+            for (const QPointF &p : mid) {
+                double d = std::numeric_limits<double>::max();
+                for (const QLineF &c : cut) {
+                    const QPointF u = c.p2() - c.p1();
+                    const double uu = QPointF::dotProduct(u, u);
+                    const double t = uu > 1e-12 ? qBound(0.0, QPointF::dotProduct(p - c.p1(), u) / uu, 1.0) : 0.0;
+                    d = qMin(d, QLineF(p, c.p1() + t * u).length());
+                }
+                run = d >= cp.tabToolR - 1e-9 ? run + 1 : 0;
+                longest = qMax(longest, run);
+            }
+            const double alone = longest > 0 ? (longest - 1) * 0.25 : -D;
+            return qMin(best - D, alone);
         };
+        // The pass starts at the ring's start (a plunge or ramp, a bit wide):
+        // a lift reaching it had that cut through its tab.
+        const double clear = cp.tabToolR + 0.5;
+        auto room = [&](double shift) { return qMin(eMax, qMin(a + shift - clear, ringLen - clear - (b + shift))); };
         // The shortest lift at this shift that leaves a full bridge, if any.
         auto fit = [&](double shift, QLineF *l) {
-            for (double e = e0;; e = qMin(e + 0.1, eMax)) {
+            const double top = room(shift);
+            for (double e = qMin(e0, top);; e = qMin(e + 0.1, top)) {
                 if (bridge(shift, e) >= w + kTabSlack) {
                     *l = ends(shift, e);
                     return true;
                 }
-                if (e >= eMax)
+                if (e >= top)
                     return false;
             }
         };
         const double maxShift = ringLen / (4.0 * nTabs);
         QLineF l;
+        // Where nothing leaves a full bridge (a small part, whose budget is
+        // under a tab and a bit), the place that leaves the most: shift 0
+        // was the corner the search had been moving away from.
+        double bestShift = 0, best = -std::numeric_limits<double>::max();
         for (double k = 0; k <= maxShift + 1e-9; k += 0.5)
-            for (double shift : {k, -k})
-                if (a + shift - e0 >= 0 && b + shift + e0 <= ringLen && fit(shift, &l)) {
+            for (double shift : {k, -k}) {
+                if (room(shift) < 0)
+                    continue;
+                if (fit(shift, &l)) {
                     m_tabEnds.append({l.p1(), l.p2()});
                     return;
                 }
-        l = ends(0, eMax);
-        if (bridge(0, eMax) < qMin(1.5, w) + kTabSlack)
+                const double br = bridge(shift, room(shift));
+                if (br > best + 1e-9) {
+                    best = br;
+                    bestShift = shift;
+                }
+            }
+        double eBest = qMax(0.0, room(bestShift));
+        if (best == -std::numeric_limits<double>::max()) {
+            eBest = eMax;   // no room clear of the start anywhere: as before
+            best = bridge(0, eMax);
+        }
+        l = ends(bestShift, eBest);
+        if (best < qMin(1.5, w) + kTabSlack)
             countThin(cp);
         m_tabEnds.append({l.p1(), l.p2()});
     }
@@ -1943,15 +2042,23 @@ public:
                 // tab was placed on: projected onto a roughing ring inside a
                 // corner, its ends came closer and the bit cut the bridge
                 // thin there.
+                // Never over the ring's start: the pass begins there, and a
+                // plunge inside a tab cut it away.
                 const double want = QLineF(e.first, e.second).length();
-                auto wrap = [&](double t) { return t - len * std::floor(t / len); };
-                for (double grown = 0; grown < len / (4.0 * m_tabEnds.size())
-                                       && QLineF(pointAtArc(poly, wrap(from)), pointAtArc(poly, wrap(to))).length() < want - 1e-6;
-                     grown += 0.1) {
-                    from -= 0.1;
-                    to += 0.1;
+                if (from <= to) {
+                    for (double grown = 0; grown < len / (4.0 * m_tabEnds.size())
+                                           && QLineF(pointAtArc(poly, from), pointAtArc(poly, to)).length() < want - 1e-6;
+                         grown += 0.1) {
+                        const bool l = from - 0.1 > 0.5, r = to + 0.1 < len - 0.5;
+                        if (!l && !r)
+                            break;
+                        if (l)
+                            from -= 0.1;
+                        if (r)
+                            to += 0.1;
+                    }
                 }
-                spans.append({wrap(from), wrap(to)});
+                spans.append({from, to});
             }
         } else {
             QVector<double> centres;
@@ -3843,6 +3950,13 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                      ? qMax(0.0, numOr(j.value("lead_radius"), 0)) : 0.0;
             const QPainterPath centres = leadR > 0 ? regionFromRings(rings) : QPainterPath();
             auto allowed = [&](const QPointF &p) { return centres.contains(p) == inside; };
+            // With tabs below the cut, a lead leaves 1.5 mm of material
+            // between its kerf and the ring's away from the join (the bridge
+            // a tab note warns under), and is no wider than the bit: a larger
+            // half circle, closed by the feed across it onto a finishing
+            // pass, cuts a chip loose.
+            const double leadKeep = cp.tabWidth > 0.01 && cp.zBot < cp.tabTop - 1e-9 ? 2 * toolR + 1.5 : 0.0;
+            const double leadUse = leadKeep > 0 ? qMin(leadR, 2 * toolR) : leadR;
             QList<QPolygonF> edge;
             if (cp.tabWidth > 0.01)
                 for (QPolygonF e : region.toSubpathPolygons())
@@ -3880,7 +3994,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 job.rings.append(rough);
                 if (leadR > 0) {
                     const QPolygonF moved = startMidLongestEdge(rough);
-                    job.lead = makeLead(moved, leadR, allowed);
+                    job.lead = makeLead(moved, leadUse, allowed, leadKeep);
                     if (job.lead.on)
                         job.rings.first() = moved;
                 }
@@ -3891,7 +4005,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     const QPolygonF fr = startNearest(f, at);
                     job.finish << fr;
                     if (job.lead.on)
-                        job.finishLeads << makeLead(fr, leadR, allowed);
+                        job.finishLeads << makeLead(fr, leadUse, allowed, leadKeep);
                     at = fr.first();
                 }
                 jobs.append(job);

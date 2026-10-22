@@ -24,6 +24,12 @@
     corner and came down close to where it rose, leaving a sliver. Each tab now slides off the
     corner or lifts further, so the bit comes down a tab's width plus a bit away in a straight
     line, on the roughing rings too; the note above counts these.
+  - On a small outside part (15 x 20 mm, 6 mm tabs, 1/4" bit) no lift fitted at any slide, and
+    the tab went back onto the corner with a 3 mm bridge; it now goes where the bridge is widest,
+    not on a stretch of the cut the bit passes again (a narrow arm), and not over the loop's start.
+  - A lead-in larger than the bit on a contour with tabs cut through the slug or the far side of a
+    tab (a 60 x 20 hole with an 8 mm lead lost its top tab). With tabs, a lead is now no wider than
+    the bit and keeps 1.5 mm of material from the far side of the cut, smaller if need be.
   - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
 - **Machine:**
