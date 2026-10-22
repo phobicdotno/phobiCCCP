@@ -476,8 +476,17 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
         QVector<Op> kept = liftBeforeTraverse(dropUncutBlocks(t.ops), safeZ);
         // Retract last, so the closing rapid is not what keeps a dead block
         // alive (and is still emitted for the blocks we did keep).
-        if (!kept.isEmpty() && t.havePos && t.pos.z < safeZ - 1e-9)
-            kept.append(Op::rapid(t.pos.x, t.pos.y - k * tileHeight, safeZ));
+        // From the last move actually kept: t.pos may hold a lift that went
+        // with a dropped block (the next toolpath, same bit, cut nothing
+        // here), and the tile then ended with the bit down in its last cut.
+        for (int i = kept.size() - 1; i >= 0; --i) {
+            const Op &m = kept.at(i);
+            if (m.kind != Op::Rapid && m.kind != Op::Feed && m.kind != Op::Arc)
+                continue;
+            if (m.z < safeZ - 1e-9)
+                kept.append(Op::rapid(m.x, m.y, safeZ));
+            break;
+        }
         out.append(kept);
     }
     return out;

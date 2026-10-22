@@ -1324,6 +1324,24 @@ int main(int argc, char *argv[])
         next.discard();
     }
 
+    // Adaptive from Start 3 with nothing cut above: its first level hops and
+    // enters from above the stock top (it rapided at Z-2 through wood).
+    {
+        Rig ad;
+        ad.addShape(c2d::Element::makeRectangle({50, 50}, 40, 30, layer));
+        ad.addToolpath("adaptive_toolpath", {{"start_depth", "3.000"}, {"end_depth", "6.000"}, {"stepdown", 1.0},
+                                             {"stepover", 1.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(ad.doc);
+        bool deeper = false, ok = !g.ops.isEmpty() && g.skipped.isEmpty();
+        for (const c2d::Op &o : g.ops) {
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -4 + 1e-6)
+                deeper = true;   // the first level (Z-4) is reached
+            if (!deeper && o.kind == c2d::Op::Rapid && o.z < -1e-6)
+                ok = false;
+        }
+        check(ok && deeper, "adaptive: no rapid below the stock top before its first level is cut");
+    }
+
     std::printf("test_hardening: %d checks OK\n", g_checks);
     return 0;
 }

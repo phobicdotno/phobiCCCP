@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.3 (build 93) — 2026-10-22
+
+> Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
+
+- **Toolpaths:**
+  - A tile could end with the bit still down in its last cut, the spindle stopped, when the next
+    toolpath with the same bit cut nothing in that tile; each tile now retracts from its last move.
+  - Adaptive with a Start depth hopped and entered its first level just above Start, as if the
+    stock above were gone, so it rapided through wood; it starts from the stock top unless it is
+    a rest band under earlier toolpaths.
+
 ## v1.3.2 (build 92) — 2026-10-20
 
 > Recursive bug hunt, round 4: inlays seat at their depth, marks stay on their letters, and closing during an export no longer hangs

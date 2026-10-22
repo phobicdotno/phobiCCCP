@@ -3076,6 +3076,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             };
             // (top of the cut, plan): one run, or one per rest band.
             QList<QPair<QPair<double, double>, adaptive::Plan>> runs;
+            // Not a rest band: nothing says the stock above Start is gone (a
+            // Start of 3 mm hopped at Z-2 through wood), so the first level
+            // hops and enters from just above the stock top.
+            bool fromTop = false;
             {
                 QList<QPolygonF> centres = planCentres(plan);
                 QVector<QPointF> pts;
@@ -3142,8 +3146,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     cleared.append({sweptRegion(centres, toolR), cp.zBot});
                 if (skipIt)
                     continue;
-                if (runs.isEmpty())
+                if (runs.isEmpty()) {
                     runs.append({{cp.zTop, cp.zBot}, plan});
+                    fromTop = true;
+                }
             }
             if (watch && watch->stop(myIndex, tpTotal, name)) {
                 res.cancelled = true;
@@ -3153,8 +3159,13 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 const adaptive::Plan &plan = run.second;
                 double prevZ = run.first.first;
                 const double runBot = run.first.second;
+                bool firstLevel = fromTop;
                 while (prevZ > runBot + 1e-9) {
                     const double z = qMax(runBot, prevZ - cp.stepdown);
+                    // Where hops and entries start: above the last floor, or
+                    // above the stock top on the first level from Start.
+                    const double hopZ = (firstLevel ? qMax(prevZ, 0.0) : prevZ) + clear;
+                    firstLevel = false;
                     for (const adaptive::Move &m : plan.moves) {
                         if (m.kind == adaptive::Move::Helix) {
                             const QPointF ctr = m.center;
@@ -3163,8 +3174,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                                                 * qTan(qDegreesToRadians(ramp)));
                             em.retract();
                             em.rapidTo(s0);
-                            em.rapidAt(s0, prevZ + clear);
-                            double hz = prevZ + clear;
+                            em.rapidAt(s0, hopZ);
+                            double hz = hopZ;
                             bool atS0 = true;
                             while (hz > z + 1e-9) {   // half a turn at a time
                                 hz = qMax(z, hz - pitch / 2);
@@ -3187,16 +3198,16 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         case adaptive::Move::Lift:
                             // Everything above the previous level is gone over
                             // the whole pocket, so a hop just above it is clear.
-                            em.rapidAt(em.pos(), prevZ + clear);
+                            em.rapidAt(em.pos(), hopZ);
                             for (const QPointF &v : m.via)
-                                em.rapidAt(v, prevZ + clear);
-                            em.rapidAt(start, prevZ + clear);
+                                em.rapidAt(v, hopZ);
+                            em.rapidAt(start, hopZ);
                             em.plungeTo(start, z);
                             break;
                         case adaptive::Move::Retract:
                             em.retract();
                             em.rapidTo(start);
-                            em.rapidAt(start, prevZ + clear);
+                            em.rapidAt(start, hopZ);
                             em.plungeTo(start, z);
                             break;
                         }
