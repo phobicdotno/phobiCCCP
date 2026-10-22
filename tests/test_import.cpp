@@ -871,6 +871,16 @@ int main(int argc, char **argv)
         const c2d::ImportResult n = c2d::importHpglData(
             "IN;SC0,100,0,100;PU0,0;PD100,0,100,100;PU;", opts(0, 0), "sc3.plt");
         check(n.ok && n.skipped >= 1, "HPGL SC without IP is noted, not ignored");
+        const c2d::ImportResult later = c2d::importHpglData(
+            "IN;IP0,0,4000,4000;SC0,100,0,100;IP0,0,8000,8000;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc4.plt");
+        check(later.ok && std::abs(later.bounds.width() - 200.0) < 0.1, "HPGL: an IP after SC re-maps the user units");
+        const c2d::ImportResult first = c2d::importHpglData(
+            "IN;SC0,100,0,100;IP0,0,4000,4000;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc5.plt");
+        check(first.ok && std::abs(first.bounds.width() - 100.0) < 0.1 && first.skipped == 0,
+              "HPGL: SC before IP scales once IP comes");
+        const c2d::ImportResult one = c2d::importHpglData(
+            "IN;IP4000,4000;SC0,100,0,100;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc6.plt");
+        check(one.ok && one.skipped >= 1 && one.bounds.width() > 1, "HPGL: IP with only P1 and no frame leaves SC skipped");
     }
 
     // HPGL label text and PE data are not commands: "Project" is not PR.

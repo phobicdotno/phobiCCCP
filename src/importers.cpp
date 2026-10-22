@@ -1802,10 +1802,45 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
     QPointF pos(0, 0);
     bool penDown = false, relative = false, open = false;
     // User units (SC) over the scaling points (IP): plotter = P1 + (u - min)
-    // * scale. SC without IP has no frame known here (the default P1/P2 are
-    // the plotter's paper), so it is noted as skipped instead of guessed.
-    bool ipSet = false, scaled = false;
+    // * scale, worked out again whenever either changes. SC without IP has
+    // no frame known here (the default P1/P2 are the plotter's paper), so it
+    // is noted as skipped when it would be used, instead of guessed.
+    bool ipSet = false, scaled = false, scUnframed = false;
     QPointF p1(0, 0), p2(0, 0), scMin(0, 0), scale(1, 1);
+    QVector<double> scArgs;
+    auto applySc = [&]() {
+        scaled = scUnframed = false;
+        scale = QPointF(1, 1);
+        if (scArgs.size() < 4)
+            return;
+        const QVector<double> &n = scArgs;
+        const int type = n.size() >= 5 ? int(n[4]) : 0;
+        if (type == 2) {
+            scMin = QPointF(n[0], n[2]);
+            scale = QPointF(n[1], n[3]);
+            scaled = true;
+            return;
+        }
+        if (!ipSet || p2.x() == p1.x() || p2.y() == p1.y() || n[1] == n[0] || n[3] == n[2]) {
+            scUnframed = true;
+            return;
+        }
+        scMin = QPointF(n[0], n[2]);
+        scale = QPointF((p2.x() - p1.x()) / (n[1] - n[0]), (p2.y() - p1.y()) / (n[3] - n[2]));
+        if (type == 1) {
+            // one scale for both, the spare room split left/below by the
+            // given shares (centred by default)
+            const double k = std::min(std::abs(scale.x()), std::abs(scale.y()));
+            const QPointF sgn(scale.x() < 0 ? -1 : 1, scale.y() < 0 ? -1 : 1);
+            const double left = n.size() >= 6 ? n[5] / 100 : 0.5;
+            const double bottom = n.size() >= 7 ? n[6] / 100 : 0.5;
+            const QPointF spare((p2.x() - p1.x()) - (n[1] - n[0]) * k * sgn.x(),
+                                (p2.y() - p1.y()) - (n[3] - n[2]) * k * sgn.y());
+            scale = QPointF(k * sgn.x(), k * sgn.y());
+            scMin -= QPointF(spare.x() * left / scale.x(), spare.y() * bottom / scale.y());
+        }
+        scaled = true;
+    };
     auto toPlot = [&](QPointF u) {
         return scaled ? QPointF(p1.x() + (u.x() - scMin.x()) * scale.x(), p1.y() + (u.y() - scMin.y()) * scale.y()) : u;
     };
@@ -1905,6 +1940,10 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
                 nums << v;
         }
         auto moveThrough = [&](bool draw) {
+            if (scUnframed && nums.size() >= 2) {
+                addSkipped(res, skipped, QStringLiteral("SC"));
+                scUnframed = false;   // once per SC
+            }
             for (int i = 0; i + 1 < nums.size(); i += 2) {
                 const QPointF u(nums[i], nums[i + 1]);
                 const QPointF p = relative ? pos + QPointF(u.x() * scale.x(), u.y() * scale.y()) * kUnit
@@ -1944,52 +1983,31 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
             relative = false;
             open = false;
             labelEnd = QChar(0x03);
-            ipSet = scaled = false;
-            scale = QPointF(1, 1);
+            ipSet = false;
+            scArgs.clear();
+            applySc();
         } else if (cmd == QLatin1String("IP")) {
-            // Scaling points P1, P2 (P2 follows P1 when only P1 is given).
-            if (nums.size() >= 2) {
+            // Scaling points P1, P2 (P2 follows P1 when only P1 is given;
+            // with no frame before that, there is none to follow).
+            if (nums.size() >= 4) {
+                p1 = QPointF(nums[0], nums[1]);
+                p2 = QPointF(nums[2], nums[3]);
+                ipSet = true;
+            } else if (nums.size() >= 2 && ipSet) {
                 const QPointF d = p2 - p1;
                 p1 = QPointF(nums[0], nums[1]);
-                p2 = nums.size() >= 4 ? QPointF(nums[2], nums[3]) : p1 + d;
-                ipSet = true;
+                p2 = p1 + d;
             } else {
                 ipSet = false;
             }
-            scaled = false;   // SC's scale is fixed when SC is read
-            scale = QPointF(1, 1);
+            applySc();
         } else if (cmd == QLatin1String("SC")) {
             // User units: type 0 maps xmin..xmax and ymin..ymax onto P1..P2;
             // type 1 does it with one scale for both, centred; type 2 gives
             // the plotter units per user unit outright. A file that scales
-            // without IP drew 2.5 mm parts 100 mm big and said nothing.
-            scaled = false;
-            scale = QPointF(1, 1);
-            if (nums.size() >= 4) {
-                const int type = nums.size() >= 5 ? int(nums[4]) : 0;
-                if (type == 2) {
-                    scMin = QPointF(nums[0], nums[2]);
-                    scale = QPointF(nums[1], nums[3]);
-                    scaled = true;
-                } else if (!ipSet) {
-                    addSkipped(res, skipped, cmd);
-                } else if (nums[1] != nums[0] && nums[3] != nums[2]) {
-                    scMin = QPointF(nums[0], nums[2]);
-                    scale = QPointF((p2.x() - p1.x()) / (nums[1] - nums[0]), (p2.y() - p1.y()) / (nums[3] - nums[2]));
-                    if (type == 1) {
-                        const double k = std::min(std::abs(scale.x()), std::abs(scale.y()));
-                        const QPointF sgn(scale.x() < 0 ? -1 : 1, scale.y() < 0 ? -1 : 1);
-                        const double left = nums.size() >= 6 ? nums[5] / 100 : 0.5;
-                        const double bottom = nums.size() >= 7 ? nums[6] / 100 : 0.5;
-                        const QPointF spare((p2.x() - p1.x()) - (nums[1] - nums[0]) * k * sgn.x(),
-                                            (p2.y() - p1.y()) - (nums[3] - nums[2]) * k * sgn.y());
-                        scale = QPointF(k * sgn.x(), k * sgn.y());
-                        // the spare room goes left/below by those shares
-                        scMin -= QPointF(spare.x() * left / scale.x(), spare.y() * bottom / scale.y());
-                    }
-                    scaled = true;
-                }
-            }
+            // drew 2.5 mm parts 100 mm big and said nothing.
+            scArgs = nums.size() >= 4 ? nums : QVector<double>();
+            applySc();
         } else if (cmd == QLatin1String("SP")
                    || cmd == QLatin1String("LT") || cmd == QLatin1String("VS")) {
             // set-up commands with nothing to draw

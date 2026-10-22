@@ -57,7 +57,8 @@
   - SVG: a `<use>` of a nested `<svg>` ignored that svg's own transform.
   - HP-GL: user scaling (SC) was ignored, so a drawing in user units came in at the wrong size
     with no word. It is mapped onto the IP points (or applied as given for type 2); SC with no
-    IP to scale into is listed as skipped.
+    IP to scale into is listed as skipped. A later IP re-maps the scaling (an IP after SC turned it
+    off; SC before IP was skipped).
   - Rotate by an angle other than a quarter turn squeezed a shape with Horizontal/Vertical
     constraints back onto the axes (a rectangle shrank instead of turning). Those constraints go
     with a note; a quarter turn swaps them; a shape with a Fixed point stays where it is.
