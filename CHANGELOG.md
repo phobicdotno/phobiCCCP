@@ -85,7 +85,9 @@
     deleting the constraint that blocked a red one, anywhere in its sketch, lets it hold.
     Moving, turning or mirroring a line merely tied to such a shape (Parallel to its edge, say)
     no longer folds it, nor does renaming the red dimension or a parameter it uses. A parameter
-    change that moves the rest of its sketch lets a red dimension there hold if it now can.
+    change that moves the rest of its sketch lets a red dimension there hold if it now can, but
+    not one on the same shape (a turned rectangle's width parameter folded it into a bow-tie).
+    A red dimension whose parameter had an error now holds once the error is fixed.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
 - **Pad:**
@@ -108,7 +110,10 @@
     whole design at every sync. The field now keeps the whole path in range, to the last digit;
     a rectangle's W and H, dragging on the canvas and drawing stay in range too, and text is
     limited the way the computer counts it (an emoji counts twice). No side or radius, typed or
-    drawn, goes over 10000 mm.
+    drawn, goes over 10000 mm. W or H on a rectangle from the computer already past the edge
+    no longer throws; it can be made smaller.
+  - Text typed in the Text box went into another design when the computer opened one on the pad
+    meanwhile (File > Send to pad); it is dropped instead.
   - After a two-finger pinch, the finger left on the screen picked up and dragged the shape under
     it, or drew a new one. It now only pans until every finger is lifted.
 

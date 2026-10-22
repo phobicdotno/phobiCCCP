@@ -96,14 +96,16 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
             return false;
         if (!a.isDimension())
             return a.expr == b.expr;
-        if (!v0.contains(a.name) || !v1.contains(b.name))
+        // One whose expression has no value (an error) counts at its stored
+        // value, so fixing the error is a change.
+        if (a.name.isEmpty() || b.name.isEmpty())
             return a.name == b.name && a.expr == b.expr;
-        return std::fabs(v0.value(a.name) - v1.value(b.name)) <= 1e-9;
+        return std::fabs(v0.value(a.name, a.value) - v1.value(b.name, b.value)) <= 1e-9;
     };
     // What the edit touches: the geometry it keeps still, what it moved,
     // added or deleted (by its own id), and what any added, changed or
     // removed constraint is on (released: its whole sketch, below).
-    QSet<QString> edited = keep, released;
+    QSet<QString> edited = keep, released, valued;
     {
         QHash<QString, const Element *> before;
         for (const Element &e : was.elements())
@@ -123,6 +125,15 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
             const int k = now.indexOfUid(c.uid);
             if (k >= 0 && same(c, now.constraints.at(k)))
                 continue;
+            // A dimension whose value alone changed (its parameter did): see
+            // `valued` below.
+            if (k >= 0 && c.isDimension() && c.refs == now.constraints.at(k).refs
+                && c.type == now.constraints.at(k).type && c.sense == now.constraints.at(k).sense
+                && c.at == now.constraints.at(k).at && c.expr == now.constraints.at(k).expr) {
+                for (const GeoRef &r : c.refs)
+                    valued.insert(r.id);
+                continue;
+            }
             for (const GeoRef &r : c.refs)
                 released.insert(r.id);
             if (k >= 0)
@@ -137,6 +148,8 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
     edited.remove(QString());
     released.remove(QString());
     released.remove(QStringLiteral("origin"));
+    valued.remove(QString());
+    valued.remove(QStringLiteral("origin"));
     // Geometry joined by constraints (before or after the edit; not through
     // the origin) is one sketch: deleting the constraint that kept a red one
     // from holding, anywhere in its sketch, lets it hold again. A move of
@@ -162,12 +175,16 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
                     parent.insert(root(r.id), root(first));
             }
         }
-    QSet<QString> releasedRoots;
+    QSet<QString> releasedRoots, valuedRoots;
     for (const QString &id : released)
         releasedRoots.insert(root(id));
+    for (const QString &id : valued)
+        valuedRoots.insert(root(id));
     // A dimension whose value an edit changes (its parameter, a dimension
     // it is defined from) is touched, and releases its sketch: another
-    // dimension there may now hold. Any other parameter edit is not.
+    // dimension there may now hold. Not one on the same shape, though (a
+    // turned rectangle's red position, when its width parameter changes,
+    // was met by folding it). Any other parameter edit is not.
     QSet<QString> out;
     for (const QString &uid : param::unsatisfied(was)) {
         const int a = was.parametric().indexOfUid(uid), b = now.indexOfUid(uid);
@@ -176,9 +193,14 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
         const Constraint &c0 = was.parametric().constraints.at(a), &c1 = now.constraints.at(b);
         if (!same(c0, c1))
             continue;
-        bool hit = false;
-        for (const GeoRef &r : c1.refs)
+        bool hit = false, shares = false;
+        for (const GeoRef &r : c1.refs) {
             hit = hit || (!r.isOrigin() && (edited.contains(r.id) || releasedRoots.contains(root(r.id))));
+            shares = shares || valued.contains(r.id);
+        }
+        if (!shares)
+            for (const GeoRef &r : c1.refs)
+                hit = hit || (!r.isOrigin() && valuedRoots.contains(root(r.id)));
         if (!hit)
             out.insert(uid);
     }

@@ -66,11 +66,12 @@ class PropertiesPanel extends StatelessWidget {
               'W × H',
               pair(
                 // Grown about its centre: both sides stay inside ±10000 mm,
-                // and no side over 10000 (the computer refuses more).
+                // and no side over 10000 (the computer refuses more). One
+                // from the computer already past the edge can still shrink.
                 NumBox(w, (v) => onChange(s.copyWith(x: s.x + (w - v) / 2, w: v)), min: 0.01,
-                    max: math.min(10000, 2 * math.min(10000 - (s.x + w / 2), (s.x + w / 2) + 10000))),
+                    max: math.max(w, math.min(10000, 2 * math.min(10000 - (s.x + w / 2), (s.x + w / 2) + 10000)))),
                 NumBox(h, (v) => onChange(s.copyWith(y: s.y + (h - v) / 2, h: v)), min: 0.01,
-                    max: math.min(10000, 2 * math.min(10000 - (s.y + h / 2), (s.y + h / 2) + 10000))),
+                    max: math.max(h, math.min(10000, 2 * math.min(10000 - (s.y + h / 2), (s.y + h / 2) + 10000)))),
               ),
             ),
           );

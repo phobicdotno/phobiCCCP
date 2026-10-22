@@ -330,9 +330,10 @@ class _MainWindowState extends State<MainWindow> {
         _addShape(Shape(id: d.nextShapeId(), type: Shape.point, x: x, y: y));
       case DrawTool.text:
         final t = await _askText();
-        // The design may have been replaced while the box was open.
+        // The design may have been replaced while the box was open (another
+        // one opened from the computer): the text was for this one only.
         final now = _d;
-        if (t != null && now != null && mounted) {
+        if (t != null && now != null && now.id == d.id && mounted) {
           _addShape(Shape(id: now.nextShapeId(), type: Shape.text, x: x, y: y, label: t.$1, size: t.$2));
         }
       case DrawTool.path:

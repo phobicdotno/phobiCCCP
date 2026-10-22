@@ -581,6 +581,58 @@ int main(int argc, char *argv[])
                       && std::fabs(QLineF(a, b).length() - 8) < 1e-6,
                   "a parameter edit lets a red length in the same sketch hold");
         }
+        // A red length whose parameter had no value (an unknown name in it)
+        // holds once the parameter gets one; it was counted unchanged.
+        {
+            Document cd;
+            const Element g = Element::makePath({{-50, 10}, {50, 10}}, false, layer);
+            const Element c = Element::makePath({{0, 0}, {1, 10}}, false, layer);
+            cd.addElement(g);
+            cd.addElement(c);
+            cd.parametricRef().params.append({QStringLiteral("h"), QStringLiteral("10"), QString()});
+            cd.parametricRef().params.append({QStringLiteral("w"), QStringLiteral("q"), QString()});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::VDistance, {GeoRef::origin(), ref(GeoRef::Point, g.id, 0)}, "h");
+            cd.parametricRef().constraints.last().value = 10;
+            add(cd, Constraint::Fix, {ref(GeoRef::Point, c.id, 0)});
+            cd.parametricRef().constraints.last().at = QPointF(0, 0);
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, c.id, 1), ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, c.id, 0)}, "w");
+            cd.parametricRef().constraints.last().value = 8;
+            canvas->setDocument(&cd);
+            Parametric after = cd.parametric();
+            after.params.last().expr = QStringLiteral("12");
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b;
+            check(param::unsatisfied(cd).isEmpty() && param::line(cd, ref(GeoRef::Line, c.id, 0), &a, &b)
+                      && std::fabs(QLineF(a, b).length() - 12) < 1e-6,
+                  "a red length holds once its parameter's error is fixed");
+        }
+        // But not one on the same shape: a turned rectangle's red position
+        // stays red when the parameter driving its width changes (the
+        // rectangle was folded into a bow-tie).
+        {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            cd.addElement(sq);
+            cd.parametricRef().params.append({QStringLiteral("w"), QStringLiteral("30"), QString()});
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, sq.id, 0)}, "w");
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            va.rotate(180);
+            Parametric after = cd.parametric();
+            after.params.first().expr = QStringLiteral("31");
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b, c, e;
+            const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
+            // (The width grows about the edge's middle; the free sides lean
+            // a hair to meet it.)
+            check(lines && std::fabs(QLineF(a, b).length() - 31) < 1e-6 && std::fabs(QLineF(c, e).length() - 20) < 0.05
+                      && param::unsatisfied(cd).size() == 1,
+                  "a parameter edit on a red shape's own width keeps its position red");
+        }
         // Moving, turning or mirroring a line merely tied to the red shape
         // (Parallel to an edge) does not bring the red dimension back to
         // fold it (a turn's holds counted as added constraints).

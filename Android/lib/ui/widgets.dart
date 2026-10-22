@@ -243,7 +243,9 @@ class _NumBoxState extends State<NumBox> {
     final t = _c.text.trim().toLowerCase().replaceAll(',', '.').replaceFirst(RegExp(r'\s*(mm|°)$'), '');
     final v = double.tryParse(t);
     if (v != null && v.isFinite) {
-      final k = v.clamp(widget.min, widget.max).toDouble();
+      // A max under the min (a field whose range a far shape squeezed
+      // shut) must not throw.
+      final k = v.clamp(widget.min, widget.max < widget.min ? widget.min : widget.max).toDouble();
       if (k != widget.value) widget.onChanged(k);
     }
     // Done commits, then focus loss commits again: the text put back here
