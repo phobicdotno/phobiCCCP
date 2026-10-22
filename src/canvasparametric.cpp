@@ -78,6 +78,66 @@ bool stayedPut(const Element &was, const Element &now)
     return true;
 }
 
+// Constraints that were red before an edit and that the edit leaves alone:
+// the same constraint, on geometry the edit did not touch (and, for a
+// dimension driven by an expression, with the parameters unchanged). They
+// stay red rather than being met by folding the shape they are on - a
+// dimension from the origin broken by a rotation was met at the next move
+// of some other line, turning a rectangle into a triangle with no word.
+QSet<QString> inertRed(const Document &was, const Parametric &now, const QSet<QString> &editIds)
+{
+    QSet<QString> out;
+    const bool paramsSame = was.parametric().params.size() == now.params.size()
+        && std::equal(now.params.begin(), now.params.end(), was.parametric().params.begin(),
+                      [](const UserParameter &a, const UserParameter &b) { return a.name == b.name && a.expr == b.expr; });
+    for (const QString &uid : param::unsatisfied(was)) {
+        const int a = was.parametric().indexOfUid(uid), b = now.indexOfUid(uid);
+        if (a < 0 || b < 0)
+            continue;
+        const Constraint &c0 = was.parametric().constraints.at(a), &c1 = now.constraints.at(b);
+        if (c0.type != c1.type || c0.refs != c1.refs || c0.expr != c1.expr || c0.sense != c1.sense)
+            continue;
+        if (c1.isDimension() && !c1.expr.trimmed().isEmpty() && !paramsSame)
+            continue;
+        bool hit = false;
+        for (const GeoRef &r : c1.refs)
+            hit = hit || editIds.contains(r.id);
+        if (!hit)
+            out.insert(uid);
+    }
+    return out;
+}
+
+// param::solve without the constraints in `omit` (they stay in the document,
+// unmet). An omitted dimension that an expression uses stands in as a
+// parameter with its value for the solve.
+param::SolveResult solveOmitting(Document &doc, const QSet<QString> &keep, const QSet<QString> &omit,
+                                 bool force = false)
+{
+    if (omit.isEmpty())
+        return param::solve(doc, keep, force);
+    Document part = doc;
+    Parametric pp = part.parametric();
+    const QHash<QString, double> vals = param::values(doc, pp);
+    for (const Constraint &c : pp.constraints)
+        if (omit.contains(c.uid) && c.isDimension() && !c.name.isEmpty())
+            pp.params.append({c.name, param::formatNumber(vals.value(c.name, c.value)), QString()});
+    pp.constraints.erase(std::remove_if(pp.constraints.begin(), pp.constraints.end(),
+                                        [&](const Constraint &c) { return omit.contains(c.uid); }),
+                         pp.constraints.end());
+    part.setParametric(pp);
+    param::SolveResult r = param::solve(part, keep, force);
+    doc.setElements(part.elements());
+    Parametric p = doc.parametric();
+    for (Constraint &c : p.constraints) {
+        const int k = part.parametric().indexOfUid(c.uid);
+        if (k >= 0)
+            c.value = part.parametric().constraints.at(k).value;
+    }
+    doc.setParametric(p);
+    return r;
+}
+
 // The whole sketch before and after a parametric change: geometry the
 // solver moved, toolpath fields re-evaluated, and the constraints.
 class SnapshotCmd : public QUndoCommand
@@ -363,6 +423,36 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
     // them, a half turn keeps them, any other angle leaves them nothing to
     // hold, so they go (as in Fusion). Re-solving them as they were
     // squeezed a rectangle turned 30 degrees back onto the axes.
+    // Rigid means orthogonal (rows of length 1 and square to each other), not
+    // just |det| = 1: a 200% x 50% scale has that too and must re-solve.
+    auto near = [](double a, double b) { return std::fabs(a - b) < 1e-9; };
+    const bool rigid = !moved.isIdentity()
+                       && near(moved.m11() * moved.m11() + moved.m12() * moved.m12(), 1.0)
+                       && near(moved.m21() * moved.m21() + moved.m22() * moved.m22(), 1.0)
+                       && near(moved.m11() * moved.m21() + moved.m12() * moved.m22(), 0.0);
+    // A dimension wholly on turned or mirrored geometry: its label sits off
+    // what it measures, so it turns with it (a quarter turn left a length's
+    // label along its line, drawn on top of the edge).
+    if (rigid) {
+        Parametric p = m_doc->parametric();
+        const QTransform lin(moved.m11(), moved.m12(), moved.m21(), moved.m22(), 0, 0);
+        bool any = false;
+        for (Constraint &c : p.constraints) {
+            if (!c.isDimension() || c.label.isNull() || c.refs.isEmpty())
+                continue;
+            bool inside = true;
+            for (const GeoRef &r : c.refs)
+                inside = inside && through.contains(r.id);
+            if (inside) {
+                c.label = lin.map(c.label);
+                any = true;
+            }
+        }
+        if (any) {
+            m_doc->setParametric(p);
+            renumbered = true;
+        }
+    }
     int axisDropped = 0;
     if (rotated) {
         const long quarters = std::lround(turn / 90.0);
@@ -388,8 +478,6 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
                 goneDims << c;
                 continue;
             }
-            // The label sits off the measured line: turn it with it.
-            c.label = QTransform(moved.m11(), moved.m12(), moved.m21(), moved.m22(), 0, 0).map(c.label);
             if (swap)
                 c.type = c.type == Constraint::Horizontal ? Constraint::Vertical
                        : c.type == Constraint::Vertical   ? Constraint::Horizontal
@@ -433,7 +521,6 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
     // met by dragging single nodes - a rectangle folded into a triangle.
     // The turned shapes are held as they are for the solve: what is tied to
     // them follows, and what cannot hold shows red.
-    const bool rigid = !moved.isIdentity() && std::fabs(std::fabs(moved.determinant()) - 1.0) < 1e-9;
     const Parametric beforeHold = m_doc->parametric();
     if (rigid) {
         Parametric p = beforeHold;
@@ -453,19 +540,40 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
         }
         m_doc->setParametric(p);
     }
-    param::SolveResult r = param::solve(*m_doc, QSet<QString>(touched.begin(), touched.end()));
+    const QSet<QString> touchedSet(touched.begin(), touched.end());
+    const QSet<QString> inert = inertRed(before, m_doc->parametric(), touchedSet);
+    param::SolveResult r = solveOmitting(*m_doc, touchedSet, inert);
+    bool partSolved = false;
+    if (rigid && !r.ok) {
+        // One constraint the held shapes can't meet (a dimension from the
+        // origin) failed the whole solve, and nothing tied to them followed.
+        // Solve again without the failing ones, as applyParametric does: the
+        // rest follows, only those show red.
+        QSet<QString> omit = inert;
+        for (const QString &u : r.failing)
+            if (!u.startsWith(QLatin1String("__rigid")))
+                omit.insert(u);
+        if (omit.size() > inert.size()) {
+            Document part = *m_doc;
+            if (solveOmitting(part, touchedSet, omit).ok) {
+                m_doc->setElements(part.elements());
+                partSolved = true;
+            }
+        }
+    }
     if (rigid) {
         Parametric p = m_doc->parametric();
         p.constraints.erase(std::remove_if(p.constraints.begin(), p.constraints.end(),
                                            [](const Constraint &c) { return c.uid.startsWith(QLatin1String("__rigid")); }),
                             p.constraints.end());
         m_doc->setParametric(p);
+        r.failing = param::unsatisfied(*m_doc);
         r.failing.erase(std::remove_if(r.failing.begin(), r.failing.end(),
-                                       [](const QString &u) { return u.startsWith(QLatin1String("__rigid")); }),
+                                       [&](const QString &u) { return inert.contains(u); }),
                         r.failing.end());
         r.ok = r.failing.isEmpty();
     }
-    if (!r.changed.isEmpty() || renumbered || !heldBack.isEmpty())
+    if (!r.changed.isEmpty() || partSolved || renumbered || !heldBack.isEmpty())
         m_undo->push(new SnapshotCmd(this, m_doc, s0, stateOf(m_doc), text));
     m_undo->endMacro();
     if (!heldBack.isEmpty()) {
@@ -507,7 +615,37 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
     // allowFailing edits (a comment, a name, a label moved, a constraint
     // deleted) never move geometry to a compromise: with something red, the
     // shapes stay where they are unless every constraint can hold.
-    param::SolveResult r = param::solve(*m_doc, keep, false);
+    // What the edit touches: the geometry it keeps still, what it moved,
+    // and what any added, changed or removed constraint is on.
+    QSet<QString> editIds = keep;
+    {
+        QHash<QString, const Element *> was;
+        for (const Element &e : s0.els)
+            was.insert(e.id, &e);
+        for (const Element &e : m_doc->elements()) {
+            const Element *w = was.value(e.id);
+            if (!w || !stayedPut(*w, e))
+                editIds.insert(e.id);
+        }
+        auto addRefs = [&](const Parametric &a, const Parametric &b) {
+            for (const Constraint &c : a.constraints) {
+                const int k = b.indexOfUid(c.uid);
+                const Constraint *o = k >= 0 ? &b.constraints.at(k) : nullptr;
+                if (o && o->type == c.type && o->refs == c.refs && o->expr == c.expr && o->sense == c.sense
+                    && o->at == c.at)
+                    continue;
+                for (const GeoRef &r : c.refs)
+                    editIds.insert(r.id);
+            }
+        };
+        addRefs(m_doc->parametric(), s0.par);
+        addRefs(s0.par, m_doc->parametric());
+    }
+    Document was = *m_doc;
+    was.setElements(s0.els);
+    was.setParametric(s0.par);
+    const QSet<QString> inert = inertRed(was, m_doc->parametric(), editIds);
+    param::SolveResult r = solveOmitting(*m_doc, keep, inert, false);
     if (!r.ok && !allowFailing) {
         // Constraints that were red before don't block an unrelated edit;
         // one the rest of the sketch can't follow is refused. A forced solve
@@ -517,12 +655,9 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
         // exactly and nothing else moves. First leave out only the red ones
         // still failing (an edited red dimension that can now hold is kept),
         // then every one that was red; neither holding refuses the edit.
-        Document was = *m_doc;
-        was.setElements(s0.els);
-        was.setParametric(s0.par);
         const QStringList red = param::unsatisfied(was);
         const QSet<QString> failing(r.failing.begin(), r.failing.end());
-        QSet<QString> redAndFailing;
+        QSet<QString> redAndFailing = inert;
         for (const QString &uid : red)
             if (failing.contains(uid))
                 redAndFailing.insert(uid);
@@ -531,12 +666,7 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
             if (omit.isEmpty())
                 continue;
             Document part = *m_doc;
-            Parametric pp = part.parametric();
-            pp.constraints.erase(std::remove_if(pp.constraints.begin(), pp.constraints.end(),
-                                                [&](const Constraint &c) { return omit.contains(c.uid); }),
-                                 pp.constraints.end());
-            part.setParametric(pp);
-            if (param::solve(part, keep, false).ok) {
+            if (solveOmitting(part, keep, omit).ok) {
                 m_doc->setElements(part.elements());
                 solved = true;
                 break;

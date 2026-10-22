@@ -481,6 +481,92 @@ int main(int argc, char *argv[])
                   "a shape dimensioned from the origin turns or mirrors whole");
             check(canvas->editWarning().contains(QStringLiteral("can't hold")), "and the dimension it breaks shows red");
         }
+        // The same with a point tied to a corner: the point follows the turned
+        // shape and only the dimension shows red (it failed the whole solve,
+        // and the point stayed behind).
+        {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            const Element pt = Element::makePoint({40, 30}, layer);
+            cd.addElement(sq);
+            cd.addElement(pt);
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, pt.id, -1), ref(GeoRef::Point, sq.id, 2)});
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            va.rotate(30);
+            QPointF corner, p;
+            param::point(cd, ref(GeoRef::Point, sq.id, 2), &corner);
+            param::point(cd, ref(GeoRef::Point, pt.id, -1), &p);
+            check(QLineF(corner, p).length() < 1e-6 && param::unsatisfied(cd).size() == 1
+                      && canvas->editWarning().contains(QStringLiteral("1 constraint can't hold")),
+                  "a point tied to a turned shape follows it past a red dimension");
+        }
+        // A dimension a turn left red is not met at the next, unrelated edit
+        // (moving another line, constraining it): the turned shape stays
+        // whole and the dimension stays red.
+        for (int k = 0; k < 2; ++k) {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            const Element ln = Element::makePath({{100, 100}, {130, 105}}, false, layer);
+            cd.addElement(sq);
+            cd.addElement(ln);
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            va.rotate(180);
+            if (k == 0) {
+                canvas->moveElementBy(ln.id, 5, 0);
+            } else {
+                Parametric after = cd.parametric();
+                Constraint h;
+                h.type = Constraint::Horizontal;
+                h.refs = {ref(GeoRef::Line, ln.id, 0)};
+                h.uid = after.nextUid();
+                after.constraints.append(h);
+                canvas->applyParametric(after, QStringLiteral("horizontal"), false);
+            }
+            QPointF a, b, c, e;
+            const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
+            check(lines && std::fabs(QLineF(a, b).length() - 30) < 1e-6 && std::fabs(QLineF(c, e).length() - 20) < 1e-6
+                      && param::unsatisfied(cd).size() == 1,
+                  k == 0 ? "a red dimension is not met by folding at the next move of another line"
+                         : "a red dimension is not met by folding when another line is constrained");
+        }
+        // A length's label turns with its edge on a quarter turn and a mirror.
+        for (int k = 0; k < 2; ++k) {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            cd.addElement(sq);
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, sq.id, 0)}, "30");
+            cd.parametricRef().constraints.last().label = QPointF(0, -8);
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            if (k == 0)
+                va.rotate(90);
+            else
+                va.mirror(vec::Axis::Horizontal);
+            const QPointF l = cd.parametric().constraints.last().label;
+            check(k == 0 ? QLineF(l, QPointF(8, 0)).length() < 1e-6 || QLineF(l, QPointF(-8, 0)).length() < 1e-6
+                         : std::fabs(std::fabs(l.y()) - 8) < 1e-6 && std::fabs(l.x()) < 1e-6,
+                  "a length's label turns with its edge");
+        }
+        // A 200% x 50% scale (determinant 1) is no rigid move: a length
+        // dimension re-solves to hold, as at 200% x 60%.
+        for (double sy : {0.5, 0.6}) {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {30, 10}, {30, 30}, {10, 30}}, true, layer);
+            cd.addElement(sq);
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, sq.id, 0)}, "20");
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            va.scale(2, sy);
+            QPointF a, b;
+            check(param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b) && std::fabs(QLineF(a, b).length() - 20) < 1e-6
+                      && param::unsatisfied(cd).isEmpty(),
+                  "a scale with X% times Y% = 1 re-solves its dimensions");
+        }
         // A horizontal distance turned off the axis that an expression uses
         // lives on as a parameter: the expression keeps working.
         {

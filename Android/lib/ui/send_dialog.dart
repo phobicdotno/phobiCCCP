@@ -117,17 +117,21 @@ class _SendDialogState extends State<SendDialog> {
   Future<void> _go() async {
     final c = _reachable().where((c) => c.desktop.id == _computer).firstOrNull;
     if (c == null) return;
+    // The machine named in the question is the one sent to: the dialog
+    // follows the computer's machine in use, which can change while the
+    // question is open, and must not start a machine nobody confirmed.
+    final machineId = _machine;
     if (_start) {
-      final machine = c.info?.machines.where((m) => m.id == _machine).firstOrNull?.name ?? 'the machine';
+      final machine = c.info?.machines.where((m) => m.id == machineId).firstOrNull?.name ?? 'the machine';
       if (!await confirmStart(context, widget.design.name, machine, c.name)) return;
     }
     setState(() {
       _busy = true;
       _error = null;
     });
-    app.lastTarget = '${c.desktop.id}/${_machine ?? ''}';
+    app.lastTarget = '${c.desktop.id}/${machineId ?? ''}';
     try {
-      final r = await app.send(widget.design, c, _machine ?? '', _start);
+      final r = await app.send(widget.design, c, machineId ?? '', _start);
       if (!mounted) return;
       Navigator.pop(context, sendWords(r, _start, c.name));
     } catch (e) {

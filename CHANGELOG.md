@@ -55,6 +55,13 @@
     Horizontal to an unselected line) folded it to meet the constraint (a rectangle became a
     triangle). The shape turns whole; what is tied to it follows, or the constraint shows red.
     A dimension the rotation drops that expressions or toolpath fields use stays as a parameter.
+    One constraint that can't hold no longer keeps everything else tied to the shape behind,
+    and the warning counts what is really red. A 200% x 50% scale is no longer taken for a turn.
+  - A constraint left red (by a rotation, say) was met at the next, unrelated edit, such as moving
+    another line, folding its shape with no word. Red constraints that an edit does not touch
+    now stay red and leave their shapes alone.
+  - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
+    its edge after a quarter turn).
 - **Pad:**
   - Open could open a design deleted on another pad or computer while the dialog was up, and
     edits on it were saved into the deletion and lost. It now says the design was deleted.
@@ -69,6 +76,8 @@
   - The Send dialog kept the machine in use when it opened; if the computer switched machines
     meanwhile, Send switched it back (reconnecting, losing its homing). It follows the computer
     until a machine is picked by hand.
+  - With that, the computer switching machines while "Start cutting now?" was open sent and
+    started the job on the other machine. It goes to the machine the question named.
 
 ## v1.3.2 (build 92) — 2026-10-20
 
