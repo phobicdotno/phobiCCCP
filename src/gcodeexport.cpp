@@ -1025,6 +1025,10 @@ struct CutParams {
     double rampAngle = 0;    // >0: ramp entries on closed loops (degrees)
     double tabTop = -1e9;    // cutout tabs: lift to this Z inside a tab
     double tabWidth = 0;     // tab span along the loop (0 = no tabs)
+    // The bit's radius: the lift runs that much further at each end, or the
+    // bit, dropping at the tab's ends, ate the bridge across the kerf from
+    // both sides (a 6 mm tab with a 1/4" bit held nothing).
+    double tabToolR = 0;
     // Optional veto for a stay-down link (3D roughing checks it against the
     // relief); unset = any link within linkDist is taken.
     std::function<bool(const QPointF &, const QPointF &)> linkOk;
@@ -1770,9 +1774,13 @@ public:
             const double t = dh > 1e-12 ? (h - hh.at(k - 1)) / dh : 1.0;
             return ss.at(k - 1) + t * (ss.at(k) - ss.at(k - 1));
         };
+        const double ringLen = ss.last();
+        // Within the third of the loop tabs may take (see tabSpots).
+        const double reach = qMin(cp.tabToolR, qMax(0.0, (ringLen / (3.0 * nTabs) - w) / 2));
         for (int t = 0; t < nTabs; ++t) {
             const double c = total * (t + 0.5) / nTabs;
-            m_tabEnds.append({pointAtArc(ring, ringAt(c - w / 2)), pointAtArc(ring, ringAt(c + w / 2))});
+            m_tabEnds.append({pointAtArc(ring, qMax(0.0, ringAt(c - w / 2) - reach)),
+                              pointAtArc(ring, qMin(ringLen, ringAt(c + w / 2) + reach))});
         }
     }
     // No outline to measure on: tabs spaced and sized along the ring itself.
@@ -1780,9 +1788,12 @@ public:
     {
         QVector<double> at;
         double w = 0;
-        if (tabSpots(ring, cp, &at, &w))
+        if (tabSpots(ring, cp, &at, &w)) {
+            const double len = perimeter(ring);
+            const double reach = qMin(cp.tabToolR, qMax(0.0, (len / (3.0 * at.size()) - w) / 2));
             for (double c : at)
-                m_tabEnds.append({pointAtArc(ring, c - w / 2), pointAtArc(ring, c + w / 2)});
+                m_tabEnds.append({pointAtArc(ring, c - w / 2 - reach), pointAtArc(ring, c + w / 2 + reach)});
+        }
     }
     void forgetTabs() { m_tabsPlaced = false; m_tabEnds.clear(); }
 
@@ -2254,6 +2265,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
     // numbered 0) still get the pause to swap them.
     QString lastTool;
     int tpIndex = 0;
+    QStringList tpUuids;   // by toolpath index, for doneIds
 
     // Ring-type toolpaths (pocket / contour / cutout) are not emitted one by
     // one: consecutive ones sharing a tool are pooled and emitted together,
@@ -2278,6 +2290,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 curTp = d.tp;
                 if (!names.contains(d.name))
                     names << d.name;
+                if (!res.doneIds.contains(tpUuids.value(d.tp)))
+                    res.doneIds << tpUuids.value(d.tp);
             }
             em.runJob(d.job, d.cp);
             lastPos = em.pos();
@@ -2307,6 +2321,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             continue;
         const QString name = j.value("name").toString();
         const int myIndex = tpIndex++;
+        tpUuids << t.uuid;
         if (watch && watch->stop(myIndex, tpTotal, name)) {
             res.cancelled = true;
             break;
@@ -2403,6 +2418,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 return;
             cp.tabTop = floor + numOr(j.value("tab_height"), 0);
             cp.tabWidth = qBound(1.0, numOr(j.value("tab_width"), 6.0), 30.0);
+            cp.tabToolR = qMax(0.0, j.value("tool").toObject().value("diameter").toDouble(3.175) / 2);
         };
         if (cutout) {
             const double floor = depth(j.value("cut_depth"));
@@ -2534,6 +2550,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             ops.append(Op::spindle(rpm));
             ops.append(body);
             res.done << name;
+            res.doneIds << t.uuid;
             continue;
         }
 
@@ -3946,6 +3963,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         ops.append(Op::spindle(rpm));
         ops.append(body);
         res.done << name;
+        res.doneIds << t.uuid;
     }
     flush();
 

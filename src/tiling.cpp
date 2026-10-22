@@ -525,7 +525,16 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         const bool keyhole = t.type == QLatin1String("keyhole_toolpath");
         if (!j.value("enabled").toBool(true) || !(keyhole || t.type == QLatin1String("thread_toolpath")))
             continue;
+        // A toolpath the export skipped is not in the program at all.
+        if (!g.doneIds.contains(t.uuid))
+            continue;
         const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
+        const bool external = j.value("side").toString() == QLatin1String("external");
+        const double pitch = numOr(j.value("pitch"), 1.5);
+        const int passes = qBound(1, int(numOr(j.value("passes"), 1)), 20);
+        double td = numOr(j.value("thread_depth"), 0);
+        if (td <= 0)
+            td = 0.6134 * pitch;
         for (const QJsonValue &v : j.value("elements").toArray()) {
             const Element *e = doc.elementById(v.toObject().value("uuid").toString());
             // Only what the export cuts: construction geometry never, sketch
@@ -547,8 +556,14 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
                 // The thread's laps and its way out beside the wall.
                 // An internal one keeps the tool centre within the hole's
                 // radius less the tool's.
+                // A circle the export left out as too small is not cut either
+                // (the same test as exportGcode's thread branch).
+                const double R = numOr(e->raw.value("radius"), 0);
+                const double first = external ? R + toolR - td / passes : R - toolR - td + td / passes;
+                if ((!external && (first < 0.05 || toolR > R - td - 0.05)) || (external && R - td <= 0.05))
+                    continue;
                 const QRectF b = e->painterPath.boundingRect();
-                if (j.value("side").toString() == QLatin1String("external")) {
+                if (external) {
                     y0 = b.top() - 2 * toolR - 1;
                     y1 = b.bottom() + 2 * toolR + 1;
                 } else {

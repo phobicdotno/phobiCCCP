@@ -2294,11 +2294,20 @@ int main(int argc, char *argv[])
             total += h;
         std::fprintf(stderr, "square tabs, lead %.0f: %d piece(s), %.2f mm of edge held\n",
                      lead, int(holds.size()), total);
-        // 4 tabs on a 160 mm outline; the reach of 0.01 mm takes 0.25 mm
-        // off either end of each.
-        check(g.done.size() == 1 && total > 4 * (4.0 - 0.8) && total < 4 * 4.0 + 0.5,
+        // 4 tabs on a 160 mm outline. The lift runs a bit radius past each
+        // end, so the edge is held for the width plus the bit; the reach of
+        // 0.01 mm takes 0.25 mm off either end of each.
+        check(g.done.size() == 1 && total > 4 * (4.0 + 6.35 - 0.8) && total < 4 * (4.0 + 6.35) + 0.5,
               lead > 0 ? "tabs hold their width of the part's edge (lead-in)"
                        : "tabs hold their width of the part's edge");
+        // And across the middle of the kerf the bridge is still the tab's
+        // width: the bit dropping at a tab's ends ate it from both sides, so
+        // a tab narrower than the bit held nothing.
+        double bridge = 0;
+        const double R = 6.35 / 2;
+        for (const double h : tabHolds(g.ops, QPolygonF(QRectF(30 - R, 30 - R, 40 + 2 * R, 40 + 2 * R)), R, -6.0))
+            bridge += h;
+        check(bridge > 4 * (4.0 - 1.0), "a tab's bridge across the kerf is its width");
     }
 
     // Finishing rings lifted for the tab width along their own length: in a

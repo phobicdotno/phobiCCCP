@@ -909,6 +909,30 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A thread or keyhole the export skipped is not in the program: it does
+    // not refuse the tiled job (a thread circle too small to cut, a keyhole
+    // whose start lies below its end).
+    {
+        QTemporaryDir d;
+        for (int v : {0, 1}) {
+            Rig r;
+            r.addShape(c2d::Element::makePath({{80, 0}, {80, 100}}, false, layer));
+            r.addToolpath("contour", {{"ofset_dir", 0}, {"uuid", "{tp-0}"}});
+            if (v == 0) {
+                r.addShape(c2d::Element::makeCircle({40, 25}, 0.5, layer));
+                r.addToolpath("thread_toolpath", {{"pitch", 1.75}, {"side", "external"}, {"end_depth", "6.000"}});
+            } else {
+                r.addShape(c2d::Element::makePoint({40, 20}, layer));
+                r.addToolpath("keyhole_toolpath", {{"angle", 90}, {"length", 12.7}, {"start_depth", "8.000"},
+                                                   {"end_depth", "6.000"}});
+            }
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("sk")), 25.0);
+            check(te.error.isEmpty() && !te.skipped.isEmpty(),
+                  v == 0 ? "tiling: a thread too small to cut does not refuse the tiled job"
+                         : "tiling: a skipped keyhole does not refuse the tiled job");
+        }
+    }
+
     // Cancel after the G-code was made but while the tiles are written: none
     // of the new tiles is committed (the old set stays whole), and the
     // result says cancelled.

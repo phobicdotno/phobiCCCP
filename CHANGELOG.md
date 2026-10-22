@@ -14,6 +14,11 @@
     earlier toolpath's cut; a rest band that opens at Start enters from the stock top too.
   - A contour on the line with tabs over an outline whose ends miss by a hair (a DXF gap) cut
     through with no tabs and no word; it now notes the open vectors cut without tabs.
+  - A tab narrower than the bit held nothing: the bit's own width ate it from both sides. The
+    lift now runs a bit radius past each end of the tab (less on a short loop with many tabs),
+    so the bridge left is the tab width you set.
+  - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
+    had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
 - **Machine:**
   - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
     beside the block below its top, and Begin again searched Z downward from there, past the
