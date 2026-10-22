@@ -19,7 +19,11 @@
     so the bridge left is the tab width you set.
   - On small parts and holes (a loop shorter than about nine bit widths) the lifts were still cut
     short, leaving a sliver or nothing, so the part or slug came free. The lifts may now take up
-    to 40% of the loop, and a part still too small for a 1 mm bridge gets a note.
+    to 40% of the loop, and a part still too small for a 1.5 mm bridge gets a note.
+  - A tab on a corner of the cut (a hole's corner, a star's point or valley) lifted round the
+    corner and came down close to where it rose, leaving a sliver. Each tab now slides off the
+    corner or lifts further, so the bit comes down a tab's width plus a bit away in a straight
+    line, on the roughing rings too; the note above counts these.
   - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
 - **Machine:**

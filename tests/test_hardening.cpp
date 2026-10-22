@@ -158,6 +158,30 @@ static QVector<double> feedRunsAt(const QVector<c2d::Op> &ops, double z, double 
     return runs;
 }
 
+// The straight distance between the ends of each feed run at height z: where
+// a tab lift leaves the cut and where it comes back down.
+static QVector<double> feedRunChordsAt(const QVector<c2d::Op> &ops, double z, double eps = 1e-6)
+{
+    QVector<double> out;
+    QPointF from, prev;
+    bool have = false, in = false;
+    for (const c2d::Op &o : ops) {
+        if (o.kind != c2d::Op::Feed && o.kind != c2d::Op::Rapid && o.kind != c2d::Op::Arc)
+            continue;
+        const bool at = o.kind == c2d::Op::Feed && std::fabs(o.z - z) < eps;
+        if (at && !in && have)
+            from = prev;
+        if (in && !at)
+            out << QLineF(from, prev).length();
+        in = at && have;
+        prev = QPointF(o.x, o.y);
+        have = true;
+    }
+    if (in)
+        out << QLineF(from, prev).length();
+    return out;
+}
+
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -307,7 +331,8 @@ int main(int argc, char *argv[])
     {
         // Small parts with a 1/4" bit: a 12 x 8 outside contour keeps a real
         // bridge at each tab (the lift was capped to a third of the loop,
-        // leaving 0.3 mm); a 14 mm hole has no room and says so.
+        // leaving 0.3 mm; now over a millimetre, still noted as under 1.5);
+        // a 14 mm hole has no room and says so.
         for (int k = 0; k < 2; ++k) {
             Rig r;
             if (k == 0)
@@ -324,11 +349,30 @@ int main(int argc, char *argv[])
             const bool noted = g.notes.join(QLatin1Char('\n')).contains(QStringLiteral("too small for its tabs"));
             const QVector<double> lifts = feedRunsAt(g.ops, -7.0);
             if (k == 0)
-                check(!noted && lifts.size() >= 3 && *std::min_element(lifts.begin(), lifts.end()) > 6.35 + 1.0,
+                check(lifts.size() >= 3 && *std::min_element(lifts.begin(), lifts.end()) > 6.35 + 1.0,
                       "gcode: a small part's tab lifts run past the bit's width");
             else
                 check(noted, "gcode: a hole too small for its tabs says so");
         }
+    }
+    {
+        // A tab on a corner of a 30 x 20 hole's ring: the lift went round the
+        // corner and came down 6.6 mm from where it rose, a 0.3 mm bridge for
+        // a 3 mm tab with a 1/4" bit. Each lift now ends a tab and a bit
+        // apart in a straight line (off the corner if need be).
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 30, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", -1},
+                                  {"end_depth", QStringLiteral("10.000")},
+                                  {"stepdown", 10.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 3.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        const QVector<double> chords = feedRunChordsAt(g.ops, -7.0);
+        check(chords.size() == 3 && *std::min_element(chords.begin(), chords.end()) >= 3.0 + 6.35 - 1e-6
+                  && !g.notes.join(QLatin1Char('\n')).contains(QStringLiteral("too small for its tabs")),
+              "gcode: a tab on a hole's corner keeps its width across the cut");
     }
     {
         // A 20 mm square cutout: three 30 mm tabs used to tile its whole

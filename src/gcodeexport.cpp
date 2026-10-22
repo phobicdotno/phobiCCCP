@@ -1777,24 +1777,99 @@ public:
             return ss.at(k - 1) + t * (ss.at(k) - ss.at(k - 1));
         };
         const double ringLen = ss.last();
-        const double reach = tabReach(ringLen, nTabs, w, cp);
         for (int t = 0; t < nTabs; ++t) {
             const double c = total * (t + 0.5) / nTabs;
-            m_tabEnds.append({pointAtArc(ring, qMax(0.0, ringAt(c - w / 2) - reach)),
-                              pointAtArc(ring, qMin(ringLen, ringAt(c + w / 2) + reach))});
+            addLift(ring, ringAt(c - w / 2), ringAt(c + w / 2), ringLen, nTabs, w, cp);
         }
     }
-    // How far each lift runs past its tab: a bit radius, so the bridge left
-    // across the cut is the tab's width. The lifts may take up to 40% of the
-    // loop (most of it is still cut through); on a part too small for that
-    // the bridge is narrower, and one under a millimetre (or none: the slug
-    // drops free) is counted for a note.
-    double tabReach(double ringLen, int nTabs, double w, const CutParams &cp)
+    // One lift, over the tab's own span a..b of the ring. It runs a bit
+    // radius past each end, so the bridge left across the cut is the tab's
+    // width - measured straight between the points where the bit comes back
+    // down: a lift round a corner of the ring (a hole's corner, a star's tip)
+    // runs on until they are a tab and a bit apart, or the tab slides along
+    // the ring (up to a quarter of the spacing) off the corner. The lifts may
+    // take up to 40% of the loop (most of it is still cut through); on a part
+    // too small for that the bridge is narrower, and one under 1.5 mm (or
+    // none: the slug drops free) is counted for a note.
+    void addLift(const QPolygonF &ring, double a, double b, double ringLen, int nTabs, double w, const CutParams &cp)
     {
-        const double lift = qMin(w + 2 * cp.tabToolR, qMax(w, ringLen / (2.5 * nTabs)));
-        if (lift - 2 * cp.tabToolR < qMin(1.0, w) - 1e-9)
+        const double D = 2 * cp.tabToolR, span = qMax(0.0, b - a);
+        const double budget = qMax(span, ringLen / (2.5 * nTabs));
+        const double e0 = qMax(0.0, qMin(cp.tabToolR, (budget - span) / 2)), eMax = qMax(e0, (budget - span) / 2);
+        // The cut is rounder than the ring's points and the lift is not
+        // quite square: a bridge read straight off them comes out a little
+        // wide, so a fifth of a millimetre more is asked for.
+        constexpr double kTabSlack = 0.2;
+        // Arc length to point by binary search: a fine ring (a font, a
+        // spline) is asked thousands of times here.
+        QVector<double> cum(1, 0.0);
+        for (int i = 0; i + 1 < ring.size(); ++i)
+            cum << cum.last() + QLineF(ring.at(i), ring.at(i + 1)).length();
+        auto pointAt = [&](double t) {
+            if (ring.size() < 2)
+                return ring.isEmpty() ? QPointF() : ring.first();
+            const int i = qBound(1, int(std::lower_bound(cum.begin(), cum.end(), t) - cum.begin()), int(cum.size()) - 1);
+            const double seg = cum.at(i) - cum.at(i - 1);
+            return seg > 1e-12 ? QLineF(ring.at(i - 1), ring.at(i)).pointAt(qBound(0.0, (t - cum.at(i - 1)) / seg, 1.0))
+                               : ring.at(i - 1);
+        };
+        auto ends = [&](double shift, double e) {
+            return QLineF(pointAt(qBound(0.0, a + shift - e, ringLen)), pointAt(qBound(0.0, b + shift + e, ringLen)));
+        };
+        // What is left across the cut: the nearest the bit comes from one
+        // side of the lift to the other, over the stretch of ring each side
+        // (in a valley of a star the cut beyond the drop point narrows it),
+        // less the bit.
+        auto bridge = [&](double shift, double e) {
+            const double s0 = qBound(0.0, a + shift - e, ringLen), s1 = qBound(0.0, b + shift + e, ringLen);
+            const double reach = w + 2 * D;
+            QVector<QPointF> left, right;
+            for (double t = 0; t <= reach + 1e-9; t += 0.5) {
+                left << pointAt(s0 - t >= 0 ? s0 - t : s0 - t + ringLen);
+                right << pointAt(s1 + t <= ringLen ? s1 + t : s1 + t - ringLen);
+            }
+            // each point of one side against the other side's segments (point
+            // pairs alone read up to a quarter step wide)
+            auto toSegs = [](const QPointF &p, const QVector<QPointF> &side) {
+                double d = std::numeric_limits<double>::max();
+                for (int i = 0; i + 1 < side.size(); ++i) {
+                    const QPointF u = side.at(i + 1) - side.at(i);
+                    const double uu = QPointF::dotProduct(u, u);
+                    const double t = uu > 1e-12 ? qBound(0.0, QPointF::dotProduct(p - side.at(i), u) / uu, 1.0) : 0.0;
+                    d = qMin(d, QLineF(p, side.at(i) + t * u).length());
+                }
+                return d;
+            };
+            double best = std::numeric_limits<double>::max();
+            for (const QPointF &p : left)
+                best = qMin(best, toSegs(p, right));
+            for (const QPointF &q : right)
+                best = qMin(best, toSegs(q, left));
+            return best - D;
+        };
+        // The shortest lift at this shift that leaves a full bridge, if any.
+        auto fit = [&](double shift, QLineF *l) {
+            for (double e = e0;; e = qMin(e + 0.1, eMax)) {
+                if (bridge(shift, e) >= w + kTabSlack) {
+                    *l = ends(shift, e);
+                    return true;
+                }
+                if (e >= eMax)
+                    return false;
+            }
+        };
+        const double maxShift = ringLen / (4.0 * nTabs);
+        QLineF l;
+        for (double k = 0; k <= maxShift + 1e-9; k += 0.5)
+            for (double shift : {k, -k})
+                if (a + shift - e0 >= 0 && b + shift + e0 <= ringLen && fit(shift, &l)) {
+                    m_tabEnds.append({l.p1(), l.p2()});
+                    return;
+                }
+        l = ends(0, eMax);
+        if (bridge(0, eMax) < qMin(1.5, w) + kTabSlack)
             countThin(cp);
-        return qMax(0.0, (lift - w) / 2);
+        m_tabEnds.append({l.p1(), l.p2()});
     }
     // No outline to measure on: tabs spaced and sized along the ring itself.
     void placeTabsOnRing(const QPolygonF &ring, const CutParams &cp)
@@ -1802,9 +1877,9 @@ public:
         QVector<double> at;
         double w = 0;
         if (tabSpots(ring, cp, &at, &w)) {
-            const double reach = tabReach(perimeter(ring), int(at.size()), w, cp);
+            const double len = perimeter(ring);
             for (double c : at)
-                m_tabEnds.append({pointAtArc(ring, c - w / 2 - reach), pointAtArc(ring, c + w / 2 + reach)});
+                addLift(ring, c - w / 2, c + w / 2, len, int(at.size()), w, cp);
         } else if (!at.isEmpty()) {
             countThin(cp);   // a loop too short for any tab
         }
@@ -1864,7 +1939,19 @@ public:
                 const double ahead = to >= from ? to - from : len - from + to;
                 if (ahead > len / 2)
                     std::swap(from, to);
-                spans.append({from, to});
+                // The ring's own lift comes down as far apart as the one the
+                // tab was placed on: projected onto a roughing ring inside a
+                // corner, its ends came closer and the bit cut the bridge
+                // thin there.
+                const double want = QLineF(e.first, e.second).length();
+                auto wrap = [&](double t) { return t - len * std::floor(t / len); };
+                for (double grown = 0; grown < len / (4.0 * m_tabEnds.size())
+                                       && QLineF(pointAtArc(poly, wrap(from)), pointAtArc(poly, wrap(to))).length() < want - 1e-6;
+                     grown += 0.1) {
+                    from -= 0.1;
+                    to += 0.1;
+                }
+                spans.append({wrap(from), wrap(to)});
             }
         } else {
             QVector<double> centres;
@@ -2144,7 +2231,7 @@ private:
     QVector<Op> &m_ops;
     double m_safeZ, m_feed, m_plunge;
     double m_x = 0, m_y = 0;
-    int m_thinTabs = 0;          // loops whose tabs leave under 1 mm across the cut
+    int m_thinTabs = 0;          // loops whose tabs leave under 1.5 mm across the cut
     bool m_tabsPlaced = false;   // placeTabs: m_tabEnds holds this job's tabs
     QVector<QPair<QPointF, QPointF>> m_tabEnds;   // each tab's start and end on the ring it was placed on
 };
@@ -2319,7 +2406,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             em.runJob(d.job, d.cp);
             lastPos = em.pos();
             if (em.thinTabs() > thinBefore) {
-                const QString n = QStringLiteral("%1: part too small for its tabs with this bit (under 1 mm "
+                const QString n = QStringLiteral("%1: part too small for its tabs with this bit (under 1.5 mm "
                                                  "left across the cut; it may come free)").arg(d.name);
                 if (!res.notes.contains(n))
                     res.notes << n;
