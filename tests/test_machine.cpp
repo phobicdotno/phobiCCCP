@@ -78,6 +78,7 @@ struct FakeGrbl {
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
     double mx = -100, my = -100, mz = -30;
+    double wcoZ = 0;   // work Z offset in the status reports
     // A jog reports Jog for `jogMs` after its line (it does not move the
     // position: tests set that), or until a jog cancel.
     int jogMs = 300;
@@ -111,7 +112,7 @@ struct FakeGrbl {
                     --homeReports;
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? "Hold:0" : home ? "Home" : jogging() ? "Jog" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n");
+                     + "|FS:0,0|WCO:0.000,0.000," + num(wcoZ) + ">\r\n");
             } else if (c == '!') {
                 held = true;
                 events << "!";
@@ -675,6 +676,7 @@ int main(int argc, char **argv)
 
     // A pad cannot start the job while the surface map waits for the plate.
     {
+        grbl.wcoZ = -60;   // Z zeroed on the stock, low enough for the map's travel
         wait(800);
         panel.showPage(QStringLiteral("bitzero"));
         for (QToolButton *b : panel.findChildren<QToolButton *>())
@@ -711,6 +713,7 @@ int main(int argc, char **argv)
         wait(800);
         check(!panel.isBusy(), "map: stopped, not busy");
         panel.showPage(QStringLiteral("job"));
+        grbl.wcoZ = 0;
     }
 
     // BitSetter turned on after "Close: I'll zero Z": the Zero Z beside Z

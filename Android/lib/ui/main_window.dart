@@ -304,7 +304,9 @@ class _MainWindowState extends State<MainWindow> {
       final whole = corners.every((c) => ringContains(face.first, c)) &&
           !face.first.any(inBox) &&
           face.skip(1).every((h) => !corners.any((c) => ringContains(h, c)) && !h.any(inBox));
-      final closed = (s.label ?? '').split('').any(closedLetters.contains);
+      // Anything past plain ASCII (Ø, é, ©...) may have a closed inside too.
+      final label = s.label ?? '';
+      final closed = label.split('').any(closedLetters.contains) || !RegExp(r'^[ -~]*$').hasMatch(label);
       if (whole && !closed) {
         ids.add(s.id);
       } else {
@@ -899,7 +901,9 @@ class _MainWindowState extends State<MainWindow> {
                     _commit(_d!, before: before);
                   },
                   onDraw: (dr) {
-                    final s = shapeFromDraft(dr, d.nextShapeId());
+                    // The design on screen now, not the one this was built from: a sync
+                    // may have brought shapes since, and their ids are taken.
+                    final s = shapeFromDraft(dr, (_d ?? d).nextShapeId());
                     if (s != null) _addShape(s);
                   },
                   onTapAt: _tapAt,

@@ -2068,6 +2068,22 @@ void MachinePanel::startSurfaceMap()
         return;
     }
     const SurfaceMapPlan plan = m_bzPanel->mapPlan();
+    // The map travels at work Z plate + travel: with Z zeroed high (tall
+    // stock, a short bit) that is past the Z switch, a hard-limit alarm and
+    // the position lost. Every other rise is kept under the top; this one
+    // cannot be lowered without hitting the plate, so it is refused.
+    if (m_grbl->status().valid) {
+        const MachineStatus st = m_grbl->status();
+        const double machineZ = plan.travelZ() + (st.mz - st.wz);
+        if (machineZ > -switchClearance() + 1e-6) {
+            log(QStringLiteral("!! surface map refused: its travel height (work Z%1) is machine Z%2, "
+                               "above the top of Z (%3). Lower the plate's height or the travel "
+                               "above it, or use a longer bit")
+                    .arg(plan.travelZ(), 0, 'f', 1).arg(machineZ, 0, 'f', 1)
+                    .arg(-switchClearance(), 0, 'f', 1));
+            return;
+        }
+    }
     log(QStringLiteral("surface map: %1 × %2 points over X%3–%4 Y%5–%6, travelling at "
                        "work Z%7%8")
             .arg(plan.cols).arg(plan.rows)

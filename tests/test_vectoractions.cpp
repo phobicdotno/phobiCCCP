@@ -427,6 +427,34 @@ int main(int argc, char *argv[])
                       && std::fabs(std::atan2(b.y() - a.y(), b.x() - a.x()) * 180 / M_PI - 30) < 1e-6,
                   "on the turned bottom edge, same direction");
         }
+        // A rectangle drawn as a path, Horizontal/Vertical on its edges: a
+        // turn of 30 degrees turns it (they had to go) and a quarter turn
+        // swaps them; neither squeezes it back onto the axes.
+        for (double ang : {30.0, 90.0}) {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            cd.addElement(sq);
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, sq.id, 0)});
+            add(cd, Constraint::Vertical, {ref(GeoRef::Line, sq.id, 1)});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, sq.id, 2)});
+            add(cd, Constraint::Vertical, {ref(GeoRef::Line, sq.id, 3)});
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id});
+            va.rotate(ang);
+            QPointF a, b, c, e;
+            const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
+            check(lines && std::fabs(QLineF(a, b).length() - 30) < 1e-6 && std::fabs(QLineF(c, e).length() - 20) < 1e-6
+                      && std::fabs(std::remainder(std::atan2(b.y() - a.y(), b.x() - a.x()) * 180 / M_PI - ang, 360)) < 1e-6,
+                  "a constrained rectangle turns whole, its size kept");
+            if (ang == 30.0)
+                check(cd.parametric().constraints.isEmpty() && canvas->editWarning().contains(QStringLiteral("off the axis")),
+                      "turned off the axes, its Horizontal/Vertical go, with a word");
+            else
+                check(cd.parametric().constraints.size() == 4 && param::unsatisfied(cd).isEmpty()
+                          && cd.parametric().constraints.first().type == Constraint::Vertical,
+                      "a quarter turn swaps Horizontal and Vertical, all holding");
+        }
         {   // the edit's own warning stays in the status bar after the
             // action's "Rotated ..." / "Mirrored ..." report
             Document cd;

@@ -112,6 +112,7 @@ struct FakeGrbl {
     bool locked = false;      // after ALARM:1: deaf until ctrl-X
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
+    double wcoZ = 0;                      // work Z offset the status reports carry
     // A V1 block model. Probes and G0 moves track the position.
     bool geo = false, rel = false, noiseOnce = false;
     QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
@@ -186,7 +187,7 @@ struct FakeGrbl {
                     continue; }
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : running ? "Run" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:0.000,0.000,0.000>\r\n");
+                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:0.000,0.000," + num(wcoZ) + ">\r\n");
             } else if (c == '!') {
                 if (!held) holdClock.start();
                 held = true;
@@ -928,6 +929,23 @@ int main(int argc, char **argv)
         std::printf("r13: status reports during 1.5 s of the rehearsal summary: %d; pad jogs sent while open %d, total after close %d\n", during, jDuring, grbl.count("$J=") - j0);
         for (int i = grbl.indexOf("$J="); i >= 0 && i < grbl.events.size(); ++i) std::printf("  ev: %s\n", grbl.events.at(i).constData());
         check(during >= 3, "r13rehdeaf: status keeps coming while the rehearsal summary is open");
+    }
+    if (mode == "maphigh") {
+        // Z zeroed high (tall stock, short bit): the map's travel height,
+        // plate top plus travel in work Z, lands past the Z switch.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Map)->click();
+        grbl.wcoZ = -15;
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(1500);
+        check(grbl.indexOf("G0 Z") < 0 && !panel.m_mapper->isRunning(),
+              "maphigh: a surface map that would travel past the Z switch is refused");
+        grbl.wcoZ = -60;
+        wait(600);
+        panel.bitZeroBegin();
+        wait(1500);
+        check(grbl.indexOf("G0 Z") >= 0, "maphigh: with Z zeroed low enough the map starts");
     }
     if (mode == "bztap") {
         // BitZero Z only, BitSetter off. The operator taps Z+ on the pad

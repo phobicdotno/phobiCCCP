@@ -20,6 +20,8 @@
     block toward the spoilboard. The pin now goes back up over the block and to where Begin was
     pressed, and the message no longer talks about a bore. A controller reset during the probe
     cancels that move (the position is gone).
+  - A surface map with Z zeroed high (tall stock, a short bit) travelled above the top of Z,
+    into the switch: a hard-limit alarm and the position lost. It is refused with what to change.
 - **Updates:**
   - The "↑ Install" link stayed clickable while an install ran; a second click started a second
     fetch and build on the same checkout. It now brings the running install to the front.
@@ -36,6 +38,9 @@
   - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.
   - DXF: a closed spline given by fit points only closed with a straight line and a kink.
   - SVG: a `<use>` of a nested `<svg>` ignored that svg's own transform.
+  - Rotate by an angle other than a quarter turn squeezed a shape with Horizontal/Vertical
+    constraints back onto the axes (a rectangle shrank instead of turning). Those constraints go
+    with a note; a quarter turn swaps them; a shape with a Fixed point stays where it is.
 - **Pad:**
   - Open could open a design deleted on another pad or computer while the dialog was up, and
     edits on it were saved into the deletion and lost. It now says the design was deleted.
@@ -44,6 +49,9 @@
     letters (A, O, e…) is left out with a note.
   - Toolpath Delete, Duplicate, Move or a property edit tapped just after a sync brought another
     device's change put the old copy back everywhere; that tap is now refused with a note.
+  - A shape drawn as a sync arrived could take an id the sync had just brought, so two shapes
+    shared it (the computer then refused the design).
+  - Area also leaves out text with accented or other non-ASCII letters (Ø, é...).
 
 ## v1.3.2 (build 92) — 2026-10-20
 

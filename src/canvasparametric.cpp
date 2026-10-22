@@ -2,6 +2,7 @@
 // drawn over the drawing, the Constrain and Dimension tools, the inline
 // value editor, and the undo steps that re-solve the sketch after an edit.
 #include "canvas.h"
+#include <cmath>
 #include <QContextMenuEvent>
 #include <QFocusEvent>
 #include <QGraphicsItem>
@@ -299,7 +300,21 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
     // A shape locked whole stays where it is, as a fixed point does: the
     // edit's move of it is put back (deleting it is still allowed).
     QSet<QString> heldBack;
-    for (const QString &id : param::lockedElements(before)) {
+    // A rotation (not a quarter turn of axis-free geometry, see below): the
+    // turned shape cannot keep a point pinned with Fix, and solving for the
+    // pin squeezed it out of shape. Such a shape stays put, like one locked
+    // whole.
+    const double turn = std::atan2(moved.m12(), moved.m11()) * 180.0 / M_PI;
+    const bool rotated = !moved.isIdentity() && moved.determinant() > 0
+                         && std::fabs(std::remainder(turn, 360.0)) > 1e-6;
+    QSet<QString> locked = param::lockedElements(before);
+    if (rotated)
+        for (const Constraint &c : before.parametric().constraints)
+            if (c.type == Constraint::Fix)
+                for (const GeoRef &r : c.refs)
+                    if (touched.contains(r.id))
+                        locked.insert(r.id);
+    for (const QString &id : locked) {
         const Element *was = nullptr;
         for (const Element &e : before.elements())
             if (e.id == id) { was = &e; break; }
@@ -343,6 +358,51 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
             renumbered = true;   // the constraints changed: keep them in the undo step
         }
     }
+    // A rotation turns Horizontal, Vertical and the horizontal and vertical
+    // distances inside the turned geometry with it: a quarter turn swaps
+    // them, a half turn keeps them, any other angle leaves them nothing to
+    // hold, so they go (as in Fusion). Re-solving them as they were
+    // squeezed a rectangle turned 30 degrees back onto the axes.
+    int axisDropped = 0;
+    if (rotated) {
+        const long quarters = std::lround(turn / 90.0);
+        const bool square = std::fabs(turn - quarters * 90.0) < 1e-6;
+        const bool swap = square && (quarters % 2) != 0;
+        Parametric p = m_doc->parametric();
+        QVector<Constraint> kept;
+        bool changed = false;
+        for (Constraint c : p.constraints) {
+            const bool axis = c.type == Constraint::Horizontal || c.type == Constraint::Vertical
+                              || c.type == Constraint::HDistance || c.type == Constraint::VDistance;
+            bool inside = axis && !c.refs.isEmpty();
+            for (const GeoRef &r : c.refs)
+                inside = inside && through.contains(r.id);
+            if (!inside) {
+                kept.append(c);
+                continue;
+            }
+            changed = true;
+            if (!square) {
+                ++axisDropped;
+                dropped << c.uid;
+                continue;
+            }
+            if (swap)
+                c.type = c.type == Constraint::Horizontal ? Constraint::Vertical
+                       : c.type == Constraint::Vertical   ? Constraint::Horizontal
+                       : c.type == Constraint::HDistance  ? Constraint::VDistance
+                                                          : Constraint::HDistance;
+            Constraint fresh = c;
+            param::prime(*m_doc, fresh);
+            c.sense = fresh.sense;
+            kept.append(c);
+        }
+        if (changed) {
+            p.constraints = kept;
+            m_doc->setParametric(p);
+            renumbered = true;
+        }
+    }
     if (!dropped.isEmpty() && dropped.contains(m_selConstraint))
         selectConstraint(QString());
     const param::SolveResult r = param::solve(*m_doc, QSet<QString>(touched.begin(), touched.end()));
@@ -360,6 +420,11 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
         m_editWarning = r.failing.size() == 1
             ? tr("1 constraint can't hold after this edit — shown in red")
             : tr("%1 constraints can't hold after this edit — shown in red").arg(r.failing.size());
+        emit statusHint(m_editWarning);
+    } else if (axisDropped > 0) {
+        m_editWarning = axisDropped == 1
+            ? tr("1 horizontal/vertical constraint went: the rotation turned it off the axis")
+            : tr("%1 horizontal/vertical constraints went: the rotation turned them off the axis").arg(axisDropped);
         emit statusHint(m_editWarning);
     } else if (!dropped.isEmpty()) {
         m_editWarning = dropped.size() == 1
