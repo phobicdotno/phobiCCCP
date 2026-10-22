@@ -32,6 +32,8 @@
     Cancel now drops the new tiles unwritten; once they are written, the export reports done.
   - The tiled export dropped the export's notes (part of an area left uncut, open outlines cut
     without tabs, ...); they are shown with the tiles now, as with one file.
+  - The tiled export refused a thread or keyhole "across a tile line" because of a shape in its
+    selection it never cuts (the part outline, construction geometry).
 - **Drawing and import:**
   - Trim and Break (and their hover preview) froze for seconds with many lines around a long
     curve; the closest-point search skips segments that cannot be closer.

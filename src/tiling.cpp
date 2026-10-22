@@ -528,7 +528,11 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
         for (const QJsonValue &v : j.value("elements").toArray()) {
             const Element *e = doc.elementById(v.toObject().value("uuid").toString());
-            if (!e)
+            // Only what the export cuts: construction geometry never, sketch
+            // points for a keyhole only, circles only for a thread. A part
+            // outline in a thread's selection refused the whole tiled job.
+            if (!e || Element::isConstruction(*e) || (Element::isPoint(*e) && !keyhole)
+                || (!keyhole && e->geometryType != QLatin1String("circle")))
                 continue;
             double y0, y1;
             if (keyhole) {

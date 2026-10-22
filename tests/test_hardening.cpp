@@ -934,6 +934,25 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A thread's selection holding the part outline across a tile line: the
+    // thread cuts only its circle, so the tiled export goes ahead.
+    {
+        QTemporaryDir d;
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({5, 5}, 60, 80, layer));
+        const QString outline = r.shapeId;
+        r.addShape(c2d::Element::makeCircle({40, 62}, 6, layer));
+        const QString upper = r.shapeId;
+        r.addShape(c2d::Element::makeCircle({40, 12}, 6, layer));
+        r.addToolpath("thread_toolpath", {{"pitch", 1.75}, {"side", "internal"}, {"end_depth", "6.000"},
+                                          {"elements", QJsonArray{QJsonObject{{"uuid", outline}},
+                                                                  QJsonObject{{"uuid", upper}},
+                                                                  QJsonObject{{"uuid", r.shapeId}}}}});
+        const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("to")), 25.0);
+        check(te.error.isEmpty() && !te.files.isEmpty(),
+              "tiling: a thread is not refused for an outline in its selection it never cuts");
+    }
+
     // A base name with "%2" in it (a browser-saved "Sign%2C v2") kept it.
     {
         QTemporaryDir d;
