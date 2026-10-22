@@ -3159,7 +3159,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 const adaptive::Plan &plan = run.second;
                 double prevZ = run.first.first;
                 const double runBot = run.first.second;
-                bool firstLevel = fromTop;
+                // A rest band opening at Start has the stock above it too.
+                bool firstLevel = fromTop || qAbs(run.first.first - cp.zTop) < 1e-9;
                 while (prevZ > runBot + 1e-9) {
                     const double z = qMax(runBot, prevZ - cp.stepdown);
                     // Where hops and entries start: above the last floor, or
@@ -3658,6 +3659,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 }
             }
         } else if (contour && j.value("ofset_dir").toInt(0) == 0) {
+            int openTabless = 0;
             for (const Element *e : elems)
                 for (const QPolygonF &p : finePolygons(e->painterPath))
                     if (p.size() >= 2) {
@@ -3665,7 +3667,13 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         job.rings.append(p);
                         job.closed = p.isClosed();
                         jobs.append(job);
+                        openTabless += job.closed ? 0 : 1;
                     }
+            // Tabs go on closed loops only: an outline whose ends miss by a
+            // hair (a DXF gap) was cut through at full depth with no word.
+            if (openTabless > 0 && cp.tabWidth > 0.01 && cp.zBot < cp.tabTop - 1e-9)
+                res.notes << QStringLiteral("%1: %2 open vector(s) cut without tabs (tabs go on closed vectors only)")
+                                 .arg(name).arg(openTabless);
         } else if (contour || cutout) {
             const QPainterPath region = regionOf(elems);
             const bool inside = contour ? j.value("ofset_dir").toInt(0) < 0

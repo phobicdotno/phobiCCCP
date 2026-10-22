@@ -1366,6 +1366,42 @@ int main(int argc, char *argv[])
         }
         check(ok && deeper, "adaptive: no rapid below the stock top before its first level is cut");
     }
+    // The same through rest machining: the band opening at Start, around a
+    // shallow pocket, is still under uncut stock outside that pocket.
+    {
+        Rig ad;
+        ad.doc.setParam(QStringLiteral("width"), QStringLiteral("120"));
+        ad.doc.setParam(QStringLiteral("height"), QStringLiteral("120"));
+        const c2d::Element a = c2d::Element::makeRectangle({60, 60}, 20, 20, layer);
+        const QRectF cutA = a.painterPath.boundingRect().adjusted(-1, -1, 1, 1);
+        ad.addShape(a);
+        ad.addToolpath("pocket_toolpath", {{"end_depth", "2.000"}});
+        ad.addShape(c2d::Element::makeRectangle({60, 60}, 60, 50, layer));
+        ad.addToolpath("adaptive_toolpath", {{"start_depth", "3.000"}, {"end_depth", "8.000"}, {"stepdown", 2.0},
+                                             {"stepover", 1.5}, {"rest_auto", true}, {"uuid", "{tp-2}"}});
+        const c2d::GcodeResult g = c2d::exportGcode(ad.doc);
+        bool deeper = false, ok = !g.ops.isEmpty() && g.skipped.isEmpty();
+        for (const c2d::Op &o : g.ops) {
+            // Through the whole first level (Z-5): every hop is under
+            // stock that is still at Z0 above it, outside the pocket.
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -7 + 1e-6)
+                deeper = true;
+            const bool inA = cutA.contains(QPointF(o.x, o.y));
+            if (!deeper && o.kind == c2d::Op::Rapid && o.z < -1e-6 && !inA)
+                ok = false;
+        }
+        check(ok && deeper, "adaptive rest band from Start: no rapid below the stock top outside what was cut");
+    }
+    // Tabs on an on-the-line contour of an outline whose ends miss by a hair:
+    // cut with no tabs, so it says so.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makePath({{20, 20}, {120, 20}, {120, 80}, {20, 80}, {20.1, 20}}, false, layer));
+        r.addToolpath("contour", {{"end_depth", "12.000"}, {"stepdown", 3.0}, {"ofset_dir", 0},
+                                  {"ignore_tabs", false}, {"tab_height", 3.0}, {"tab_width", 8.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.notes.join(" ").contains("without tabs"), "tabs: an open outline cut on the line says it has no tabs");
+    }
 
     std::printf("test_hardening: %d checks OK\n", g_checks);
     return 0;

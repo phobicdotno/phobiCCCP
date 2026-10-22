@@ -10,6 +10,10 @@
   - Adaptive with a Start depth hopped and entered its first level just above Start, as if the
     stock above were gone, so it rapided through wood; it starts from the stock top unless it is
     a rest band under earlier toolpaths.
+  - The same Adaptive with Rest machining on still hopped at Start through the stock around the
+    earlier toolpath's cut; a rest band that opens at Start enters from the stock top too.
+  - A contour on the line with tabs over an outline whose ends miss by a hair (a DXF gap) cut
+    through with no tabs and no word; it now notes the open vectors cut without tabs.
 - **Machine:**
   - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
     beside the block below its top, and Begin again searched Z downward from there, past the
