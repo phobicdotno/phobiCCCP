@@ -541,13 +541,17 @@ double _r2(double v) => (v * 100).roundToDouble() / 100;
 
 /// The shape a drawing drag makes, as the desktop's tools do: a rectangle
 /// corner to corner, a circle or hexagon from its centre out to the finger.
+/// No side or radius over 10000 mm (the computer refuses more); a rectangle
+/// keeps the corner the drag started from.
 Shape? shapeFromDraft(Draft d, String id) {
-  final r = _r2(math.sqrt(math.pow(d.x1 - d.x0, 2) + math.pow(d.y1 - d.y0, 2)));
+  const most = Shape.maxCoord;
+  final r = math.min(most, _r2(math.sqrt(math.pow(d.x1 - d.x0, 2) + math.pow(d.y1 - d.y0, 2))));
   switch (d.tool) {
     case DrawTool.rect:
-      final w = (d.x1 - d.x0).abs(), h = (d.y1 - d.y0).abs();
+      final w = math.min(most, (d.x1 - d.x0).abs()), h = math.min(most, (d.y1 - d.y0).abs());
       if (w < 0.01 || h < 0.01) return null;
-      return Shape(id: id, type: Shape.rect, x: _r2(math.min(d.x0, d.x1)), y: _r2(math.min(d.y0, d.y1)), w: _r2(w), h: _r2(h));
+      final x = d.x1 < d.x0 ? d.x0 - w : d.x0, y = d.y1 < d.y0 ? d.y0 - h : d.y0;
+      return Shape(id: id, type: Shape.rect, x: _r2(x), y: _r2(y), w: _r2(w), h: _r2(h));
     case DrawTool.circle:
       return r < 0.01 ? null : Shape(id: id, type: Shape.circle, x: _r2(d.x0), y: _r2(d.y0), r: r);
     case DrawTool.polygon:

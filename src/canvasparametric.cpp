@@ -87,8 +87,18 @@ bool stayedPut(const Element &was, const Element &now)
 QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<QString> &keep)
 {
     const Parametric &now = nowDoc.parametric();
-    auto same = [](const Constraint &a, const Constraint &b) {
-        return a.type == b.type && a.refs == b.refs && a.expr == b.expr && a.sense == b.sense && a.at == b.at;
+    // A dimension is the same while its value is: renaming it or a parameter
+    // its expression uses rewrites the text but changes nothing, and a
+    // parameter edit that changes its value changes it.
+    const QHash<QString, double> v0 = param::values(was, was.parametric()), v1 = param::values(was, now);
+    auto same = [&](const Constraint &a, const Constraint &b) {
+        if (a.type != b.type || a.refs != b.refs || a.sense != b.sense || a.at != b.at)
+            return false;
+        if (!a.isDimension())
+            return a.expr == b.expr;
+        if (!v0.contains(a.name) || !v1.contains(b.name))
+            return a.name == b.name && a.expr == b.expr;
+        return std::fabs(v0.value(a.name) - v1.value(b.name)) <= 1e-9;
     };
     // What the edit touches: the geometry it keeps still, what it moved,
     // added or deleted (by its own id), and what any added, changed or
@@ -105,17 +115,24 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
         }
         for (auto it = before.cbegin(); it != before.cend(); ++it)
             edited.insert(it.key());
-        auto addRefs = [&](const Parametric &x, const Parametric &y) {
-            for (const Constraint &c : x.constraints) {
-                const int k = y.indexOfUid(c.uid);
-                if (k >= 0 && same(c, y.constraints.at(k)))
-                    continue;
+        // The holds a rotate or mirror adds for the solve are no edit.
+        auto hold = [](const Constraint &c) { return c.uid.startsWith(QLatin1String("__rigid")); };
+        for (const Constraint &c : was.parametric().constraints) {
+            if (hold(c))
+                continue;
+            const int k = now.indexOfUid(c.uid);
+            if (k >= 0 && same(c, now.constraints.at(k)))
+                continue;
+            for (const GeoRef &r : c.refs)
+                released.insert(r.id);
+            if (k >= 0)
+                for (const GeoRef &r : now.constraints.at(k).refs)
+                    released.insert(r.id);
+        }
+        for (const Constraint &c : now.constraints)
+            if (!hold(c) && was.parametric().indexOfUid(c.uid) < 0)
                 for (const GeoRef &r : c.refs)
                     released.insert(r.id);
-            }
-        };
-        addRefs(now, was.parametric());
-        addRefs(was.parametric(), now);
     }
     edited.remove(QString());
     released.remove(QString());
@@ -149,8 +166,8 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
     for (const QString &id : released)
         releasedRoots.insert(root(id));
     // A dimension whose value an edit changes (its parameter, a dimension
-    // it is defined from) is touched; any other parameter edit is not.
-    const QHash<QString, double> v0 = param::values(was, was.parametric()), v1 = param::values(was, now);
+    // it is defined from) is touched, and releases its sketch: another
+    // dimension there may now hold. Any other parameter edit is not.
     QSet<QString> out;
     for (const QString &uid : param::unsatisfied(was)) {
         const int a = was.parametric().indexOfUid(uid), b = now.indexOfUid(uid);
@@ -158,9 +175,6 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
             continue;
         const Constraint &c0 = was.parametric().constraints.at(a), &c1 = now.constraints.at(b);
         if (!same(c0, c1))
-            continue;
-        if (c1.isDimension()
-            && (c0.name != c1.name || !v1.contains(c1.name) || std::fabs(v0.value(c0.name) - v1.value(c1.name)) > 1e-9))
             continue;
         bool hit = false;
         for (const GeoRef &r : c1.refs)

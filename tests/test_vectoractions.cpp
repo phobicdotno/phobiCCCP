@@ -505,19 +505,28 @@ int main(int argc, char *argv[])
         // A dimension a turn left red is not met at the next, unrelated edit
         // (moving another line, constraining it): the turned shape stays
         // whole and the dimension stays red.
-        // So is adding or editing a parameter the dimension doesn't use.
-        for (int k = 0; k < 4; ++k) {
+        // So is adding or editing a parameter the dimension doesn't use, and
+        // renaming the dimension or a parameter it does use.
+        for (int k = 0; k < 6; ++k) {
             Document cd;
             const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
             const Element ln = Element::makePath({{100, 100}, {130, 105}}, false, layer);
             cd.addElement(sq);
             cd.addElement(ln);
             cd.parametricRef().params.append({QStringLiteral("depth"), QStringLiteral("6"), QString()});
-            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
+            cd.parametricRef().params.append({QStringLiteral("ten"), QStringLiteral("10"), QString()});
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, k == 5 ? "ten" : "10");
             canvas->setDocument(&cd);
             canvas->selectIds({sq.id});
             va.rotate(180);
-            if (k == 0) {
+            if (k >= 4) {
+                Parametric after = cd.parametric();
+                if (k == 4)
+                    after.renameEverywhere(QStringLiteral("d1"), QStringLiteral("width"));
+                else
+                    after.renameEverywhere(QStringLiteral("ten"), QStringLiteral("tenx"));
+                canvas->applyParametric(after, QStringLiteral("rename"), true);
+            } else if (k == 0) {
                 canvas->moveElementBy(ln.id, 5, 0);
             } else if (k >= 2) {
                 Parametric after = cd.parametric();
@@ -543,11 +552,39 @@ int main(int argc, char *argv[])
                   k == 0   ? "a red dimension is not met by folding at the next move of another line"
                   : k == 1 ? "a red dimension is not met by folding when another line is constrained"
                   : k == 2 ? "a red dimension is not met by folding when a parameter is added"
-                           : "a red dimension is not met by folding when another parameter changes");
+                  : k == 3 ? "a red dimension is not met by folding when another parameter changes"
+                  : k == 4 ? "a red dimension is not met by folding when it is renamed"
+                           : "a red dimension is not met by folding when its parameter is renamed");
         }
-        // Moving a line merely tied to the red shape (Parallel to an edge)
-        // does not bring the red dimension back to fold it.
+        // A parameter edit that moves another dimension's geometry releases
+        // the sketch: a red length there that can now hold, does.
         {
+            Document cd;
+            const Element g = Element::makePath({{-50, 10}, {50, 10}}, false, layer);
+            const Element c = Element::makePath({{0, 0}, {1, 10}}, false, layer);
+            cd.addElement(g);
+            cd.addElement(c);
+            cd.parametricRef().params.append({QStringLiteral("h"), QStringLiteral("10"), QString()});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::VDistance, {GeoRef::origin(), ref(GeoRef::Point, g.id, 0)}, "h");
+            add(cd, Constraint::Fix, {ref(GeoRef::Point, c.id, 0)});
+            cd.parametricRef().constraints.last().at = QPointF(0, 0);
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, c.id, 1), ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, c.id, 0)}, "8");
+            canvas->setDocument(&cd);
+            check(param::unsatisfied(cd).size() == 1, "a length too short to reach the line starts red");
+            Parametric after = cd.parametric();
+            after.params.first().expr = QStringLiteral("5");
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b;
+            check(param::unsatisfied(cd).isEmpty() && param::line(cd, ref(GeoRef::Line, c.id, 0), &a, &b)
+                      && std::fabs(QLineF(a, b).length() - 8) < 1e-6,
+                  "a parameter edit lets a red length in the same sketch hold");
+        }
+        // Moving, turning or mirroring a line merely tied to the red shape
+        // (Parallel to an edge) does not bring the red dimension back to
+        // fold it (a turn's holds counted as added constraints).
+        for (int k = 0; k < 3; ++k) {
             Document cd;
             const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
             const Element ln = Element::makePath({{100, 100}, {100, 120}}, false, layer);
@@ -558,13 +595,23 @@ int main(int argc, char *argv[])
             canvas->setDocument(&cd);
             canvas->selectIds({sq.id});
             va.rotate(180);
-            canvas->moveElementBy(ln.id, 5, 0);
+            if (k == 0) {
+                canvas->moveElementBy(ln.id, 5, 0);
+            } else {
+                canvas->selectIds({ln.id});
+                if (k == 1)
+                    va.rotate(180);
+                else
+                    va.mirror(vec::Axis::Horizontal);
+            }
             QPointF a, b, c, e;
             const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
                                && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
             check(lines && std::fabs(QLineF(a, b).length() - 30) < 1e-6 && std::fabs(QLineF(c, e).length() - 20) < 1e-6
                       && param::unsatisfied(cd).size() == 1,
-                  "moving a line tied to a red shape does not fold it");
+                  k == 0   ? "moving a line tied to a red shape does not fold it"
+                  : k == 1 ? "turning a line tied to a red shape does not fold it"
+                           : "mirroring a line tied to a red shape does not fold it");
         }
         // A red dimension left out of a solve stands in at its exact value:
         // one defined from it (d2 = d1) still holds after an unrelated edit.
