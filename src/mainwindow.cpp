@@ -1873,6 +1873,8 @@ void MainWindow::onExportGcodeTiled()
                       .arg(r.files.join(QStringLiteral(", ")));
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
+    if (!r.notes.isEmpty())
+        msg += QStringLiteral("  (%1)").arg(r.notes.join(QStringLiteral("; ")));
     statusBar()->showMessage(msg, 10000);
     // A previous export under this base name may have needed more tiles. Those
     // files are still there, still look like part of this job, and still say

@@ -28,6 +28,8 @@
   - Cancel during a tiled export still wrote the tiles (seconds of work after the G-code is
     made) and said "Export cancelled", hiding the note about older tiles left in the folder.
     Cancel now drops the new tiles unwritten; once they are written, the export reports done.
+  - The tiled export dropped the export's notes (part of an area left uncut, open outlines cut
+    without tabs, ...); they are shown with the tiles now, as with one file.
 - **Drawing and import:**
   - Trim and Break (and their hover preview) froze for seconds with many lines around a long
     curve; the closest-point search skips segments that cannot be closer.

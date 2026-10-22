@@ -1401,6 +1401,10 @@ int main(int argc, char *argv[])
                                   {"ignore_tabs", false}, {"tab_height", 3.0}, {"tab_width", 8.0}});
         const c2d::GcodeResult g = c2d::exportGcode(r.doc);
         check(g.notes.join(" ").contains("without tabs"), "tabs: an open outline cut on the line says it has no tabs");
+        QTemporaryDir d;
+        const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("nt")), 25.0);
+        check(te.error.isEmpty() && te.notes.join(" ").contains("without tabs"),
+              "tabs: the tiled export keeps the export's notes");
     }
 
     std::printf("test_hardening: %d checks OK\n", g_checks);

@@ -505,6 +505,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
     const GcodeResult g = exportGcode(doc, watch, relief);
     r.done = g.done;
     r.skipped = g.skipped;
+    r.notes = g.notes;
     if (g.cancelled) {
         r.error = QStringLiteral("cancelled");
         return r;
