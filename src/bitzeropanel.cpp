@@ -305,6 +305,17 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
     updateHelp();
 }
 
+void BitZeroPanel::reload()
+{
+    if (QAbstractButton *b = m_plates->button(
+            QSettings().value(QStringLiteral("machine/bitzero/plate"), 0).toInt()))
+        b->setChecked(true);
+    load();
+    updateRows();
+    updateHelp();
+    updateBegin();
+}
+
 BitZeroPanel::Mode BitZeroPanel::mode() const
 {
     return Mode(qBound(0, m_modes->checkedId(), int(Map)));

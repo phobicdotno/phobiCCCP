@@ -1,6 +1,7 @@
 #include "padlink.h"
 
 #include "c2ddocument.h"
+#include "parametric.h"
 #include "element.h"
 #include "toollibrary.h"
 #include "toolpathfactory.h"
@@ -23,6 +24,16 @@
 #include <algorithm>
 #include <cmath>
 
+
+// makeToolpath() sizes the lead-in, rest and helix from the document's last
+// toolpath of the kind (or #201), which differs between building a design
+// and reading it back; size them from the pad's own bit in both.
+static void sizeToTool(QJsonObject &j, const c2d::LibraryTool &t)
+{
+    if (j.contains(QStringLiteral("lead_radius"))) j.insert(QStringLiteral("lead_radius"), 0.5 * t.diameter);
+    if (j.contains(QStringLiteral("rest_diameter"))) j.insert(QStringLiteral("rest_diameter"), t.diameter);
+    if (j.contains(QStringLiteral("helix_diameter"))) j.insert(QStringLiteral("helix_diameter"), t.diameter);
+}
 namespace c2d::padlink {
 
 namespace {
@@ -287,7 +298,7 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         const int number = int(t.value(QStringLiteral("tool")).toDouble());
         const LibraryTool *tool = lib.byNumber(number);
         if (!tool)
-            return fail(QStringLiteral("toolpath %1: tool #%2 is not in the tool library").arg(name).arg(number));
+            return fail(QStringLiteral("toolpath %1: tool #%2 is not in the tool library").arg(name, QString::number(number)));
         const ToolFeeds *feeds = tool->feedsFor(material);
         if (!feeds || !feeds->valid())
             return fail(QStringLiteral("toolpath %1: %2 has no feeds and speeds for %3")
@@ -299,6 +310,7 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         Toolpath tp = makeToolpath(doc, ccType, refs);
         QJsonObject j = tp.json;
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
+        sizeToTool(j, *tool);
         const double depth = t.value(QStringLiteral("depth")).toDouble();
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
         if (ccType == QLatin1String("contour")) {
@@ -311,11 +323,15 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         j.insert(QStringLiteral("enabled"), t.value(QStringLiteral("enabled")).toBool(true));
         if (depth > thickness && notes)
             *notes << QStringLiteral("toolpath %1 goes %2 mm deeper than the stock")
-                          .arg(name).arg(depth - thickness, 0, 'f', 2);
+                          .arg(name, QString::number(depth - thickness, 'f', 2));
         tp.json = j;
         doc.addToolpath(tp);
     }
-    if (!doc.save(c2dPath, &err))
+    // Lead-in, rest and helix follow each toolpath's own bit (sizeToTool);
+    // files without this mark were built before that.
+    // (save() writes shapes and toolpaths, not params: written after it.)
+    if (!doc.save(c2dPath, &err)
+        || !Document::writeParam(c2dPath, QStringLiteral("pad_sizing"), QStringLiteral("bit"), &err))
         return fail(err);
     return true;
 }
@@ -349,13 +365,39 @@ const QStringList &ignoredToolpathKeys()
 
 } // namespace
 
-bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err)
+bool rebuildDocument(const QJsonObject &d, const QString &path, QString *err, const QString &keepFrom)
 {
     const QString tmp = path + QStringLiteral(".pad-new");
     QStringList notes;
     if (!buildDocument(d, tmp, &notes, err)) {
         QFile::remove(tmp);
         return false;
+    }
+    // What the pad design does not carry is kept from the file it replaces
+    // (or sits beside): every setting but the stock, material and toolpath
+    // count the design sets, and the constraints, which name its old
+    // geometry. So a retract height raised to clear clamps, the tiling and
+    // the display units survive a pad's edit. And the file's permissions (a
+    // shared, group-writable file stays so).
+    const QString source = keepFrom.isEmpty() ? path : keepFrom;
+    if (QFileInfo::exists(source)) {
+        static const QStringList fromDesign = {
+            QStringLiteral("width"), QStringLiteral("height"), QStringLiteral("thickness"),
+            QStringLiteral("material"), QStringLiteral("num_toolpaths"), Parametric::paramKey()};
+        Document before;
+        if (before.load(source)) {
+            const QHash<QString, QString> &params = before.params();
+            for (auto it = params.cbegin(); it != params.cend(); ++it) {
+                if (fromDesign.contains(it.key()))
+                    continue;
+                if (!Document::writeParam(tmp, it.key(), it.value(), err)) {
+                    QFile::remove(tmp);
+                    return false;
+                }
+            }
+        }
+        QFile::setPermissions(tmp, QFile::permissions(source)
+                                       & ~(QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser));
     }
     if (!QFileInfo::exists(path)) {
         if (QFile::rename(tmp, path))
@@ -436,11 +478,18 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         padIds[e.id].append(s.value(QStringLiteral("id")).toString());
         shapes.append(s);
     };
+    const QJsonValue firstLayer = doc.elements().isEmpty() ? QJsonValue()
+                                                           : doc.elements().first().raw.value(QStringLiteral("layer"));
     for (const Element &e : doc.elements()) {
         if (Element::isConstruction(e)) {
             lose(QStringLiteral("construction lines"));
             continue;
         }
+        // The pad puts every shape on one layer, in no group.
+        const QJsonValue group = e.raw.value(QStringLiteral("group_id"));
+        if ((group.isArray() ? !group.toArray().isEmpty() : !group.toString().isEmpty())
+            || e.raw.value(QStringLiteral("layer")) != firstLayer)
+            lose(QStringLiteral("layers and groups"));
         if (!e.raw.value(QStringLiteral("tabs")).toArray().isEmpty())
             lose(QStringLiteral("tabs"));
         const QString sid = padShapeId(e.id);
@@ -522,8 +571,22 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
     d.insert(QStringLiteral("shapes"), shapes);
 
     QJsonArray toolpaths;
+    // Files built before sizeToTool() (no pad_sizing mark) sized the
+    // lead-in, rest and helix from the previous toolpath's flat bit, else
+    // #201: that size is what the pad built, not a setting made here. Only
+    // that one size, and only in those files: any other is a desktop edit.
+    const bool oldSizing = doc.params().value(QStringLiteral("pad_sizing")) != QLatin1String("bit");
+    double prevFlat = 0;
+    if (const LibraryTool *t201 = lib.byNumber(201))
+        prevFlat = t201->diameter;
     for (const Toolpath &t : doc.toolpaths()) {
         const QString type = t.json.value(QStringLiteral("type")).toString();
+        const QJsonObject thisTool = t.json.value(QStringLiteral("tool")).toObject();
+        const double oldSize = prevFlat;
+        const int ccType = int(thisTool.value(QStringLiteral("type")).toDouble(0));
+        if (thisTool.value(QStringLiteral("diameter")).toDouble() > 0 && ccType != 1 && ccType != 2
+            && thisTool.value(QStringLiteral("angle")).toDouble(0) <= 0)
+            prevFlat = thisTool.value(QStringLiteral("diameter")).toDouble();
         const QString kind = type == QLatin1String("contour")           ? QStringLiteral("profile")
                            : type == QLatin1String("pocket_toolpath")   ? QStringLiteral("pocket")
                            : type == QLatin1String("drilling_toolpath") ? QStringLiteral("drill")
@@ -567,11 +630,21 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         Toolpath fresh = makeToolpath(doc, type, elementIds);
         QJsonObject j = fresh.json;
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
+        sizeToTool(j, *tool);
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
         if (type == QLatin1String("contour"))
             j.insert(QStringLiteral("ofset_dir"), dir);
         j.insert(QStringLiteral("enabled"), t.json.value(QStringLiteral("enabled")).toBool(true));
         QJsonObject have = t.json;
+        auto oldBuild = [&](const QString &k, double scale) {
+            if (!oldSizing || !have.contains(k) || !j.contains(k) || oldSize <= 0)
+                return;
+            if (std::abs(have.value(k).toDouble() - oldSize * scale) < 1e-6)
+                j.insert(k, have.value(k));
+        };
+        oldBuild(QStringLiteral("lead_radius"), 0.5);
+        oldBuild(QStringLiteral("rest_diameter"), 1.0);
+        oldBuild(QStringLiteral("helix_diameter"), 1.0);
         for (const QString &k : ignoredToolpathKeys()) {
             have.remove(k);
             j.remove(k);
@@ -585,9 +658,9 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
     // above with none: not added again, or every save would add a copy.
     auto key = [](const QJsonObject &t) {
         return QStringLiteral("%1\n%2\n%3\n%4")
-            .arg(t.value(QStringLiteral("name")).toString(), t.value(QStringLiteral("type")).toString())
-            .arg(t.value(QStringLiteral("tool")).toInt())
-            .arg(t.value(QStringLiteral("depth")).toDouble());
+            .arg(t.value(QStringLiteral("name")).toString(), t.value(QStringLiteral("type")).toString(),
+                 QString::number(t.value(QStringLiteral("tool")).toInt()),
+                 QString::number(t.value(QStringLiteral("depth")).toDouble()));
     };
     QSet<QString> emptyHere;
     for (const QJsonValue &v : std::as_const(toolpaths))
@@ -963,14 +1036,34 @@ Order order(const QJsonObject &a, const QJsonObject &b)
         }
         return Order::Unknown;
     }
+    // A full vv dropped its oldest older-edit entries (Store::edited): an
+    // entry it lacks at or below the oldest it still holds is one of those,
+    // known to it, not an edit made apart.
+    auto dropped = [](const QJsonObject &full) {
+        double oldest = -1;
+        if (full.size() >= kMaxReplicas)
+            for (auto it = full.constBegin(); it != full.constEnd(); ++it)
+                if (it.key().startsWith(QLatin1String("e-"))
+                    && (oldest < 0 || it.value().toDouble() < oldest))
+                    oldest = it.value().toDouble();
+        return oldest;
+    };
+    const double droppedA = dropped(va), droppedB = dropped(vb);
+    auto known = [](const QString &k, double t, double droppedUpTo) {
+        return droppedUpTo >= 0 && k.startsWith(QLatin1String("e-")) && t <= droppedUpTo;
+    };
     bool aAhead = false, bAhead = false;
     auto entry = [](const QJsonObject &v, const QString &k) { return v.value(k).toDouble(); };
     for (auto it = va.constBegin(); it != va.constEnd(); ++it) {
-        aAhead = aAhead || it.value().toDouble() > entry(vb, it.key());
-        bAhead = bAhead || it.value().toDouble() < entry(vb, it.key());
+        const double t = it.value().toDouble();
+        if (!vb.contains(it.key()) && known(it.key(), t, droppedB))
+            continue;
+        aAhead = aAhead || t > entry(vb, it.key());
+        bAhead = bAhead || t < entry(vb, it.key());
     }
     for (auto it = vb.constBegin(); it != vb.constEnd(); ++it)
-        bAhead = bAhead || (!va.contains(it.key()) && it.value().toDouble() > 0);
+        bAhead = bAhead || (!va.contains(it.key()) && it.value().toDouble() > 0
+                            && !known(it.key(), it.value().toDouble(), droppedA));
     return aAhead ? (bAhead ? Order::Concurrent : Order::After) : (bAhead ? Order::Before : Order::Same);
 }
 
@@ -1038,6 +1131,18 @@ QJsonObject Store::edited(QJsonObject design, double modified) const
     // the edit made here is known to be made from it.
     QJsonObject vv = ancestry(design);
     vv.insert(replicaId(), modified);
+    // Each older client's edit adds an entry; past the limit the versions
+    // would not be believed and start over, so the oldest of those go first.
+    while (vv.size() > kMaxReplicas) {
+        QString oldest;
+        for (auto it = vv.constBegin(); it != vv.constEnd(); ++it)
+            if (it.key().startsWith(QLatin1String("e-"))
+                && (oldest.isEmpty() || it.value().toDouble() < vv.value(oldest).toDouble()))
+                oldest = it.key();
+        if (oldest.isEmpty())
+            break;
+        vv.remove(oldest);
+    }
     design.insert(QStringLiteral("modified"), modified);
     design.insert(QStringLiteral("vv"), vv);
     return design;

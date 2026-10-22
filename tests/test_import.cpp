@@ -409,6 +409,141 @@ int main(int argc, char **argv)
                   "dxf: the joined square is closed with four sides");
             check(!isClosed(sq.elements.at(1)), "dxf: the loose line stays open");
         }
+        {
+            // A MINSERT array turns with the insert.
+            const QByteArray dxf =
+                "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n2\nSQ\n10\n0\n20\n0\n"
+                "0\nLWPOLYLINE\n90\n4\n70\n1\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n10\n0\n20\n10\n"
+                "0\nENDBLK\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n"
+                "0\nINSERT\n2\nSQ\n10\n0\n20\n0\n50\n90\n70\n3\n71\n1\n44\n20\n45\n0\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult m = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("minsert"));
+            check(m.ok && m.elements.size() == 3 && std::abs(m.bounds.width() - 10.0) < 0.1
+                      && std::abs(m.bounds.height() - 50.0) < 0.1, "dxf: a rotated MINSERT array turns with it");
+        }
+        {
+            const QByteArray dxf = QByteArray("\xEF\xBB\xBF") +
+                "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\n10\n21\n0\n0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult b = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("bom"));
+            check(b.ok && b.elements.size() == 1, "dxf: a UTF-8 byte-order mark is skipped");
+        }
+        {
+            // No viewBox and only a width (or height): user units stay px,
+            // the content box is not stretched to the page.
+            for (const char *attr : {"width='100mm'", "height='100mm'"}) {
+                const c2d::ImportResult w = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' ") + attr
+                        + "><rect width='10' height='10'/></svg>", opts(0, 0), QStringLiteral("wonly"));
+                check(w.ok && std::abs(w.bounds.width() - 10 * 25.4 / 96) < 0.01
+                          && std::abs(w.bounds.height() - 10 * 25.4 / 96) < 0.01,
+                      "svg: width or height alone without a viewBox keeps px user units");
+            }
+        }
+        {
+            // A percentage with only a width on the root is of that width;
+            // "defer" before the alignment does not centre the drawing.
+            const c2d::ImportResult p = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='100mm'><rect width='100%' height='10'/></svg>",
+                opts(0, 0), QStringLiteral("pct"));
+            check(p.ok && std::abs(p.bounds.width() - 100) < 0.01, "svg: a width percentage with only a root width");
+            auto left = [&](const char *par) {
+                const c2d::ImportResult d = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='100mm' viewBox='0 0 10 10' "
+                               "preserveAspectRatio='") + par + "'><rect width='10' height='10'/></svg>",
+                    opts(0, 0), QStringLiteral("defer"));
+                return d.ok ? d.bounds.left() : -1.0;
+            };
+            check(std::abs(left("defer xMinYMin meet") - left("xMinYMin meet")) < 1e-6,
+                  "svg: preserveAspectRatio 'defer' is skipped");
+            // A symbol <use>d under a root with only a width stays at 0, not
+            // centred in a strip as wide as the root.
+            auto useLeft = [&](const char *root) {
+                const c2d::ImportResult u = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'") + root
+                        + "><symbol id='s' viewBox='0 0 10 10'><rect width='10' height='10'/></symbol>"
+                          "<use xlink:href='#s'/><rect x='0' y='0' width='1' height='1'/></svg>",
+                    opts(0, 0), QStringLiteral("use"));
+                return u.ok ? u.bounds.width() : -1.0;
+            };
+            // The 1 px rect at 0 pins the left edge: the width is the symbol's reach.
+            check(std::abs(useLeft(" width='100mm'") - useLeft("")) < 1e-6,
+                  "svg: a symbol under a width-only root is not shifted");
+            // A <use> of a nested <svg> keeps that svg's place and viewBox.
+            const c2d::ImportResult ns = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' width='100mm' "
+                "height='100mm' viewBox='0 0 100 100'><defs><svg id='n' x='10' y='10' width='20' height='20' "
+                "viewBox='0 0 10 10'><rect width='10' height='10'/></svg></defs><use xlink:href='#n' x='50'/></svg>",
+                opts(0, 0), QStringLiteral("nested"));
+            check(ns.ok && std::abs(ns.bounds.width() - 20) < 0.01, "svg: a used nested svg keeps its size");
+            auto usedW = [&](const char *body) {
+                const c2d::ImportResult u = c2d::importSvgData(
+                    QByteArray("<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "
+                               "width='100mm' height='100mm' viewBox='0 0 100 100'>") + body + "</svg>",
+                    opts(0, 0), QStringLiteral("nested"));
+                return u.ok ? u.bounds.width() : -1.0;
+            };
+            // % inside it is of its own viewport, also nested in nested...
+            check(std::abs(usedW("<defs><svg id='n' x='10' y='10' width='20' height='20' viewBox='0 0 10 10'>"
+                                 "<rect width='100%' height='100%'/></svg></defs><use xlink:href='#n'/>") - 20) < 0.01,
+                  "svg: % lengths in a used nested svg are of its viewport");
+            check(std::abs(usedW("<defs><svg id='o' width='50' height='50' viewBox='0 0 10 10'><svg viewBox='0 0 1 1'>"
+                                 "<rect width='1' height='1'/></svg></svg></defs><use xlink:href='#o'/>") - 50) < 0.01,
+                  "svg: a used svg nested in a nested svg");
+            // ...and the <use>'s width and height resize it.
+            check(std::abs(usedW("<defs><svg id='q' width='20' height='20' viewBox='0 0 10 10'><rect width='10' "
+                                 "height='10'/></svg></defs><use xlink:href='#q' width='40' height='40'/>") - 40) < 0.01,
+                  "svg: a use's width and height resize a nested svg");
+        }
+        {
+            // <use> places what it refers to (pdftocairo's text, clones).
+            const c2d::ImportResult u = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink' "
+                "width='100mm' height='100mm' viewBox='0 0 100 100'>"
+                "<defs><symbol id='g1' overflow='visible'><path d='M0 0 L10 0 L10 10 Z'/></symbol></defs>"
+                "<rect x='0' y='0' width='5' height='5'/>"
+                "<use xlink:href='#g1' x='50' y='50'/><use href='#g1' x='70' y='50' transform='translate(0 20)'/>"
+                "</svg>", opts(0, 0), QStringLiteral("use"));
+            check(u.ok && u.elements.size() == 3, "svg: each <use> draws what it refers to");
+            check(std::abs(u.bounds.width() - 80.0) < 0.1 && std::abs(u.bounds.height() - 80.0) < 0.1,
+                  "svg: placed at its x,y inside its transform");
+        }
+        {
+            // A <use> of a group leaves out its hidden children; a <use> of a
+            // <symbol viewBox> fits it into the use's width x height.
+            const c2d::ImportResult h = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><g id='a'><rect width='10' height='10'/>"
+                "<rect y='50' width='10' height='10' style='display:none'/></g></defs>"
+                "<use href='#a' x='50'/></svg>", opts(0, 0), QStringLiteral("usehidden"));
+            check(h.ok && h.elements.size() == 1 && std::abs(h.bounds.height() - 10.0) < 0.1,
+                  "svg: a <use> leaves out hidden children");
+            const c2d::ImportResult y = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><symbol id='i' viewBox='0 0 10 10'><rect width='10' height='10'/></symbol></defs>"
+                "<use href='#i' x='20' y='20' width='50' height='50'/></svg>", opts(0, 0), QStringLiteral("usesym"));
+            check(y.ok && y.elements.size() == 1 && std::abs(y.bounds.width() - 50.0) < 0.1
+                      && std::abs(y.bounds.height() - 50.0) < 0.1,
+                  "svg: a symbol's viewBox fits the use's size");
+        }
+        {
+            // A clone leaves out the clip paths and definitions inside what it
+            // clones; a <use> may refer to a symbol defined after it, and a
+            // percentage inside definitions is of the viewport.
+            const c2d::ImportResult c = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><symbol id='s' viewBox='0 0 100 100'><g><defs><rect id='C' width='100' height='100'/></defs>"
+                "<clipPath id='k'><use href='#C'/></clipPath><rect x='40' y='40' width='20' height='20'/></g></symbol></defs>"
+                "<use href='#s' width='100' height='100'/></svg>", opts(0, 0), QStringLiteral("useclip"));
+            check(c.ok && c.elements.size() == 1 && std::abs(c.bounds.width() - 20.0) < 0.1,
+                  "svg: a clone leaves out inline clip paths");
+            const c2d::ImportResult f = c2d::importSvgData(
+                "<svg xmlns='http://www.w3.org/2000/svg' width='200mm' height='200mm' viewBox='0 0 200 200'>"
+                "<defs><g id='g'><use href='#s' width='50%' height='50%'/></g>"
+                "<symbol id='s' viewBox='0 0 10 10'><rect width='10' height='10'/></symbol></defs>"
+                "<use href='#g'/></svg>", opts(0, 0), QStringLiteral("usefwd"));
+            check(f.ok && f.elements.size() == 1 && std::abs(f.bounds.width() - 100.0) < 0.1,
+                  "svg: a symbol defined later, at a percentage of the viewport");
+        }
         // Extrusion 0,0,-1 mirrors OCS entities only: a LINE is stored in
         // world coordinates and must stay at +X.
         {
@@ -695,6 +830,49 @@ int main(int argc, char **argv)
         const c2d::ImportResult a = c2d::importHpglData(
             "PR;PU400,400;IN;PD800,0;PU;", opts(0, 0), "in2.plt");
         check(a.ok && std::abs(a.bounds.width() - 10.0) < 0.1, "HPGL IN: back to absolute coordinates");
+    }
+
+    // HPGL label text and PE data are not commands: "Project" is not PR.
+    {
+        const c2d::ImportResult r = c2d::importHpglData(
+            QByteArray("IN;PU;LBProject 7\x03;PU8000,0;PD12000,0,12000,4000,8000,4000,8000,0;PU;"),
+            opts(0, 0), "lb.plt");
+        check(r.ok && std::abs(r.bounds.width() - 100.0) < 0.1 && std::abs(r.bounds.height() - 100.0) < 0.1,
+              "HPGL LB: label text is skipped, the square stays absolute");
+        const c2d::ImportResult t = c2d::importHpglData(
+            QByteArray("IN;DT@;LBPrinted@;PU0,0;PD400,0;PU;"), opts(0, 0), "dt.plt");
+        check(t.ok && std::abs(t.bounds.width() - 10.0) < 0.1, "HPGL DT: the label ends at its own terminator");
+        const c2d::ImportResult q = c2d::importHpglData(
+            QByteArray("IN;SP1;PU0,0;PD4000,0;PU;CO\"Project 7\";PU8000,0;PD12000,0,12000,4000,8000,4000,8000,0;PU;"),
+            opts(0, 0), "co.plt");
+        check(q.ok && std::abs(q.bounds.width() - 300.0) < 0.1 && std::abs(q.bounds.height() - 100.0) < 0.1,
+              "HPGL CO: a quoted comment is not read as commands");
+        const c2d::ImportResult w = c2d::importHpglData(
+            QByteArray("IN;WDPress any key\x03;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "wd.plt");
+        check(w.ok && std::abs(w.bounds.width() - 100.0) < 0.1 && std::abs(w.bounds.height() - 100.0) < 0.1,
+              "HPGL WD: display text is skipped like a label");
+        // A PCL wrapper (Windows drivers): ESC%1B's B is not the start of BP.
+        const c2d::ImportResult e = c2d::importHpglData(
+            QByteArray("\x1b%-12345X@PJL ENTER LANGUAGE=HPGL2\r\n\x1b%1BBP1,\"Project\";IN;"
+                       "PU8000,0;PD12000,0,12000,4000,8000,4000,8000,0;PU;\x1b%0A"),
+            opts(0, 0), "pcl.plt");
+        check(e.ok && std::abs(e.bounds.width() - 100.0) < 0.1 && std::abs(e.bounds.height() - 100.0) < 0.1,
+              "HPGL in PCL: escape sequences are skipped whole");
+        const c2d::ImportResult e2 = c2d::importHpglData(
+            QByteArray("\x1b%1BPU8000,0;PD12000,0,12000,4000;PU;"), opts(0, 0), "pcl2.plt");
+        check(e2.ok && std::abs(e2.bounds.width() - 100.0) < 0.1, "HPGL in PCL: the first PU is kept");
+        const c2d::ImportResult in = c2d::importHpglData(
+            QByteArray("IN;DT@;LBa@;IN;LBNext\x03;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "in3.plt");
+        check(in.ok && in.elements.size() == 1, "HPGL IN: the label terminator is back to ETX");
+        // Plotter-on (ESC.( / ESC.Y) takes no parameters and has no ':'.
+        const c2d::ImportResult on = c2d::importHpglData(
+            QByteArray("\x1b.(IN;SP1;PU0,0;PD4000,0,4000,4000;PU;"), opts(0, 0), "on.plt");
+        check(on.ok && std::abs(on.bounds.width() - 100.0) < 0.1 && std::abs(on.bounds.height() - 100.0) < 0.1,
+              "HPGL ESC.(: plotter-on is one letter");
+        const c2d::ImportResult on2 = c2d::importHpglData(
+            QByteArray("\x1b.Y;IN;PU0,0;PD4000,0,4000,4000;PU;LBTime: 12\x03;PU8000,0;PD12000,0;PU;"
+                       "\x1b.I81;;17:PU0,8000;PD400,8000;PU;"), opts(0, 0), "on2.plt");
+        check(on2.ok && on2.elements.size() == 3, "HPGL ESC.Y: nothing after it is dropped; ESC.I to ':'");
     }
 
     std::printf("test_import: %d checks OK\n", g_checks);

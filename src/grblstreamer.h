@@ -203,6 +203,8 @@ private:
     QStringList m_adhocLines;                   // the same lines, oldest first
     QElapsedTimer m_adhocClock;                 // since the last ad-hoc send/ack
     bool m_tloPending = false;                  // G43.1 not yet on the controller
+    int m_tloRetries = 0;                       // refused G43.1 resends so far
+    bool m_tloWaitIdle = false;                 // refused (error:9 mid-jog): resend at Idle
     bool m_needsReset = false;                  // critical alarm: lines go unanswered
     bool m_resetNagged = false;                 // said so once for this alarm
     bool m_heard = false;                       // a line answered on this connection

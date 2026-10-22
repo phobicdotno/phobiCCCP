@@ -15,6 +15,8 @@
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QRegularExpression>
@@ -569,12 +571,20 @@ int main(int argc, char *argv[])
     // GUI scale from Settings. It has to be in the environment before
     // QApplication exists; an explicit QT_SCALE_FACTOR wins, and the CLI
     // modes (--shot included) always render at 100 %.
+    // A scale this program set itself (inherited by the copy a Settings
+    // restart starts) is not an explicit one: it kept the old scale.
+    if (!qEnvironmentVariableIsEmpty("PHOBICCCP_SCALE_SET")) {
+        qunsetenv("QT_SCALE_FACTOR");
+        qunsetenv("PHOBICCCP_SCALE_SET");
+    }
     if (!(argc > 1 && QByteArray(argv[1]).startsWith("--"))
         && qEnvironmentVariableIsEmpty("QT_SCALE_FACTOR")) {
         QSettings s(QStringLiteral("phobicdotno"), QStringLiteral("phobiCCCP"));
         const int pct = c2d::appsettings::uiScalePercent(s);
-        if (pct != 100)
+        if (pct != 100) {
             qputenv("QT_SCALE_FACTOR", QByteArray::number(pct / 100.0));
+            qputenv("PHOBICCCP_SCALE_SET", "1");
+        }
     }
     // Register with AT-SPI whatever the desktop's accessibility switch says,
     // so an on-screen keyboard in auto-show mode (Onboard) pops up when a
@@ -1473,13 +1483,27 @@ int main(int argc, char *argv[])
             return 3;
         }
         const QByteArray bytes = r.gcode.toUtf8();
-        QFile f(QString::fromLocal8Bit(argv[3]));
-        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            qWarning() << "write failed:" << f.errorString();
-            return 2;
+        // A file is moved into place only when complete (a full disk leaves the
+        // old one); /dev/stdout, a pipe or a device is written straight.
+        const QString out = QString::fromLocal8Bit(argv[3]);
+        const QFileInfo oi(out);
+        const bool stream = oi.exists()
+                            && (!oi.isFile() || oi.canonicalFilePath().startsWith(QLatin1String("/proc/"))
+                                || oi.absoluteFilePath().startsWith(QLatin1String("/dev/")));
+        bool ok = false;
+        QString why;
+        if (stream) {
+            QFile f(out);
+            ok = f.open(QIODevice::WriteOnly | QIODevice::Text) && f.write(bytes) == bytes.size() && f.flush();
+            why = f.errorString();
+        } else {
+            QSaveFile f(out);
+            f.setDirectWriteFallback(true);
+            ok = f.open(QIODevice::WriteOnly | QIODevice::Text) && f.write(bytes) == bytes.size() && c2d::commitKeepingMode(f);
+            why = f.errorString();
         }
-        if (f.write(bytes) != bytes.size() || !f.flush()) {
-            qWarning() << "write failed:" << f.errorString();
+        if (!ok) {
+            qWarning() << "write failed:" << why;
             return 2;
         }
         qInfo() << "exported:" << r.done << "skipped:" << r.skipped
@@ -1501,10 +1525,11 @@ int main(int argc, char *argv[])
     w.showStartupWindow();
 
     // Open a file passed on the command line, or start on a blank design
-    // the size of the machine.
+    // the size of the machine. A file that fails to open (moved, damaged)
+    // still leaves a blank design: without one every tool did nothing.
     if (argc > 1)
         w.openFile(QString::fromLocal8Bit(argv[1]));
-    else
+    if (!w.hasDocument())
         w.newUntitled();
 
     return app.exec();

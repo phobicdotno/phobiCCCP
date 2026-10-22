@@ -16,13 +16,18 @@
         android:largeScreens="true"
         android:normalScreens="true"
         android:smallScreens="true" />
+    <!-- No backups: a tablet restored from another's would share its id in
+         the pads' version vectors (src/padlink.cpp, Store::replicaId; Qt
+         has no machine id on Android), and one's edits would silently
+         replace the other's. The designs are on the computer anyway. -->
     <application
         android:name="org.qtproject.qt.android.bindings.QtApplication"
         android:hardwareAccelerated="true"
         android:label="PhobiCCCP"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupOnly="false">
         <activity
             android:name="org.qtproject.qt.android.bindings.QtActivity"

@@ -178,7 +178,7 @@ class AppState extends ChangeNotifier {
         try {
           final r = await syncWith(c.desktop, store,
               withTools: withTools,
-              pad: {'id': settings.deviceId, 'name': deviceName},
+              pad: {'id': store.replicaId, 'name': deviceName},
               handled: _opened[c.desktop.id] ?? 0, onPulled: () {
             designs = store.live();
             _changed();

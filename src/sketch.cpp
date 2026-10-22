@@ -596,6 +596,24 @@ QVector<double> crossings(const PathModel &m, int sub, const QVector<PathModel> 
             crossFlats(A, flatten(os), &hits);
     for (const auto &h : hits)
         out.append(h.first);
+    // An open path's end resting on this one (where Extend leaves it) is a
+    // cut too: from the convex side it never reaches the flattened polyline.
+    auto touching = [&](const SubPath &os) {
+        if (os.closed || os.nodes.size() < 2)
+            return;
+        for (const QPointF &e : {os.nodes.first().p, os.nodes.last().p}) {
+            int seg;
+            double t;
+            if (s.closest(e, &seg, &t) < 1e-5 && seg >= 0)
+                out.append(seg + t);
+        }
+    };
+    for (int i = 0; i < m.subs.size(); ++i)
+        if (i != sub)
+            touching(m.subs.at(i));
+    for (const PathModel &o : others)
+        for (const SubPath &os : o.subs)
+            touching(os);
     // Self-crossings, minus the joints between consecutive segments.
     QVector<QPair<double, double>> self;
     crossFlats(A, A, &self);
@@ -610,9 +628,18 @@ QVector<double> crossings(const PathModel &m, int sub, const QVector<PathModel> 
             g = 0;   // the start node, seen from the end
         if (!s.closed && (g < 1e-7 || g > n - 1e-7))
             continue;   // an open subpath's own ends bound it anyway
+        // The same point found twice (an exact crossing and a resting line
+        // end) may differ by a hair in parameter: kept twice it left a
+        // sliver of a few microns behind after Trim and Break. (Far apart
+        // in parameter, one point is two cuts: a bow tie's crossing.)
+        auto pointOf = [&s, n](double v) {
+            const int k = qBound(0, int(std::floor(v)), n - 1);
+            return s.pointAt(k, qBound(0.0, v - k, 1.0));
+        };
         bool dup = false;
         for (double c : clean)
-            dup = dup || wrapDist(c, g, n, s.closed) < 1e-7;
+            dup = dup || wrapDist(c, g, n, s.closed) < 1e-7
+                  || (wrapDist(c, g, n, s.closed) < 1e-3 && QLineF(pointOf(c), pointOf(g)).length() < 1e-5);
         if (!dup)
             clean.append(g);
     }
@@ -777,7 +804,11 @@ bool extend(PathModel &m, QPointF q, double tol, const QVector<PathModel> &other
     const bool atEnd = QLineF(q, s.nodes.last().p).length() < QLineF(q, s.nodes.first().p).length();
     const Cubic endSeg = cubicOf(s, atEnd ? n - 1 : 0);
     const QPointF P = atEnd ? endSeg.p[3] : endSeg.p[0];
+    // The tangent at the end: its own handle, else the segment's other one
+    // (an S after a line), else the chord.
     QPointF dir = atEnd ? endSeg.p[3] - endSeg.p[2] : endSeg.p[0] - endSeg.p[1];
+    if (std::hypot(dir.x(), dir.y()) < 1e-12)
+        dir = atEnd ? endSeg.p[3] - endSeg.p[1] : endSeg.p[0] - endSeg.p[2];
     if (std::hypot(dir.x(), dir.y()) < 1e-12)
         dir = atEnd ? endSeg.p[3] - endSeg.p[0] : endSeg.p[0] - endSeg.p[3];
     const double dl = std::hypot(dir.x(), dir.y());

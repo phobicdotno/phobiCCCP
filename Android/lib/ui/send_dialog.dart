@@ -62,8 +62,9 @@ class _SendDialogState extends State<SendDialog> {
     final reach = _reachable();
     final c = reach.where((c) => c.desktop.id == last.first).firstOrNull ?? reach.firstOrNull;
     _computer = c?.desktop.id;
-    final machines = c?.info?.machines ?? const [];
-    _machine = machines.any((m) => last.length > 1 && m.id == last[1]) ? last[1] : c?.info?.activeMachine;
+    // The machine the computer uses now: the last send's machine may have
+    // been switched away from since, and sending would switch it back.
+    _machine = c?.info?.activeMachine;
   }
 
   @override
@@ -94,6 +95,8 @@ class _SendDialogState extends State<SendDialog> {
         out.add('${t.name}: T${t.tool} is not in its tool library');
       } else if (!tool.materials.contains(material)) {
         out.add('${t.name}: T${t.tool} has no feeds for ${lib.materialName(material)} there');
+      } else if (veeLeftOut(t, tool)) {
+        out.add('${t.name}: T${t.tool} is a V-bit; ${t.type == 'pocket' ? 'a pocket' : 'an inside or outside profile'} needs an end mill');
       }
     }
     return out;
@@ -219,3 +222,9 @@ class _SendDialogState extends State<SendDialog> {
     );
   }
 }
+
+/// A toolpath phobiCCCP leaves out: a pocket or an inside/outside profile
+/// with a V-bit (an offset is a tool radius, far wider than a V-bit cuts;
+/// src/gcodeexport.cpp). One turned off is not made, so not left out either.
+bool veeLeftOut(ToolpathSpec t, Tool tool) =>
+    t.enabled && tool.isVee && (t.type == 'pocket' || (t.type == 'profile' && t.side != 'on'));

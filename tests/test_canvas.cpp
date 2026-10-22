@@ -449,7 +449,11 @@ int main(int argc, char *argv[])
         cv.centerOn(QPointF(50, 50));
         QUndoStack *u = cv.undoStack();
         const QJsonObject layer = d2.defaultLayer();
-        const c2d::Element h = c2d::Element::makePath({{0, 50}, {100, 50}}, false, layer);
+        // A construction line in a group: every broken piece stays both.
+        QJsonObject hj = c2d::Element::makePath({{0, 50}, {100, 50}}, false, layer).raw;
+        hj.insert("construction", true);
+        hj.insert("group_id", "g-break");
+        const c2d::Element h = c2d::Element::fromJson(hj);
         const c2d::Element v1 = c2d::Element::makePath({{30, 0}, {30, 100}}, false, layer);
         const c2d::Element v2 = c2d::Element::makePath({{70, 0}, {70, 100}}, false, layer);
         const c2d::Element shortLine = c2d::Element::makePath({{0, 20}, {20, 20}}, false, layer);
@@ -470,6 +474,10 @@ int main(int argc, char *argv[])
         cv.setTool(c2d::Canvas::Break);
         click(&cv, {50, 50});
         check(d2.elements().size() == 6 && u->count() == 1, "break makes three pieces of the line");
+        int kept = 0;
+        for (const c2d::Element &e : d2.elements())
+            kept += c2d::Element::isConstruction(e) && e.raw.value("group_id").toString() == "g-break";
+        check(kept == 3, "broken pieces keep construction and the group");
         u->undo();
         check(d2.elements().size() == 4, "undo break");
 
@@ -655,6 +663,36 @@ int main(int argc, char *argv[])
         want = {pk.id, boss.id};
         want.sort();
         check(got == want, "area click keeps a small boss as an island");
+        // A lone shape with sharp tips (a 16-degree diamond) is selected,
+        // not copied: fillFace() blunts the tips a little.
+        {
+            const double h = 50 * std::tan(8 * M_PI / 180);
+            const c2d::Element dia = c2d::Element::makePath({{300, 450}, {350, 450 + h}, {400, 450}, {350, 450 - h}},
+                                                            true, adoc.defaultLayer());
+            adoc.addElement(dia);
+            ac.rebuild();
+            const int n = int(adoc.elements().size());
+            click(&ac, {350, 450});
+            check(ac.selectedElementIds() == QStringList{dia.id} && int(adoc.elements().size()) == n,
+                  "area click on a sharp diamond selects it");
+        }
+        // The same diamond as an island in a pocket: the pocket and the
+        // diamond are selected, nothing is added.
+        {
+            const double h = 30 * std::tan(8 * M_PI / 180);
+            const c2d::Element pocket = c2d::Element::makeRectangle({600, 450}, 120, 100, adoc.defaultLayer());
+            const c2d::Element isl = c2d::Element::makePath({{570, 450}, {600, 450 + h}, {630, 450}, {600, 450 - h}},
+                                                            true, adoc.defaultLayer());
+            adoc.addElement(pocket);
+            adoc.addElement(isl);
+            ac.rebuild();
+            const int n = int(adoc.elements().size());
+            click(&ac, {600, 480});
+            QStringList sel = ac.selectedElementIds(), exp{pocket.id, isl.id};
+            sel.sort();
+            exp.sort();
+            check(sel == exp && int(adoc.elements().size()) == n, "area click keeps a sharp diamond as an island");
+        }
     }
 
     // --- a CC rectangle's corner style survives a resize --------------------------------

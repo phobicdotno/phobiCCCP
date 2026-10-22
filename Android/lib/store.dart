@@ -115,8 +115,21 @@ class DesignStore {
   }
 
   /// [vv] (the stored copy's) with this pad's edit at [modified] noted.
-  Map<String, int> _edited(Design have, int modified) =>
-      {...ancestryOf(have.vv, have.modified, deleted: have.deleted), replicaId: modified};
+  /// Each older client's edit adds an entry; past [maxReplicas] the versions
+  /// would not be believed and start over, so the oldest of those go first
+  /// (as phobiCCCP's Store::edited).
+  Map<String, int> _edited(Design have, int modified) {
+    final vv = {...ancestryOf(have.vv, have.modified, deleted: have.deleted), replicaId: modified};
+    while (vv.length > maxReplicas) {
+      String? oldest;
+      for (final e in vv.entries) {
+        if (e.key.startsWith('e-') && (oldest == null || e.value < vv[oldest]!)) oldest = e.key;
+      }
+      if (oldest == null) break;
+      vv.remove(oldest);
+    }
+    return vv;
+  }
 
   /// An edit made here: stamped with the time, so it wins the next sync. Its
   /// bases and versions are the stored copy's (the last one exchanged with a
@@ -198,16 +211,6 @@ class Settings {
   set lastDesign(String v) {
     _v['lastDesign'] = v;
     _save();
-  }
-
-  /// This pad's own id, made once, so a computer can send designs to it.
-  String get deviceId {
-    final v = _v['deviceId'];
-    if (v is String && v.isNotEmpty) return v;
-    final id = newId();
-    _v['deviceId'] = id;
-    _save();
-    return id;
   }
 
   String get lastTarget => _v['lastTarget'] is String ? _v['lastTarget'] as String : '';

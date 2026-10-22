@@ -197,8 +197,11 @@ bool Document::save(const QString &destPath, QString *error)
     // group-writable file stays so); a new file is rw-r--r--. They are
     // applied just before the rename: a read-only original copied onto the
     // staging file now would make SQLite open it read-only and fail the save.
+    // The *User bits say what this process may do (root may always write),
+    // not the file's mode; setPermissions() would turn them into owner bits.
     const QFileDevice::Permissions finalPerms =
         QFileInfo::exists(realDest) ? QFile::permissions(realDest)
+                                          & ~(QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser)
                                     : QFileDevice::ReadOwner | QFileDevice::WriteOwner
                                           | QFileDevice::ReadGroup | QFileDevice::ReadOther;
     QFile::setPermissions(tmpPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner
@@ -536,6 +539,42 @@ bool Document::createBlank(const QString &path, double width, double height,
     QSqlDatabase::removeDatabase(conn);
     if (!ok)
         QFile::remove(path);
+    return ok;
+}
+
+bool Document::writeParam(const QString &path, const QString &key, const QString &value,
+                          QString *error)
+{
+    const QString conn = QStringLiteral("c2dp_%1").arg(QUuid::createUuid().toString());
+    bool ok = true;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+        db.setDatabaseName(path);
+        if (!db.open()) {
+            if (error) *error = db.lastError().text();
+            ok = false;
+        } else {
+            db.transaction();
+            QSqlQuery q(db);
+            q.prepare(QStringLiteral("DELETE FROM params WHERE key=?"));
+            q.addBindValue(key);
+            ok = q.exec();
+            if (ok) {
+                q.prepare(QStringLiteral("INSERT INTO params(key,value) VALUES(?,?)"));
+                q.addBindValue(key);
+                q.addBindValue(value);
+                ok = q.exec();
+            }
+            if (!ok && error)
+                *error = q.lastError().text();
+            if (ok)
+                ok = db.commit();
+            else
+                db.rollback();
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(conn);
     return ok;
 }
 

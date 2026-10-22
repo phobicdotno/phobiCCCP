@@ -32,8 +32,10 @@ public:
     SendToDialog(const QString &name, const QString &ownId,
                  std::function<QString(QString *error)> makeCopy, QWidget *parent = nullptr);
 
-    // The biggest design that fits in one request.
-    static constexpr qint64 kMaxDesign = 12LL * 1024 * 1024;
+    // The biggest design that fits in one request: base64 makes it 4/3 the
+    // size, and the request (ProjectReceiver::kMaxRequest, 16 MiB) also
+    // carries the JSON around it.
+    static constexpr qint64 kMaxDesign = (16LL * 1024 * 1024 - 64 * 1024) / 4 * 3;
 
     // A phobiCCCP found on the network. `pad`: it runs on a pad (Android or
     // iPad), so it has no machine of its own.

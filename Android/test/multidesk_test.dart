@@ -281,4 +281,19 @@ void main() {
       }
     }
   });
+
+  test('edits in turn with an older client keep at most 64 versions, dropping the oldest older-edit entries', () {
+    final pad = DesignStore(Directory('${root.path}/cap'), device: Directory('${root.path}/capdev'));
+    // A believed vv already at the limit: 64 older-client edits.
+    final vv = {for (var i = 1; i <= 64; i++) 'e-${i.toRadixString(16).padLeft(16, '0')}': 1000 + i};
+    pad.put(Design(id: 'c1', name: 'Cap', modified: 1064, vv: vv));
+    final s = pad.save(pad.get('c1')!, now: 5000);
+    expect(s.vv.length, 64);
+    expect(s.vv[pad.replicaId], s.modified);
+    expect(s.vv.containsKey('e-${1.toRadixString(16).padLeft(16, '0')}'), false, reason: 'the oldest goes');
+    expect(believedVv(s.vv, s.modified), isNotEmpty);
+    expect(orderOf(s.vv, s.modified, vv, 1064), Order.after, reason: 'still made from the copy it edited');
+    final next = pad.save(s, now: 6000);
+    expect(orderOf(next.vv, next.modified, s.vv, s.modified), Order.after);
+  });
 }

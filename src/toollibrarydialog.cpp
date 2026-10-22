@@ -236,7 +236,7 @@ int ToolLibraryDialog::stockBroken(const LibraryTool &t)
 QString ToolLibraryDialog::itemLabel(const LibraryTool &t)
 {
     QString label = QStringLiteral("%1   Ø%2 mm · %3 fl")
-                        .arg(t.name, mmText(t.diameter)).arg(t.flutes);
+                        .arg(t.name, mmText(t.diameter), QString::number(t.flutes));
     if (t.angle > 0)
         label += QStringLiteral(" · %1°").arg(t.angle);
     if (t.uncertain)
@@ -301,7 +301,7 @@ void ToolLibraryDialog::rebuildList()
     for (const LibraryTool *tp : tools) {
         const LibraryTool &t = *tp;
         QString hay = QStringLiteral("#%1 %2 %3 %4 %5mm")
-                          .arg(t.number).arg(t.name, t.kind, t.model).arg(t.diameter);
+                          .arg(QString::number(t.number), t.name, t.kind, t.model, QString::number(t.diameter));
         if (!q.isEmpty() && !hay.contains(q, Qt::CaseInsensitive))
             continue;
         auto *it = new QListWidgetItem(itemLabel(t), m_list);
@@ -330,7 +330,7 @@ void ToolLibraryDialog::rebuildCollections(const QString &show)
         m_collection->clear();
         m_collection->addItem(QStringLiteral("All bits"), QString());
         for (const ToolCollection &c : m_collections.all())
-            m_collection->addItem(QStringLiteral("%1 (%2)").arg(c.name).arg(c.tools.size()),
+            m_collection->addItem(QStringLiteral("%1 (%2)").arg(c.name, QString::number(c.tools.size())),
                                   c.name);
         const int i = m_collection->findData(show);
         m_collection->setCurrentIndex(i >= 0 ? i : 0);
@@ -482,8 +482,7 @@ void ToolLibraryDialog::updatePreview()
         ? QStringLiteral("corner-rounding bit, Ø = cutting tip")
         : QLatin1String(kinds[t->ccType()]);
     QString s = QStringLiteral("%1\n%2 · Ø %3 mm · %4 flutes")
-                    .arg(t->name, kind, mmText(t->diameter))
-                    .arg(t->flutes);
+                    .arg(t->name, kind, mmText(t->diameter), QString::number(t->flutes));
     if (t->angle > 0)
         s += QStringLiteral(" · %1°").arg(t->angle);
     if (t->price > 0) {

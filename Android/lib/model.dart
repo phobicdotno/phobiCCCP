@@ -117,14 +117,30 @@ Order orderOf(Map<String, int> va, int ma, Map<String, int> vb, int mb, {bool aD
     }
     return Order.unknown;
   }
+  // A full vv dropped its oldest older-edit entries (DesignStore._edited): an
+  // entry it lacks at or below the oldest it still holds is one of those,
+  // known to it, not an edit made apart.
+  int dropped(Map<String, int> full) {
+    var oldest = -1;
+    if (full.length >= maxReplicas) {
+      for (final e in full.entries) {
+        if (e.key.startsWith('e-') && (oldest < 0 || e.value < oldest)) oldest = e.value;
+      }
+    }
+    return oldest;
+  }
+
+  final droppedA = dropped(a), droppedB = dropped(b);
+  bool known(String k, int t, int upTo) => upTo >= 0 && k.startsWith('e-') && t <= upTo;
   var aAhead = false, bAhead = false;
   for (final e in a.entries) {
+    if (!b.containsKey(e.key) && known(e.key, e.value, droppedB)) continue;
     final o = b[e.key] ?? 0;
     aAhead = aAhead || e.value > o;
     bAhead = bAhead || e.value < o;
   }
   for (final e in b.entries) {
-    bAhead = bAhead || (!a.containsKey(e.key) && e.value > 0);
+    bAhead = bAhead || (!a.containsKey(e.key) && e.value > 0 && !known(e.key, e.value, droppedA));
   }
   return aAhead ? (bAhead ? Order.concurrent : Order.after) : (bAhead ? Order.before : Order.same);
 }
@@ -691,6 +707,10 @@ class Tool {
   final List<String> materials;
   const Tool(
       {required this.number, required this.name, this.kind = '', this.diameter = 0, this.angle = 0, this.flutes = 0, this.materials = const []});
+
+  /// A pointed bit (V-bit, engraver, any tool with an angle but a ball), as
+  /// phobiCCCP's export reads it.
+  bool get isVee => kind == 'vbit' || kind == 'engraver' || (angle > 0 && kind != 'ball');
   factory Tool.fromJson(Map<String, Object?> j) => Tool(
         number: _i(j['number']),
         name: _s(j['name']),
@@ -748,6 +768,7 @@ class ToolLibrary {
   }
 
   /// A sensible first tool for a kind of toolpath, from what there is for the material.
+  /// Never a V-bit for a pocket or profile: phobiCCCP leaves those out.
   int? defaultTool(String material, String type) {
     final have = toolsFor(material);
     final wanted = type == 'engrave' ? ['engraver', 'vbit', 'endmill'] : ['endmill', 'ball'];
@@ -756,7 +777,8 @@ class ToolLibrary {
         if (t.kind == k) return t.number;
       }
     }
-    return have.isEmpty ? null : have.first.number;
+    final usable = type == 'engrave' ? have : have.where((t) => !t.isVee);
+    return usable.isEmpty ? null : usable.first.number;
   }
 }
 

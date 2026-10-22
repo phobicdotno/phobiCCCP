@@ -551,14 +551,53 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
         }
         return r;
     };
-    auto area = [](const QVector<QPolygonF> &rings) {
-        double a = 0;
-        for (const QPolygonF &g : rings)
-            a += vec::ringArea(g);
-        return std::fabs(a);
-    };
     // Same region: what is in one and not the other is a sliver at most.
-    auto same = [&](const QPainterPath &a, const QPainterPath &b) {
+    auto same = [&](const QPainterPath &a, const QPainterPath &shape, bool hole = false) {
+        // fillFace() shrinks and regrows the face by 0.01 mm, which blunts
+        // sharp tips (a 10-degree point loses over 0.1 mm); the shape gets
+        // the same treatment before it is compared. A hole of the face is
+        // the outside of its island, so there it is the other way round:
+        // the island's tips stay sharp.
+        QPainterPath b = shape;
+        if (a.boundingRect().adjusted(-1, -1, 1, 1).contains(shape.boundingRect())
+            && shape.boundingRect().adjusted(-1, -1, 1, 1).contains(a.boundingRect())) {
+            QVector<QPolygonF> back;
+            if (hole) {
+                // The island as fillFace() makes a hole of it: the face of a
+                // box around it, holes only - the very same pipeline, so a
+                // hair-thin tip loses exactly what it lost in the face.
+                const QRectF box = shape.boundingRect().adjusted(-10, -10, 10, 10);
+                QPainterPath frame;
+                frame.addRect(box);
+                const QVector<QPolygonF> f = vec::fillFace({frame, shape}, box.topLeft() + QPointF(5, 5));
+                // Only when the island came back whole: a multi-ring island
+                // ("O" text) gives other holes, and is not this face's hole.
+                int own = 0;
+                for (const QPolygonF &g : shape.toSubpathPolygons())
+                    own += g.size() >= 3 ? 1 : 0;
+                // And only when the island's own even-odd region (what a
+                // toolpath cuts) fills the hole: a one-ring "O" with a hair
+                // slit, or a horseshoe whose tips nearly meet, closes up as a
+                // hole here, but selecting it would cut its counter or room.
+                double ownArea = 0, holeArea = 0, perim = 0;
+                for (const QPolygonF &g : vec::offsetRings({shape}, {}, 0))
+                    ownArea += vec::ringArea(g);
+                for (const QPolygonF &g : f.mid(1)) {
+                    holeArea += std::fabs(vec::ringArea(g));
+                    for (int i = 0; i < g.size(); ++i)
+                        perim += QLineF(g.at(i), g.at((i + 1) % g.size())).length();
+                }
+                if (f.size() - 1 == own && std::fabs(std::fabs(ownArea) - holeArea) <= perim * 0.02)
+                    back = f.mid(1);
+                else
+                    return false;
+            } else {
+                const QVector<QPolygonF> in = vec::offsetRings({shape}, {}, -0.01);
+                back = in.isEmpty() ? in : vec::offsetRings({pathOf(in)}, {}, 0.01);
+            }
+            if (!back.isEmpty())
+                b = pathOf(back);
+        }
         // A pocket shape with an island inside is two rings; a lone outline
         // around it is one - not the same, however small the island.
         auto rings = [](const QPainterPath &p) {
@@ -572,10 +611,38 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
         if (!a.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(b.boundingRect())
             || !b.boundingRect().adjusted(-0.05, -0.05, 0.05, 0.05).contains(a.boundingRect()))
             return false;
-        const double diff = area(vec::booleanRings({a}, {b}, vec::BoolOp::Subtract))
-                            + area(vec::booleanRings({b}, {a}, vec::BoolOp::Subtract));
-        const double whole = area(vec::booleanRings({a}, {}, vec::BoolOp::Union));
-        return diff <= 0.002 * whole + 0.01;
+        // Every corner of each lies on the other's outline. An area rule
+        // (even 0.02 mm per mm of outline) let a notch of a few mm on a big
+        // shape count as the whole shape; a notch's corners are off the
+        // outline by its own size.
+        auto segDist = [](const QPointF &p, const QPointF &s, const QPointF &e) {
+            const QPointF d = e - s;
+            const double l2 = QPointF::dotProduct(d, d);
+            const double t = l2 > 0 ? std::clamp(QPointF::dotProduct(p - s, d) / l2, 0.0, 1.0) : 0.0;
+            return QLineF(p, s + t * d).length();
+        };
+        // Qt flattens curves for 1-unit pixels; in mm that is a coarse
+        // polygon (a 5 mm circle off its own outline by more than 0.1 mm).
+        auto fine = [](const QPainterPath &p) {
+            QList<QPolygonF> out = p.toSubpathPolygons(QTransform::fromScale(100, 100));
+            for (QPolygonF &g : out)
+                g = QTransform::fromScale(0.01, 0.01).map(g);
+            return out;
+        };
+        auto near = [&segDist, &fine](const QPainterPath &from, const QPainterPath &to) {
+            const QList<QPolygonF> tg = fine(to);
+            for (const QPolygonF &g : fine(from))
+                for (const QPointF &v : g) {
+                    double best = 1e18;
+                    for (const QPolygonF &h : tg)
+                        for (int i = 0; i + 1 < h.size(); ++i)
+                            best = std::min(best, segDist(v, h.at(i), h.at(i + 1)));
+                    if (best > 0.1)
+                        return false;
+                }
+            return true;
+        };
+        return near(a, b) && near(b, a);
     };
     auto keep = [&ids](const QString &id) {
         if (!ids.contains(id))
@@ -588,11 +655,52 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
             selectElements(ids);
             return;
         }
+    // An island of several rings with no counters ("TL" text, an "i"): each
+    // glyph is its own hole of the face, so none matches the whole element
+    // alone. When every ring of it is one of the holes, it is the element.
+    auto subpaths = [](const QPainterPath &p) {
+        QList<QPainterPath> out;
+        for (int i = 0; i < p.elementCount(); ++i) {
+            const QPainterPath::Element e = p.elementAt(i);
+            if (e.isMoveTo()) {
+                out.append(QPainterPath());
+                out.last().moveTo(e);
+            } else if (out.isEmpty()) {
+                continue;
+            } else if (e.isLineTo()) {
+                out.last().lineTo(e);
+            } else if (e.isCurveTo() && i + 2 < p.elementCount()) {
+                out.last().cubicTo(e, p.elementAt(i + 1), p.elementAt(i + 2));
+                i += 2;
+            }
+        }
+        return out;
+    };
+    QSet<int> taken;   // face rings an island already accounts for
+    for (const auto &c : closed) {
+        const QList<QPainterPath> parts = subpaths(c.second);
+        if (parts.size() < 2)
+            continue;
+        QSet<int> mine;
+        for (const QPainterPath &part : parts)
+            for (int r = 1; r < face.size(); ++r)
+                if (!taken.contains(r) && !mine.contains(r) && same(pathOf({face.at(r)}), part, true)) {
+                    mine.insert(r);
+                    break;
+                }
+        if (mine.size() == parts.size()) {
+            taken.unite(mine);
+            keep(c.first);
+        }
+    }
     QVector<QPolygonF> fresh;
-    for (const QPolygonF &ring : face) {
+    for (int fi = 0; fi < face.size(); ++fi) {
+        if (taken.contains(fi))
+            continue;
+        const QPolygonF &ring = face.at(fi);
         QString match;
         for (const auto &c : closed)
-            if (same(pathOf({ring}), c.second)) {
+            if (same(pathOf({ring}), c.second, &ring != &face.first())) {
                 match = c.first;
                 break;
             }
@@ -931,9 +1039,21 @@ void Canvas::drawNodes(QPainter *p) const
     }
 }
 
+// A node drag shows its live shape on the item; when the drag is dropped
+// without a commit, the item goes back to the element's own path.
+void Canvas::restoreEditItem()
+{
+    if (m_grab == GrabNone || m_editId.isEmpty() || !m_doc)
+        return;
+    if (const Element *e = m_doc->elementById(m_editId))
+        if (QGraphicsPathItem *it = itemFor(m_editId))
+            it->setPath(e->painterPath);
+}
+
 void Canvas::syncEditTarget()
 {
     const QStringList ids = selectedElementIds();
+    restoreEditItem();
     m_editId.clear();
     m_model = PathModel();
     if (m_doc && ids.size() == 1) {
@@ -1101,6 +1221,17 @@ void Canvas::setTool(Tool t)
     if ((m_tool == DrawPath && t != DrawPath) || !m_clicks.isEmpty() || isModifyTool(m_tool)
         || !m_splinePts.isEmpty() || !m_tanLines.isEmpty() || m_preview)
         cancelDrawing();
+    restoreEditItem();
+    // A Select drag cut off by a tool key: the moved items go back, as a node
+    // drag does (the release only saves a move in Select, so the shape stayed
+    // drawn moved while the design kept it in place).
+    if (m_tool == Select && t != Select) {
+        if (QGraphicsItem *g = m_scene->mouseGrabberItem())
+            g->ungrabMouse();
+        for (QGraphicsItem *it : m_scene->items())
+            if (it->data(0).isValid() && !it->pos().isNull())
+                it->setPos(0, 0);
+    }
     m_tool = t;
     m_drawing = false;
     m_grab = GrabNone;
@@ -1189,6 +1320,7 @@ void Canvas::rebuild()
     const QStringList selected = selectedElementIds();
     m_scene->blockSignals(true);
     m_preview = nullptr;           // owned by the scene; clear() deletes it
+    m_resizing = false;            // its preview is gone with the scene
     m_previewItems.clear();        // likewise
     m_scene->clear();
     if (!m_doc) {
@@ -1621,8 +1753,11 @@ bool Canvas::pickOpenEnd(const QPointF &q, QPointF *end, QPointF *dir) const
             const int n = sp.nodes.size();
             const PathNode &f = sp.nodes.first(), &l = sp.nodes.last();
             // Leaving an end means carrying on the way the curve arrives there.
-            const QPointF outFirst = f.hasOut() ? f.p - f.out : f.p - sp.nodes.at(1).p;
-            const QPointF outLast = l.hasIn() ? l.p - l.in : l.p - sp.nodes.at(n - 2).p;
+            // Its own handle, else the next node's handle (an S after a
+            // line), else the chord.
+            const PathNode &f1 = sp.nodes.at(1), &l1 = sp.nodes.at(n - 2);
+            const QPointF outFirst = f.hasOut() ? f.p - f.out : f1.hasIn() ? f.p - f1.in : f.p - f1.p;
+            const QPointF outLast = l.hasIn() ? l.p - l.in : l1.hasOut() ? l.p - l1.out : l.p - l1.p;
             for (const auto &cand : {qMakePair(f.p, outFirst), qMakePair(l.p, outLast)}) {
                 const double d = QLineF(cand.first, q).length();
                 if (d <= best && std::hypot(cand.second.x(), cand.second.y()) > 1e-9) {
@@ -1833,9 +1968,8 @@ void Canvas::modifyAt(const QPointF &q)
         }
         QVector<Element> after;
         after.append(Element::withPathModel(before, parts.first()));
-        const QJsonObject layer = before.raw.value("layer").toObject();
         for (int i = 1; i < parts.size(); ++i)
-            after.append(Element::makeBezierPath(parts.at(i), layer));
+            after.append(Element::pieceOf(before, parts.at(i)));
         QHash<QString, QStringList> piecesOf;
         for (const Element &e : after)
             piecesOf[before.id] << e.id;
@@ -1931,6 +2065,7 @@ void Canvas::cancelDrawing()
     m_penDrag = false;
     m_splinePts.clear();
     m_arcTurn = 0;
+    m_resizing = false;           // a resize drag cancelled, not committed on release
     clearPreview();
 }
 
@@ -2584,8 +2719,16 @@ void Canvas::keyPressEvent(QKeyEvent *event)
         }
         return;
     }
-    if (m_tool == NodeEdit && event->key() == Qt::Key_Escape && m_selSub >= 0) {
+    if (m_tool == NodeEdit && event->key() == Qt::Key_Escape && (m_selSub >= 0 || m_grab != GrabNone)) {
+        // Mid-drag, Escape cancels the drag: the nodes go back to the
+        // element's own (a grab left on node -1 crashed the next move).
+        const bool dragging = m_grab != GrabNone;
+        m_grab = GrabNone;
         m_selSub = m_selNode = -1;
+        if (dragging) {
+            syncEditTarget();
+            previewModel();
+        }
         viewport()->update();
         return;
     }

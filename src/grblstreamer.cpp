@@ -290,6 +290,7 @@ void GrblStreamer::abortAfterReset()
     m_macroSkipAck = false;                     // its ack died with the reset
     m_macroQueue.clear();
     m_tloPending = (m_tlo != 0.0);
+    m_tloRetries = 0;
     emit errorOccurred(QStringLiteral("controller reset: %1 stopped")
                            .arg(wasProgram ? QStringLiteral("the program")
                                            : QStringLiteral("the tool measurement")));
@@ -394,6 +395,7 @@ void GrblStreamer::stopStream()
     m_adhocPending = 0;                         // reset flushes GRBL's buffer
     m_adhocLines.clear();
     m_tloPending = (m_tlo != 0.0);              // GRBL forgets G43.1 on reset
+    m_tloRetries = 0;
     emit consoleLine(QStringLiteral("> [soft reset]"));
     if (wasMacro)
         emit macroFinished(false);
@@ -564,12 +566,13 @@ void GrblStreamer::applyToolLengthOffset(double mm)
 {
     m_tlo = mm;
     m_tloPending = true;
+    m_tloRetries = 0;
     flushTlo();
 }
 
 void GrblStreamer::flushTlo()
 {
-    if (!m_tloPending || !canSendCommand())
+    if (!m_tloPending || m_tloWaitIdle || !canSendCommand())
         return;                                 // busy: sent when the line frees up
     m_tloPending = false;
     ++m_adhocPending;
@@ -666,6 +669,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         st.valid = true;
         m_status = st;
+        if (m_tloWaitIdle && st.state == QLatin1String("Idle")) {
+            m_tloWaitIdle = false;
+            flushTlo();
+        }
         // An ad-hoc line that is still unanswered while the controller sits
         // Idle for seconds was never received (typical right after a DTR
         // reset). Without this every stream and macro would wait forever.
@@ -775,6 +782,23 @@ void GrblStreamer::handleLine(const QByteArray &line)
         // Unlock and homing both leave GRBL without the G43.1 it had.
         if (ok && (sent == QLatin1String("$X") || sent == QLatin1String("$H")) && m_tlo != 0.0)
             m_tloPending = true;
+        // A refused G43.1 (error:9 while a jog still runs) left the controller
+        // without the offset the panel shows: the next job cut that far off.
+        // Sent again once the controller reports Idle.
+        // A controller that keeps refusing it gets three tries, not one per
+        // status report forever.
+        if (sent == QLatin1String("G43.1")) {
+            if (!err) {
+                m_tloRetries = 0;
+            } else if (++m_tloRetries <= 3) {
+                m_tloPending = true;
+                m_tloWaitIdle = true;
+            } else {
+                m_tloRetries = 0;
+                emit errorOccurred(QStringLiteral("the controller refuses the tool length offset "
+                                                  "(G43.1) — it is not applied"));
+            }
+        }
         emit commandAnswered(sent, ok);
         if (m_adhocPending == 0) {
             flushTlo();

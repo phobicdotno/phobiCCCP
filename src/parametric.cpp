@@ -1977,6 +1977,26 @@ SolveResult solve(Document &doc, const QSet<QString> &keep, bool force)
             }
         }
     }
+    // The same for a circle, rectangle or polygon shrunk to nothing (Tangent
+    // then Concentric on two circles, a rectangle's opposite corners made
+    // coincident): the shape would vanish from the drawing.
+    for (const Body &b : sys.bodies()) {
+        bool collapsed = false;
+        for (int k = 0; k < b.n && !collapsed; ++k)
+            collapsed = isSize(b.off + k) && std::fabs(x0[b.off + k]) > 1e-6
+                        && std::fabs(x[b.off + k]) < 1e-6;
+        if (!collapsed)
+            continue;
+        for (const Constraint &c : sys.constraints()) {
+            if (res.failing.contains(c.uid))
+                continue;
+            for (const GeoRef &r : c.refs)
+                if (r.id == b.id) {
+                    res.failing << c.uid;
+                    break;
+                }
+        }
+    }
     res.ok = res.failing.isEmpty();
     if (!res.ok && !force)
         return res;

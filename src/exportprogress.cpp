@@ -6,6 +6,7 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QProgressDialog>
+#include <QScopeGuard>
 #include <QThread>
 #include <QTimer>
 
@@ -25,9 +26,13 @@ struct Shared {
 // Drives the dialog while `body` runs on a worker. Returns when the worker
 // finishes; the dialog's Cancel only sets the flag, so the export always stops
 // at a safe point of its own choosing rather than being killed.
+int g_running = 0;   // interface thread only
+
 void runBehindDialog(QWidget *parent, const QString &title, Shared &sh,
                      std::function<void()> body)
 {
+    ++g_running;
+    const auto running = qScopeGuard([] { --g_running; });
     QProgressDialog dlg(QStringLiteral("Preparing toolpaths…"),
                         QStringLiteral("Cancel"), 0, 0, parent);
     dlg.setWindowTitle(title);
@@ -82,8 +87,16 @@ void runBehindDialog(QWidget *parent, const QString &title, Shared &sh,
     tick.start(100);
 
     t->start();
-    while (!done)
-        loop.exec();      // the window stays alive; only Cancel is reachable
+    while (!done) {
+        // The window stays alive; only Cancel is reachable. Once the
+        // application is quitting (its window closed before this dialog
+        // showed), exec() returns -1 at once and no event is delivered any
+        // more, so the finish could never arrive: cancel and wait instead.
+        if (loop.exec() < 0) {
+            sh.cancel.store(true);
+            break;
+        }
+    }
     t->wait();
     // ThreadSanitizer reports a race here on QThread's own wait condition
     // (the finishing thread broadcasts on it; this destroys it). Deferring
@@ -149,6 +162,11 @@ TiledExport exportTiledWithProgress(QWidget *parent, Document &doc, const QStrin
     if (sh.cancel.load() && out.error.isEmpty())
         out.error = QStringLiteral("cancelled");
     return out;
+}
+
+bool exportRunning()
+{
+    return g_running > 0;
 }
 
 } // namespace c2d

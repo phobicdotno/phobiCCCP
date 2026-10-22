@@ -4,10 +4,27 @@
 #include "gcodeexport.h"
 
 #include <QFile>
+#include <QFileInfo>
+#include <QSaveFile>
+#include <memory>
+#include <QJsonArray>
 #include <QtMath>
 #include <cmath>
 
 namespace c2d {
+
+bool commitKeepingMode(QSaveFile &f)
+{
+    const QFileInfo fi(f.fileName());
+    const bool existed = fi.exists() && fi.isFile();
+    const QFileDevice::Permissions perms = QFile::permissions(f.fileName())
+        & ~(QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser);
+    if (!f.commit())
+        return false;
+    if (existed)
+        QFile::setPermissions(f.fileName(), perms);
+    return true;
+}
 
 namespace {
 
@@ -377,6 +394,11 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
                     t.pos.z = safeZ;
                 }
                 t.ops.append(op);
+                // After a bit change the spindle is wherever the change left
+                // it: the next cut reconnects through safe Z, even one that
+                // starts where the last cut ended (a pilot then a drill).
+                if (op.kind == Op::Tool)
+                    t.havePos = false;
             }
             break;
         case Op::Comment:
@@ -482,16 +504,71 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.error = QStringLiteral("no exportable toolpaths");
         return r;
     }
+    // A keyhole slot or a thread mill cut in two tiles comes back in through
+    // solid wood (the keyhole bit ramps down, then lifts out through the
+    // neck): such a job must sit in one tile. Tiles split by tool centre,
+    // and the last one is open at the top.
+    const int lastTile = tileCount(g.ops, r.tileHeight) - 1;
+    auto tileOf = [&](double y) { return qBound(0, int(std::floor(y / r.tileHeight)), qMax(0, lastTile)); };
+    for (const Toolpath &t : doc.toolpaths()) {
+        const QJsonObject &j = t.json;
+        const bool keyhole = t.type == QLatin1String("keyhole_toolpath");
+        if (!j.value("enabled").toBool(true) || !(keyhole || t.type == QLatin1String("thread_toolpath")))
+            continue;
+        const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
+        for (const QJsonValue &v : j.value("elements").toArray()) {
+            const Element *e = doc.elementById(v.toObject().value("uuid").toString());
+            if (!e)
+                continue;
+            double y0, y1;
+            if (keyhole) {
+                // The centre (as the export takes it), then the slot along its angle.
+                const QJsonArray c = e->raw.value("center").toArray();
+                const double cy = c.size() == 2 ? c.at(1).toDouble() : e->painterPath.boundingRect().center().y();
+                const double dy = j.value("length").toDouble(12.7)
+                                  * std::sin(qDegreesToRadians(j.value("angle").toDouble(90)));
+                y0 = qMin(cy, cy + dy);
+                y1 = qMax(cy, cy + dy);
+            } else {
+                // The thread's laps and its way out beside the wall.
+                // An internal one keeps the tool centre within the hole's
+                // radius less the tool's.
+                const QRectF b = e->painterPath.boundingRect();
+                if (j.value("side").toString() == QLatin1String("external")) {
+                    y0 = b.top() - 2 * toolR - 1;
+                    y1 = b.bottom() + 2 * toolR + 1;
+                } else {
+                    const double reach = qMax(0.0, b.height() / 2 - toolR) + 0.01;
+                    y0 = b.center().y() - reach;
+                    y1 = b.center().y() + reach;
+                }
+            }
+            if (tileOf(y0) != tileOf(y1)) {
+                r.error = QStringLiteral("%1 crosses a tile line (every %2 mm): a keyhole or thread "
+                                         "must be cut within one tile. Move it or change the tile height.")
+                              .arg(j.value("name").toString(), QString::number(r.tileHeight, 'f', 1));
+                return r;
+            }
+        }
+    }
     const QVector<QVector<Op>> tiles = tileOps(g.ops, r.tileHeight, safeZ);
+    // Every tile is staged and the set is moved into place only once all are
+    // written: a failure part-way leaves the previous tiles as they were, not
+    // a truncated tile or new tiles mixed with old ones.
+    std::vector<std::unique_ptr<QSaveFile>> staged;
     for (int k = 0; k < tiles.size(); ++k) {
         QVector<Op> ops;
         ops.append(Op::comment(QStringLiteral("tile %1/%2").arg(k + 1).arg(tiles.size())));
         ops.append(tiles.at(k));
         const QString gcode = GrblPost(true).generate(ops);
-        const QString path = QStringLiteral("%1_tile%2.nc").arg(outBase).arg(k + 1);
-        QFile f(path);
+        const QString path = QStringLiteral("%1_tile%2.nc").arg(outBase, QString::number(k + 1));
+        staged.push_back(std::make_unique<QSaveFile>(path));
+        QSaveFile &f = *staged.back();
+        f.setDirectWriteFallback(true);
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
             r.error = QStringLiteral("%1: %2").arg(path, f.errorString());
+            r.files.clear();
+            r.gcode.clear();
             return r;
         }
         // The single-file exporter already checks this; the tiled one did not,
@@ -508,13 +585,21 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.files << path;
         r.gcode << gcode;
     }
+    for (const auto &f : staged) {
+        if (!commitKeepingMode(*f)) {
+            r.error = QStringLiteral("%1: %2").arg(f->fileName(), f->errorString());
+            r.files.clear();
+            r.gcode.clear();
+            return r;
+        }
+    }
     // A previous export under the same base name may have needed more tiles.
     // Those files are still on disk, still look like part of this job, and
     // still carry a plausible "(tile 4/5)" comment inside. Say so rather than
     // deleting anything: they are the user's files, and the overwrite prompt
     // they answered was for <base>.nc, which is never written.
     for (int k = tiles.size(); ; ++k) {
-        const QString stale = QStringLiteral("%1_tile%2.nc").arg(outBase).arg(k + 1);
+        const QString stale = QStringLiteral("%1_tile%2.nc").arg(outBase, QString::number(k + 1));
         if (!QFile::exists(stale))
             break;
         r.stale << stale;

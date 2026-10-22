@@ -383,12 +383,13 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     QList<QPair<QString, F>> c;
     auto add = [&c](const QString &key, F f) { c.append({key, f}); };
     auto mm = [](const QString &card, const QString &label, double max = 1000, const QString &tip = {}) {
+        // 3 decimals: at 2 a typed 3.175 came back as 3.18 and was saved so.
         F f; f.card = card; f.label = label; f.kind = F::Number; f.unit = QStringLiteral("mm");
-        f.max = max; f.tip = tip; return f;
+        f.max = max; f.tip = tip; f.decimals = 3; return f;
     };
     auto depth = [](const QString &label, const QString &tip = {}) {
         F f; f.card = QStringLiteral("depth"); f.label = label; f.kind = F::Depth;
-        f.unit = QStringLiteral("mm"); f.max = 1000; f.tip = tip; return f;
+        f.unit = QStringLiteral("mm"); f.max = 1000; f.tip = tip; f.decimals = 3; return f;
     };
     auto deg = [](const QString &card, const QString &label, double min, double max) {
         F f; f.card = card; f.label = label; f.kind = F::Number; f.unit = QStringLiteral("°");
@@ -454,10 +455,14 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     add(QStringLiteral("chamfer_width"), mm(QStringLiteral("cut"), QStringLiteral("Chamfer width"), 50));
     add(QStringLiteral("tip_offset"), mm(QStringLiteral("cut"), QStringLiteral("Tip offset"), 20));
     add(QStringLiteral("boss_clearance"), mm(QStringLiteral("cut"), QStringLiteral("Boss clearance"), 100));
-    add(QStringLiteral("pitch"), mm(QStringLiteral("cut"), QStringLiteral("Pitch"), 20));
+    {
+        F f = mm(QStringLiteral("cut"), QStringLiteral("Pitch"), 20);
+        f.decimals = 4; // thread pitches like 1/20" = 1.27 mm and 0.7938 need 4
+        add(QStringLiteral("pitch"), f);
+    }
     {
         F f; f.card = QStringLiteral("cut"); f.label = QStringLiteral("Passes"); f.kind = F::Int;
-        f.min = 1; f.max = 50; add(QStringLiteral("passes"), f);
+        f.min = 1; f.max = 20; add(QStringLiteral("passes"), f); // the export cuts at most 20
     }
     add(QStringLiteral("left_hand"), sw(QStringLiteral("cut"), QStringLiteral("Left-hand thread")));
     add(QStringLiteral("length"), mm(QStringLiteral("cut"), QStringLiteral("Slot length"), 500));
@@ -491,7 +496,11 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
 
     // Entry
     add(QStringLiteral("enable_ramping"), sw(QStringLiteral("entry"), QStringLiteral("Ramp in")));
-    add(QStringLiteral("ramp_angle"), deg(QStringLiteral("entry"), QStringLiteral("Ramp angle"), 0, 45));
+    // Adaptive ramps between 0.5° and 15°, whatever is set.
+    if (type == QLatin1String("adaptive_toolpath"))
+        add(QStringLiteral("ramp_angle"), deg(QStringLiteral("entry"), QStringLiteral("Ramp angle"), 0.5, 15));
+    else
+        add(QStringLiteral("ramp_angle"), deg(QStringLiteral("entry"), QStringLiteral("Ramp angle"), 0, 45));
     add(QStringLiteral("helix_entry"), sw(QStringLiteral("entry"), QStringLiteral("Helix in")));
     add(QStringLiteral("helix_diameter"), enabledBy(mm(QStringLiteral("entry"), QStringLiteral("Helix Ø"), 200),
                                                     QStringLiteral("helix_entry")));
@@ -507,7 +516,7 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
         add(QStringLiteral("ignore_tabs"), f);
     }
     add(QStringLiteral("tab_height"), mm(QStringLiteral("tabs"), QStringLiteral("Height"), 50));
-    add(QStringLiteral("tab_width"), mm(QStringLiteral("tabs"), QStringLiteral("Width"), 500));
+    add(QStringLiteral("tab_width"), mm(QStringLiteral("tabs"), QStringLiteral("Width"), 30));
 
     // Rest machining
     add(QStringLiteral("rest_auto"), sw(QStringLiteral("rest"), QStringLiteral("Skip what the toolpaths above cut")));

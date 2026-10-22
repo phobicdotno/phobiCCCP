@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.1 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -186,6 +186,9 @@ add_executable(test_receiver tests/test_receiver.cpp src/projectreceiver.cpp)
 target_link_libraries(test_receiver PRIVATE phobicccp_core Qt6::Network)
 add_test(NAME receiver COMMAND test_receiver)
 # The phone app's side: pad designs into documents, the design store, machines.
+add_executable(test_machinenames tests/test_machinenames.cpp)
+target_link_libraries(test_machinenames PRIVATE phobicccp_core)
+add_test(NAME machinenames COMMAND test_machinenames)
 add_executable(test_padlink tests/test_padlink.cpp)
 target_link_libraries(test_padlink PRIVATE phobicccp_core)
 add_test(NAME padlink COMMAND test_padlink)
@@ -249,6 +252,21 @@ if(Qt6Test_FOUND)
                    src/propertiespanel.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
+    # Area tool on hair-thin islands, and pattern copies round a closed path.
+    add_executable(test_areathin tests/test_areathin.cpp src/canvas.cpp src/canvasparametric.cpp)
+    target_link_libraries(test_areathin PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME areathin COMMAND test_areathin)
+    add_executable(test_patternclosed tests/test_patternclosed.cpp)
+    target_link_libraries(test_patternclosed PRIVATE phobicccp_core)
+    add_test(NAME patternclosed COMMAND test_patternclosed)
+    add_executable(test_ringisland tests/test_ringisland.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/propertiespanel.cpp)
+    target_link_libraries(test_ringisland PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME ringisland COMMAND test_ringisland)
+    add_executable(test_escdrag tests/test_escdrag.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/propertiespanel.cpp)
+    target_link_libraries(test_escdrag PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME escdrag COMMAND test_escdrag)
     add_executable(test_sendto tests/test_sendto.cpp src/sendtodialog.cpp src/projectreceiver.cpp)
     target_link_libraries(test_sendto PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
     add_test(NAME sendto COMMAND test_sendto)
@@ -299,6 +317,44 @@ if(Qt6Test_FOUND)
                    src/projectreceiver.cpp src/sendtopaddialog.cpp src/sendtodialog.cpp)
     target_link_libraries(test_mainwindow PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
     add_test(NAME mainwindow COMMAND test_mainwindow)
+    # A pad's edit arriving while a typed number is not yet committed.
+    get_target_property(_mwsrc test_mainwindow SOURCES)
+    list(REMOVE_ITEM _mwsrc tests/test_mainwindow.cpp)
+    add_executable(test_padput tests/test_padput.cpp ${_mwsrc})
+    target_link_libraries(test_padput PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME padput COMMAND test_padput)
+    add_executable(test_padenter tests/test_padenter.cpp ${_mwsrc})
+    target_link_libraries(test_padenter PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME padenter COMMAND test_padenter)
+    add_executable(test_tpflush tests/test_tpflush.cpp ${_mwsrc})
+    target_link_libraries(test_tpflush PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME tpflush COMMAND test_tpflush)
+    add_executable(test_padmachinemodal tests/test_padmachinemodal.cpp ${_mwsrc})
+    target_link_libraries(test_padmachinemodal PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME padmachinemodal COMMAND test_padmachinemodal)
+    add_executable(test_typedclick tests/test_typedclick.cpp ${_mwsrc})
+    target_link_libraries(test_typedclick PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME typedclick COMMAND test_typedclick)
+    # Delete with a value still typed in the toolpath form.
+    add_executable(test_tpdelete tests/test_tpdelete.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
+    target_link_libraries(test_tpdelete PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME tpdelete COMMAND test_tpdelete)
+    # STL import's default size for a mesh too big for the board.
+    add_executable(test_stlplace tests/test_stlplace.cpp src/modelpanel.cpp)
+    target_link_libraries(test_stlplace PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME stlplace COMMAND test_stlplace)
+    # Crash recovery offered at start-up waits for the command-line file's open.
+    add_executable(test_recoverystart tests/test_recoverystart.cpp ${_mwsrc})
+    target_link_libraries(test_recoverystart PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_test(NAME recoverystart COMMAND test_recoverystart)
+    # A pad's edit already queued when Save commits a typed number.
+    add_executable(test_padputsave tests/test_padputsave.cpp ${_mwsrc})
+    target_link_libraries(test_padputsave PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    foreach(mode save close nosave)
+        add_test(NAME padputsave_${mode} COMMAND test_padputsave ${mode})
+    endforeach()
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.
     add_executable(test_dragscroll tests/test_dragscroll.cpp src/canvas.cpp src/canvasparametric.cpp
                    src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
@@ -334,6 +390,23 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     target_link_libraries(test_machine PRIVATE phobicccp_core Qt6::Widgets)
     add_test(NAME machine COMMAND test_machine)
     set_tests_properties(machine PROPERTIES SKIP_RETURN_CODE 77)
+    # Cancel job / Disconnect while the hold settles: a Stop in the wait, and
+    # the job's last lines answered in it.
+    # A machine switch reloads the BitZero page's plate settings.
+    add_executable(test_bzprofile tests/test_bzprofile.cpp src/machinepanel.cpp src/shopdialog.cpp
+                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
+                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
+    target_link_libraries(test_bzprofile PRIVATE phobicccp_core Qt6::Widgets)
+    add_test(NAME bzprofile COMMAND test_bzprofile)
+    add_executable(test_machinestop tests/test_machinestop.cpp src/machinepanel.cpp src/shopdialog.cpp
+                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
+                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
+    target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset)
+        add_test(NAME machinestop_${mode} COMMAND test_machinestop)
+        set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
+                             ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")
+    endforeach()
 endif()
 
 find_package(Python3 COMPONENTS Interpreter)

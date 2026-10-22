@@ -367,7 +367,7 @@ bool deepest(const C2::Paths64 &region, QPointF *at, double *clearance)
     if (core.empty())
         return false;
     // Area-weighted centre of the biggest piece of the core, if it is
-    // inside it; else any vertex of it.
+    // inside the core; else any vertex of that piece.
     size_t best = 0;
     for (size_t i = 1; i < core.size(); ++i)
         if (std::fabs(C2::Area(core[i])) > std::fabs(C2::Area(core[best])))
@@ -381,7 +381,9 @@ bool deepest(const C2::Paths64 &region, QPointF *at, double *clearance)
         cy += (poly.at(i).y() + poly.at(i + 1).y()) * w;
     }
     QPointF c = std::fabs(a) > 1e-12 ? QPointF(cx / (3 * a), cy / (3 * a)) : poly.first();
-    if (!inside(C2::Paths64{core[best]}, c))
+    // Against the whole core, holes included: the core of a groove round an
+    // island is a thin ring, whose centre is in the island.
+    if (!inside(core, c))
         c = poly.first();
     *at = c;
     *clearance = lo;
@@ -643,6 +645,13 @@ Plan plan(const QVector<QPolygonF> &rings, const Params &p, const std::function<
                 stalled = 0;
             }
         }
+        // A lap round where the tool centre may go, cutting only what is
+        // still there: a channel barely wider than the tool, or an acute
+        // corner, is a sliver the growing front's area test stops before.
+        const Candidate fin = runsOf(orientedRings(part, p.climb), cl, r, step);
+        for (const QPolygonF &run : fin.runs)
+            if (!run.isEmpty() && !plannedBefore(run))
+                addCut(run);
     }
     return out;
 }

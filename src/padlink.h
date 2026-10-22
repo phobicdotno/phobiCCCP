@@ -68,7 +68,10 @@ bool buildDocument(const QJsonObject &design, const QString &c2dPath,
 
 // `design` written to `c2dPath` as buildDocument does, but built beside it
 // and swapped in, so a failure leaves the file that is there as it was.
-bool rebuildDocument(const QJsonObject &design, const QString &c2dPath, QString *error);
+// What the design does not carry (retract height, tiling, display units, ...)
+// is kept from `keepFrom`, by default the file being replaced.
+bool rebuildDocument(const QJsonObject &design, const QString &c2dPath, QString *error,
+                     const QString &keepFrom = QString());
 
 // The other way: a .c2d made from a pad design and edited here, as a pad
 // design again, so the edit reaches the pads. `base` is the pad design it was

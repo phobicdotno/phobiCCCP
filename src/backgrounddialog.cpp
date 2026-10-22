@@ -186,8 +186,7 @@ void installImageMenus(QMenu *fileMenu, QWidget *window, Canvas *canvas,
         bg->visible = true;
         markDirty();
         emit canvas->statusHint(QObject::tr("Background image set: %1 (%2 × %3 mm)")
-                                    .arg(path).arg(bg->widthMm(), 0, 'f', 1)
-                                    .arg(bg->heightMm(), 0, 'f', 1));
+                                    .arg(path, QString::number(bg->widthMm(), 'f', 1), QString::number(bg->heightMm(), 'f', 1)));
     });
 
     QObject::connect(clearAct, &QAction::triggered, window, [=] {

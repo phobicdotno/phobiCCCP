@@ -26,6 +26,7 @@
 #include <QDateTime>
 #include <QLockFile>
 #include <QLineF>
+#include <QSet>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -865,6 +866,138 @@ int main(int argc, char *argv[])
               "stale: a leftover tile past the end is reported, not silently left");
     }
 
+    // A keyhole across a tile line would be finished in the next tile through
+    // solid wood: the tiled export is refused; within one tile it goes ahead.
+    {
+        QTemporaryDir d;
+        struct Case { double y, angle; bool tall, refused; const char *what; };
+        const Case cases[] = {
+            {20, 90, true, true, "tiling: a keyhole across a tile line is refused"},
+            {5, 90, true, false, "tiling: a keyhole inside one tile is exported"},
+            {30, 0, true, false, "tiling: a sideways keyhole near a tile line is exported"},
+            {30, 90, true, false, "tiling: a keyhole running up inside its tile is exported"},
+            {10, 90, false, false, "tiling: a keyhole in a one-tile job is exported"},
+        };
+        for (const Case &c : cases) {
+            Rig r;
+            if (c.tall) {   // something 100 mm tall: four tiles
+                r.addShape(c2d::Element::makePath({{60, 0}, {60, 100}}, false, layer));
+                r.addToolpath("contour", {{"ofset_dir", 0}, {"uuid", "{tp-0}"}});
+            }
+            r.addShape(c2d::Element::makePoint({40, c.y}, layer));
+            r.addToolpath("keyhole_toolpath", {{"angle", c.angle}, {"length", 12.7}, {"end_depth", "9.000"}});
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("k")), 25.0);
+            check(c.refused ? te.error.contains("tile line") : te.error.isEmpty(), c.what);
+        }
+    }
+
+    // An internal thread stays in its hole: one inside a tile is exported
+    // (the margin for an external thread's way out refused it); one across
+    // a tile line is still refused.
+    {
+        QTemporaryDir d;
+        for (const auto &c : {std::pair<double, bool>{12, false}, std::pair<double, bool>{25, true}}) {
+            Rig r;
+            r.addShape(c2d::Element::makePath({{80, 0}, {80, 100}}, false, layer));
+            r.addToolpath("contour", {{"ofset_dir", 0}, {"uuid", "{tp-0}"}});
+            r.addShape(c2d::Element::makeCircle({40, c.first}, 6, layer));
+            r.addToolpath("thread_toolpath", {{"pitch", 1.75}, {"side", "internal"}, {"end_depth", "6.000"}});
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("th")), 25.0);
+            check(c.second ? te.error.contains("tile line") : te.error.isEmpty(),
+                  c.second ? "tiling: an internal thread across a tile line is refused"
+                           : "tiling: an internal thread inside one tile is exported");
+        }
+    }
+
+    // A base name with "%2" in it (a browser-saved "Sign%2C v2") kept it.
+    {
+        QTemporaryDir d;
+        Rig r;
+        r.addShape(c2d::Element::makePath({{60, 0}, {60, 100}}, false, layer));
+        r.addToolpath("contour", {{"ofset_dir", 0}});
+        const QString base = d.filePath(QStringLiteral("Sign%2C v2"));
+        const c2d::TiledExport te = c2d::exportTiled(r.doc, base, 25.0);
+        check(te.error.isEmpty() && !te.files.isEmpty() && QFile::exists(base + QStringLiteral("_tile1.nc")),
+              "tiling: a base name with %2 in it is kept");
+    }
+
+    // A pocket at a stepover past the tool radius left a rib along its middle
+    // (the last ring a stepover short of the centre line, the tool reaching
+    // only its radius); every width gets its middle cut now.
+    {
+        auto nearestFloorCut = [](const QVector<c2d::Op> &ops, QPointF p) {
+            double best = 1e18, px = 0, py = 0, pz = 0;
+            for (const c2d::Op &o : ops) {
+                if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && std::max(pz, o.z) <= -2.0 + 1e-6) {
+                    const QPointF a(px, py), d = QPointF(o.x, o.y) - a;
+                    const double L2 = QPointF::dotProduct(d, d);
+                    const double t = L2 > 0 ? std::clamp(QPointF::dotProduct(p - a, d) / L2, 0.0, 1.0) : 0;
+                    best = std::min(best, QLineF(p, a + t * d).length());
+                }
+                if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc || o.kind == c2d::Op::Rapid) {
+                    px = o.x; py = o.y; pz = o.z;
+                }
+            }
+            return best;
+        };
+        int ribs = 0;
+        for (double so : {4.0, 4.5, 5.0})
+            for (double w = 10; w <= 60; w += 0.5) {
+                Rig r;
+                r.addShape(c2d::Element::makeRectangle({100, 50}, 150, w, layer));
+                r.addToolpath("pocket_toolpath", {{"stepover", so}});
+                const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+                if (nearestFloorCut(g.ops, QPointF(100, 50)) > 3.175 + 0.01)
+                    ++ribs;
+            }
+        check(ribs == 0, "pocket: a stepover past the radius still cuts the middle");
+        // The narrow arm of an L runs out while the body goes on: its middle
+        // is cut too.
+        for (double arm : {14.0, 15.0}) {
+            Rig r;
+            r.addShape(c2d::Element::makePath({{0, 0}, {100, 0}, {100, 40}, {25 + arm, 40}, {25 + arm, 100},
+                                               {25, 100}, {25, 40}, {0, 40}}, true, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 4.5}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            check(nearestFloorCut(g.ops, QPointF(25 + arm / 2, 70)) <= 3.175 + 0.01,
+                  "pocket: the narrow arm of an L gets its middle cut");
+        }
+        // With a helix entry each ring is entered where it is nearest: the
+        // only plunges from above the stock are the helix's own, one per depth.
+        auto plungesFromAbove = [](const QVector<c2d::Op> &ops) {
+            int n = 0;
+            double px = 0, py = 0, pz = 10;
+            for (const c2d::Op &o : ops) {
+                if (o.kind == c2d::Op::Feed && std::abs(o.x - px) < 1e-6 && std::abs(o.y - py) < 1e-6
+                    && o.z < pz - 1e-6 && pz > 0)
+                    ++n;
+                if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc || o.kind == c2d::Op::Rapid) {
+                    px = o.x; py = o.y; pz = o.z;
+                }
+            }
+            return n;
+        };
+        {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({100, 100}, 80, 50, layer));
+            r.addToolpath("pocket_toolpath", {{"stepover", 3.0}, {"helix_entry", true}, {"end_depth", "6.0"}});
+            check(plungesFromAbove(c2d::exportGcode(r.doc).ops) == 3,
+                  "pocket: rings entered where nearest, no plunge at a ring's start");
+        }
+    }
+
+    // An internal thread plunges at the hole's centre: a mill wider than the
+    // minor diameter (M14x2, 12 mm) is refused, not run shaving the crests.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({40, 40}, 7, layer));
+        r.addToolpath("thread_toolpath", {{"pitch", 2.0}, {"side", "internal"}, {"end_depth", "10.000"},
+                                          {"tool", QJsonObject{{"diameter", 12.0}, {"number", 201}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.isEmpty() && g.skipped.join(" ").contains("too small"),
+              "thread: an internal thread mill wider than the minor diameter is refused");
+    }
+
     // -----------------------------------------------------------------------
     // Texture over a big sheet. The generator used to sample the region every
     // 0.5 mm along the diagonal for every hatch line, so its cost grew with
@@ -998,6 +1131,140 @@ int main(int argc, char *argv[])
             c2d::exportTiled(doc, td.filePath(QStringLiteral("j")), 200.0, &never);
         check(!tiled.error.isEmpty(), "cancel: a cancelled tiled export is not a success");
         check(tiled.files.isEmpty(), "cancel: and writes no tiles");
+    }
+
+    // -----------------------------------------------------------------------
+    // V-carve reach is measured at the stock top: an inlay male starting 5.5
+    // below it needs a 6 mm cone there, which a 6.35 mm 90° bit lacks (its
+    // shank rubbed the stock with no note). Per pass 0 on a V-carve is one
+    // pass, also for the flat clearing (it stepped 0.05 mm at a time).
+    if (c2d::medialAxisAvailable()) {
+        const QJsonObject layer;
+        const QJsonObject vbit{{"diameter", 6.35}, {"number", 301}, {"angle", 90.0}, {"type", 2}};
+        Rig f;
+        f.addShape(c2d::Element::makeRectangle({30, 30}, 3, 40, layer));
+        f.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", "6.000"},
+                                                   {"stepdown", 2.0}, {"tool", vbit}});
+        const c2d::GcodeResult fg = c2d::exportGcode(f.doc);
+        check(fg.skipped.isEmpty() && fg.notes.isEmpty(), "vcarve: a narrow female carves without a note");
+        Rig m;
+        const c2d::Element border = c2d::Element::makeRectangle({100, 30}, 23, 60, layer);
+        const c2d::Element strip = c2d::Element::makeRectangle({100, 30}, 3, 40, layer);
+        m.addShape(border);
+        m.addShape(strip);
+        m.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "5.500"}, {"end_depth", "6.000"},
+                                                   {"stepdown", 2.0}, {"tool", vbit},
+                                                   {"elements", QJsonArray{QJsonObject{{"uuid", border.id}},
+                                                                           QJsonObject{{"uuid", strip.id}}}}});
+        const c2d::GcodeResult mg = c2d::exportGcode(m.doc);
+        double widest = 0;
+        for (const c2d::Op &o : mg.ops)
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < 0)
+                widest = std::max(widest, -o.z);
+        check(widest <= 3.175 + 1e-6 && (!mg.skipped.isEmpty() || !mg.notes.isEmpty()),
+              "vcarve: an inlay male deeper than the cone at the stock top is refused with a note");
+        // A letter V-carved on a pocket's floor (Start 3) has its stock start
+        // at that floor: it carves, and its passes start there, not in air.
+        const QJsonObject v60{{"diameter", 6.35}, {"number", 301}, {"angle", 60.0}, {"type", 2}};
+        Rig pf;
+        const c2d::Element panel = c2d::Element::makeRectangle({50, 50}, 80, 40, layer);
+        const c2d::Element letter = c2d::Element::makeRectangle({50, 50}, 4, 30, layer);
+        pf.addShape(panel);
+        pf.addShape(letter);
+        pf.addToolpath("pocket_toolpath", {{"end_depth", "3.000"}, {"uuid", "{tp-0}"},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", panel.id}}}}});
+        pf.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "3.000"}, {"end_depth", "10.000"},
+                                                    {"tool", v60}, {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", letter.id}}}}});
+        const c2d::GcodeResult pg = c2d::exportGcode(pf.doc);
+        double deepest = 0;
+        for (const c2d::Op &o : pg.ops)
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc)
+                deepest = std::min(deepest, o.z);
+        check(pg.skipped.isEmpty() && pg.notes.isEmpty() && deepest < -6.4,
+              "vcarve: a letter on a pocket's floor carves (the stock starts at the floor)");
+        // ...but only a floor wide enough for the cone around the letter: a
+        // pocket 1 mm wider than the letter each side still has its walls
+        // standing where the cone (and shank) would pass, so it is refused.
+        Rig nw;
+        const c2d::Element slot = c2d::Element::makeRectangle({50, 50}, 6, 34, layer);
+        const c2d::Element inSlot = c2d::Element::makeRectangle({50, 50}, 4, 30, layer);
+        nw.addShape(slot);
+        nw.addShape(inSlot);
+        nw.addToolpath("pocket_toolpath", {{"end_depth", "3.000"}, {"uuid", "{tp-0}"},
+                                           {"tool", QJsonObject{{"diameter", 3.175}, {"number", 201}}},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", slot.id}}}}});
+        nw.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "3.000"}, {"end_depth", "10.000"},
+                                                    {"tool", v60}, {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", inSlot.id}}}}});
+        const c2d::GcodeResult ng = c2d::exportGcode(nw.doc);
+        check(!ng.skipped.isEmpty() || !ng.notes.isEmpty(),
+              "vcarve: a pocket floor too narrow for the cone around the letter does not count");
+        // A floor shallower than the start depth: the cone is still as wide
+        // at Z0 as from the start depth, so a slot 0.7 mm wider than the
+        // letter each side, pocketed only 1 mm deep, does not let a 4 mm
+        // start through.
+        Rig sh;
+        const c2d::Element shSlot = c2d::Element::makeRectangle({50, 50}, 3.4, 32, layer);
+        const c2d::Element shLetter = c2d::Element::makeRectangle({50, 50}, 2, 30, layer);
+        sh.addShape(shSlot);
+        sh.addShape(shLetter);
+        sh.addToolpath("pocket_toolpath", {{"end_depth", "1.000"}, {"uuid", "{tp-0}"},
+                                           {"tool", QJsonObject{{"diameter", 1.0}, {"number", 202}}},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", shSlot.id}}}}});
+        sh.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "4.000"}, {"end_depth", "10.000"},
+                                                    {"tool", QJsonObject{{"diameter", 6.0}, {"number", 301},
+                                                                         {"angle", 60.0}, {"type", 2}}},
+                                                    {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", shLetter.id}}}}});
+        const c2d::GcodeResult shg = c2d::exportGcode(sh.doc);
+        check(!shg.skipped.isEmpty() || !shg.notes.isEmpty(),
+              "vcarve: a floor shallower than the start depth still needs room for the cone at Z0");
+        // An uncut island inside the letter's reach is not floor: a pocket
+        // round a 1.5 mm boss, an 8 mm square V-carved over the boss.
+        Rig il;
+        const c2d::Element ilArea = c2d::Element::makeRectangle({50, 50}, 40, 40, layer);
+        const c2d::Element ilBoss = c2d::Element::makeCircle({50, 50}, 1.5, layer);
+        const c2d::Element ilLetter = c2d::Element::makeRectangle({50, 50}, 8, 8, layer);
+        il.addShape(ilArea);
+        il.addShape(ilBoss);
+        il.addShape(ilLetter);
+        il.addToolpath("pocket_toolpath", {{"end_depth", "3.000"}, {"uuid", "{tp-0}"},
+                                           {"elements", QJsonArray{QJsonObject{{"uuid", ilArea.id}},
+                                                                   QJsonObject{{"uuid", ilBoss.id}}}}});
+        il.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "3.000"}, {"end_depth", "6.000"},
+                                                    {"stepdown", 1.0},
+                                                    {"tool", QJsonObject{{"diameter", 6.0}, {"number", 301},
+                                                                         {"angle", 60.0}, {"type", 2}}},
+                                                    {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", ilLetter.id}}}}});
+        const c2d::GcodeResult ilg = c2d::exportGcode(il.doc);
+        check(!ilg.skipped.isEmpty() || !ilg.notes.isEmpty(),
+              "vcarve: an uncut island under the letter is not a floor");
+        // A faced panel's floor counts like a pocket's.
+        Rig fc;
+        const c2d::Element faceArea = c2d::Element::makeRectangle({50, 50}, 80, 60, layer);
+        const c2d::Element onFace = c2d::Element::makeRectangle({50, 50}, 5, 30, layer);
+        fc.addShape(faceArea);
+        fc.addShape(onFace);
+        fc.addToolpath("face_toolpath", {{"end_depth", "2.000"}, {"uuid", "{tp-0}"},
+                                         {"tool", QJsonObject{{"diameter", 12.0}, {"number", 1}}},
+                                         {"elements", QJsonArray{QJsonObject{{"uuid", faceArea.id}}}}});
+        fc.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "2.000"}, {"end_depth", "10.000"},
+                                                    {"tool", v60}, {"uuid", "{tp-1}"},
+                                                    {"elements", QJsonArray{QJsonObject{{"uuid", onFace.id}}}}});
+        const c2d::GcodeResult fcg = c2d::exportGcode(fc.doc);
+        check(fcg.skipped.isEmpty() && fcg.notes.isEmpty(), "vcarve: a letter on a faced panel carves");
+        const QJsonObject wide{{"diameter", 12.7}, {"number", 301}, {"angle", 90.0}, {"type", 2}};
+        Rig one;
+        one.addShape(c2d::Element::makeRectangle({30, 30}, 16, 16, layer));
+        one.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", "5.000"},
+                                                     {"stepdown", 0.0}, {"tool", wide}});
+        QSet<long> levels;
+        for (const c2d::Op &o : c2d::exportGcode(one.doc).ops)
+            if (o.kind != c2d::Op::Rapid && o.z < -1e-6)
+                levels.insert(std::lround(o.z * 1000));
+        check(levels.size() < 20, "vcarve: Per pass 0 clears the flat bottom in one pass");
     }
 
     // -----------------------------------------------------------------------

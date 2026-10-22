@@ -168,10 +168,10 @@ bool isClosed(const Element &e)
 #ifdef HAVE_CLIPPER2
 static const double kScale = 1000.0;   // integer µm
 
-static C2::Path64 toPath64(const QPolygonF &poly)
+static C2::Path64 toPath64(const QPolygonF &poly, bool trimClosed = true)
 {
     C2::Path64 p;
-    const int n = poly.isClosed() ? poly.size() - 1 : poly.size();
+    const int n = trimClosed && poly.isClosed() ? poly.size() - 1 : poly.size();
     p.reserve(size_t(n));
     for (int i = 0; i < n; ++i)
         p.push_back(C2::Point64(qRound64(poly.at(i).x() * kScale),
@@ -308,8 +308,8 @@ QVector<QPolygonF> offsetRings(const QVector<QPainterPath> &closed,
         C2::Paths64 lines;
         for (const QPainterPath &pp : open)
             for (const QPolygonF &poly : finePolygons(pp, tol))
-                if (poly.size() > 1)
-                    lines.push_back(toPath64(poly));
+                if (poly.size() > 1)   // an open path ending on its start keeps that last side
+                    lines.push_back(toPath64(poly, false));
         const C2::Paths64 stroke = C2::InflatePaths(lines, std::fabs(delta) * kScale,
                                                     C2::JoinType::Round, C2::EndType::Round,
                                                     2.0, arcTol);
@@ -777,9 +777,17 @@ QVector<QTransform> pathTransforms(const QPainterPath &path, int count, double s
                        : closed ? total * i / count : total * i / (count - 1);
         if (s > total + 1e-9)
             break;
+        // Round a closed path back at the start: a copy there would sit on
+        // the original (stacked vectors cancel in a pocket).
+        if (closed && s > total - 0.01)
+            break;
         QPointF p;
         double d = 0;
         at(s, &p, &d);
+        // A copy that lands on the start (a figure-eight crossing it, a tiny
+        // circle) is skipped; the path goes on past it.
+        if (closed && QLineF(p, p0).length() < 0.05)
+            continue;
         QTransform t;
         t.translate(p.x(), p.y());
         if (orient)

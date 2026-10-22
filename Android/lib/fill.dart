@@ -71,26 +71,125 @@ bool ringContains(List<Pt> r, Pt p) {
 // meet exactly.
 const _q = 10000.0;
 
+// Gaps this narrow (0.02 mm, on the grid) count as touching: the desktop
+// shrinks the face by 0.01 mm and grows it back, which cuts any channel
+// narrower than twice that.
+const _touch = 200;
+
 typedef _V = (int, int);
+
+// Flattened, a circle touching a side no longer touches it: the pieces hang
+// together by a slit a few microns wide. Each corner within [_touch] of
+// another shape's edge gets a short bridge to that edge, which cuts the slit
+// the way the desktop's shrink-and-regrow does. The outlines themselves stay
+// exactly as drawn (moving or bending them broke the map where outlines run
+// within microns of each other).
+List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
+  final out = <(_V, _V, int)>[];
+  // Arc length along each ring to each vertex: a ring's own edges count as
+  // another shape's once they are more than 3 touch widths away along it.
+  final arc = [
+    for (final r in rings)
+      () {
+        final l = <double>[0];
+        for (var k = 1; k <= r.length; k++) {
+          final a = r[k - 1], b = r[k % r.length];
+          l.add(l.last + math.sqrt(((b.$1 - a.$1) * (b.$1 - a.$1) + (b.$2 - a.$2) * (b.$2 - a.$2)).toDouble()));
+        }
+        return l;
+      }()
+  ];
+  // Edges bucketed on a coarse grid (cells of 0.5 mm), each in every cell its
+  // box grown by _touch covers: a corner only looks at the edges of its cell.
+  const cell = 5000;
+  final cells = <int, List<int>>{};
+  int key(int cx, int cy) => cx * 1000003 + cy;
+  for (var rj = 0; rj < rings.length; rj++) {
+    final r = rings[rj];
+    for (var k = 0; k < r.length; k++) {
+      final a = r[k], b = r[(k + 1) % r.length];
+      if (a == b || edgeOf[rj][k] < 0) continue;
+      final x0 = (math.min(a.$1, b.$1) - _touch) ~/ cell, x1 = (math.max(a.$1, b.$1) + _touch) ~/ cell;
+      final y0 = (math.min(a.$2, b.$2) - _touch) ~/ cell, y1 = (math.max(a.$2, b.$2) + _touch) ~/ cell;
+      for (var cx = x0; cx <= x1; cx++) {
+        for (var cy = y0; cy <= y1; cy++) {
+          (cells[key(cx, cy)] ??= <int>[]).add(rj << 24 | k);
+        }
+      }
+    }
+  }
+  for (var ri = 0; ri < rings.length; ri++) {
+    for (var pi = 0; pi < rings[ri].length; pi++) {
+      final p = rings[ri][pi];
+      final cand = cells[key(p.$1 ~/ cell, p.$2 ~/ cell)] ?? const <int>[];
+      final best = <int, (double, int, _V)>{};
+      for (final e in cand) {
+        final rj = e >> 24, k = e & 0xffffff;
+        final r = rings[rj];
+        final a = r[k], b = r[(k + 1) % r.length];
+        if (p.$1 < math.min(a.$1, b.$1) - _touch || p.$1 > math.max(a.$1, b.$1) + _touch) continue;
+        if (p.$2 < math.min(a.$2, b.$2) - _touch || p.$2 > math.max(a.$2, b.$2) + _touch) continue;
+        if (rj == ri) {
+          final L = arc[ri].last;
+          double along(int i, int j) { final d = (arc[ri][i] - arc[ri][j]).abs(); return math.min(d, L - d); }
+          if (math.min(along(pi, k), along(pi, k + 1)) < 3 * _touch) continue;
+        }
+        final dx = (b.$1 - a.$1).toDouble(), dy = (b.$2 - a.$2).toDouble();
+        final t = (((p.$1 - a.$1) * dx + (p.$2 - a.$2) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        final q = ((a.$1 + dx * t).round(), (a.$2 + dy * t).round());
+        final ex = (p.$1 - q.$1).toDouble(), ey = (p.$2 - q.$2).toDouble();
+        final d2 = ex * ex + ey * ey;
+        final o = best[rj];
+        if (o == null || d2 < o.$1 || (d2 == o.$1 && k < o.$2)) best[rj] = (d2, k, q);
+      }
+      final order = best.keys.toList()..sort();
+      for (final rj in order) {
+        final (bd, bk, bestQ) = best[rj]!;
+        final bestSeg = edgeOf[rj][bk];
+        if (bestSeg < 0 || bd > _touch * _touch || bd <= 2) continue;
+        out.add((p, bestQ, bestSeg));
+      }
+    }
+  }
+  return out;
+}
 
 /// The face around [at] bounded by [rings]: its outline first, then its
 /// holes (the shapes standing inside it), wound the other way. Empty when
 /// [at] is inside none.
 List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
-  // Every edge, on the grid.
+  // A tap inside none of the shapes (a window framed by overlapping bars)
+  // fills nothing, as on the computer.
+  if (!rings.any((r) => r.length >= 3 && ringContains(r, at))) return const [];
+  // Every edge, on the grid, after closing the slits between near-touching
+  // shapes.
+  final grid = [for (final r in rings) [for (final p in r) _snap(p)]];
   final segs = <(_V, _V)>[];
-  for (final r in rings) {
+  final edgeOf = <List<int>>[];
+  for (final r in grid) {
+    final ids = <int>[];
     for (var i = 0; i < r.length; i++) {
-      final a = _snap(r[i]), b = _snap(r[(i + 1) % r.length]);
+      final a = r[i], b = r[(i + 1) % r.length];
+      ids.add(a != b ? segs.length : -1);
       if (a != b) segs.add((a, b));
     }
+    edgeOf.add(ids);
   }
   if (segs.isEmpty) return const [];
+  final bridges = _bridges(grid, edgeOf);
+  final shapeSegs = segs.length;
+  for (final (p, q, _) in bridges) {
+    segs.add((p, q));
+  }
 
   // Split each edge wherever another crosses or touches it.
   final cuts = [
     for (final s in segs) <_V>{s.$1, s.$2},
   ];
+  // A bridge ends on its edge to within the grid's rounding: cut it there.
+  for (final (_, q, seg) in bridges) {
+    if (seg < shapeSegs) cuts[seg].add(q);
+  }
   for (var i = 0; i < segs.length; i++) {
     final (a, b) = segs[i];
     for (var j = i + 1; j < segs.length; j++) {
@@ -219,7 +318,7 @@ bool _onSeg(_V a, _V b, _V p) =>
     p.$2 >= math.min(a.$2, b.$2) &&
     p.$2 <= math.max(a.$2, b.$2);
 
-/// The same outline as [ring], to within a sliver: same box and same area.
+/// The same outline as [ring], to within a sliver: same box, corners on each other's outline.
 bool sameRing(List<Pt> a, List<Pt> b) {
   List<double> box(List<Pt> r) => [
     r.map((p) => p.$1).reduce(math.min),
@@ -231,6 +330,28 @@ bool sameRing(List<Pt> a, List<Pt> b) {
   for (var i = 0; i < 4; i++) {
     if ((ba[i] - bb[i]).abs() > 0.05) return false;
   }
-  final aa = ringArea(a).abs(), ab = ringArea(b).abs();
-  return (aa - ab).abs() <= 0.002 * math.max(aa, ab) + 0.01;
+  // Every corner of each lies on the other's outline. An area rule let a
+  // notch of a few mm on a big shape count as the whole shape; a notch's
+  // corners are off the outline by its own size. The same rule as the
+  // desktop's Area tool.
+  return _near(a, b) && _near(b, a);
+}
+
+double _segDist(Pt p, Pt s, Pt e) {
+  final dx = e.$1 - s.$1, dy = e.$2 - s.$2;
+  final l2 = dx * dx + dy * dy;
+  final t = l2 > 0 ? (((p.$1 - s.$1) * dx + (p.$2 - s.$2) * dy) / l2).clamp(0.0, 1.0) : 0.0;
+  final x = s.$1 + t * dx - p.$1, y = s.$2 + t * dy - p.$2;
+  return math.sqrt(x * x + y * y);
+}
+
+bool _near(List<Pt> from, List<Pt> to) {
+  for (final v in from) {
+    var best = double.infinity;
+    for (var i = 0; i < to.length; i++) {
+      best = math.min(best, _segDist(v, to[i], to[(i + 1) % to.length]));
+    }
+    if (best > 0.1) return false;
+  }
+  return true;
 }

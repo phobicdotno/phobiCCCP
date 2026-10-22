@@ -40,6 +40,7 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
     void openFile(const QString &path);
+    bool hasDocument() const { return !m_doc.filePath().isEmpty(); }
     void showParameters();          // Design page, Parameters tab
     // A blank design the size of the machine in Settings, not yet saved
     // anywhere: what the window starts on when no file is given.
@@ -116,7 +117,8 @@ private:
     // File > Send to pad…: the open file to a pad, to edit it there.
     void onSendToPad();
     // The design as it is now, saved or not, as a .c2d in the cache (to send whole).
-    QString sendCopy(QString *error);
+    QString sendCopy(const QString &opened, QString *error);
+    bool sameDesign(const QString &opened, QString *error) const;
     qint64 sendToPad(const QString &padId, QString *note, QString *error);
     padlink::Pads m_pads;   // pads in touch lately, and designs waiting for them
     void padDesignChanged(const QString &id);
@@ -172,6 +174,15 @@ private:
     // the program export run the event loop, and another one must not open a
     // design (or start the machine) in the middle of it.
     bool m_linkBusy = false;
+    // A step here works on the open design across a dialog or an export
+    // (Export G-code, the setup sheet): a pad or computer must not replace it.
+    int m_holdDoc = 0;
+    bool docHeld() const;
+    // Where Export G-code starts: beside the design (or the file an untitled
+    // one came from), named after it.
+    QString gcodeSuggestion() const;
+    void commitEdits();
+    bool typingPending() const;
     QAction *m_receiveAct = nullptr;
     bool m_isoStale = false;
     // refreshIso runs the event loop behind its progress dialog. An edit made

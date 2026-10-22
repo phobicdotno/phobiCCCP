@@ -44,6 +44,10 @@ private:
     void onCurrentChanged();
     void onItemChanged(QTreeWidgetItem *item, int column);
     void createInlayMale();       // mirrored male from the selected v-carve
+    // A number typed in the form (no Enter yet) is committed, and its queued
+    // edit run, before an action reads the toolpath: run after it, the edit's
+    // snapshot put back what the action changed.
+    void flushForm();
     void pickTool();              // tool library -> selected toolpath's tool/speeds
     void updateButtons();
     // "which shapes does this toolpath cut?" and its reverse. The first paints

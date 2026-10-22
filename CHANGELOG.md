@@ -1,5 +1,253 @@
 # Changelog
 
+## v1.3.2 (build 92) — 2026-10-20
+
+> Recursive bug hunt, round 4: inlays seat at their depth, marks stay on their letters, and closing during an export no longer hangs
+
+- **Toolpaths:**
+  - The inlay male started the glue gap below the top, so the plug seated only that deep
+    and left a void of most of the pocket under it. It now starts the gap short of the
+    pocket's depth and ends at it: the gap of glue below, the plug the gap proud.
+  - The inlay male no longer carves construction guides and points into the male as real
+    vectors (the female leaves them out).
+  - An inlay male starting deep below the top was carved even when the V-bit's cone was too
+    short to reach the stock top, so its shank rubbed and the plug kept a ledge. It is refused
+    with a note now (a V-carve on a pocket's or a facing's floor counts its stock from that
+    floor where the floor is wide enough for the cone, and its passes start there). Per pass 0 on a V-carve is one pass for its flat clearing too (it stepped
+    down 0.05 mm at a time).
+  - Site order ran a toolpath out of list order before one it depends on: a straight
+    horizontal or vertical line (a dado, a groove) before a cutout or pocket at the same
+    place, or a rest-depth groove along the seam of two earlier pockets between them.
+  - Circular round several bosses cut into the neighbouring bosses when they stood closer
+    than the clearance; the laps stop short of them, and a boss the tool cannot pass beside
+    is skipped with a note.
+  - Adaptive left most of a channel only a little wider than the tool uncut, without a
+    note; each part now ends with a lap round where the tool can reach.
+  - Adaptive on a groove round a centred island (a ring channel round a boss) entered with
+    its helix inside the island and left the groove's middle uncut; it enters in the groove.
+  - Adaptive started with a rapid across to X0 Y0 before its first cut; it goes straight to
+    its entry now.
+  - V-carve with a flat or ball bit cut straight down past the walls; it asks for a V-bit,
+    as 2D Chamfer does. 2D Chamfer no longer takes a ball bit with an angle on file, and a
+    bevel wider than the V-bit's cone (which the shank would cut) is refused with a note.
+    A V-carve shape that would go deeper than the bit's cone (a wide shape with the end depth
+    past the cone) is left out with a note, rather than cut with a lip along its walls.
+  - V-carve took its whole depth in one pass, ignoring Per pass (an inlay male, which starts
+    below the top, plunged 4.5 mm into untouched stock at its first move); the carving and the
+    flat clearing both step down from the stock top now.
+  - Pocket, Cutout and offset Contours accepted a V-bit and kept it a whole radius off the
+    vectors, so the part came out oversize; they ask for an end mill (on-the-line is fine).
+    Adaptive, Circular, Bore and Face do too. Per pass 0 on a V-carve is still one pass.
+  - A keyhole or thread crossing a tile line was finished in the next tile through solid wood
+    (the keyhole bit lifted out through the neck); the tiled export is refused, naming it.
+    An internal thread is judged by where its tool goes (it was refused well inside one tile).
+  - A pocket with a stepover past the tool radius (60 to 75 % of the bit) could leave a rib of
+    full height along its middle, or a pin in a round pocket, also in a narrower arm or a
+    channel beside an island; laps are added where the rings left something uncut.
+  - Pockets retracted and plunged into solid stock at the start of a ring at every depth
+    (helix entry or not) when the ring's first point was far from where the last one ended;
+    each ring is now entered where it is nearest.
+  - An internal thread took a thread mill wider than the hole's minor diameter and shaved the
+    crests where it plunges at the centre; such a hole is left out as too small.
+  - Face over selected vectors cut a tool radius and more past their box; the tool stays inside it.
+  - A V-carve starting deeper than the pocket floor under it measured the room for its cone at
+    that floor, not at its start depth, so the cone and shank could cut into the pocket's wall.
+  - A V-carve over an uncut island of a pocket (a boss left standing under the letter) took the
+    pocket's floor as its stock top, so its first pass went through the island full depth.
+  - In a tiled program, a toolpath with another bit starting where the last cut in that tile
+    ended (a pilot drill then a drill at the same hole) fed straight down from wherever the tool
+    change left the spindle; it now comes back through safe Z first.
+- **Drawing:**
+  - Hebrew and Arabic vowel marks (and Devanagari vowel signs) came off their letters with
+    letter spacing or on an arc; each letter moves with its marks now.
+  - HPGL import read text as commands (the "Pr" of "Project" switched to relative moves);
+    labels, display texts, quoted comments and names, and encoded polylines are skipped.
+    HPGL inside a printer-driver wrapper (PCL/PJL) keeps its first command too.
+    A file starting with a plotter-on code (ESC.( or ESC.Y) keeps its drawing.
+  - Text in PDF, AI and EPS files (and SVG clones) was dropped on import; it comes in now.
+    A clone of a group leaves out the group's hidden parts, and a clone of an icon symbol
+    takes the size it is given.
+    Clip paths inside a cloned symbol or group no longer come in as extra squares; a clone may
+    refer to a symbol defined after it.
+  - A rotated DXF block array (MINSERT) ran along X instead of turning with the insert.
+  - Extend, and the tangent arc's start, went along the chord off a curve whose end has no
+    handle of its own (an S after a line); they follow the curve now.
+  - The Area tool took the whole shape when a small notch overlapped it (a few mm on a table
+    or a sheet); the face counts as the shape only when their corners lie on each other's
+    outline. The pad's Area tool has the same rule.
+  - Break and Convert to paths on text left the extra pieces out of the shape's group and
+    dropped construction from them.
+  - The Area tool copied a shape with sharp tips (under about 20 degrees) instead of selecting
+    it, as a lone shape or as an island in a pocket (hair-thin islands too).
+  - Pattern on path with a spacing round a closed path put the last copy on the original.
+  - A DXF saved with a byte-order mark failed to import.
+  - An SVG with only a width or only a height and no viewBox came in stretched to that size.
+  - A closed path of a single curve from an SVG or PDF (a teardrop) vanished on Rotate, Mirror,
+    Scale, node edits, Break, Trim or Extend.
+  - Escape pressed while dragging a node crashed the program; it now cancels the drag. Escape
+    or a tool switch during a resize-handle drag cancels the resize too (it landed on release).
+  - Constraints that could only hold by shrinking a circle, rectangle or polygon to nothing
+    (Tangent then Concentric on two circles, a rectangle's opposite corners made coincident)
+    were accepted and the shape vanished; they show as a conflict now.
+  - A tool switch or a selection change (Ctrl+A) during a node drag left the dragged shape
+    drawn on the item while the design kept the old one. Undo during a resize drag no longer
+    lands a stale resize on release (it also cleared the redo step).
+  - A tool key pressed during a Select drag left the shape drawn moved while the design kept
+    it in place; it goes back now.
+  - In an SVG with a width but no viewBox, sizes in % came out against 100 px, not the width;
+    and a preserveAspectRatio starting with "defer" placed the drawing off to one side.
+  - The Area tool round a shape whose own ends nearly meet (an O drawn as one outline with a hair
+    slit, a horseshoe whose tips almost touch) selected that shape, so a pocket also cut its
+    counter or room; the face is added as its own closed path now.
+  - Offset of an open path whose last node sits on its first left its last side unstroked.
+  - An SVG symbol drawn with `<use>` under a root with only a width came in shifted right.
+  - Trim and Break missed a curve whose crossing was a line's end resting on it from outside
+    (where Extend leaves it): Trim deleted the whole circle.
+  - The Area tool round text with no counters ("TL", "i") added copies of the letters as new
+    paths; it selects the text.
+  - An SVG `<use>` of a nested `<svg>` left out that svg's position, size and viewBox.
+  - Trim and Break still missed most lines Extended onto a circle (the point search was too
+    coarse), and a line ending on a shape from inside left an invisible sliver behind.
+  - In an SVG, a nested `<svg>` drawn through `<use>` sized % lengths by the page, not by
+    itself, and ignored the `<use>`'s width and height.
+- **Machine:**
+  - Stop pressed while Cancel job was still waiting for the hold to settle still raised Z
+    afterwards; nothing moves after Stop now. Cancel job or Disconnect as the job's last lines
+    are answered still resets the held controller (and adds no end-of-job moves).
+  - Resume pressed while Cancel job waited for the hold restarted the job, which was then
+    reset mid-cut; it is refused now.
+  - An end stop or controller reset during BitZero's last move left its final step waiting,
+    and it ran by itself (zeroing and probing) after the next Initialize.
+  - A safe Z typed above the Z switch (0, -1) tripped the limit switch at every tool change,
+    Go to X0 Y0 and job end, as Park already avoided; every safe-Z move keeps within the travel now.
+  - A "rise" to safe Z no longer moves down when the spindle already stands higher (safe Z set
+    below a tall job's retract height plunged at the last X Y at the end of the job).
+    The end-of-job rise waits until the program's own last retract has run, and a tool change
+    parks at the top. Park, Go to X0 Y0 and Measure are refused while that rise is still
+    waiting (they moved down from the job's last retract), and so is Zero.
+  - Rehearse tool change parked at a tool-change spot outside the travel (Y +20 for -20 tripped
+    the limit switch); it is refused, as Run already refused it. Zero Z and BitZero with the
+    BitSetter on check, as Measure bit does, that the machine is homed and the button inside
+    the travel before they go to measure.
+  - While the tool-change prompt was open the panel read nothing from the controller: no
+    position, no alarms, and pad jogs refused. It keeps listening now, and so does the
+    rehearsal's summary.
+  - A pad jog tap during BitZero went out just before its zero, so the zero (and the rise)
+    was refused by the controller while the log said it was set. Taps are dropped while a
+    step waits for the machine to stand still, and a start sent from a pad then is refused.
+    So is a start (from the pad or Run) sent right after a jog tap, before the controller
+    reports the jog (the job's first lines were refused and the job stopped). Rehearse tool
+    change, Park, Go to X0 Y0, Measure and BitZero wait for it the same way, with the reason,
+    instead of failing with error:9 or a misleading "no contact".
+  - A jog tapped while the machine homed ran after homing without travel limits, and made the
+    controller refuse the tool length offset, so the next job cut that far off in Z. Jogs are
+    refused while homing, and a refused offset is sent again once the controller is idle.
+  - A tool length measured on one machine was sent again to the next after a machine switch.
+  - Initialize on a controller that refuses homing ($22=0) left every jog refused "while
+    homing" until Stop or a disconnect. A tool length offset the controller keeps refusing
+    is tried three times, then reported, instead of at every status report.
+  - A start from a pad now refuses a design set up for tiling that needs more than one tile
+    (Run on the computer too: it drove Y past the end of travel), and refuses while the
+    surface map or Air cut is switched on at the computer (an old map bent the new design's
+    depths; an air cut was reported as "cutting started"). Every job starts with the feed,
+    rapid and spindle overrides back at 100 % (they carried over from the job before).
+  - Switching to a machine profile with a different BitZero plate kept the old plate's
+    settings in the BitZero panel until the program was restarted.
+  - A pad switching the machine while Preferences was open let OK write the old machine's size
+    into the new one; the pad is told to try again once the window is closed.
+- **Panels:**
+  - Closing the window just as an export started (Simulate, Export, Run) left the program
+    running forever in the background.
+  - A design sent from a pad or another computer no longer replaces the open one under a
+    dialog or an export (Export G-code wrote the old design's program under the new name);
+    the sender is told to try again shortly. An open Send to pad window does not count, so
+    a design sent back from the pad still opens.
+  - A number typed in a field without Enter is kept by Save, Export G-code, the setup sheet,
+    Send to pad, New and closing the window.
+  - A Send window left open while another design is opened refuses to send that one under the
+    first one's name.
+  - A pad's edit arriving while a number was typed but not committed asked to save over it and
+    lost the pad's edit; the typed number now counts as unsaved, so the file is left alone.
+  - A Send window refused its own design after a pad edit reopened it by its real path.
+  - A design of exactly 12 MB passed the size check and then failed as "request too long".
+  - A pad's edit of a Carbide Create file reset its retract height to 2.54 mm (and its file
+    permissions); both are kept now, with tiling and the other job settings, and a copy
+    made from a pad edit keeps them too.
+  - A pad's edit of another design, arriving while a number was being typed, cut the number
+    short ("2" of "2.5"); the typing is left alone. Enter on a field left unchanged no longer
+    counts as typing, so the pad's edit is taken.
+  - A number typed in a toolpath (no Enter) undid Assign selected vectors, was lost when the
+    toolpath's on/off box was clicked, and went to the original instead of the copy on Duplicate.
+    It was also lost on a new toolpath from the toolbar, and a typed Properties value was lost
+    when a Vectors toolbar action (Mirror, ...) was clicked. A pad's edit arriving as Save
+    committed a typed number reloaded the design and lost the number.
+  - Two unnamed machines could both be called "Machine 3", and Remove other machine then
+    removed the wrong one.
+  - A G-code export that failed part-way (a full disk, a pulled stick) left a cut-off program
+    in place of the previous one; the old file stays until the new one is complete, for tiled
+    and command-line exports too (--export to /dev/stdout or a pipe still writes straight).
+    A read-only program stays read-only when exported over.
+  - A tiled export whose name or folder held "%2" (a browser-saved "Sign%2C v2") wrote the
+    tiles under a mangled name, or failed; the name is kept. Names with "%1" to "%9" also show
+    as typed in labels and messages (tool library, pad copies, notes and errors), and a pad
+    toolpath with such a name is no longer dropped.
+  - Opening a file from the command line after a crash could have the recovery copy swapped in
+    halfway, under the file's name. The recovery is offered once the open is done.
+  - A command-line file that failed to open (moved, damaged) left a window where every tool
+    did nothing; a blank design follows the error now.
+  - Delete pressed while a toolpath value was still being typed put that value into the
+    toolpath shown next. An STL deeper than the board was scaled up many times by the
+    default fit instead of down; it now fits the board both ways.
+  - Saving a design whose file is read-only said "Saved incompletely" at every save and kept
+    it unsaved; it saves (and stays read-only, also when run as root).
+  - Toolpath settings in mm kept only 2 decimals, so a typed 3.175 was saved as 3.18; they keep
+    3, and a thread's Pitch keeps 4.
+  - Tab width took up to 500 mm and a new cutout started at 127 mm, but tabs are cut at most
+    30 mm wide; the field stops at 30 and a new cutout starts at 12.
+  - The setup sheet left a cutout's break-through out of its depth.
+  - Depth fields in the toolpath settings kept 2 decimals (3.175 was saved as 3.17); they keep 3.
+  - A thread's Passes took up to 50 and the Adaptive ramp angle up to 45°, but the export cuts at
+    most 20 passes and ramps at 0.5 to 15°; the fields stop there.
+  - Export G-code suggested the cache's scratch name ("untitled-6829.nc") for a design opened
+    from a DXF or SVG, and no folder; it suggests the source's name beside it.
+  - Restart now after changing the GUI scale came back at the old scale.
+  - With Preview turned off while it was updating, "Updating preview…" stayed on the status
+    line for good.
+- **Pad link:**
+  - A pad design cut with any bit but #201 counted as having toolpath settings made on the
+    computer after its first Save there, so every later pad edit went to a "(pad)" copy. The
+    lead-in, rest and helix sizes now follow the pad's bit both ways (files made before keep
+    taking pad edits too).
+  - Send and start from a pad cut the rest of a design when a toolpath could not be made (a
+    V-bit in a pocket), freeing the part before it. Such a start is refused with the reason,
+    the pad warns before sending, and a pocket or profile never gets a V-bit by default.
+    Run on the computer lists what is left out.
+  - A Carbide Create file with layers or groups lost them when a pad edited it; they are now
+    named as something the pad does not hold, so the pad's edit is kept as a copy beside it.
+  - phobiCCCP on a tablet is no longer backed up or moved to a new tablet, so two tablets cannot share one
+    identity, and the pad's id on the computer is its own id in the versions.
+  - A design edited in turn by an older and a newer client no longer outgrows its versions,
+    and the copies made after that are still known to be made from each other.
+  - A design sent by another computer no longer warns that the pad is old.
+  - The pad shows its real version (it said 1.2.3).
+  - Start on the pad's Machine page and the Send dialog went to the machine of the last send,
+    not the one the computer uses now (a machine picked on another computer could even
+    retarget this one); both use the machine in use.
+  - The pad's Area fill joined pieces through a circle touching a side (a circle in a panel's
+    corner filled the whole panel, not the nook), and filled a window framed by shapes that is
+    inside none of them; it fills what the computer fills, also where outlines nearly coincide.
+  - The pad's Area fill no longer joined a shape's own nearly touching ends (a horseshoe whose
+    tips almost meet, an O drawn as one outline), so it filled the wrong piece; and a tap on a
+    design with many shapes froze the pad for seconds.
+  - A tap with the Area tool on one big outline (thousands of points) froze the pad for seconds.
+  - Tapping the pad's End depth field and leaving it changed 3.175 to 3.17, so a profile no
+    longer cut through; a field left as it was keeps its value, and End shows 3 decimals.
+  - Typing a number into a pad field and pressing Done put the old value back when the old one
+    had more decimals than the field shows.
+  - The pad's Open dialog opened the copy it showed when it was opened: when a newer copy synced
+    in meanwhile, the first edit was dropped while the status said it was done. Designs deleted
+    elsewhere while it was open broke its list.
+
 ## v1.3.1 (build 91) — 2026-10-20
 
 > Recursive bug hunt, rounds 1 to 3: about 70 bugs fixed in toolpaths, the machine, drawing, panels and the pad link

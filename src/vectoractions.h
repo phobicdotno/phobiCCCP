@@ -1,5 +1,6 @@
 #pragma once
 #include "vectorops.h"
+#include <functional>
 #include <QObject>
 #include <QStringList>
 #include <QVector>
@@ -55,6 +56,10 @@ public:
     // points and construction geometry.
     void boolean(vec::BoolOp op);
     void offsetBy(double delta, bool keepInputs);
+
+    // Runs before every Vectors action: the window commits a number typed in
+    // a panel (no Enter yet), or the action's refresh would drop it.
+    std::function<void()> beforeAction;
 
 private:
     void onSelection(const QStringList &ids);

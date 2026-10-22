@@ -392,6 +392,11 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
         a->setShortcutContext(Qt::WindowShortcut);
         a->setToolTip(tip.isEmpty() ? text : tip);
         a->setStatusTip(a->toolTip());
+        // Connected first, so it runs first.
+        connect(a, &QAction::triggered, this, [this] {
+            if (beforeAction)
+                beforeAction();
+        });
         connect(a, &QAction::triggered, this, slot);
         group.append(a);
         return a;

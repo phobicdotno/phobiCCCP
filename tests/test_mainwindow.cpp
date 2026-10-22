@@ -10,6 +10,8 @@
 #include "../src/mainwindow.h"
 #include "../src/canvas.h"
 #include "../src/simpanel.h"
+#include "../src/toolpathform.h"
+#include "../src/toolpathpanel.h"
 #undef private
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
@@ -18,11 +20,17 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QGraphicsItem>
+#include <QDoubleSpinBox>
+#include <QFileInfo>
 #include <QJsonObject>
 #include <QMap>
 #include <QStandardPaths>
+#include <QTemporaryDir>
 #include <QTest>
+#include <QStatusBar>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUndoStack>
 
 #include <cstdio>
@@ -217,11 +225,125 @@ int main(int argc, char *argv[])
         snap->setChecked(snapOn);
     }
 
+    // A number typed in a toolpath field but not yet committed (no Enter, no
+    // focus change) reaches the document before save, export or close read it.
+    {
+        w.setMode(c2d::MainWindow::Mode::Toolpaths, false);
+        w.m_tp->m_list->setCurrentItem(w.m_tp->m_list->topLevelItem(0));
+        QApplication::processEvents();
+        auto *spin = qobject_cast<QDoubleSpinBox *>(w.m_tp->m_form->m_editors.value("end_depth"));
+        check(spin, "typed field: end depth editor");
+        w.activateWindow();
+        spin->setFocus();
+        QApplication::processEvents();
+        QTest::keyClick(spin, Qt::Key_A, Qt::ControlModifier);
+        QTest::keyClicks(spin, "12");
+        w.commitEdits();
+        const double depth = qAbs(d.toolpathByUuid(p.uuid)->json.value("end_depth").toVariant().toDouble());
+        std::fprintf(stderr, "typed field: end depth %g\n", depth);
+        check(qAbs(depth - 12) < 1e-6, "typed field: committed before the file action");
+        check(spin->hasFocus() || !w.isActiveWindow(), "typed field: focus given back");
+    }
+
+    // The Area tool on a big shape with a small notch overlapping its corner
+    // picks the shape minus the notch (added as a closed path), not the whole
+    // shape: the notch is far more than a sliver along the outline.
+    {
+        w.setMode(c2d::MainWindow::Mode::Design, false);
+        const c2d::Element t = c2d::Element::makeRectangle({1000, 1000}, 600, 400, d.defaultLayer());
+        const QRectF tb = t.painterPath.boundingRect();
+        c2d::Element n = c2d::Element::makeRectangle({0, 0}, 20, 20, d.defaultLayer());
+        const QPointF shift = tb.bottomRight() - n.painterPath.boundingRect().center();
+        n = c2d::Element::makeRectangle(QPointF(0, 0) + shift, 20, 20, d.defaultLayer());
+        d.addElement(t);
+        d.addElement(n);
+        w.m_canvas->setDocument(&d);
+        QApplication::processEvents();
+        const int before = int(d.elements().size());
+        QGraphicsItem *ti = w.m_canvas->itemFor(t.id);
+        check(ti, "area notch: the table is drawn");
+        w.m_canvas->selectAreaAt(ti->sceneBoundingRect().center(), false);
+        check(int(d.elements().size()) == before + 1, "area notch: the face is added, not the whole shape taken");
+    }
+    // Smaller notches too (a few mm on an edge or corner), and a plain shape
+    // is still the whole shape.
+    {
+        struct Case { const char *name; QPointF at; bool circle; double size; bool notched; };
+        const Case cases[] = {
+            {"8 mm square on an edge", {300, 200}, false, 8, true},
+            {"12 mm square on a corner", {600, 400}, false, 12, true},
+            {"10 mm circle on an edge", {300, 200}, true, 10, true},
+            {"no notch", {0, 0}, false, 0, false},
+        };
+        double y = 3000;
+        for (const Case &c : cases) {
+            const c2d::Element t = c2d::Element::makeRectangle({1300, y + 200}, 600, 400, d.defaultLayer());
+            d.addElement(t);
+            if (c.notched) {
+                // c.at is from the table's lower-left; an edge notch sits on y = 0.
+                const QPointF ctr(1000 + c.at.x(), y + (c.at.y() == 200 ? 0 : c.at.y()));
+                d.addElement(c.circle ? c2d::Element::makeCircle(ctr, c.size / 2, d.defaultLayer())
+                                      : c2d::Element::makeRectangle(ctr, c.size, c.size, d.defaultLayer()));
+            }
+            w.m_canvas->setDocument(&d);
+            QApplication::processEvents();
+            const int before = int(d.elements().size());
+            QGraphicsItem *ti = w.m_canvas->itemFor(t.id);
+            check(ti, "area notch: the table is drawn");
+            w.m_canvas->selectAreaAt(ti->sceneBoundingRect().center(), false);
+            std::fprintf(stderr, "area notch %s: %d -> %d\n", c.name, before, int(d.elements().size()));
+            check(int(d.elements().size()) == before + (c.notched ? 1 : 0), c.name);
+            y += 1000;
+        }
+    }
+
+    // A Send-to dialog sends the design it was opened for: a different one
+    // opened under it meanwhile is refused, not sent under the old name.
+    {
+        QString err;
+        check(!w.sendCopy(w.m_doc.filePath(), &err).isEmpty(), "send copy: the same design is copied");
+        check(w.sendCopy(QStringLiteral("/elsewhere/Alpha.c2d"), &err).isEmpty() && !err.isEmpty(),
+              "send copy: another design is refused");
+        // The same file through a symlinked folder is the same design.
+        const QFileInfo fi(w.m_doc.filePath());
+        QTemporaryDir links;
+        if (!fi.filePath().isEmpty() && QFile::link(fi.absolutePath(), links.filePath("via"))) {
+            const QString viaLink = links.filePath("via/") + fi.fileName();
+            check(!w.sendCopy(viaLink, &err).isEmpty(), "send copy: the same file by another path");
+        }
+    }
+
     // The window stays open while an update step's process runs.
     {
         w.m_updateStep = std::make_shared<bool>(true);
         check(!w.close() && w.isVisible(), "update step: close refused");
         w.m_updateStep.reset();
+    }
+
+    // A preview run that ends with Preview off leaves no "Updating
+    // preview…" behind: nothing else would replace it.
+    {
+        const bool was = w.m_previewAct->isChecked();
+        w.m_previewAct->setChecked(false);
+        ++w.m_previewGen;
+        w.startPreviewRun();
+        QTest::qWaitFor([&] { return !w.m_previewRun; }, 30000);
+        QApplication::processEvents();
+        check(w.statusBar()->currentMessage() != QStringLiteral("Updating preview…"),
+              "preview: the status line is cleared when a run ends with Preview off");
+        w.m_previewAct->setChecked(was);
+    }
+
+    // Export G-code is offered beside the file an untitled design came
+    // from, named after it - not after the cache's scratch copy.
+    {
+        const bool wasUntitled = w.m_untitled;
+        const QString wasFrom = w.m_untitledFrom;
+        w.m_untitled = true;
+        w.m_untitledFrom = QStringLiteral("/tmp/parts/part.dxf");
+        check(w.gcodeSuggestion() == QLatin1String("/tmp/parts/part.nc"), "export: named after the imported file");
+        w.m_untitled = wasUntitled;
+        w.m_untitledFrom = wasFrom;
     }
 
     w.m_dirty = false;

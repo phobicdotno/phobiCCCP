@@ -110,6 +110,9 @@ public:
     // The result is always a `path` element: a rectangle/circle/polygon whose
     // nodes were edited is no longer parametric.
     static Element withPathModel(const Element &src, const PathModel &model);
+    // A new piece cut from src: a fresh id, but src's group and
+    // construction/point flags (no tabs: they were placed on src).
+    static Element pieceOf(const Element &src, const PathModel &model);
     // Decode the point model (any point-model geometry type) into absolute-mm
     // nodes. Text yields an empty model — convert it with toPaths() first.
     static PathModel pathModel(const Element &e);

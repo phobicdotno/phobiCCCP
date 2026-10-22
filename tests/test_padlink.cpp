@@ -173,6 +173,52 @@ static void testPadFixture(const QString &dir)
     check(doc.toolpaths().size() == 4 && g.done.size() == 4, "and all four toolpaths export");
 }
 
+// A pad's edit rebuilds the linked file, keeping what the pad design does
+// not carry: the retract height a Carbide Create file raised (clamps), the
+// tiling.
+static void testRebuildKeepsRetract(const QString &dir)
+{
+    QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
+    f.open(QIODevice::ReadOnly);
+    const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
+    const QString path = QDir(dir).filePath("retract.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "retract fixture builds");
+    check(Document::writeParam(path, "retract", "10", &err), "retract raised to 10 mm");
+    check(Document::writeParam(path, "tiling_enabled", "1", &err)
+              && Document::writeParam(path, "tile_height", "300", &err), "tiling set");
+    check(padlink::rebuildDocument(d, path, &err), "a pad's edit rebuilds the file");
+    Document doc;
+    doc.load(path, &err);
+    check(doc.params().value("retract") == QLatin1String("10"), "the rebuilt file keeps its retract height");
+    check(doc.params().value("tiling_enabled") == QLatin1String("1")
+              && doc.params().value("tile_height") == QLatin1String("300"), "and its tiling");
+}
+
+// Layers and groups are not something the pad holds: a file with them is not
+// the pad's to replace.
+static void testLayersAndGroupsLost(const QString &dir)
+{
+    QFile f(QStringLiteral(PHOBICCCP_SOURCE_DIR "/tests/data/pad-design.json"));
+    f.open(QIODevice::ReadOnly);
+    const QJsonObject d = QJsonDocument::fromJson(f.readAll()).object();
+    const QString path = QDir(dir).filePath("layers.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "layers fixture builds");
+    QStringList lost;
+    padlink::designFromDocument(path, d, &lost, &err);
+    check(!lost.contains(QStringLiteral("layers and groups")), "a pad-built file has no layers or groups to lose");
+    Document doc;
+    doc.load(path, &err);
+    QJsonObject raw = doc.elements().first().raw;
+    raw.insert("group_id", QJsonArray{"{G1}"});
+    doc.replaceElement(Element::fromJson(raw));
+    doc.save(path, &err);
+    lost.clear();
+    padlink::designFromDocument(path, d, &lost, &err);
+    check(lost.contains(QStringLiteral("layers and groups")), "a group is reported as lost to the pad");
+}
+
 // A design from a pad, saved here, goes back to the pads unchanged; once
 // something only phobiCCCP has is added, the pad copy says what it lacks.
 static void testBackToPad(const QString &dir)
@@ -727,6 +773,23 @@ static void testVersions(const QString &dir, QJsonObject d)
     fresh.insert("modified", 0);   // a design of its own made here (padShareSaved)
     check(s4.edited(fresh, 5000).value("vv").toObject() == QJsonObject({{me, 5000}}),
           "a design new here starts its own versions");
+    {
+        // At the limit: the oldest older-edit entry makes room, the vv stays believed.
+        QJsonObject full = a;
+        QJsonObject vv;
+        for (int i = 1; i <= 64; ++i)
+            vv.insert(QStringLiteral("e-%1").arg(i, 16, 16, QLatin1Char('0')), 1000.0 + i);
+        full.insert("vv", vv);
+        full.insert("modified", 1064.0);
+        const QJsonObject capped = s4.edited(full, 5000);
+        const QJsonObject cv = capped.value("vv").toObject();
+        check(cv.size() == 64 && cv.value(me).toDouble() == 5000
+                  && !cv.contains(QStringLiteral("e-%1").arg(1, 16, 16, QLatin1Char('0')))
+                  && !padlink::versionVector(capped).isEmpty(),
+              "64 versions at most: the oldest older-edit entry goes");
+        check(padlink::order(capped, full) == Order::After && padlink::order(full, capped) == Order::Before,
+              "and the capped copy is still made from the one it edited");
+    }
     // The same on the pad (Android/lib/model.dart olderEditId, forkIdFor).
     check(olderEdit == QLatin1String("e-e625dcdd1333364a"), "the older edit's id is the pad's");
     check(padlink::Store::forkIdFor(c) == QLatin1String("2b4050ca-c995-58c3-b7c9-374462673dd3"), "a fork's id is the pad's");
@@ -805,6 +868,66 @@ static void testProfiles(const QString &dir)
 
 // File > Send to pad…: pads in touch are listed, and a design sent to one
 // waits for its next "info" until it says it opened it.
+// A profile on a bit other than #201, built and read back unchanged, lost
+// nothing (the lead-in was sized from another bit, so it looked set here).
+static void testOtherBitRoundTrip(const QString &dir)
+{
+    for (int tool : {201, 102, 602}) {
+        const QJsonObject d{{"format", "phobicccp-pad"}, {"version", 1}, {"id", "sign"}, {"name", "Sign"},
+                            {"modified", 1000.0}, {"material", "softwood"},
+                            {"stock", QJsonObject{{"width", 300}, {"height", 200}, {"thickness", 12}}},
+                            {"shapes", QJsonArray{QJsonObject{{"id", "r"}, {"type", "rect"}, {"x", 10}, {"y", 10}, {"w", 100}, {"h", 50}}}},
+                            {"toolpaths", QJsonArray{QJsonObject{{"name", "Cut"}, {"type", "profile"}, {"side", "outside"},
+                                                                 {"shapes", QJsonArray{"r"}}, {"tool", tool}, {"depth", 12.5}},
+                                                     QJsonObject{{"name", "Pocket"}, {"type", "pocket"},
+                                                                 {"shapes", QJsonArray{"r"}}, {"tool", tool}, {"depth", 3}}}}};
+        const QString path = QDir(dir).filePath(QStringLiteral("bit%1.c2d").arg(tool));
+        QString err;
+        check(padlink::buildDocument(d, path, nullptr, &err), "other bit: built");
+        QStringList lost;
+        padlink::designFromDocument(path, d, &lost, &err);
+        check(lost.isEmpty(), "other bit: nothing lost on the way back");
+        if (tool == 201)
+            continue;
+        // A file built before the sizes followed the bit: #201's lead-in and
+        // rest, as the pad built them, are not settings made here; a lead-in
+        // typed here still is.
+        for (double lead : {201.0, 7.0}) {
+            // Built before the mark: take it out of the file.
+            check(Document::writeParam(path, "pad_sizing", QString(), &err), "other bit: mark cleared");
+            Document doc;
+            doc.load(path, &err);
+            for (Toolpath t : doc.toolpaths()) {
+                if (t.json.contains("lead_radius"))
+                    t.json.insert("lead_radius", lead == 201.0 ? 3.175 : lead);
+                doc.replaceToolpath(t);
+            }
+            doc.save(path, &err);
+            lost.clear();
+            padlink::designFromDocument(path, d, &lost, &err);
+            check(lead == 201.0 ? lost.isEmpty() : !lost.isEmpty(),
+                  lead == 201.0 ? "other bit: an older file's #201 sizes are not settings made here"
+                                : "other bit: a lead-in typed here still is");
+        }
+        // In a file built with the mark, the same #201 sizes are a desktop
+        // edit (the first toolpath's lead-in at #201's) and fork rather than
+        // be undone.
+        {
+            check(padlink::buildDocument(d, path, nullptr, &err), "other bit: rebuilt");
+            Document doc;
+            doc.load(path, &err);
+            check(doc.params().value("pad_sizing") == "bit", "other bit: the file carries the sizing mark");
+            Toolpath t = doc.toolpaths().first();
+            t.json.insert("lead_radius", 3.175);
+            doc.replaceToolpath(t);
+            doc.save(path, &err);
+            lost.clear();
+            padlink::designFromDocument(path, d, &lost, &err);
+            check(!lost.isEmpty(), "other bit: a lead-in set here to #201's size is a setting made here");
+        }
+    }
+}
+
 static void testPads()
 {
     padlink::Pads pads;
@@ -859,6 +982,8 @@ int main(int argc, char **argv)
     testBuild(tmp.path(), d);
     testPadFixture(tmp.path());
     testBackToPad(tmp.path());
+    testRebuildKeepsRetract(tmp.path());
+    testLayersAndGroupsLost(tmp.path());
     testLinks(tmp.path());
     testStore(tmp.path(), d);
     testConflicts(tmp.path(), d);
@@ -867,6 +992,7 @@ int main(int argc, char **argv)
     testVersions(tmp.path(), d);
     testFollowDesign(tmp.path(), d);
     testProfiles(tmp.path());
+    testOtherBitRoundTrip(tmp.path());
     testPads();
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;

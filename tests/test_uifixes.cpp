@@ -145,14 +145,19 @@ int main(int argc, char *argv[])
     }
 
     // Inlay male from a v-carve whose end depth is bound to a parameter:
-    // the male's binding carries the glue gap, so re-evaluating keeps it.
+    // the male's start binding follows it less the glue gap, so re-evaluating keeps it.
     {
         c2d::Document d;
         check(d.load(blank, &err), "load");
         d.parametricRef().params.append({QStringLiteral("carve"), QStringLiteral("3"), QString()});
         const c2d::Element r = c2d::Element::makeCircle({50, 50}, 15, d.defaultLayer());
         d.addElement(r);
-        c2d::Toolpath t = c2d::makeToolpath(d, "advanced_vcarve_toolpath", {r.id});
+        // A construction guide in the selection: the female leaves it out,
+        // so the male must too.
+        c2d::Element guide = c2d::Element::makeCircle({50, 50}, 25, d.defaultLayer());
+        guide.raw.insert("construction", true);
+        d.addElement(guide);
+        c2d::Toolpath t = c2d::makeToolpath(d, "advanced_vcarve_toolpath", {r.id, guide.id});
         t.json["end_depth"] = "-3.000";
         t.json["phobic_expr"] = QJsonObject{{"end_depth", QJsonObject{{"expr", "carve"}, {"neg", true},
                                                                         {"str", true}, {"min", 0.0},
@@ -197,17 +202,23 @@ int main(int argc, char *argv[])
             check(worst < 0.02, "the male outline follows the circle within 0.02 mm");
         }
         check(sawOutline, "the male has the mirrored outline");
-        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 3.5) < 1e-9,
-              "male end depth is carve + 0.5 gap");
+        check(d.toolpathByUuid(male)->json.value("elements").toArray().size() == 2,
+              "the male has the border and the outline, not the construction guide");
+        // The plug wedges in at the male's start depth: 0.5 short of the
+        // pocket leaves 0.5 of glue under it; the male floor stands it 0.5 proud.
+        auto depths = [&](double start, double end) {
+            const c2d::Toolpath *m = d.toolpathByUuid(male);
+            return std::fabs(num(m->json.value("start_depth")) + start) < 1e-9
+                && std::fabs(num(m->json.value("end_depth")) + end) < 1e-9;
+        };
+        check(depths(2.5, 3.0), "male starts at carve - 0.5 gap and ends at carve");
         c2d::param::applyToolpathBindings(d, nullptr);
-        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 3.5) < 1e-9,
-              "re-evaluating the bindings keeps the gap");
+        check(depths(2.5, 3.0), "re-evaluating the bindings keeps the gap");
         check(std::fabs(num(d.toolpathByUuid(t.uuid)->json.value("end_depth")) + 3.0) < 1e-9,
               "the female stays at carve");
         d.parametricRef().params[0].expr = QStringLiteral("4");
         c2d::param::applyToolpathBindings(d, nullptr);
-        check(std::fabs(num(d.toolpathByUuid(male)->json.value("end_depth")) + 4.5) < 1e-9,
-              "a parameter edit moves the male with the gap");
+        check(depths(3.5, 4.0), "a parameter edit moves the male with the gap");
     }
 
     std::printf("test_uifixes: %d checks OK\n", g_checks);

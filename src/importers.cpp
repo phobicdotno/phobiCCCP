@@ -710,7 +710,9 @@ bool svgUserLength(QStringView text, double ref, double *out)
 QTransform svgViewBoxTransform(double vx, double vy, double vw, double vh,
                                double w, double h, QStringView par)
 {
-    const QStringList words = par.trimmed().toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    QStringList words = par.trimmed().toString().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.value(0) == QLatin1String("defer"))   // only for <image>; the alignment follows
+        words.removeFirst();
     const QString align = words.value(0, QStringLiteral("xMidYMid"));
     const bool slice = words.value(1) == QLatin1String("slice");
     double sx = w / vw, sy = h / vh, tx = 0, ty = 0;
@@ -834,6 +836,168 @@ QPainterPath svgShape(QStringView name, const QXmlStreamAttributes &at, bool *kn
 
 } // namespace
 
+namespace {
+
+QString svgHref(const QXmlStreamAttributes &at)
+{
+    QString h = at.value(QLatin1String("href")).toString();
+    if (h.isEmpty())
+        h = at.value(QLatin1String("http://www.w3.org/1999/xlink"), QLatin1String("href")).toString();
+    if (h.isEmpty())
+        h = at.value(QLatin1String("xlink:href")).toString();
+    return h.startsWith(QLatin1Char('#')) ? h.mid(1) : QString();
+}
+
+// What each element with an id draws, in its parent's user units (its own
+// transform applied), for <use> to place: PDF / AI / EPS (through
+// pdftocairo) draw every glyph of their text as a <use> of one defined once,
+// and Inkscape's clones are <use> too. A <use> inside counts as what it
+// refers to, when that was defined before it.
+struct SvgDef {
+    QPainterPath path;
+    QRectF viewBox;   // a <symbol>'s, fitted into the <use>'s width x height
+    QString aspect;
+    // A nested <svg>: path is its content, unplaced; placed at `at`, sized
+    // `size` (a <use>'s width and height replace it), its viewBox fitted in.
+    bool nested = false;
+    QPointF at;
+    QSizeF size;
+};
+
+// Where a <use> draws what it refers to: a symbol's viewBox fitted into the
+// use's width x height (100% of the viewport when absent), then at x,y.
+QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, double vpW, double vpH)
+{
+    double x = 0, y = 0;
+    svgUserLength(at.value(QLatin1String("x")), vpW, &x);
+    svgUserLength(at.value(QLatin1String("y")), vpH, &y);
+    QTransform vb;
+    if (def.nested) {
+        double w = def.size.width(), h = def.size.height();
+        svgUserLength(at.value(QLatin1String("width")), vpW, &w);
+        svgUserLength(at.value(QLatin1String("height")), vpH, &h);
+        if (def.viewBox.isValid() && w > 0 && h > 0)
+            vb = svgViewBoxTransform(def.viewBox.x(), def.viewBox.y(), def.viewBox.width(),
+                                     def.viewBox.height(), w, h, def.aspect);
+        return (vb * QTransform::fromTranslate(def.at.x() + x, def.at.y() + y)).map(def.path);
+    }
+    if (def.viewBox.isValid()) {
+        // The viewport only when both sides are known: a width alone fitted
+        // the symbol into a wide strip and centred it.
+        const bool vp = vpW > 0 && vpH > 0;
+        double w = vp ? vpW : def.viewBox.width(), h = vp ? vpH : def.viewBox.height();
+        svgUserLength(at.value(QLatin1String("width")), vpW, &w);
+        svgUserLength(at.value(QLatin1String("height")), vpH, &h);
+        if (w > 0 && h > 0)
+            vb = svgViewBoxTransform(def.viewBox.x(), def.viewBox.y(), def.viewBox.width(),
+                                     def.viewBox.height(), w, h, def.aspect);
+    }
+    return (vb * QTransform::fromTranslate(x, y)).map(def.path);
+}
+
+QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString> &hiddenClasses,
+                                      double rootW, double rootH)
+{
+    // Clip paths, masks, patterns, markers and nested definitions draw
+    // nothing where they stand: their ids are kept, their paths are not part
+    // of the group or symbol around them.
+    static const QStringList noDraw = {
+        QStringLiteral("defs"), QStringLiteral("symbol"), QStringLiteral("clipPath"),
+        QStringLiteral("mask"), QStringLiteral("pattern"), QStringLiteral("marker")};
+    QHash<QString, SvgDef> defs;
+    struct Frame { QString id; QTransform own; QPainterPath path; bool hidden = false;
+                   QRectF viewBox; QString aspect; bool noDraw = false;
+                   double vw = 0, vh = 0;   // the viewport its children's % lengths use
+                   bool nested = false; QPointF at; QSizeF size; };
+    // Two passes: the second sees what the first found, so a <use> of
+    // something defined further down (a symbol after the group using it)
+    // resolves too.
+    QHash<QString, SvgDef> earlier;
+    for (int pass = 0; pass < 2; ++pass) {
+        if (pass == 1) {
+            earlier = defs;
+            defs.clear();
+        }
+        QVector<Frame> stack;
+        QXmlStreamReader xml(data);
+        while (!xml.atEnd()) {
+            const auto tok = xml.readNext();
+            if (tok == QXmlStreamReader::StartElement) {
+                const QXmlStreamAttributes at = xml.attributes();
+                Frame f{at.value(QLatin1String("id")).toString(),
+                        parseSvgTransform(at.value(QLatin1String("transform")).toString()), {},
+                        svgHidden(at, hiddenClasses), {}, {}, noDraw.contains(xml.name().toString())};
+                // Lengths in % are of the nearest viewport: a nested <svg>'s.
+                const double vpW = stack.isEmpty() ? rootW : stack.last().vw;
+                const double vpH = stack.isEmpty() ? rootH : stack.last().vh;
+                f.vw = vpW;
+                f.vh = vpH;
+                if (xml.name() == QLatin1String("use")) {
+                    const QString href = svgHref(at);
+                    const auto here = defs.constFind(href), before = earlier.constFind(href);
+                    if (here != defs.constEnd())
+                        f.path = svgPlaceUse(*here, at, vpW, vpH);
+                    else if (before != earlier.constEnd())
+                        f.path = svgPlaceUse(*before, at, vpW, vpH);
+                } else if (xml.name() == QLatin1String("symbol")) {
+                    Scanner sc{at.value(QLatin1String("viewBox"))};
+                    double a[4];
+                    bool vb = true;
+                    for (double &v : a) vb = vb && sc.number(&v);
+                    if (vb && a[2] > 0 && a[3] > 0) {
+                        f.viewBox = QRectF(a[0], a[1], a[2], a[3]);
+                        f.aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
+                    }
+                } else if (xml.name() != QLatin1String("svg")) {
+                    bool known = false, bad = false;
+                    f.path = svgShape(xml.name(), at, &known, &bad, vpW, vpH);
+                } else if (!stack.isEmpty()) {
+                    // A nested <svg>: its x, y, size and viewBox place what
+                    // it holds, for a <use> of it as where it stands.
+                    double x = 0, y = 0, w = vpW, h = vpH;
+                    svgUserLength(at.value(QLatin1String("x")), vpW, &x);
+                    svgUserLength(at.value(QLatin1String("y")), vpH, &y);
+                    svgUserLength(at.value(QLatin1String("width")), vpW, &w);
+                    svgUserLength(at.value(QLatin1String("height")), vpH, &h);
+                    QTransform vp;
+                    Scanner sc{at.value(QLatin1String("viewBox"))};
+                    double a[4];
+                    bool vb = true;
+                    for (double &v : a) vb = vb && sc.number(&v);
+                    f.aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
+                    if (vb && a[2] > 0 && a[3] > 0 && w > 0 && h > 0) {
+                        vp = svgViewBoxTransform(a[0], a[1], a[2], a[3], w, h, f.aspect);
+                        f.viewBox = QRectF(a[0], a[1], a[2], a[3]);
+                    }
+                    f.vw = f.viewBox.isValid() ? a[2] : w;
+                    f.vh = f.viewBox.isValid() ? a[3] : h;
+                    f.nested = true;
+                    f.at = QPointF(x, y);
+                    f.size = QSizeF(w, h);
+                    f.own = vp * QTransform::fromTranslate(x, y) * f.own;
+                }
+                stack.append(f);
+            } else if (tok == QXmlStreamReader::EndElement && !stack.isEmpty()) {
+                const Frame f = stack.takeLast();
+                if (f.hidden)
+                    continue;   // display:none draws nothing, through a <use> either
+                const QPainterPath mapped = f.own.map(f.path);
+                if (f.nested && !f.id.isEmpty() && !f.path.isEmpty())
+                    defs.insert(f.id, SvgDef{f.path, f.viewBox, f.aspect, true, f.at, f.size});
+                else if (!f.id.isEmpty() && !mapped.isEmpty())
+                    defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
+                if (!stack.isEmpty() && !mapped.isEmpty() && !f.noDraw)
+                    stack.last().path.addPath(mapped);
+                if (defs.size() > 100000)
+                    break;
+            }
+        }
+    }
+    return defs;
+}
+
+} // namespace
+
 ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                            const QString &sourceName)
 {
@@ -860,8 +1024,10 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
         QStringLiteral("radialGradient"), QStringLiteral("filter"), QStringLiteral("script"),
         QStringLiteral("foreignObject")};
     static const QStringList reportedSkips = {
-        QStringLiteral("text"), QStringLiteral("image"), QStringLiteral("use"),
+        QStringLiteral("text"), QStringLiteral("image"),
         QStringLiteral("linearGradient"), QStringLiteral("radialGradient")};
+    QHash<QString, SvgDef> defs;   // made on the first <use>
+    bool defsMade = false;
 
     while (!xml.atEnd()) {
         const auto tok = xml.readNext();
@@ -886,7 +1052,12 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 aspect = at.value(QLatin1String("preserveAspectRatio")).toString();
                 Ctx root{QTransform(), false};
                 if (vw > 0 && vh > 0) { root.vpW = vw; root.vpH = vh; }
-                else if (wMm > 0 && hMm > 0) { root.vpW = wMm / (25.4 / 96); root.vpH = hMm / (25.4 / 96); }
+                else {
+                    // Each axis from its own length: a width alone still
+                    // sizes width percentages (they fell back to px).
+                    if (wMm > 0) root.vpW = wMm / (25.4 / 96);
+                    if (hMm > 0) root.vpH = hMm / (25.4 / 96);
+                }
                 stack.append(root);
                 continue;
             }
@@ -949,6 +1120,18 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 if (bad) ++malformed;
                 if (!local.isEmpty())
                     user.addPath(ctx.xf.map(local));
+            } else if (name == QLatin1String("use")) {
+                if (!defsMade) {
+                    defs = svgDefinitions(data, hiddenClasses, stack.first().vpW, stack.first().vpH);
+                    defsMade = true;
+                }
+                // Placed at x,y inside its own transform.
+                const auto ref = defs.constFind(svgHref(at));
+                if (ref == defs.constEnd()) {
+                    addSkipped(res, skippedCounts, name);
+                } else {
+                    user.addPath(ctx.xf.map(svgPlaceUse(*ref, at, ctx.vpW, ctx.vpH)));
+                }
             } else if (name == QLatin1String("g") || name == QLatin1String("svg")
                        || name == QLatin1String("a") || name == QLatin1String("switch")) {
                 // containers: nothing to draw
@@ -962,7 +1145,7 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     }
     if (xml.hasError()) {
         res.error = QStringLiteral("%1: XML error at line %2: %3")
-                        .arg(sourceName).arg(xml.lineNumber()).arg(xml.errorString());
+                        .arg(sourceName, QString::number(xml.lineNumber()), xml.errorString());
         return res;
     }
     if (!rootSeen) {
@@ -974,12 +1157,12 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     // width x height. No width/height: the viewBox is measured in px.
     const double pxMm = 25.4 / 96;
     if (vw <= 0 || vh <= 0) {
+        // Each axis on its own: a width alone used to stretch the content
+        // box to it (a 10 px square in a width="100mm" file came in 100 mm).
         vx = vy = 0;
-        if (wMm > 0 && hMm > 0) { vw = wMm / pxMm; vh = hMm / pxMm; }
-        else {
-            const QRectF ub = user.boundingRect();
-            vw = qMax(1.0, ub.right()); vh = qMax(1.0, ub.bottom());
-        }
+        const QRectF ub = user.boundingRect();
+        vw = wMm > 0 ? wMm / pxMm : qMax(1.0, ub.right());
+        vh = hMm > 0 ? hMm / pxMm : qMax(1.0, ub.bottom());
     }
     if (wMm <= 0 || hMm <= 0) {
         if (wMm > 0)      { hMm = wMm * vh / vw; }
@@ -1412,7 +1595,9 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
                 local.translate(-b.base.x(), -b.base.y());
                 local = local * QTransform::fromScale(sx, sy);
                 QTransform rt; rt.rotate(rot);
-                local = local * rt * QTransform::fromTranslate(ins.x() + c * colSp, ins.y() + r * rowSp);
+                // The array turns with the insert, about its insertion point.
+                const QPointF off = rt.map(QPointF(c * colSp, r * rowSp));
+                local = local * rt * QTransform::fromTranslate(ins.x() + off.x(), ins.y() + off.y());
                 // Spent: one more call records it, then stop the array
                 // instead of looping rows x cols x entities for nothing.
                 if (ctx.budget <= 0) {
@@ -1450,7 +1635,8 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
     QVector<Pair> pairs;
     {
         // Any line ending: LF, CRLF, or the bare CR of old Mac exports.
-        QString text = QString::fromLatin1(data);
+        // A UTF-8 byte-order mark (some exporters write one) is not a group code.
+        QString text = QString::fromLatin1(data.startsWith("\xEF\xBB\xBF") ? data.mid(3) : data);
         text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
         text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
         const QStringList lines = text.split(QLatin1Char('\n'));
@@ -1458,7 +1644,7 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
             bool ok = false;
             const int code = lines.at(i).trimmed().toInt(&ok);
             if (!ok) {
-                res.error = QStringLiteral("%1: bad group code at line %2").arg(sourceName).arg(i + 1);
+                res.error = QStringLiteral("%1: bad group code at line %2").arg(sourceName, QString::number(i + 1));
                 return res;
             }
             QString v = lines.at(i + 1);
@@ -1609,13 +1795,92 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
     bool penDown = false, relative = false, open = false;
     QHash<QString, int> skipped;
     const QString text = QString::fromLatin1(data);
-    static const QRegularExpression cmdRe(QStringLiteral("([A-Za-z]{2})([^A-Za-z;]*)"));
-    auto it = cmdRe.globalMatch(text);
-    while (it.hasNext()) {
-        const QRegularExpressionMatch m = it.next();
-        const QString cmd = m.captured(1).toUpper();
+    // Read commands in order: a label's text (LB, up to the terminator DT
+    // sets) and encoded polyline data (PE) are not commands, and scanning
+    // them as such read the "Pr" of "Project" as relative mode.
+    QChar labelEnd(0x03);
+    int at = 0;
+    const int len = int(text.size());
+    auto isLetter = [](QChar c) {
+        return (c >= QLatin1Char('A') && c <= QLatin1Char('Z'))
+            || (c >= QLatin1Char('a') && c <= QLatin1Char('z'));
+    };
+    while (at < len) {
+        // A PCL / PJL wrapper (Windows plotter drivers): an escape sequence
+        // is skipped whole, up to its closing capital (or ':' for "ESC."),
+        // so its last letter does not pair with the next command's first.
+        if (text.at(at) == QChar(0x1b)) {
+            ++at;
+            const bool dot = at < len && text.at(at) == QLatin1Char('.');
+            if (at < len && (dot || text.at(at) == QLatin1Char('%') || text.at(at) == QLatin1Char('&')
+                             || text.at(at) == QLatin1Char('*') || text.at(at) == QLatin1Char('(')
+                             || text.at(at) == QLatin1Char(')'))) {
+                ++at;
+                // ESC.@ .H .I .M .N .P .S .T take parameters up to ':'; the
+                // other device controls (ESC.( .Y .) .Z .B ...) are one letter.
+                if (dot && at < len && !QStringLiteral("@HIMNPST").contains(text.at(at))) {
+                    ++at;
+                    continue;
+                }
+                while (at < len) {
+                    const QChar c = text.at(at++);
+                    if (dot ? c == QLatin1Char(':') : (c >= QLatin1Char('A') && c <= QLatin1Char('Z')) || c == QLatin1Char('@'))
+                        break;
+                }
+            } else if (at < len) {
+                ++at;                     // a two-character escape (ESC E)
+            }
+            continue;
+        }
+        if (text.at(at) == QLatin1Char('@') && text.mid(at, 4) == QLatin1String("@PJL")) {
+            const int end = int(text.indexOf(QLatin1Char('\n'), at));
+            at = end < 0 ? len : end + 1;
+            continue;
+        }
+        if (at + 1 >= len || !isLetter(text.at(at)) || !isLetter(text.at(at + 1))) {
+            ++at;
+            continue;
+        }
+        const QString cmd = text.mid(at, 2).toUpper();
+        at += 2;
+        // Text up to the label terminator: a label, a display text, a
+        // buffered label.
+        if (cmd == QLatin1String("LB") || cmd == QLatin1String("WD") || cmd == QLatin1String("BL")) {
+            const int end = int(text.indexOf(labelEnd, at));
+            at = end < 0 ? len : end + 1;
+            addSkipped(res, skipped, cmd);
+            continue;
+        }
+        if (cmd == QLatin1String("DT")) {
+            // The label terminator: the next character, or ETX by default.
+            if (at < len && text.at(at) != QLatin1Char(';'))
+                labelEnd = text.at(at++);
+            else
+                labelEnd = QChar(0x03);
+            continue;
+        }
+        if (cmd == QLatin1String("PE")) {
+            const int end = int(text.indexOf(QLatin1Char(';'), at));
+            at = end < 0 ? len : end + 1;
+            addSkipped(res, skipped, cmd);
+            continue;
+        }
+        // A quoted string (CO's comment, BP's picture name) is one argument,
+        // whatever letters it holds; it carries nothing to draw.
+        QString args;
+        int argEnd = at;
+        while (argEnd < len && !isLetter(text.at(argEnd)) && text.at(argEnd) != QLatin1Char(';')) {
+            if (text.at(argEnd) == QLatin1Char('"')) {
+                const int close = int(text.indexOf(QLatin1Char('"'), argEnd + 1));
+                argEnd = close < 0 ? len : close + 1;
+                args += QLatin1Char(',');
+                continue;
+            }
+            args += text.at(argEnd++);
+        }
+        at = argEnd;
         QVector<double> nums;
-        for (const QString &n : m.captured(2).split(QRegularExpression(QStringLiteral("[,\\s]+")),
+        for (const QString &n : args.split(QRegularExpression(QStringLiteral("[,\\s]+")),
                                                     Qt::SkipEmptyParts)) {
             bool ok = false;
             const double v = n.toDouble(&ok);
@@ -1660,6 +1925,7 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
             penDown = false;
             relative = false;
             open = false;
+            labelEnd = QChar(0x03);
         } else if (cmd == QLatin1String("SP")
                    || cmd == QLatin1String("LT") || cmd == QLatin1String("VS")
                    || cmd == QLatin1String("IP") || cmd == QLatin1String("SC")) {
@@ -1774,9 +2040,7 @@ ImportResult importFile(const QString &path, const ImportOptions &opt)
     // help: it only starts counting once the whole file has been parsed.
     if (f.size() > kMaxImportBytes) {
         res.error = QStringLiteral("%1 is %2 MB; the import limit is %3 MB")
-                        .arg(QFileInfo(path).fileName())
-                        .arg(f.size() / (1024 * 1024))
-                        .arg(kMaxImportBytes / (1024 * 1024));
+                        .arg(QFileInfo(path).fileName(), QString::number(f.size() / (1024 * 1024)), QString::number(kMaxImportBytes / (1024 * 1024)));
         return res;
     }
     const QString name = QFileInfo(path).fileName();

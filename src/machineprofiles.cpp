@@ -90,9 +90,20 @@ QString add(QSettings &s, const QString &name)
         if (!kPerMachine.contains(p.first) && !kGlobal.contains(p.first))
             kv.append(p);
     writeGroup(s, dataGroup(id), kv);
+    // An unnamed machine gets a "Machine N" not in use (the count alone
+    // repeated a name once one in the middle was removed).
+    QString fallback;
+    if (name.trimmed().isEmpty()) {
+        QStringList taken;
+        for (const QString &other : ids(s))
+            taken << s.value(QStringLiteral("profiles/%1/name").arg(other)).toString();
+        int n = int(ids(s).size()) + 1;
+        while (taken.contains(QStringLiteral("Machine %1").arg(n)))
+            ++n;
+        fallback = QStringLiteral("Machine %1").arg(n);
+    }
     s.setValue(QStringLiteral("profiles/%1/name").arg(id),
-               name.trimmed().isEmpty() ? QStringLiteral("Machine %1").arg(ids(s).size() + 1)
-                                        : name.trimmed().left(60));
+               fallback.isEmpty() ? name.trimmed().left(60) : fallback);
     s.setValue(QStringLiteral("profiles/ids"), ids(s) << id);
     return id;
 }

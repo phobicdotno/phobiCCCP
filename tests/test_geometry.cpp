@@ -1240,6 +1240,20 @@ int main(int argc, char *argv[])
         }
         check(plungesOff, "face plunges beside the stock");
     }
+    // Face over selected vectors: the box around them, the tool inside it.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({150, 100}, 60, 40, layer));
+        r.addToolpath("face_toolpath", {{"end_depth", "1.000"}, {"stepdown", 1.0}, {"stepover", 4.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double minZ;
+        const QRectF bb = cutBounds(g.gcode, &minZ);
+        const double R = 6.35 / 2;
+        check(g.done.size() == 1 && bb.left() >= 120 + R - 1e-3 && bb.right() <= 180 - R + 1e-3
+                  && bb.top() >= 80 + R - 1e-3 && bb.bottom() <= 120 - R + 1e-3,
+              "face over vectors keeps the tool inside their box");
+        check(bb.width() > 60 - 2 * R - 0.1 && bb.height() > 40 - 2 * R - 0.1, "face over vectors covers the box");
+    }
 
     // --- bore: helix down the circle's wall ------------------------------------
     {
@@ -1312,6 +1326,105 @@ int main(int argc, char *argv[])
         const c2d::GcodeResult gf = c2d::exportGcode(flat.doc);
         check(gf.done.isEmpty() && gf.skipped.size() == 1 && gf.skipped.first().contains("V-bit"),
               "chamfer with an end mill is refused");
+        // A ball bit with an angle on file is still no V-bit; a bevel deeper
+        // than the cone would be cut by the shank.
+        QJsonObject ball = vbit;
+        ball.insert("type", 1);
+        Rig rb;
+        rb.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        rb.addToolpath("chamfer_toolpath", {{"tool", ball}});
+        check(c2d::exportGcode(rb.doc).done.isEmpty(), "chamfer with a ball bit is refused");
+        Rig rw;
+        rw.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        rw.addToolpath("chamfer_toolpath", {{"chamfer_width", 6.0}, {"tip_offset", 0.5}, {"tool", vbit}});
+        const c2d::GcodeResult gw = c2d::exportGcode(rw.doc);
+        check(gw.done.isEmpty() && gw.skipped.size() == 1 && gw.skipped.first().contains("radius"),
+              "chamfer wider than the V-bit is refused");
+        // V-carve with a flat end mill: refused, not carved past the walls.
+        QJsonObject em;
+        em.insert("diameter", 6.35);
+        em.insert("number", 202);
+        em.insert("type", 0);
+        Rig rv;
+        rv.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        rv.addToolpath("advanced_vcarve_toolpath", {{"tool", em}});
+        const c2d::GcodeResult gv = c2d::exportGcode(rv.doc);
+        check(gv.done.isEmpty() && gv.skipped.size() == 1 && gv.skipped.first().contains("V-bit"),
+              "v-carve with an end mill is refused");
+        // V-carve deeper than the cone (90 degrees, 12.7 mm: 6.35 mm) on a
+        // shape wider than the bit leaves a lip: refused; within the cone it carves.
+        for (const char *end : {"10.000", "6.000"}) {
+            Rig rd;
+            rd.addShape(c2d::Element::makeRectangle({30, 30}, 40, 40, layer));
+            rd.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", end}, {"tool", vbit}});
+            const c2d::GcodeResult gd = c2d::exportGcode(rd.doc);
+            const bool deep = QByteArray(end) == "10.000";
+            check(deep ? gd.done.isEmpty() && gd.skipped.size() == 1 && gd.skipped.first().contains("cone")
+                       : gd.done.size() == 1 && gd.skipped.isEmpty(),
+                  deep ? "v-carve deeper than the cone is refused" : "v-carve within the cone carves");
+        }
+        // An inlay male starts below the top; its flat clearing laps still
+        // step down from the stock top, not a full lap at the start depth.
+        {
+            Rig ri;
+            const c2d::Element outer = c2d::Element::makeRectangle({60, 60}, 60, 60, layer);
+            const c2d::Element inner = c2d::Element::makeRectangle({60, 60}, 20, 20, layer);
+            ri.addShape(outer);
+            ri.addShape(inner);
+            QJsonObject v60 = vbit;
+            v60.insert("angle", 60);
+            ri.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "4.500"}, {"end_depth", "5.000"},
+                                                        {"stepdown", 1.0}, {"tool", v60},
+                                                        {"elements", QJsonArray{QJsonObject{{"uuid", outer.id}},
+                                                                                QJsonObject{{"uuid", inner.id}}}}});
+            const c2d::GcodeResult gi = c2d::exportGcode(ri.doc);
+            bool firstLap = false;
+            for (int i = 1; i < gi.ops.size(); ++i) {
+                const c2d::Op &o = gi.ops.at(i), &prev = gi.ops.at(i - 1);
+                if (o.kind == c2d::Op::Feed && prev.kind == c2d::Op::Rapid && std::fabs(prev.x - o.x) < 1e-9
+                    && std::fabs(prev.y - o.y) < 1e-9 && std::fabs(o.z + 1.0) < 1e-6)
+                    firstLap = true;
+            }
+            check(gi.done.size() == 1 && firstLap, "v-carve flat clearing steps down from the stock top");
+            double firstCut = 1;
+            for (const c2d::Op &o : gi.ops)
+                if (o.kind == c2d::Op::Feed) {
+                    firstCut = o.z;
+                    break;
+                }
+            check(firstCut > -1.0 - 1e-6, "v-carve's carving pass takes one Per pass at a time too");
+            // Per pass 0 on file: one pass, as before (not 0.05 mm steps).
+            Rig r0;
+            r0.addShape(c2d::Element::makeRectangle({30, 30}, 6, 40, layer));
+            r0.addToolpath("advanced_vcarve_toolpath", {{"start_depth", "0.000"}, {"end_depth", "5.000"},
+                                                        {"stepdown", 0.0}, {"tool", v60}});
+            const c2d::GcodeResult g0 = c2d::exportGcode(r0.doc);
+            check(g0.done.size() == 1 && g0.ops.size() < 2000, "v-carve with Per pass 0 is one pass");
+        }
+        // Offset toolpaths with a V-bit: offset by its radius, the part came
+        // out oversize. Refused; on the line it is fine.
+        {
+            for (const char *type : {"pocket_toolpath", "cutout"}) {
+                Rig rp;
+                rp.addShape(c2d::Element::makeRectangle({30, 30}, 40, 40, layer));
+                rp.addToolpath(type, {{"tool", vbit}});
+                const c2d::GcodeResult gp = c2d::exportGcode(rp.doc);
+                check(gp.done.isEmpty() && gp.skipped.size() == 1 && gp.skipped.first().contains("end mill"),
+                      "an offset toolpath with a V-bit is refused");
+            }
+            Rig rl;
+            rl.addShape(c2d::Element::makeRectangle({30, 30}, 40, 40, layer));
+            rl.addToolpath("contour", {{"ofset_dir", 0}, {"tool", vbit}});
+            check(c2d::exportGcode(rl.doc).done.size() == 1, "a contour on the line with a V-bit is fine");
+            for (const char *type : {"adaptive_toolpath", "face_toolpath", "bore_toolpath", "circular_toolpath"}) {
+                Rig ra;
+                ra.addShape(c2d::Element::makeCircle({50, 50}, 20, layer));
+                ra.addToolpath(type, {{"tool", vbit}});
+                const c2d::GcodeResult ga = c2d::exportGcode(ra.doc);
+                check(ga.done.isEmpty() && !ga.skipped.isEmpty() && ga.skipped.first().contains("end mill"),
+                      "adaptive, face, bore and circular refuse a V-bit");
+            }
+        }
     }
 
     // --- adaptive: helix entry, passes repeated per level, inside the pocket --
@@ -1332,6 +1445,13 @@ int main(int argc, char *argv[])
         check(bb.width() > 60 - 2 * R - 0.1 && bb.height() > 40 - 2 * R - 0.1,
               "adaptive reaches the walls");
         check(approx(minZ, -6, 1e-6), "adaptive depth");
+        bool origin = false;
+        for (const c2d::Op &op : g.ops) {
+            if (op.kind == c2d::Op::Feed || op.kind == c2d::Op::Arc)
+                break;
+            origin = origin || (op.kind == c2d::Op::Rapid && std::fabs(op.x) < 1e-9 && std::fabs(op.y) < 1e-9);
+        }
+        check(!origin, "adaptive does not rapid to X0 Y0 before its first cut");
         // Two levels, each entered on a helix that sinks gently.
         int helixArcs = 0;
         bool gentle = true;
@@ -1839,6 +1959,38 @@ int main(int argc, char *argv[])
             check(g.done.size() == 1 && plunges == 0, "circular boss: no plunge into the stock");
             check(approx(rOut, 12 + R + 5, 1e-6), "circular boss: the helix stays on the outermost lap");
         }
+        // Bosses side by side: the laps round one stop short of the other,
+        // and one the tool cannot pass beside is skipped with a note.
+        {
+            const double gap = 2 * R + 3;
+            Rig r;
+            const c2d::Element a = c2d::Element::makeCircle({40, 40}, 12, layer),
+                               b = c2d::Element::makeCircle({40 + 24 + gap, 40}, 12, layer);
+            r.addShape(a);
+            r.addShape(b);
+            r.addToolpath("circular_toolpath", {{"end_depth", "3.000"}, {"stepdown", 1.5},
+                                                {"side", "outside"}, {"stepover", 2.5},
+                                                {"elements", QJsonArray{QJsonObject{{"uuid", a.id}},
+                                                                        QJsonObject{{"uuid", b.id}}}}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            double nearest = 1e9;
+            for (const c2d::Op &op : g.ops)
+                if ((op.kind == c2d::Op::Arc || op.kind == c2d::Op::Feed) && op.z < -1e-9)
+                    nearest = std::min({nearest, std::hypot(op.x - 40, op.y - 40),
+                                        std::hypot(op.x - 40 - 24 - gap, op.y - 40)});
+            check(g.done.size() == 1 && nearest >= 12 + R - 1e-6, "circular bosses: no lap cuts the other boss");
+            Rig t;
+            const c2d::Element c = c2d::Element::makeCircle({40, 40}, 12, layer),
+                               e = c2d::Element::makeCircle({40 + 24 + R, 40}, 12, layer);
+            t.addShape(c);
+            t.addShape(e);
+            t.addToolpath("circular_toolpath", {{"end_depth", "3.000"}, {"side", "outside"},
+                                                {"elements", QJsonArray{QJsonObject{{"uuid", c.id}},
+                                                                        QJsonObject{{"uuid", e.id}}}}});
+            const c2d::GcodeResult gt = c2d::exportGcode(t.doc);
+            check(!gt.skipped.isEmpty() && gt.skipped.first().contains("too close"),
+                  "circular bosses: closer than the tool is reported");
+        }
         Rig small;
         small.addShape(c2d::Element::makeCircle({0, 0}, 3, layer));
         small.addToolpath("circular_toolpath", {});
@@ -1869,6 +2021,14 @@ int main(int argc, char *argv[])
         p.addToolpath("contour", {{"name", "Cut 50%3 deep"}, {"ofset_dir", 1}});
         check(c2d::setupSheetHtml(p.doc, QStringLiteral("Job")).contains("Cut 50%3 deep"),
               "setup sheet: a % placeholder in a name is kept as written");
+
+        // A cutout's Depth counts its break-through, like the program's min Z.
+        Rig c;
+        c.addShape(c2d::Element::makeRectangle({40, 30}, 40, 20, layer));
+        c.addToolpath("cutout", {{"name", "Free"}, {"cut_depth", "12.000"}, {"break_through", "0.500"},
+                                 {"ignore_tabs", true}});
+        check(c2d::setupSheetHtml(c.doc, QStringLiteral("Job")).contains("<td class=\"n\">12.50</td>"),
+              "setup sheet: cutout depth includes break-through");
     }
 
     // --- the factory makes all four with working defaults --------------------
@@ -2028,6 +2188,30 @@ int main(int argc, char *argv[])
         }
         check(found && firstZ > -2.0 - 1e-6,
               "rest contour: lead arcs in uncut stock keep the first pass at the top");
+    }
+
+    // --- site order: a straight dado listed before its part's cutout ---------
+    // A horizontal line's box has no height; it still overlaps the part, so
+    // the earlier dado is cut before the cutout frees the part.
+    {
+        Rig r;
+        r.doc.setParam("site_order", "1");
+        const c2d::Element part = c2d::Element::makeRectangle({100, 60}, 200, 100, layer);
+        const c2d::Element dado = c2d::Element::makePath({QPointF(205, 60), QPointF(-5, 60)}, false, layer);
+        r.addShape(part);
+        r.doc.addElement(dado);
+        r.shapeId = dado.id;
+        r.addToolpath("contour", {{"ofset_dir", 0}, {"end_depth", "6.000"}, {"name", "dado"}, {"uuid", "{tp-d}"}});
+        r.shapeId = part.id;
+        r.addToolpath("cutout", {{"cut_depth", "18.000"}, {"depth_per_pass", 2.0}, {"break_through", "0.200"},
+                                 {"name", "cutout"}, {"uuid", "{tp-c}"}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        QStringList seen;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Comment && (o.text == QLatin1String("dado") || o.text == QLatin1String("cutout"))
+                && !seen.contains(o.text))
+                seen << o.text;
+        check(seen == QStringList({"dado", "cutout"}), "site order: a straight dado runs before the cutout");
     }
 
     // --- spindle speed 0, a bad tool diameter, start below end: skipped -----

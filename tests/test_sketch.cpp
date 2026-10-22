@@ -249,6 +249,21 @@ int main(int argc, char **argv)
               nearPt(l.subs[0].nodes.last().p, {25, 0}), "line end grows to the wall");
         PathModel l2 = line({0, 0}, {10, 0});
         check(!sketch::extend(l2, {1, 0}, 2, wall), "the far end runs into nothing");
+        // An end whose own handle is on its anchor (an S after a line)
+        // carries on along the segment's other handle, not the chord.
+        {
+            PathModel c;
+            SubPath sp;
+            PathNode p0, p1;
+            p0.p = p0.in = p0.out = QPointF(0, 0);
+            p1.p = p1.out = QPointF(100, 0);
+            p1.in = QPointF(50, 50);
+            sp.nodes << p0 << p1;
+            c.subs << sp;
+            check(sketch::extend(c, {1, 0.5}, 5, {line({-10, -50}, {-10, 50})})
+                      && nearPt(c.subs[0].nodes.first().p, {-10, -10}),
+                  "an end with no handle of its own follows the curve's tangent");
+        }
         PathModel l3 = line({30, 0}, {40, 0});
         check(sketch::extend(l3, {31, 0}, 2, wall) && nearPt(l3.subs[0].nodes.first().p, {25, 0}),
               "start end grows backwards to the wall");
@@ -382,6 +397,63 @@ int main(int argc, char **argv)
         check(worst < 1e-3, "conic: the cubic pieces follow the true curve");
         const PathModel line = sketch::conic({0, 0}, {10, 0}, {5, 0}, 0.5);
         check(line.subs.size() == 1 && line.subs.first().nodes.size() == 2, "conic: collinear apex gives a line");
+    }
+
+    {
+        // Lines Extended onto a circle from outside end exactly on it: Trim
+        // cuts the arc between them (the ends missed the inner polyline).
+        auto seg = [](QPointF a, QPointF b) {
+            c2d::PathModel m;
+            c2d::SubPath sp;
+            c2d::PathNode n0, n1;
+            n0.p = n0.in = n0.out = a;
+            n1.p = n1.in = n1.out = b;
+            sp.nodes << n0 << n1;
+            m.subs << sp;
+            return m;
+        };
+        const c2d::PathModel circ = c2d::Element::pathModel(c2d::Element::makeCircle({0, 0}, 10, QJsonObject()));
+        c2d::PathModel l1 = seg({20, 3}, {12, 3}), l2 = seg({20, -3}, {12, -3});
+        c2d::sketch::extend(l1, {12, 3}, 1, {circ});
+        c2d::sketch::extend(l2, {12, -3}, 1, {circ});
+        check(c2d::sketch::crossings(circ, 0, {l1, l2}).size() == 2, "trim: line ends resting on a circle are cuts");
+        bool hit = false;
+        const c2d::PathModel t = c2d::sketch::trim(circ, {10, 0}, 1, {l1, l2}, &hit);
+        const QRectF b = t.painterPath().boundingRect();
+        check(hit && b.left() < -9.9 && b.right() < 9.6, "trim: only the arc between the two lines goes");
+    }
+    {
+        // The same for many radii and heights (closest() was too coarse for
+        // most), and a line from inside: one cut, not two a hair apart.
+        auto seg = [](QPointF a, QPointF b) {
+            c2d::PathModel m;
+            c2d::SubPath sp;
+            c2d::PathNode n0, n1;
+            n0.p = n0.in = n0.out = a;
+            n1.p = n1.in = n1.out = b;
+            sp.nodes << n0 << n1;
+            m.subs << sp;
+            return m;
+        };
+        int outsideBad = 0, insideBad = 0;
+        for (double R : {10.0, 25.0, 50.0, 100.0, 200.0}) {
+            const c2d::PathModel circ = c2d::Element::pathModel(c2d::Element::makeCircle({0, 0}, R, QJsonObject()));
+            for (int k = 1; k < 20; ++k) {
+                const double y = R * 0.9 * k / 20.0;
+                c2d::PathModel l1 = seg({R * 2, y}, {R * 1.2, y}), l2 = seg({R * 2, -y * 0.5}, {R * 1.2, -y * 0.5});
+                c2d::sketch::extend(l1, {R * 1.2, y}, 1, {circ});
+                c2d::sketch::extend(l2, {R * 1.2, -y * 0.5}, 1, {circ});
+                outsideBad += c2d::sketch::crossings(circ, 0, {l1, l2}).size() != 2;
+            }
+            for (int k = 1; k < 10; ++k) {
+                const double y = R * 0.08 * k;
+                c2d::PathModel l = seg({0, y}, {R * 0.3, y});
+                c2d::sketch::extend(l, {R * 0.3, y}, 1, {circ});
+                insideBad += c2d::sketch::crossings(circ, 0, {l}).size() != 1;
+            }
+        }
+        check(outsideBad == 0, "trim: every line Extended onto a circle from outside is a cut");
+        check(insideBad == 0, "trim: a line Extended onto a circle from inside is one cut, not two");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

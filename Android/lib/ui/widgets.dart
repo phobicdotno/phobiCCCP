@@ -202,6 +202,7 @@ class NumBox extends StatefulWidget {
 class _NumBoxState extends State<NumBox> {
   late final TextEditingController _c = TextEditingController(text: _show(widget.value));
   final _focus = FocusNode();
+  String? _shown; // the text put in on focus: left as is, nothing is committed
 
   String _show(double v) => '${v.toStringAsFixed(widget.decimals)}${widget.suffix}';
 
@@ -210,7 +211,7 @@ class _NumBoxState extends State<NumBox> {
     super.initState();
     _focus.addListener(() {
       if (_focus.hasFocus) {
-        _c.text = widget.value.toStringAsFixed(widget.decimals);
+        _c.text = _shown = widget.value.toStringAsFixed(widget.decimals);
         _c.selection = TextSelection(baseOffset: 0, extentOffset: _c.text.length);
       } else {
         _commit();
@@ -234,13 +235,20 @@ class _NumBoxState extends State<NumBox> {
   void _commit() {
     // A plain number, maybe with its unit; anything else ("1/4 in", "2in")
     // is left alone rather than read as some other number.
+    // Untouched, the rounded text would replace 3.175 with 3.17.
+    if (_c.text == _shown) {
+      _c.text = _shown = _show(widget.value);
+      return;
+    }
     final t = _c.text.trim().toLowerCase().replaceAll(',', '.').replaceFirst(RegExp(r'\s*(mm|°)$'), '');
     final v = double.tryParse(t);
     if (v != null && v.isFinite) {
       final k = v.clamp(widget.min, widget.max).toDouble();
       if (k != widget.value) widget.onChanged(k);
     }
-    _c.text = _show(widget.value);
+    // Done commits, then focus loss commits again: the text put back here
+    // must count as untouched, or the old value is sent after the new one.
+    _c.text = _shown = _show(widget.value);
   }
 
   @override

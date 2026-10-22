@@ -114,6 +114,7 @@ private:
     // unanswered and no jog waiting: GRBL refuses G-code while jogging
     // (error:9), so zeroing and resuming wait for this.
     bool standingStill() const;
+    bool movingStill(const QString &what);   // logs and returns true when not standing still
     QString stillMovingWhy() const;
     // Zeroing is refused while a program runs: a bumped pad button would
     // shift the rest of the job. The one exception is Z during a tool-change
@@ -121,7 +122,7 @@ private:
     bool zeroAllowed(bool xy);
     // Feed hold, wait for it to settle (Hold:0 or Idle, at most 5 s), soft
     // reset, then `then`. Used to cancel a job and to disconnect during one.
-    void holdResetThen(std::function<void()> then);
+    void holdResetThen(std::function<void()> then, bool evenAfterStop = false);
     void rehearseToolChange();
     void finishRehearsal(bool ok, bool measured);
     void onStatus(const MachineStatus &st);
@@ -228,6 +229,8 @@ private:
     bool m_toolMeasured = false;
     bool m_rehearsal = false;            // the running program is a rehearsal
     std::function<void()> m_onIdle;
+    quint64 m_idleSeq = 0;      // which whenIdle() step a posted run belongs to
+    bool m_idlePosted = false;   // a run of m_onIdle is queued
     QString m_lastState;
     // Carbide Motion's "Initialize machine": after power-up GRBL sits in Alarm
     // until it has homed, and refuses jogs and zeroing (error:9) till then.
@@ -236,10 +239,12 @@ private:
     QString m_machineState;      // last reported state, never cleared by whenIdle
     bool needsInit();            // true (and says so in the log) while in Alarm
     void initializeMachine();    // $H, then park()
-    void park();                 // safe Z, then the tool-change XY
+    void park(bool afterHoming = false);   // safe Z, then the tool-change XY
     bool m_parkAfterHome = false;
     bool m_sawHoming = false;
     quint64 m_flowSeq = 0;       // counts resetFlow(): a Stop since calls off what was planned
+    bool m_resetPending = false; // Cancel job / Disconnect waits for the hold to reset
+    quint64 m_stopSeq = 0;       // counts real Stops (button, tool prompt, end stop, cable) only
     // Jog limits. Jogs go to absolute machine positions kept inside the
     // travel GRBL reports ($130-$132), because this machine runs with soft
     // and hard limits off ($20=0, $21=0): a jog past the end grinds the
@@ -287,6 +292,11 @@ private:
     bool requireHomed(const QString &what);
     bool insideTravel(double x, double y) const;
     double switchClearance() const;
+    double safeZ() const;
+    double riseZ() const;
+    bool endRiseWaiting() const;
+    bool bitSetterReachable(const BitSetterConfig &cfg, const QString &what);
+    bool jobWindingDown(const QString &what);
     QString m_unhomedWhy = QStringLiteral("not connected");
     QString m_lastLimitPins;
     bool m_limitWarned = false;
@@ -304,6 +314,7 @@ private:
     bool m_holdSeen = false;
     QElapsedTimer m_heldClock;
     void setHeld(bool held);             // m_held and the pause button
+    bool m_endRisePending = false;       // the end-of-job rise waits for Idle
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
     QProgressBar *m_progress;
     QPlainTextEdit *m_console;

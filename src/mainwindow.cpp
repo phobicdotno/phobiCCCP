@@ -19,7 +19,6 @@
 #include "padlink.h"
 #include "sendtopaddialog.h"
 #include <QActionGroup>
-#include <QLineEdit>
 #include <QJsonDocument>
 #include <QUuid>
 #include <QRandomGenerator>
@@ -37,6 +36,7 @@
 #include <QUrl>
 
 #include <QApplication>
+#include <QAbstractSpinBox>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QJsonArray>
@@ -804,6 +804,9 @@ MainWindow::MainWindow(QWidget *parent)
                                      QStringLiteral("There are no toolpaths to describe yet."));
             return;
         }
+        commitEdits();
+        ++m_holdDoc;
+        const auto hold = qScopeGuard([this] { --m_holdDoc; });
         const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
         const QString title = fi.fileName().isEmpty() ? QStringLiteral("Untitled") : fi.completeBaseName();
         const QString dest = QFileDialog::getSaveFileName(
@@ -1202,7 +1205,8 @@ MainWindow::MainWindow(QWidget *parent)
     tb->addSeparator();
     tb->addAction(undoAct);
     tb->addAction(redoAct);
-    new VectorActions(m_canvas, editMenu, this);   // Edit → Vectors + icon bar
+    auto *vecActions = new VectorActions(m_canvas, editMenu, this);   // Edit → Vectors + icon bar
+    vecActions->beforeAction = [this] { commitEdits(); };
 
     // Status bar: transient hints. Zoom and the live mm position are on the
     // canvas itself (bottom right, with the zoom buttons).
@@ -1331,6 +1335,21 @@ MainWindow::MainWindow(QWidget *parent)
     // Come back up in the mode the shop PC was left in.
     const int saved = QSettings().value(QStringLiteral("ui/mode"), 0).toInt();
     setMode(MainWindow::Mode(qBound(0, saved, 3)), false);
+    // A field's "modified" flag (typingPending) stays set after Enter when
+    // the text did not change; clear it once the edit is finished. Hooked
+    // on first focus, so fields made later (toolpath forms) are covered.
+    connect(qApp, &QApplication::focusChanged, this, [this](QWidget *, QWidget *now) {
+        if (!now || !isAncestorOf(now))
+            return;
+        auto *le = qobject_cast<QLineEdit *>(now);
+        if (!le)
+            if (auto *sb = qobject_cast<QAbstractSpinBox *>(now))
+                le = sb->findChild<QLineEdit *>();
+        if (!le || le->property("modifiedHooked").toBool())
+            return;
+        le->setProperty("modifiedHooked", true);
+        connect(le, &QLineEdit::editingFinished, le, [le] { le->setModified(false); });
+    });
 }
 
 // [ + ]: square brackets with a plus inside, the full-screen toggle; while
@@ -1731,6 +1750,9 @@ void MainWindow::setMode(Mode m, bool autoRun)
 
 void MainWindow::onExportGcode()
 {
+    commitEdits();
+    ++m_holdDoc;
+    const auto hold = qScopeGuard([this] { --m_holdDoc; });
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code"),
                                  QStringLiteral("Open a .c2d file first."));
@@ -1769,28 +1791,27 @@ void MainWindow::onExportGcode()
     }
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export G-code"),
-        QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
+        gcodeSuggestion(),
         QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
     if (path.isEmpty())
         return;
-    QFile f(path);
+    // Written beside the target and moved over it only when complete: a full
+    // disk or a stick pulled mid-write must not leave a program ending in the
+    // middle of a block (no retract, no spindle stop) in place of the good one.
+    QSaveFile f(path);
+    f.setDirectWriteFallback(true);       // a folder it cannot make files in
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
     }
-    // Unchecked and unflushed, a full disk or a stick pulled mid-write left a
-    // program ending in the middle of a block - no retract, no spindle stop -
-    // and the status bar said it had been exported.
     const QByteArray bytes = r.gcode.toUtf8();
-    if (f.write(bytes) != bytes.size() || !f.flush()) {
+    if (f.write(bytes) != bytes.size() || !commitKeepingMode(f)) {
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
-        f.close();
         return;
     }
-    f.close();
     QString msg = QStringLiteral("Exported %1 toolpath(s) to %2   [%3]")
-                      .arg(r.done.size()).arg(path)
-                      .arg(statsSummary(computeStats(r.ops))
+                      .arg(QString::number(r.done.size()), path,
+                           statsSummary(computeStats(r.ops))
                                .replace(QChar('\n'), QStringLiteral("  ·  ")));
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
@@ -1801,6 +1822,9 @@ void MainWindow::onExportGcode()
 
 void MainWindow::onExportGcodeTiled()
 {
+    commitEdits();
+    ++m_holdDoc;
+    const auto hold = qScopeGuard([this] { --m_holdDoc; });
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Export G-code (tiled)"),
                                  QStringLiteral("Open a .c2d file first."));
@@ -1818,7 +1842,7 @@ void MainWindow::onExportGcodeTiled()
         return;
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export tiled G-code — base name (_tile1.nc, _tile2.nc, … are added)"),
-        QFileInfo(m_doc.filePath()).completeBaseName() + QStringLiteral(".nc"),
+        gcodeSuggestion(),
         QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
     if (path.isEmpty())
         return;
@@ -1936,6 +1960,9 @@ void MainWindow::startPreviewRun()
         run->thread = nullptr;
         if (m_previewRun == run)
             m_previewRun.reset();
+        // With Preview off nothing else replaces it, and it stayed for good.
+        if (statusBar()->currentMessage() == QStringLiteral("Updating preview…"))
+            statusBar()->clearMessage();
         if (run->gen == m_previewGen && !run->cancel.load() && !run->result.cancelled) {
             m_previewServed = run->gen;
             applyPreview(run->result, m_previewAct->isChecked());
@@ -2170,6 +2197,7 @@ void MainWindow::onOpen()
 
 void MainWindow::onSave()
 {
+    commitEdits();
     if (m_untitled || m_doc.filePath().isEmpty()) {
         onSaveAs();
         return;
@@ -2192,8 +2220,17 @@ void MainWindow::onSave()
 void MainWindow::saveExtras(const QString &path)
 {
     QString bgErr, mdErr;
+    // Document::save keeps a read-only file read-only; the extras are part of
+    // the same save, so they get to write before that is put back.
+    const QFileDevice::Permissions perms = QFile::permissions(path)
+        & ~(QFileDevice::ReadUser | QFileDevice::WriteUser | QFileDevice::ExeUser);
+    const bool readOnly = !(perms & QFileDevice::WriteOwner);
+    if (readOnly)
+        QFile::setPermissions(path, perms | QFileDevice::WriteOwner);
     const bool bgOk = m_bg.saveTo(path, &bgErr);
     const bool mdOk = m_model->saveTo(path, &mdErr);
+    if (readOnly)
+        QFile::setPermissions(path, perms);
     if (!bgOk || !mdOk) {
         QMessageBox::warning(
             this, QStringLiteral("Saved incompletely"),
@@ -2213,6 +2250,7 @@ void MainWindow::saveExtras(const QString &path)
 
 void MainWindow::onSaveAs()
 {
+    commitEdits();
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Nothing to save"),
                                  QStringLiteral("Open a .c2d file first."));
@@ -2251,8 +2289,45 @@ void MainWindow::onSaveAs()
 // m_dirty was tracked and shown in the title bar but never acted on: opening
 // another document, picking one from Open Recent, dropping a file on the
 // window or closing it all discarded an afternoon of edits without a word.
+// A number typed into a field takes effect on Enter or when the field loses
+// focus, and reaches the design through a queued call: a shortcut (Ctrl+S,
+// Ctrl+G) or closing the window would otherwise work on the design without
+// it, and it would land afterwards. Commit it first.
+void MainWindow::commitEdits()
+{
+    const QPointer<QWidget> f = QApplication::focusWidget();
+    if (f && isAncestorOf(f)) {
+        f->clearFocus();
+        // Other queued calls run here too: a pad's request is refused as busy
+        // rather than opening a design under the save or export that called this.
+        ++m_holdDoc;
+        const auto hold = qScopeGuard([this] { --m_holdDoc; });
+        for (int i = 0; i < 3; ++i)
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::MetaCall);
+        if (f)
+            f->setFocus();
+    }
+}
+
+bool MainWindow::typingPending() const
+{
+    QWidget *f = QApplication::focusWidget();
+    if (!f || !isAncestorOf(f))
+        return false;
+    // Fields that track it themselves (the toolpath form) say so exactly.
+    const QVariant typed = f->property("typed");
+    if (typed.isValid())
+        return typed.toBool();
+    auto *le = qobject_cast<QLineEdit *>(f);
+    if (!le)
+        if (auto *sb = qobject_cast<QAbstractSpinBox *>(f))
+            le = sb->findChild<QLineEdit *>();
+    return le && le->isModified();
+}
+
 bool MainWindow::confirmDiscard(const QString &what)
 {
+    commitEdits();
     if (!m_dirty)
         return true;
     const QString name = m_untitled ? QStringLiteral("The untitled design")
@@ -2275,6 +2350,7 @@ bool MainWindow::confirmDiscard(const QString &what)
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
+    commitEdits();
     // Never close in the middle of a cut, a probe or a homing cycle: the
     // serial link goes with the window, and the machine is left mid-move.
     // Quietly: a popup over a running job is exactly what the operator must
@@ -2482,6 +2558,13 @@ void MainWindow::autosave()
 // design (Save As offers the original name), never over the user's file.
 void MainWindow::offerRecovery()
 {
+    // Queued at start-up: a box the command-line file's open shows runs
+    // events, and swapping in a recovered design there left it half opened
+    // under the other file's name. Asked once that open is done.
+    if (QApplication::activeModalWidget()) {
+        QTimer::singleShot(200, this, &MainWindow::offerRecovery);
+        return;
+    }
     for (const Recovery::Entry &e : m_recovery.pending()) {
         const QString what = e.untitled ? QStringLiteral("an untitled design")
                                         : QFileInfo(e.source).fileName();
@@ -2598,6 +2681,11 @@ void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
     if (m_linkBusy || m_machine->isBusy()) {
         if (m_receiver)
             m_receiver->answer(id, false, QStringLiteral("%1 is busy; try again when the machine is done").arg(host));
+        return;
+    }
+    if (docHeld()) {
+        if (m_receiver)
+            m_receiver->answer(id, false, QStringLiteral("%1 is busy with the open design; try again shortly").arg(host));
         return;
     }
     m_linkBusy = true;
@@ -2746,7 +2834,7 @@ QString padCopyPath(const QString &path)
     const QDir dir = fi.absoluteDir();
     for (int n = 1; n < 100; ++n) {
         const QString name = n == 1 ? QStringLiteral("%1 (pad).c2d").arg(fi.completeBaseName())
-                                    : QStringLiteral("%1 (pad %2).c2d").arg(fi.completeBaseName()).arg(n);
+                                    : QStringLiteral("%1 (pad %2).c2d").arg(fi.completeBaseName(), QString::number(n));
         if (!QFileInfo::exists(dir.filePath(name)))
             return dir.filePath(name);
     }
@@ -2755,15 +2843,30 @@ QString padCopyPath(const QString &path)
 
 // Write the pad design `d` to `path`, built beside it and swapped in, so a
 // failure leaves what is there alone.
-bool buildPadFile(const QJsonObject &d, const QString &path, QString *err)
+bool buildPadFile(const QJsonObject &d, const QString &path, QString *err,
+                  const QString &keepFrom = QString())
 {
-    return padlink::rebuildDocument(d, path, err);
+    return padlink::rebuildDocument(d, path, err, keepFrom);
 }
 
 } // namespace
 
-QString MainWindow::sendCopy(QString *err)
+bool MainWindow::sameDesign(const QString &opened, QString *err) const
 {
+    // The same file by another path counts (a pad's edit reopens it by its
+    // canonical path, a symlinked folder's target).
+    if (m_doc.filePath() == opened
+        || (!opened.isEmpty() && !m_doc.filePath().isEmpty() && QFileInfo(m_doc.filePath()) == QFileInfo(opened)))
+        return true;
+    if (err)
+        *err = QStringLiteral("a different design was opened here; close this and send again");
+    return false;
+}
+
+QString MainWindow::sendCopy(const QString &opened, QString *err)
+{
+    if (!sameDesign(opened, err))
+        return {};
     // A copy as the design is now, saved or not; the user's file is untouched.
     const QString name = m_untitled || m_doc.filePath().isEmpty()
                              ? QStringLiteral("Untitled")
@@ -2783,10 +2886,14 @@ QString MainWindow::sendCopy(QString *err)
 
 void MainWindow::onSendTo()
 {
+    commitEdits();
     const QString name = m_untitled || m_doc.filePath().isEmpty()
                              ? QStringLiteral("Untitled")
                              : QFileInfo(m_doc.filePath()).completeBaseName();
-    SendToDialog dlg(name, instanceId(), [this](QString *err) { return sendCopy(err); }, this);
+    // The dialog stays open while another computer or a pad may open a design
+    // here; its name is fixed, so a different design is refused, not sent as this one.
+    const QString opened = m_doc.filePath();
+    SendToDialog dlg(name, instanceId(), [this, opened](QString *err) { return sendCopy(opened, err); }, this);
     dlg.exec();
 }
 
@@ -2837,6 +2944,28 @@ QJsonObject MainWindow::padInfo()
         {QStringLiteral("unsaved"), m_dirty}};
 }
 
+QString MainWindow::gcodeSuggestion() const
+{
+    // An untitled design's file is a scratch copy in the cache
+    // ("untitled-6829"): name the export after where it came from.
+    const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
+    if (fi.fileName().isEmpty())
+        return QDir::homePath() + QStringLiteral("/Untitled.nc");
+    return fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".nc");
+}
+
+bool MainWindow::docHeld() const
+{
+    // Any modal step (a dialog, the export's progress) may be working on the
+    // open design; so may an export not yet showing its dialog.
+    // Send to pad / Send to phobiCCCP stay open after a send, waiting for the
+    // design to come back; they read the open file only when Send is pressed.
+    QWidget *modal = QApplication::activeModalWidget();
+    if (qobject_cast<SendToPadDialog *>(modal) || qobject_cast<SendToDialog *>(modal))
+        modal = nullptr;
+    return m_holdDoc > 0 || modal != nullptr || exportRunning();
+}
+
 void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &peer)
 {
     const QString op = req.value(QStringLiteral("op")).toString();
@@ -2847,6 +2976,15 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
     if (changes && m_linkBusy) {
         // Another send (or a received project) is waiting on a question here.
         reply = padError(QStringLiteral("%1 is busy with another design; try again shortly")
+                             .arg(QSysInfo::machineHostName()));
+    } else if ((op == QLatin1String("send") || op == QLatin1String("open")) && docHeld()) {
+        // Opening it would swap the design under a dialog or an export.
+        reply = padError(QStringLiteral("%1 is busy with the open design; try again shortly")
+                             .arg(QSysInfo::machineHostName()));
+    } else if (op == QLatin1String("machine") && docHeld()) {
+        // Preferences (or an export) holds the old machine's settings and
+        // would write them into the new one on OK.
+        reply = padError(QStringLiteral("%1 has a window open; try again shortly")
                              .arg(QSysInfo::machineHostName()));
     } else if (op == QLatin1String("info")) {
         reply = padInfo();
@@ -3059,7 +3197,8 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
     openPath(c2dPath, false);
     if (QFileInfo(m_doc.filePath()) != QFileInfo(c2dPath))
         return padError(QStringLiteral("%1 did not open on %2").arg(QFileInfo(c2dPath).fileName(), host));
-    if (const QString older = olderPadWarning(req, peer); !older.isEmpty())
+    // A whole file sent by a computer carries no versions to warn about.
+    if (const QString older = whole ? QString() : olderPadWarning(req, peer); !older.isEmpty())
         statusBar()->showMessage(QStringLiteral("“%1” from %2. %3").arg(name, sender, older), 15000);
     else
         statusBar()->showMessage(QStringLiteral("“%1” from %2").arg(name, sender), 10000);
@@ -3241,6 +3380,7 @@ QString MainWindow::padShareSaved(const QString &c2dPath, bool startLink, QStrin
 
 void MainWindow::onSendToPad()
 {
+    commitEdits();
     if (m_doc.filePath().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Nothing to send"),
                                  QStringLiteral("Open or make a design first."));
@@ -3261,11 +3401,14 @@ void MainWindow::onSendToPad()
     }
     SendToPadDialog::Hooks hooks;
     hooks.pads = [this] { return m_pads.recent(QDateTime::currentMSecsSinceEpoch()); };
-    hooks.send = [this](const QString &padId, QString *note, QString *error) {
+    const QString opened = m_doc.filePath();
+    hooks.send = [this, opened](const QString &padId, QString *note, QString *error) {
+        if (!sameDesign(opened, error))
+            return qint64(0);
         return sendToPad(padId, note, error);
     };
     hooks.waiting = [this](const QString &padId, qint64 seq) { return m_pads.waiting(padId, seq); };
-    hooks.makeCopy = [this](QString *err) { return sendCopy(err); };
+    hooks.makeCopy = [this, opened](QString *err) { return sendCopy(opened, err); };
     hooks.ownId = instanceId();
     SendToPadDialog dlg(QFileInfo(m_doc.filePath()).completeBaseName(), m_receiver != nullptr, hooks, this);
     dlg.exec();
@@ -3372,7 +3515,7 @@ void MainWindow::padDesignChanged(const QString &id)
                 continue;
             }
             const QString copy = padCopyPath(path);
-            if (copy.isEmpty() || !buildPadFile(d, copy, &err)) {
+            if (copy.isEmpty() || !buildPadFile(d, copy, &err, path)) {
                 statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; %2 %3, and the pad's version "
                                                         "could not be made beside it: %4")
                                              .arg(name, file, why, err), 10000);
@@ -3384,7 +3527,12 @@ void MainWindow::padDesignChanged(const QString &id)
             continue;
         }
         const bool open = !m_untitled && QFileInfo(m_doc.filePath()) == QFileInfo(path);
-        if (open && (m_dirty || m_machine->isBusy())) {
+        // A number being typed (not committed yet) is an unsaved change too.
+        // Not committed here: taking the focus away mid-number would keep
+        // half of it ("2" of "2.5").
+        // m_holdDoc: inside commitEdits (Save, Export, close, ...), a value
+        // just committed may still be on its way into the document.
+        if (open && (m_dirty || typingPending() || m_holdDoc > 0 || m_machine->isBusy())) {
             statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; save or finish %2 first, "
                                                     "then send it again from the pad")
                                          .arg(name, file), 10000);
@@ -3490,7 +3638,14 @@ void MainWindow::rebuildMachineMenu()
         QStringList names;
         QStringList ids;
         for (const auto &p : machineprofiles::list(s))
-            if (p.id != active) { names << p.name; ids << p.id; }
+            if (p.id != active) {
+                // Labels unique, so the pick maps back to one machine.
+                QString label = p.name;
+                for (int n = 2; names.contains(label); ++n)
+                    label = QStringLiteral("%1 (%2)").arg(p.name, QString::number(n));
+                names << label;
+                ids << p.id;
+            }
         bool ok = false;
         const QString pick = QInputDialog::getItem(this, QStringLiteral("Remove machine"),
             QStringLiteral("Forget this machine and its settings:"), names, 0, false, &ok);

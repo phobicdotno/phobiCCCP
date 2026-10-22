@@ -13,6 +13,8 @@
 
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
+#include "../src/importers.h"
+#include "../src/vectorops.h"
 
 #include <QGuiApplication>
 #include <QJsonArray>
@@ -372,6 +374,13 @@ int main(int argc, char *argv[])
               && glyphs.first().id == t.id && glyphs.at(1).id != t.id,
               "text converts to one path per contour");
         check(c2d::Element::pathModel(glyphs.first()).subs.first().closed, "glyph paths are closed");
+        QJsonObject tg = t.raw;
+        tg.insert("construction", true);
+        tg.insert("group_id", "g-text");
+        bool allKept = true;
+        for (const c2d::Element &g : c2d::Element::toPaths(c2d::Element::fromJson(tg)))
+            allKept = allKept && c2d::Element::isConstruction(g) && g.raw.value("group_id").toString() == "g-text";
+        check(allKept, "every glyph path keeps construction and the group");
     }
 
     // --- optional: write a specimen document --------------------------------------
@@ -410,6 +419,26 @@ int main(int argc, char *argv[])
                 ++arcs;
         check(arcs == 2, "arc texts survive save/load");
         std::fprintf(stderr, "specimen written: %s\n", argv[2]);
+    }
+
+    // An SVG teardrop (one curve from a point back to itself) keeps its
+    // outline through an edit that rebuilds it from its nodes.
+    {
+        const QByteArray svg = "<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><path d='M 50 10 C 90 90 10 90 50 10 Z'/></svg>";
+        c2d::ImportOptions o;
+        o.stockWidth = 200;
+        o.stockHeight = 200;
+        const c2d::ImportResult r = c2d::importSvgData(svg, o, "t.svg");
+        check(r.elements.size() == 1, "teardrop imports");
+        if (r.elements.size() == 1) {
+            const QRectF b0 = r.elements.first().painterPath.boundingRect();
+            const c2d::Element rot = c2d::vec::transformElement(
+                r.elements.first(), c2d::vec::rotateTransform(b0.center(), 90));
+            const QRectF b1 = rot.painterPath.boundingRect();
+            check(std::abs(b1.width() - b0.height()) < 0.5 && std::abs(b1.height() - b0.width()) < 0.5,
+                  "a rotated teardrop keeps its outline");
+        }
     }
 
     std::printf("OK: %d checks passed\n", g_checks);
