@@ -863,9 +863,14 @@ QStringList Canvas::selectedElementIds() const
 void Canvas::selectIds(const QStringList &ids)
 {
     const QSet<QString> want(ids.begin(), ids.end());
+    // One change signal, not one per item: each rebuilt the whole id list
+    // (a few hundred selected shapes froze an array or a boolean for seconds).
+    m_scene->blockSignals(true);
     for (QGraphicsItem *it : m_scene->items())
         if (it->data(0).isValid())
             it->setSelected(want.contains(it->data(0).toString()));
+    m_scene->blockSignals(false);
+    onSelectionChanged();
 }
 
 void Canvas::editToolpath(const QString &uuid, const QJsonObject &newJson)

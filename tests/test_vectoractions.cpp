@@ -13,6 +13,7 @@
 #include "../src/vectoractions.h"
 
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLineF>
@@ -1035,6 +1036,26 @@ int main(int argc, char *argv[])
         const QPointF c = e->painterPath.boundingRect().center();
         check(std::fabs(c.x() - rb.left()) < 1e-6 && std::fabs(c.y() - rb.top()) < 1e-6,
               "scaled sketch point moves with the shape (its corner)");
+        canvas->setDocument(&doc);
+    }
+
+    // r50: selecting hundreds of shapes after an action was cubic (one
+    // selection-changed signal per item, each rebuilding the whole list).
+    {
+        Document big;
+        QStringList bigIds;
+        for (int i = 0; i < 1200; ++i) {
+            const Element e = Element::makeRectangle({double(i % 30) * 5, double(i / 30) * 5}, 3, 3, layer);
+            big.addElement(e);
+            bigIds << e.id;
+        }
+        canvas->setDocument(&big);
+        canvas->selectIds(bigIds);
+        QElapsedTimer clock;
+        clock.start();
+        va.moveCopy(1, 1, 1, false);
+        check(big.elements().size() == 2400, "copying 1200 shapes makes 1200 more");
+        check(clock.elapsed() < 4000, "copying 1200 selected shapes is not cubic in the selection");
         canvas->setDocument(&doc);
     }
 

@@ -7,6 +7,8 @@
 - **Machine:**
   - Run missed the Z-zero refusal when two different tool length offsets were measured within one
     WCO report; a new machine profile no longer copies the other machine's Z-zero record.
+- **Drawing:** arrays, Move/Copy, booleans and offset on a few hundred selected shapes took seconds to
+  minutes (a selection signal per shape); one signal now.
 - **Pad:** a pad edit now says it loses toolpath groups, a named layer, or a bit edited in the file
   (the rebuild dropped them silently).
 - **Toolpaths:**
