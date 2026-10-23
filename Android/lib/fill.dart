@@ -99,8 +99,10 @@ List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
         return l;
       }()
   ];
-  // Edges bucketed on a coarse grid (cells of 0.5 mm), each in every cell its
-  // box grown by _touch covers: a corner only looks at the edges of its cell.
+  // Edges bucketed on a coarse grid (cells of 0.5 mm), each in every cell
+  // within _touch of it: a corner only looks at the edges of its cell. Only
+  // the cells along the edge - its whole box made a diagonal across a sheet
+  // millions of cells (seconds, and gigabytes).
   const cell = 5000;
   final cells = <int, List<int>>{};
   int key(int cx, int cy) => cx * 1000003 + cy;
@@ -109,11 +111,17 @@ List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
     for (var k = 0; k < r.length; k++) {
       final a = r[k], b = r[(k + 1) % r.length];
       if (a == b || edgeOf[rj][k] < 0) continue;
-      final x0 = (math.min(a.$1, b.$1) - _touch) ~/ cell, x1 = (math.max(a.$1, b.$1) + _touch) ~/ cell;
-      final y0 = (math.min(a.$2, b.$2) - _touch) ~/ cell, y1 = (math.max(a.$2, b.$2) + _touch) ~/ cell;
-      for (var cx = x0; cx <= x1; cx++) {
-        for (var cy = y0; cy <= y1; cy++) {
-          (cells[key(cx, cy)] ??= <int>[]).add(rj << 24 | k);
+      final id = rj << 24 | k;
+      final dx = (b.$1 - a.$1).toDouble(), dy = (b.$2 - a.$2).toDouble();
+      // Points no more than half a cell apart, each with its _touch box.
+      final n = (math.sqrt(dx * dx + dy * dy) / (cell / 2)).ceil();
+      final seen = <int>{};
+      for (var i = 0; i <= n; i++) {
+        final x = a.$1 + dx * i / n, y = a.$2 + dy * i / n;
+        for (var cx = (x - _touch - cell / 2) ~/ cell; cx <= (x + _touch + cell / 2) ~/ cell; cx++) {
+          for (var cy = (y - _touch - cell / 2) ~/ cell; cy <= (y + _touch + cell / 2) ~/ cell; cy++) {
+            if (seen.add(key(cx, cy))) (cells[key(cx, cy)] ??= <int>[]).add(id);
+          }
         }
       }
     }
@@ -190,9 +198,16 @@ List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
   for (final (_, q, seg) in bridges) {
     if (seg < shapeSegs) cuts[seg].add(q);
   }
-  for (var i = 0; i < segs.length; i++) {
-    final (a, b) = segs[i];
-    for (var j = i + 1; j < segs.length; j++) {
+  // Swept left to right: only edges whose x ranges overlap are tried (every
+  // pair took seconds on a board with a few hundred circles).
+  final byX = List<int>.generate(segs.length, (i) => i)
+    ..sort((p, q) => math.min(segs[p].$1.$1, segs[p].$2.$1).compareTo(math.min(segs[q].$1.$1, segs[q].$2.$1)));
+  for (var ii = 0; ii < byX.length; ii++) {
+    final maxX = math.max(segs[byX[ii]].$1.$1, segs[byX[ii]].$2.$1);
+    for (var jj = ii + 1; jj < byX.length; jj++) {
+      if (math.min(segs[byX[jj]].$1.$1, segs[byX[jj]].$2.$1) > maxX) break;
+      final i = math.min(byX[ii], byX[jj]), j = math.max(byX[ii], byX[jj]);
+      final (a, b) = segs[i];
       final (c, d) = segs[j];
       if (math.max(a.$1, b.$1) < math.min(c.$1, d.$1) ||
           math.max(c.$1, d.$1) < math.min(a.$1, b.$1) ||

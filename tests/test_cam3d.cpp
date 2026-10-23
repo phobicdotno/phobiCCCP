@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 
@@ -331,6 +332,26 @@ int main()
         check(approx(along, across, 0.1 * along), "finish: cross pass set equals the first");
     }
 
+    // --- finish inside boundary vectors keeps the whole tool inside -----------
+    // As the rough does (rings inset by the tool radius): with only its centre
+    // clipped, the finish ran a tool radius outside, full depth in stock the
+    // rough never cleared.
+    for (const char *type : {"3d_finish_toolpath", "3d_rough_toolpath"}) {
+        c2d::Document doc;
+        const QJsonObject layer;
+        const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 40, 40, layer);
+        doc.addElement(e);
+        QJsonObject j = toolpath(type, kFlat, {{"stepdown", 3.0}, {"stepover", 2.5}, {"stock_to_leave", 0.0}});
+        j.insert("elements", QJsonArray{QJsonObject{{"uuid", e.id}}});
+        addToolpath(doc, j);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const c2d::JobStats st = c2d::computeStats(g.ops);
+        const double lo = 10 + 3.175 - 0.01, hi = 50 - 3.175 + 0.01;
+        check(g.done.size() == 1 && st.minX >= lo && st.maxX <= hi && st.minY >= lo && st.maxY <= hi,
+              std::strcmp(type, "3d_rough_toolpath") == 0 ? "rough: the whole tool stays inside the boundary"
+                                                          : "finish: the whole tool stays inside the boundary");
+    }
+
     // --- boundary vectors + offset, percent stepover, flat finish tool -----------
     {
         c2d::Document doc;
@@ -344,8 +365,10 @@ int main()
         const c2d::GcodeResult g = c2d::exportGcode(doc);
         check(g.done.size() == 1, "finish: boundary exports");
         const c2d::JobStats st = c2d::computeStats(g.ops);
-        check(st.minX >= 18 - 0.01 && st.maxX <= 42 + 0.01 && st.minY >= 18 - 0.01 && st.maxY <= 42 + 0.01,
-              "finish: tool centre stays inside the boundary + offset");
+        // Boundary + offset 18..42, less the tool radius: the whole tool inside.
+        const double lo = 18 + 3.175 - 0.01, hi = 42 - 3.175 + 0.01;
+        check(st.minX >= lo && st.maxX <= hi && st.minY >= lo && st.maxY <= hi,
+              "finish: the whole tool stays inside the boundary + offset");
         // Measure the stepover itself: the distinct Y offsets of the passes.
         // (Total cut length is a poor proxy — it also counts the Y links
         // between passes and the Z following of the surface.)
@@ -374,7 +397,7 @@ int main()
         }
         std::printf("finish/boundary: %d passes, gaps %.3f..%.3f mm, cutLen %.1f mm\n",
                     int(ys.size()), minGap, maxGap, st.cutLen);
-        check(ys.size() >= 18 && ys.size() <= 21, "finish: 24 mm / 1.27 mm gives ~19 passes");
+        check(ys.size() >= 14 && ys.size() <= 16, "finish: 17.65 mm / 1.27 mm gives ~15 passes");
         // The last pass is snapped onto the far edge, so it may sit closer.
         check(approx(maxGap, 1.27, 0.02), "finish: 20% of 6.35 = 1.27 mm stepover");
         // The flat tool rides on the exact disc maximum: never into the dome.
@@ -662,10 +685,10 @@ int main()
         check(worst >= -0.02, "waterline: never below the model (0.02 mm)");
         check(sim.gougeCells == 0 && sim.rapidHitCount == 0, "waterline: no gouge, no rapid into stock");
 
-        // A boundary keeps the tool centre inside it.
+        // A boundary keeps the whole tool inside it.
         {
             c2d::Document d;
-            const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 20, 20, QJsonObject());
+            const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 24, 24, QJsonObject());
             d.addElement(e);
             QJsonObject j = toolpath("3d_finish_toolpath", kBall,
                                      {{"stepdown", 2.0}, {"strategy", QStringLiteral("waterline")}});
@@ -673,11 +696,12 @@ int main()
             addToolpath(d, j);
             const c2d::GcodeResult gb = c2d::exportGcode(d);
             const c2d::JobStats st = c2d::computeStats(gb.ops);
-            check(gb.done.size() == 1 && st.minX >= 20 - 0.01 && st.maxX <= 40 + 0.01
-                      && st.minY >= 20 - 0.01 && st.maxY <= 40 + 0.01,
-                  "waterline: tool centre stays inside the boundary");
-            // Loop radii: 9.1 mm at -2 (whole), 12.5 at -4 (corners clipped
-            // off), 14.9 at -6 (beyond the 14.1 mm corner: gone).
+            check(gb.done.size() == 1 && st.minX >= 19.5 - 0.01 && st.maxX <= 40.5 + 0.01
+                      && st.minY >= 19.5 - 0.01 && st.maxY <= 40.5 + 0.01,
+                  "waterline: the whole tool stays inside the boundary");
+            // Tool centres within 18..42 less the 1.5 mm radius (half 10.5,
+            // corner 14.85). Loop radii: 9.1 mm at -2 (whole), 12.5 at -4
+            // (corners clipped off), 14.9 at -6 (beyond the corner: gone).
             const QSet<qint64> lvb = feedLevels(gb.ops);
             check(lvb.size() == 2 && lvb.contains(-20000) && lvb.contains(-40000),
                   "waterline: clipped loops still cut");

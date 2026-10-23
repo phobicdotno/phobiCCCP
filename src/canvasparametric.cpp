@@ -213,61 +213,54 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
     return out;
 }
 
-// Of `reds` (let back in by a value change elsewhere in their sketch), those
-// that now hold only by bending a shape they are on: a turned rectangle's
-// red position, tied by Parallel to one whose width changed, was met by
-// folding it. A length dimension on a plain line is free to change it.
-QSet<QString> distortedBy(const Document &before, const Document &after, const QSet<QString> &reds)
+param::SolveResult solveOmitting(Document &doc, const QSet<QString> &keep, const QSet<QString> &omit,
+                                 bool force = false);
+
+// `reds` (let back in by a value change elsewhere in their sketch) if holding
+// them bends a closed shape: the same edit solved with them left out is the
+// reference, and any closed subpath whose side lengths or distances from its
+// first node differ from it was bent to meet them (a turned rectangle folded
+// by a red on a line attached to it). Open paths are free to change.
+QSet<QString> distortedBy(const Document &before, const Document &after, const QSet<QString> &reds,
+                          const QSet<QString> &keep = {}, const QSet<QString> &inert = {})
 {
-    QSet<QString> out;
     if (reds.isEmpty())
-        return out;
-    const QStringList still = param::unsatisfied(after);
-    QHash<QString, const Element *> was, now;
-    for (const Element &e : before.elements())
-        was.insert(e.id, &e);
-    for (const Element &e : after.elements())
-        now.insert(e.id, &e);
-    // Each subpath's side lengths and its nodes' distances from its first.
-    auto shape = [](const Element &e) {
+        return {};
+    Document ref = after;
+    ref.setElements(before.elements());
+    ref.setParametric(after.parametric());
+    solveOmitting(ref, keep, inert | reds);
+    auto closedShape = [](const Element &e) {
         QVector<double> d;
         for (const SubPath &sp : Element::pathModel(e).subs)
-            for (int i = 1; i < sp.nodes.size(); ++i)
-                d << QLineF(sp.nodes.at(i - 1).p, sp.nodes.at(i).p).length()
-                  << QLineF(sp.nodes.first().p, sp.nodes.at(i).p).length();
+            if (sp.closed)
+                for (int i = 1; i < sp.nodes.size(); ++i)
+                    d << QLineF(sp.nodes.at(i - 1).p, sp.nodes.at(i).p).length()
+                      << QLineF(sp.nodes.first().p, sp.nodes.at(i).p).length();
         return d;
     };
-    for (const QString &uid : reds) {
-        const int k = after.parametric().indexOfUid(uid);
-        if (k < 0 || still.contains(uid))
+    QHash<QString, const Element *> r;
+    for (const Element &e : ref.elements())
+        r.insert(e.id, &e);
+    for (const Element &e : after.elements()) {
+        const Element *a = r.value(e.id);
+        if (!a)
             continue;
-        const Constraint &c = after.parametric().constraints.at(k);
-        bool bent = false;
-        for (const GeoRef &r : c.refs) {
-            const Element *a = was.value(r.id), *b = now.value(r.id);
-            if (r.isOrigin() || !a || !b)
-                continue;
-            const PathModel m = Element::pathModel(*b);
-            if (c.isDimension() && c.refs.size() == 1 && r.kind == GeoRef::Line && m.subs.size() == 1
-                && m.subs.first().nodes.size() == 2)
-                continue;
-            const QVector<double> da = shape(*a), db = shape(*b);
-            bool same = da.size() == db.size();
-            for (int i = 0; same && i < da.size(); ++i)
-                same = std::fabs(da.at(i) - db.at(i)) < 1e-6;
-            bent = bent || !same;
-        }
-        if (bent)
-            out.insert(uid);
+        const QVector<double> da = closedShape(*a), db = closedShape(e);
+        bool same = da.size() == db.size();
+        for (int i = 0; same && i < da.size(); ++i)
+            same = std::fabs(da.at(i) - db.at(i)) < 1e-6;
+        if (!same)
+            return reds;
     }
-    return out;
+    return {};
 }
 
 // param::solve without the constraints in `omit` (they stay in the document,
 // unmet). An omitted dimension that an expression uses stands in as a
 // parameter with its value for the solve.
 param::SolveResult solveOmitting(Document &doc, const QSet<QString> &keep, const QSet<QString> &omit,
-                                 bool force = false)
+                                 bool force)
 {
     if (omit.isEmpty())
         return param::solve(doc, keep, force);
@@ -706,7 +699,7 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
     QSet<QString> inert = inertRed(before, *m_doc, touchedSet, &onlyValued);
     const QVector<Element> preSolve = m_doc->elements();
     param::SolveResult r = solveOmitting(*m_doc, touchedSet, inert);
-    if (const QSet<QString> bent = distortedBy(before, *m_doc, onlyValued); !bent.isEmpty()) {
+    if (const QSet<QString> bent = distortedBy(before, *m_doc, onlyValued, touchedSet, inert); !bent.isEmpty()) {
         m_doc->setElements(preSolve);
         inert |= bent;
         r = solveOmitting(*m_doc, touchedSet, inert);
@@ -792,7 +785,7 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
     QSet<QString> inert = inertRed(was, *m_doc, keep, &onlyValued);
     const QVector<Element> preSolve = m_doc->elements();
     param::SolveResult r = solveOmitting(*m_doc, keep, inert, false);
-    if (const QSet<QString> bent = distortedBy(was, *m_doc, onlyValued); !bent.isEmpty()) {
+    if (const QSet<QString> bent = distortedBy(was, *m_doc, onlyValued, keep, inert); !bent.isEmpty()) {
         m_doc->setElements(preSolve);
         inert |= bent;
         r = solveOmitting(*m_doc, keep, inert, false);

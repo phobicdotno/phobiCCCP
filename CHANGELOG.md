@@ -41,6 +41,9 @@
   - A bit diameter stored as text sized tab lifts (and the tiled keyhole check) from 1/8".
   - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
+  - A 3D finish limited by boundary vectors kept only the bit's centre inside them, so it cut a
+    bit radius outside, full depth in stock the 3D rough (which keeps the whole bit inside) never
+    cleared. The finish keeps the whole bit inside too.
 - **Machine:**
   - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
     beside the block below its top, and Begin again searched Z downward from there, past the
@@ -98,6 +101,9 @@
     A red dimension whose parameter had an error now holds once the error is fixed.
     Typing a new value into such a shape's own width, or changing the width of a shape tied to it
     (Parallel, Equal), no longer folds it either.
+    Nor does a red position on a line attached to the shape's corner, and a red length on an
+    edge of an open polyline holds again once a change elsewhere lets it.
+  - Selecting or highlighting shapes on a board with thousands of them took seconds; now instant.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
 - **Pad:**
@@ -122,6 +128,9 @@
     limited the way the computer counts it (an emoji counts twice). No side or radius, typed or
     drawn, goes over 10000 mm. W or H on a rectangle from the computer already past the edge
     no longer throws; it can be made smaller, its corner kept within range.
+  - Area: a tap inside a large shape with slanted sides (a triangle across a sheet, a turned
+    rectangle) froze the pad for seconds and took gigabytes; a board with hundreds of circles
+    took seconds too. Both now take a fraction of a second.
   - Text typed in the Text box went into another design when the computer opened one on the pad
     meanwhile (File > Send to pad); it is dropped instead.
   - After a two-finger pinch, the finger left on the screen picked up and dragged the shape under

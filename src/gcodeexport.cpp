@@ -2779,7 +2779,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                                 "the middle of a level is left uncut").arg(name);
                 lastPos = em.pos();
             } else {
-                body = finishOps(*hm, p3, boundary, nullptr, watch);
+                // Boundary vectors keep the whole tool inside, as for the
+                // rough (its rings are inset by the tool radius): a finish
+                // with only its centre clipped to them ran a tool radius
+                // outside, full depth in stock the rough never cleared.
+                // With none, the boundary is the model's edge and the
+                // overhang is over the board's edge, in air.
+                const QPainterPath inside =
+                    belems.isEmpty() ? boundary : cam3dBoundary(*hm, boundary, -p3.tool.radius());
+                body = finishOps(*hm, p3, inside, nullptr, watch);
                 for (int k = body.size() - 1; k >= 0; --k)
                     if (body.at(k).kind == Op::Feed) {
                         lastPos = QPointF(body.at(k).x, body.at(k).y);

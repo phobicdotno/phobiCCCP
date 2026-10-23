@@ -667,6 +667,57 @@ int main(int argc, char *argv[])
                   k == 0 ? "typing a red shape's own width keeps its position red"
                          : "a width on a tied shape keeps a red shape's position red");
         }
+        // Nor a red position on a line attached to its corner: meeting it
+        // dragged the corner and folded the rectangle.
+        {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            const Element t = Element::makePath({{10, 10}, {5, 10}}, false, layer);
+            cd.addElement(sq);
+            cd.addElement(t);
+            cd.parametricRef().params.append({QStringLiteral("w"), QStringLiteral("30"), QString()});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, t.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, t.id, 0)}, "5");
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, t.id, 0), ref(GeoRef::Point, sq.id, 0)});
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, t.id, 1)}, "5");
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, sq.id, 0)}, "w");
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id, t.id});
+            va.rotate(180);
+            Parametric after = cd.parametric();
+            after.params.first().expr = QStringLiteral("31");
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b, c, e;
+            const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
+            check(lines && std::fabs(QLineF(a, b).length() - 31) < 1e-6 && std::fabs(QLineF(c, e).length() - 20) < 0.05
+                      && param::unsatisfied(cd).size() == 1,
+                  "a red position on a line attached to a shape keeps it from folding");
+        }
+        // A red length on an edge of an open polyline still holds once a
+        // parameter edit elsewhere in its sketch lets it (round 34's case).
+        {
+            Document cd;
+            const Element g = Element::makePath({{-50, 10}, {50, 10}}, false, layer);
+            const Element c = Element::makePath({{0, 0}, {1, 10}, {1, 20}}, false, layer);
+            cd.addElement(g);
+            cd.addElement(c);
+            cd.parametricRef().params.append({QStringLiteral("h"), QStringLiteral("10"), QString()});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::VDistance, {GeoRef::origin(), ref(GeoRef::Point, g.id, 0)}, "h");
+            add(cd, Constraint::Fix, {ref(GeoRef::Point, c.id, 0)});
+            cd.parametricRef().constraints.last().at = QPointF(0, 0);
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, c.id, 1), ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, c.id, 0)}, "8");
+            canvas->setDocument(&cd);
+            Parametric after = cd.parametric();
+            after.params.first().expr = QStringLiteral("5");
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b;
+            check(param::unsatisfied(cd).isEmpty() && param::line(cd, ref(GeoRef::Line, c.id, 0), &a, &b)
+                      && std::fabs(QLineF(a, b).length() - 8) < 1e-6,
+                  "a red length on an open polyline holds after a parameter edit");
+        }
         // Moving, turning or mirroring a line merely tied to the red shape
         // (Parallel to an edge) does not bring the red dimension back to
         // fold it (a turn's holds counted as added constraints).

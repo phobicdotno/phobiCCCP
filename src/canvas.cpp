@@ -521,6 +521,19 @@ QGraphicsPathItem *Canvas::itemFor(const QString &id) const
     return nullptr;
 }
 
+QList<QGraphicsPathItem *> Canvas::itemsFor(const QStringList &ids) const
+{
+    QList<QGraphicsPathItem *> out;
+    if (ids.isEmpty())
+        return out;
+    const QSet<QString> want(ids.begin(), ids.end());
+    for (QGraphicsItem *it : m_scene->items())
+        if (it->data(0).isValid() && want.contains(it->data(0).toString()))
+            if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(it))
+                out << pi;
+    return out;
+}
+
 // Area (fill tool): the face the click is in, bounded by every closed shape
 // around it and any it overlaps - not whole shapes. A face whose rings are
 // existing shapes (a shape, or a shape and its islands) selects those; any
@@ -726,9 +739,8 @@ void Canvas::selectElements(const QStringList &ids)
 {
     m_scene->blockSignals(true);
     m_scene->clearSelection();
-    for (const QString &id : ids)
-        if (QGraphicsItem *it = itemFor(id))
-            it->setSelected(true);
+    for (QGraphicsPathItem *it : itemsFor(ids))
+        it->setSelected(true);
     m_scene->blockSignals(false);
     onSelectionChanged();
 }
@@ -950,9 +962,8 @@ void Canvas::drawForeground(QPainter *p, const QRectF &rect)
             hp.setJoinStyle(Qt::RoundJoin);
             hp.setCapStyle(Qt::RoundCap);
             p->setPen(hp);
-            for (const QString &id : m_highlightIds)
-                if (const QGraphicsPathItem *it = itemFor(id))
-                    p->drawPath(it->mapToScene(it->path()));
+            for (const QGraphicsPathItem *it : itemsFor(m_highlightIds))
+                p->drawPath(it->mapToScene(it->path()));
         }
         p->restore();
     }

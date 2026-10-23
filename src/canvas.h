@@ -196,6 +196,9 @@ private:
     void syncHitTolerance();            // re-size the items' hit corridor to the zoom
     double m_hitScale = 0;              // view scale the corridor was sized for
     QGraphicsPathItem *itemFor(const QString &id) const;
+    // The items of all of `ids` in one walk of the scene (itemFor per id
+    // walked it per id: seconds with thousands of shapes).
+    QList<QGraphicsPathItem *> itemsFor(const QStringList &ids) const;
 
     // Node editor.
     enum NodeGrab { GrabNone, GrabAnchor, GrabIn, GrabOut };
