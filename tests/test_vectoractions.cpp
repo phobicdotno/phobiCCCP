@@ -791,6 +791,78 @@ int main(int argc, char *argv[])
                       && std::fabs(QLineF(p, q).length() - 50) < 1e-6,
                   "a red length holds by resizing a rectangle");
         }
+        // Also with a corner drawn twice (a doubled node), and on a tilted
+        // arch whose straight edge turns back by 180 degrees at its ends.
+        for (int k = 0; k < 4; ++k) {
+            Document cd;
+            Element R;
+            QPointF B, Q, up;
+            if (k < 2) {
+                R = Element::makePath({{30, 40}, {70, 40}, {70, 60}, {70, 60}, {30, 60}}, true, layer);
+                B = QPointF(70, 40);
+                Q = QPointF(85, 40);
+                up = QPointF(0, 1);
+            } else {
+                const double ang = (k == 2 ? 61 : 72) * M_PI / 180;
+                const QPointF ux(std::cos(ang), std::sin(ang));
+                up = QPointF(-ux.y(), ux.x());
+                const QPointF A(30, 40);
+                B = A + 40 * ux;
+                Q = B + 15 * ux;
+                PathModel m;
+                SubPath sp;
+                sp.closed = true;
+                auto node = [](QPointF p) { PathNode n; n.p = n.in = n.out = p; return n; };
+                sp.nodes << node(A) << node(A + 20 * ux) << node(B);
+                sp.nodes[2].out = B + 27 * up;
+                sp.nodes[0].in = A + 27 * up;
+                m.subs << sp;
+                R = Element::makeBezierPath(m, layer);
+            }
+            const Element L = Element::makePath({B, Q}, false, layer);
+            const Element M = Element::makePath({Q, Q + 30 * up}, false, layer);
+            cd.addElement(R);
+            cd.addElement(L);
+            cd.addElement(M);
+            const double h0 = k < 2 ? 85 : std::hypot(Q.x(), Q.y()) - 3;
+            cd.parametricRef().params.append({QStringLiteral("h"), QString::number(h0, 'f', 9), QString()});
+            add(cd, Constraint::Fix, {ref(GeoRef::Point, R.id, 0)});
+            cd.parametricRef().constraints.last().at = QPointF(30, 40);
+            if (k < 2) {
+                add(cd, Constraint::Horizontal, {ref(GeoRef::Line, R.id, 0)});
+                add(cd, Constraint::Vertical, {ref(GeoRef::Line, R.id, 1)});
+                if (k == 1)
+                    add(cd, Constraint::Coincident, {ref(GeoRef::Point, R.id, 2), ref(GeoRef::Point, R.id, 3)});
+                add(cd, Constraint::Horizontal, {ref(GeoRef::Line, R.id, 3)});
+                add(cd, Constraint::Vertical, {ref(GeoRef::Line, R.id, 4)});
+                add(cd, Constraint::Coincident, {ref(GeoRef::Point, L.id, 0), ref(GeoRef::Point, R.id, 1)});
+                add(cd, Constraint::Horizontal, {ref(GeoRef::Line, L.id, 0)});
+                add(cd, Constraint::Vertical, {ref(GeoRef::Line, M.id, 0)});
+                add(cd, Constraint::Coincident, {ref(GeoRef::Point, M.id, 0), ref(GeoRef::Point, L.id, 1)});
+                add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, M.id, 0)}, "h");
+            } else {
+                add(cd, Constraint::Fix, {ref(GeoRef::Point, R.id, 1)});
+                cd.parametricRef().constraints.last().at = B - 20 * (Q - B) / 15;
+                add(cd, Constraint::Parallel, {ref(GeoRef::Line, R.id, 0), ref(GeoRef::Line, R.id, 1)});
+                add(cd, Constraint::Coincident, {ref(GeoRef::Point, L.id, 0), ref(GeoRef::Point, R.id, 2)});
+                add(cd, Constraint::Parallel, {ref(GeoRef::Line, L.id, 0), ref(GeoRef::Line, R.id, 0)});
+                add(cd, Constraint::Coincident, {ref(GeoRef::Point, M.id, 0), ref(GeoRef::Point, L.id, 1)});
+                add(cd, Constraint::Perpendicular, {ref(GeoRef::Line, M.id, 0), ref(GeoRef::Line, L.id, 0)});
+                add(cd, Constraint::Distance, {GeoRef::origin(), ref(GeoRef::Point, M.id, 0)}, "h");
+            }
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, L.id, 0)}, "10");
+            canvas->setDocument(&cd);
+            Parametric after = cd.parametric();
+            after.params.first().expr = QString::number(k < 2 ? 90 : std::hypot(Q.x(), Q.y()) + 4, 'f', 9);
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b;
+            check(param::line(cd, ref(GeoRef::Line, L.id, 0), &a, &b) && param::unsatisfied(cd).isEmpty()
+                      && std::fabs(QLineF(a, b).length() - 10) < 1e-6,
+                  k == 0   ? "a red length holds by resizing a rectangle with a doubled corner"
+                  : k == 1 ? "a red length holds by resizing a rectangle with a joined doubled corner"
+                  : k == 2 ? "a red length holds by stretching an arch tilted 61 degrees"
+                           : "a red length holds by stretching an arch tilted 72 degrees");
+        }
         // Moving, turning or mirroring a line merely tied to the red shape
         // (Parallel to an edge) does not bring the red dimension back to
         // fold it (a turn's holds counted as added constraints).

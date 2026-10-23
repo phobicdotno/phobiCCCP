@@ -78,7 +78,7 @@ struct FakeGrbl {
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
     double mx = -100, my = -100, mz = -30;
-    double wcoZ = 0;   // work Z offset in the status reports
+    double wcoZ = -40;   // work Z offset in the status reports (zero under the switch)
     // A jog reports Jog for `jogMs` after its line (it does not move the
     // position: tests set that), or until a jog cancel.
     int jogMs = 300;
@@ -112,7 +112,7 @@ struct FakeGrbl {
                     --homeReports;
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? "Hold:0" : home ? "Home" : jogging() ? "Jog" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0|WCO:0.000,0.000," + num(wcoZ) + ">\r\n");
+                     + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ) + ">\r\n");   // XY zero inside the travel
             } else if (c == '!') {
                 held = true;
                 events << "!";

@@ -179,6 +179,24 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
         if (close)
             out.closeSubpath();
     };
+    // Repeated open pieces are dropped.
+    auto sameSegs = [](const QVector<Seg> &x, const QVector<Seg> &y) {
+        if (x.size() != y.size())
+            return false;
+        for (int k = 0; k < x.size(); ++k) {
+            const Seg &g = x.at(k), &h = y.at(k);
+            if (g.curve != h.curve || g.a != h.a || g.b != h.b || (g.curve && (g.c1 != h.c1 || g.c2 != h.c2)))
+                return false;
+        }
+        return true;
+    };
+    for (int j = 0; j < subs.size(); ++j)
+        for (int i = 0; i < j && !subs[j].closed && !subs[j].segs.isEmpty(); ++i)
+            if (!used[i] && !subs[i].closed
+                && (sameSegs(subs[i].segs, subs[j].segs) || sameSegs(subs[i].segs, reversed(subs[j].segs)))) {
+                used[j] = true;
+                break;
+            }
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
             continue;
@@ -194,6 +212,10 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
         for (bool grew = true; grew;) {
             grew = false;
             for (int j = 0; j < subs.size(); ++j) {
+                if (chain.size() > 1 && samePt(chain.first().a, chain.last().b, tol)) {
+                    grew = false;
+                    break;
+                }
                 if (used[j] || subs[j].closed || subs[j].segs.isEmpty())
                     continue;
                 const QVector<Seg> &o = subs[j].segs;
@@ -772,6 +794,32 @@ int main(int argc, char **argv)
     check(c2d::isImportableFile(QStringLiteral("a.PLT")) && c2d::isImportableFile(QStringLiteral("b.ai"))
               && c2d::isImportableFile(QStringLiteral("c.pdf")) && !c2d::isImportableFile(QStringLiteral("d.c2d")),
           "importable suffixes");
+
+    // A rectangle of loose lines closes even with a stray line on a corner or
+    // an edge drawn twice (before or after the rest): the outline is not
+    // reopened by a piece touching its closed corner, and the copy is dropped.
+    for (int k = 0; k < 3; ++k) {
+        QPainterPath in;
+        auto line = [&in](QPointF a, QPointF b) { in.moveTo(a); in.lineTo(b); };
+        if (k == 2)
+            line({0, 0}, {10, 0});
+        line({0, 0}, {10, 0});
+        line({10, 0}, {10, 10});
+        line({10, 10}, {0, 10});
+        line({0, 10}, {0, 0});
+        if (k == 0)
+            line({0, 0}, {-5, -5});
+        if (k == 1)
+            line({0, 0}, {10, 0});
+        const QVector<c2d::Element> els = c2d::elementsFromPath(c2d::joinSubpaths(in), QJsonObject());
+        int closedRects = 0;
+        for (const c2d::Element &e : els)
+            closedRects += isClosed(e) && countType(e, 1) == 4;
+        check(closedRects == 1 && els.size() == (k == 0 ? 2 : 1),
+              k == 0   ? "joinSubpaths: a stray line on a corner leaves the rectangle closed"
+              : k == 1 ? "joinSubpaths: an edge drawn again after leaves the rectangle closed"
+                       : "joinSubpaths: an edge drawn again first leaves the rectangle closed");
+    }
 
     // joinSubpaths with its endpoint grid: same output as the old O(n^2)
     // sweep on scrambled pieces snapped to a coarse grid (many shared ends,

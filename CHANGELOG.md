@@ -48,6 +48,9 @@
   - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
     under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
+  - Run streamed a job that went past the machine's travel at the current work zero (past an X/Y
+    switch or the far hard stop, or an air cut lifted past the Z switch). It is refused, naming
+    the axis and how far over it goes, as jogs, Park and the surface map already were.
   - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
     beside the block below its top, and Begin again searched Z downward from there, past the
     block toward the spoilboard. The pin now goes back up over the block and to where Begin was
@@ -107,7 +110,12 @@
     Nor does a red position on a line attached to the shape's corner, and a red length on an
     edge of an open polyline holds again once a change elsewhere lets it. A red that holds by
     resizing a rectangle (not folding it) holds again, and a folded shape's red keeps only reds
-    in its own sketch red.
+    in its own sketch red. The same holds on an arch whose straight edge turns back at its ends,
+    and on a shape with a corner drawn twice.
+  - Pattern on path with orientation turned copies on a corner one edge too little (four brackets
+    round a square came out 0, 90, 180 degrees instead of 90, 180, 270).
+  - Imported outlines of loose lines (DXF, HPGL, SVG lines) stayed open when a stray line touched a
+    corner or an edge was drawn twice; they close, and an exact repeat of a piece is dropped.
   - Selecting or highlighting shapes on a board with thousands of them took seconds; now instant.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).

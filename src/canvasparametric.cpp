@@ -231,16 +231,26 @@ QSet<QString> distortedBy(const Document &before, const Document &after, const Q
     ref.setElements(before.elements());
     ref.setParametric(after.parametric());
     solveOmitting(ref, keep, inert | reds);
-    // Each closed subpath's signed turn at every corner.
+    // Each closed subpath's signed turn at every corner, between the nearest
+    // distinct nodes either side (a doubled node turns 0 at its second copy).
     auto corners = [](const Element &e) {
         QVector<double> d;
         for (const SubPath &sp : Element::pathModel(e).subs) {
             const int n = int(sp.nodes.size());
             if (!sp.closed || n < 3)
                 continue;
+            auto at = [&](int i) { return sp.nodes.at(((i % n) + n) % n).p; };
+            auto apart = [](QPointF a, QPointF b) { return QLineF(a, b).length() > 1e-6; };
             for (int i = 0; i < n; ++i) {
-                const QPointF p = sp.nodes.at((i + n - 1) % n).p, q = sp.nodes.at(i).p, r = sp.nodes.at((i + 1) % n).p;
-                const QPointF u = q - p, v = r - q;
+                const QPointF q = at(i);
+                if (!apart(at(i - 1), q)) {
+                    d << 0.0;
+                    continue;
+                }
+                int ri = i + 1;
+                while (ri < i + n && !apart(at(ri), q))
+                    ++ri;
+                const QPointF u = q - at(i - 1), v = at(ri) - q;
                 d << std::atan2(u.x() * v.y() - u.y() * v.x(), u.x() * v.x() + u.y() * v.y());
             }
         }
@@ -278,7 +288,7 @@ QSet<QString> distortedBy(const Document &before, const Document &after, const Q
         const QVector<double> da = corners(*a), db = corners(e);
         bool same = da.size() == db.size();
         for (int i = 0; same && i < da.size(); ++i)
-            same = std::fabs(da.at(i) - db.at(i)) < 1e-6;
+            same = std::fabs(std::remainder(da.at(i) - db.at(i), 2 * M_PI)) < 1e-6;   // +-180 deg wraps
         if (!same)
             bentRoots.insert(root(e.id));
     }

@@ -112,7 +112,8 @@ struct FakeGrbl {
     bool locked = false;      // after ALARM:1: deaf until ctrl-X
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
-    double wcoZ = 0;                      // work Z offset the status reports carry
+    double wcoX = -200, wcoY = -200;   // a work zero inside the travel (Run checks it)
+    double wcoZ = -40;                    // work Z offset the status reports carry (zero under the switch)
     // A V1 block model. Probes and G0 moves track the position.
     bool geo = false, rel = false, noiseOnce = false;
     QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
@@ -187,7 +188,7 @@ struct FakeGrbl {
                     continue; }
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : running ? "Run" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:0.000,0.000," + num(wcoZ) + ">\r\n");
+                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:" + num(wcoX) + "," + num(wcoY) + "," + num(wcoZ) + ">\r\n");
             } else if (c == '!') {
                 if (!held) holdClock.start();
                 held = true;
@@ -931,6 +932,48 @@ int main(int argc, char **argv)
         std::printf("r13: status reports during 1.5 s of the rehearsal summary: %d; pad jogs sent while open %d, total after close %d\n", during, jDuring, grbl.count("$J=") - j0);
         for (int i = grbl.indexOf("$J="); i >= 0 && i < grbl.events.size(); ++i) std::printf("  ev: %s\n", grbl.events.at(i).constData());
         check(during >= 3, "r13rehdeaf: status keeps coming while the rehearsal summary is open");
+    }
+    if (mode == "envxy" || mode == "envz") {
+        // A job past the travel at the current zero is refused: with the XY
+        // zero at the switches it ran to machine X +48; with Z zeroed 30 mm
+        // under the switch, an air cut lifted 30 mm rapided past it.
+        if (mode == "envxy") {
+            grbl.wcoX = 0;
+            grbl.wcoY = 0;
+            grbl.wcoZ = -60;
+        } else {
+            grbl.wcoZ = -30;
+            grbl.wcoX = -200;
+            grbl.wcoY = -200;
+            panel.m_airCut->setChecked(true);
+            panel.m_airLift->setValue(30);
+        }
+        wait(800);
+        grbl.events.clear();
+        bool refused = false;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("The program goes off the machine")) {
+                refused = true;
+                return QStringLiteral("OK");
+            }
+            if (v.headline.startsWith("Insert tool"))
+                return QStringLiteral("Same length: continue");
+            return QStringLiteral("\u25b6 Start");
+        };
+        const bool started = panel.runProgram();
+        wait(1500);
+        check(refused && !started && !s->isStreaming(), mode == "envxy" ? "envxy: a job past the X/Y travel is refused"
+                                                             : "envz: an air cut lifted past the Z switch is refused");
+        // Inside the travel the same job runs.
+        grbl.wcoX = -200;
+        grbl.wcoY = -200;
+        grbl.wcoZ = -60;
+        panel.m_airCut->setChecked(false);
+        wait(800);
+        const bool ok = panel.runProgram();
+        check(ok, "env: the job inside the travel runs");
+        s->stopStream();
+        wait(500);
     }
     if (mode == "connhold") {
         // Connected to a controller paused in a job this session never sent:

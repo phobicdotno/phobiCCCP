@@ -113,9 +113,41 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         };
         return std::make_pair(k(p.x()), k(p.y()));
     };
+    // An open piece drawn twice exactly (a CAD export repeating an edge) is cut
+    // once: the copy is dropped. Kept, the two closed on each other as an
+    // empty loop and left the outline they belong to open.
+    auto sameSegs = [](const QVector<Seg> &x, const QVector<Seg> &y) {
+        if (x.size() != y.size())
+            return false;
+        for (int k = 0; k < x.size(); ++k) {
+            const Seg &g = x.at(k), &h = y.at(k);
+            if (g.curve != h.curve || g.a != h.a || g.b != h.b || (g.curve && (g.c1 != h.c1 || g.c2 != h.c2)))
+                return false;
+        }
+        return true;
+    };
+    {
+        QHash<std::pair<std::pair<qint64, qint64>, std::pair<qint64, qint64>>, QVector<int>> ends;
+        for (int j = 0; j < subs.size(); ++j) {
+            if (subs[j].closed || subs[j].segs.isEmpty())
+                continue;
+            auto a = cellOf(subs[j].segs.first().a), b = cellOf(subs[j].segs.last().b);
+            if (b < a)
+                std::swap(a, b);
+            QVector<int> &v = ends[{a, b}];
+            const QVector<Seg> back = reversed(subs[j].segs);
+            for (int i : v)
+                if (sameSegs(subs[i].segs, subs[j].segs) || sameSegs(subs[i].segs, back)) {
+                    used[j] = true;
+                    break;
+                }
+            if (!used[j])
+                v.append(j);
+        }
+    }
     QHash<std::pair<qint64, qint64>, QVector<int>> grid;
     for (int j = 0; j < subs.size(); ++j) {
-        if (subs[j].closed || subs[j].segs.isEmpty())
+        if (subs[j].closed || subs[j].segs.isEmpty() || used[j])
             continue;
         grid[cellOf(subs[j].segs.first().a)].append(j);
         const auto e = cellOf(subs[j].segs.last().b);
@@ -161,6 +193,10 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         int from = 0;
         bool grew = false;
         for (;;) {
+            // Closed: a piece touching its corner (a stray line) starts its
+            // own path rather than reopening the outline.
+            if (chain.size() > 1 && samePoint(chain.front().a, chain.back().b, tol))
+                break;
             nearby(chain.front().a, chain.back().b, cand);
             int best = -1, wrap = -1;
             int how = 0, wrapHow = 0;

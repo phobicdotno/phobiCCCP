@@ -3551,6 +3551,72 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     // that goes down travels across before it descends.
     lines = QStringList{QStringLiteral("G21")} + riseToTop() + safeRapidsTransform(lines);
 
+    // The program inside the travel, at the current work zero (with the air
+    // cut lift and the map's lifted rapids): jogs, Park and the map keep to
+    // it, the job did not, and drove past the Z switch or into a hard stop.
+    if (m_homed && m_grbl->status().valid) {
+        const auto &st = m_grbl->status();
+        const double off[3] = {st.mx - st.wx, st.my - st.wy, st.mz - st.wz};
+        double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+        auto grow = [&](double x, double y, double z) {
+            const double v[3] = {x, y, z};
+            for (int k = 0; k < 3; ++k) {
+                lo[k] = qMin(lo[k], v[k]);
+                hi[k] = qMax(hi[k], v[k]);
+            }
+        };
+        double px = 0, py = 0, pz = 0;
+        for (const Op &o : ops) {
+            if (o.kind != Op::Rapid && o.kind != Op::Feed && o.kind != Op::Arc)
+                continue;
+            grow(o.x, o.y, o.z);
+            if (o.kind == Op::Arc) {
+                // The arc's own extremes: where it crosses 0, 90, 180, 270 deg.
+                const double cx = px + o.ci, cy = py + o.cj, r = std::hypot(o.ci, o.cj);
+                const double a0 = std::atan2(py - cy, px - cx), a1 = std::atan2(o.y - cy, o.x - cx);
+                double sweep = o.cw ? a0 - a1 : a1 - a0;
+                while (sweep <= 1e-9)
+                    sweep += 2 * M_PI;
+                for (int q = 0; q < 4; ++q) {
+                    const double a = q * M_PI / 2;
+                    double t = o.cw ? a0 - a : a - a0;
+                    while (t < 0)
+                        t += 2 * M_PI;
+                    while (t >= 2 * M_PI)
+                        t -= 2 * M_PI;
+                    if (t <= sweep)
+                        grow(cx + r * std::cos(a), cy + r * std::sin(a), qMax(pz, o.z));
+                }
+            }
+            px = o.x;
+            py = o.y;
+            pz = o.z;
+        }
+        if (lo[0] <= hi[0]) {
+            QSettings sset;
+            const auto machine = appsettings::machine(sset);
+            const double travel[2] = {m_grbl->setting(130, machine.width), m_grbl->setting(131, machine.height)};
+            const double top = -switchClearance(), lift = air ? m_airLift->value() : 0.0;
+            QStringList over;
+            for (int k = 0; k < 2; ++k) {
+                const QChar ax = QChar::fromLatin1("XY"[k]);
+                if (hi[k] + off[k] > top + 1e-6)
+                    over << QStringLiteral("%1 %2 mm past its home switch").arg(ax).arg(hi[k] + off[k] - top, 0, 'f', 1);
+                if (lo[k] + off[k] < -travel[k] - 1e-6)
+                    over << QStringLiteral("%1 %2 mm past the far end of its travel")
+                                .arg(ax).arg(-travel[k] - (lo[k] + off[k]), 0, 'f', 1);
+            }
+            if (hi[2] + lift + off[2] > top + 1e-6)
+                over << QStringLiteral("Z %1 mm above the top of its travel")
+                            .arg(hi[2] + lift + off[2] - top, 0, 'f', 1);
+            if (!over.isEmpty())
+                return refuse(QStringLiteral("The program goes off the machine."),
+                              QStringLiteral("From the current work zero it reaches %1. Set the zero "
+                                             "again, move the design, or lower the air cut lift.")
+                                  .arg(over.join(QStringLiteral(", "))));
+        }
+    }
+
     // Confirmation gate: extents + time estimate, and an unmissable note about
     // whether this run will spin the spindle.
     const int npause = int(lines.filter(QStringLiteral("M0 ;")).size());
