@@ -216,11 +216,12 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
 param::SolveResult solveOmitting(Document &doc, const QSet<QString> &keep, const QSet<QString> &omit,
                                  bool force = false);
 
-// `reds` (let back in by a value change elsewhere in their sketch) if holding
-// them bends a closed shape: the same edit solved with them left out is the
-// reference, and any closed subpath whose side lengths or distances from its
-// first node differ from it was bent to meet them (a turned rectangle folded
-// by a red on a line attached to it). Open paths are free to change.
+// Of `reds` (let back in by a value change elsewhere in their sketch), those
+// whose holding bends a closed shape in their sketch: the same edit solved
+// with them left out is the reference, and a closed subpath whose corners
+// turn differently from it was folded to meet them (a turned rectangle
+// folded by a red on a line attached to it). A resize keeps its corners;
+// open paths are free to change. Sketches are judged apart.
 QSet<QString> distortedBy(const Document &before, const Document &after, const QSet<QString> &reds,
                           const QSet<QString> &keep = {}, const QSet<QString> &inert = {})
 {
@@ -230,30 +231,71 @@ QSet<QString> distortedBy(const Document &before, const Document &after, const Q
     ref.setElements(before.elements());
     ref.setParametric(after.parametric());
     solveOmitting(ref, keep, inert | reds);
-    auto closedShape = [](const Element &e) {
+    // Each closed subpath's signed turn at every corner.
+    auto corners = [](const Element &e) {
         QVector<double> d;
-        for (const SubPath &sp : Element::pathModel(e).subs)
-            if (sp.closed)
-                for (int i = 1; i < sp.nodes.size(); ++i)
-                    d << QLineF(sp.nodes.at(i - 1).p, sp.nodes.at(i).p).length()
-                      << QLineF(sp.nodes.first().p, sp.nodes.at(i).p).length();
+        for (const SubPath &sp : Element::pathModel(e).subs) {
+            const int n = int(sp.nodes.size());
+            if (!sp.closed || n < 3)
+                continue;
+            for (int i = 0; i < n; ++i) {
+                const QPointF p = sp.nodes.at((i + n - 1) % n).p, q = sp.nodes.at(i).p, r = sp.nodes.at((i + 1) % n).p;
+                const QPointF u = q - p, v = r - q;
+                d << std::atan2(u.x() * v.y() - u.y() * v.x(), u.x() * v.x() + u.y() * v.y());
+            }
+        }
         return d;
     };
+    // The sketches: elements joined by constraints.
+    QHash<QString, QString> parent;
+    std::function<QString(const QString &)> root = [&](const QString &id) {
+        const QString p = parent.value(id, id);
+        if (p == id)
+            return id;
+        const QString top = root(p);
+        parent.insert(id, top);
+        return top;
+    };
+    for (const Constraint &c : after.parametric().constraints) {
+        QString first;
+        for (const GeoRef &g : c.refs) {
+            if (g.isOrigin())
+                continue;
+            if (first.isEmpty())
+                first = g.id;
+            else if (root(g.id) != root(first))
+                parent.insert(root(g.id), root(first));
+        }
+    }
     QHash<QString, const Element *> r;
     for (const Element &e : ref.elements())
         r.insert(e.id, &e);
+    QSet<QString> bentRoots;
     for (const Element &e : after.elements()) {
         const Element *a = r.value(e.id);
         if (!a)
             continue;
-        const QVector<double> da = closedShape(*a), db = closedShape(e);
+        const QVector<double> da = corners(*a), db = corners(e);
         bool same = da.size() == db.size();
         for (int i = 0; same && i < da.size(); ++i)
             same = std::fabs(da.at(i) - db.at(i)) < 1e-6;
         if (!same)
-            return reds;
+            bentRoots.insert(root(e.id));
     }
-    return {};
+    QSet<QString> out;
+    if (bentRoots.isEmpty())
+        return out;
+    for (const QString &uid : reds) {
+        const int k = after.parametric().indexOfUid(uid);
+        if (k < 0)
+            continue;
+        for (const GeoRef &g : after.parametric().constraints.at(k).refs)
+            if (!g.isOrigin() && bentRoots.contains(root(g.id))) {
+                out.insert(uid);
+                break;
+            }
+    }
+    return out;
 }
 
 // param::solve without the constraints in `omit` (they stay in the document,

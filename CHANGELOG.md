@@ -43,7 +43,10 @@
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
   - A 3D finish limited by boundary vectors kept only the bit's centre inside them, so it cut a
     bit radius outside, full depth in stock the 3D rough (which keeps the whole bit inside) never
-    cleared. The finish keeps the whole bit inside too.
+    cleared. The finish keeps the whole bit inside too; a ball or V by its width at the deepest
+    the finish goes, so it leaves no wider band than it must.
+  - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
+    under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
   - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
     beside the block below its top, and Begin again searched Z downward from there, past the
@@ -102,7 +105,9 @@
     Typing a new value into such a shape's own width, or changing the width of a shape tied to it
     (Parallel, Equal), no longer folds it either.
     Nor does a red position on a line attached to the shape's corner, and a red length on an
-    edge of an open polyline holds again once a change elsewhere lets it.
+    edge of an open polyline holds again once a change elsewhere lets it. A red that holds by
+    resizing a rectangle (not folding it) holds again, and a folded shape's red keeps only reds
+    in its own sketch red.
   - Selecting or highlighting shapes on a board with thousands of them took seconds; now instant.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
@@ -131,6 +136,9 @@
   - Area: a tap inside a large shape with slanted sides (a triangle across a sheet, a turned
     rectangle) froze the pad for seconds and took gigabytes; a board with hundreds of circles
     took seconds too. Both now take a fraction of a second.
+  - Area: a tap in one of two overlapping circles (or hexagons) could fill both whole shapes, or
+    a face overlapping its neighbours, where a crossing rounded onto the grid bent an edge;
+    crossings are now snap-rounded, the same faces as on the computer.
   - Text typed in the Text box went into another design when the computer opened one on the pad
     meanwhile (File > Send to pad); it is dropped instead.
   - After a two-finger pinch, the finger left on the screen picked up and dragged the shape under

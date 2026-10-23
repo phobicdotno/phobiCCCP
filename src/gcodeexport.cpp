@@ -2784,9 +2784,26 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 // with only its centre clipped to them ran a tool radius
                 // outside, full depth in stock the rough never cleared.
                 // With none, the boundary is the model's edge and the
-                // overhang is over the board's edge, in air.
-                const QPainterPath inside =
-                    belems.isEmpty() ? boundary : cam3dBoundary(*hm, boundary, -p3.tool.radius());
+                // overhang is over the board's edge, in air. A ball or V is
+                // only as wide as its profile at the deepest the finish
+                // goes below the stock top; insetting the full radius left
+                // a wider band unfinished than needed.
+                double lowest = qMax(hm->baseZ, p3.maxDepth);
+                for (float h : hm->z)
+                    if (h != HeightModel::NoModel)
+                        lowest = qMin(lowest, double(h));
+                const double d = qMax(0.0, -qMax(lowest, p3.maxDepth));
+                const ToolGeom &t = p3.tool;
+                const double R = t.radius();
+                double reach = R;
+                if (t.kind == ToolGeom::VBit)
+                    reach = qMin(R, d * std::tan(qDegreesToRadians(qBound(5.0, t.angle, 179.0) / 2)));
+                else if (t.kind == ToolGeom::Ball || (t.kind == ToolGeom::Flat && t.cornerRadius > 1e-9)) {
+                    const double c = t.kind == ToolGeom::Ball ? R : qMin(t.cornerRadius, R);
+                    if (d < c)
+                        reach = R - c + std::sqrt(qMax(0.0, 2 * c * d - d * d));
+                }
+                const QPainterPath inside = belems.isEmpty() ? boundary : cam3dBoundary(*hm, boundary, -reach);
                 body = finishOps(*hm, p3, inside, nullptr, watch);
                 for (int k = body.size() - 1; k >= 0; --k)
                     if (body.at(k).kind == Op::Feed) {

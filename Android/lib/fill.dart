@@ -84,8 +84,8 @@ typedef _V = (int, int);
 // the way the desktop's shrink-and-regrow does. The outlines themselves stay
 // exactly as drawn (moving or bending them broke the map where outlines run
 // within microns of each other).
-List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
-  final out = <(_V, _V, int)>[];
+List<(_V, _V)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
+  final out = <(_V, _V)>[];
   // Arc length along each ring to each vertex: a ring's own edges count as
   // another shape's once they are more than 3 touch widths away along it.
   final arc = [
@@ -153,9 +153,10 @@ List<(_V, _V, int)> _bridges(List<List<_V>> rings, List<List<int>> edgeOf) {
       final order = best.keys.toList()..sort();
       for (final rj in order) {
         final (bd, bk, bestQ) = best[rj]!;
-        final bestSeg = edgeOf[rj][bk];
-        if (bestSeg < 0 || bd > _touch * _touch || bd <= 2) continue;
-        out.add((p, bestQ, bestSeg));
+        // A corner already (to within the grid) on the edge needs no bridge:
+        // snap rounding bends the edge through it.
+        if (edgeOf[rj][bk] < 0 || bd > _touch * _touch || bestQ == p) continue;
+        out.add((p, bestQ));
       }
     }
   }
@@ -184,73 +185,33 @@ List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
     edgeOf.add(ids);
   }
   if (segs.isEmpty) return const [];
-  final bridges = _bridges(grid, edgeOf);
-  final shapeSegs = segs.length;
-  for (final (p, q, _) in bridges) {
+  for (final (p, q) in _bridges(grid, edgeOf)) {
     segs.add((p, q));
   }
 
-  // Split each edge wherever another crosses or touches it.
-  final cuts = [
-    for (final s in segs) <_V>{s.$1, s.$2},
-  ];
-  // A bridge ends on its edge to within the grid's rounding: cut it there.
-  for (final (_, q, seg) in bridges) {
-    if (seg < shapeSegs) cuts[seg].add(q);
-  }
-  // Swept left to right: only edges whose x ranges overlap are tried (every
-  // pair took seconds on a board with a few hundred circles).
-  final byX = List<int>.generate(segs.length, (i) => i)
-    ..sort((p, q) => math.min(segs[p].$1.$1, segs[p].$2.$1).compareTo(math.min(segs[q].$1.$1, segs[q].$2.$1)));
-  for (var ii = 0; ii < byX.length; ii++) {
-    final maxX = math.max(segs[byX[ii]].$1.$1, segs[byX[ii]].$2.$1);
-    for (var jj = ii + 1; jj < byX.length; jj++) {
-      if (math.min(segs[byX[jj]].$1.$1, segs[byX[jj]].$2.$1) > maxX) break;
-      final i = math.min(byX[ii], byX[jj]), j = math.max(byX[ii], byX[jj]);
-      final (a, b) = segs[i];
-      final (c, d) = segs[j];
-      if (math.max(a.$1, b.$1) < math.min(c.$1, d.$1) ||
-          math.max(c.$1, d.$1) < math.min(a.$1, b.$1) ||
-          math.max(a.$2, b.$2) < math.min(c.$2, d.$2) ||
-          math.max(c.$2, d.$2) < math.min(a.$2, b.$2)) {
-        continue;
-      }
-      final d1 = _cross(a, b, c), d2 = _cross(a, b, d), d3 = _cross(c, d, a), d4 = _cross(c, d, b);
-      if (d1 == 0 && d2 == 0) {
-        // Collinear: each one's ends that lie on the other cut it.
-        for (final p in [c, d]) {
-          if (_onSeg(a, b, p)) cuts[i].add(p);
-        }
-        for (final p in [a, b]) {
-          if (_onSeg(c, d, p)) cuts[j].add(p);
-        }
-        continue;
-      }
-      if (d1 == 0 && _onSeg(a, b, c)) cuts[i].add(c);
-      if (d2 == 0 && _onSeg(a, b, d)) cuts[i].add(d);
-      if (d3 == 0 && _onSeg(c, d, a)) cuts[j].add(a);
-      if (d4 == 0 && _onSeg(c, d, b)) cuts[j].add(b);
-      if ((d1 > 0) != (d2 > 0) && (d3 > 0) != (d4 > 0) && d1 != 0 && d2 != 0 && d3 != 0 && d4 != 0) {
-        final t = d1 / (d1 - d2);
-        final p = ((c.$1 + (d.$1 - c.$1) * t).round(), (c.$2 + (d.$2 - c.$2) * t).round());
-        cuts[i].add(p);
-        cuts[j].add(p);
-      }
-    }
+  // Snap rounding: every corner and every crossing (rounded to the grid) is
+  // a hot pixel, and each edge is bent through every hot pixel its path
+  // crosses. Rounding crossings alone left kinks a unit off the edge that
+  // reordered the edges round a corner (two overlapping circles filled as
+  // one); bent through the pixels, no two pieces cross away from a corner.
+  // The pieces are tried again for crossings, in case rounding still made
+  // one (it should not).
+  final hot = <_V>{for (final s in segs) ...[s.$1, s.$2]};
+  var pieces = segs;
+  var fresh = _crossings(segs);
+  for (var round = 0;; round++) {
+    hot.addAll(fresh);
+    pieces = _route(pieces, hot);
+    if (round == 3) break;
+    fresh = _crossings(pieces)..removeAll(hot);
+    if (fresh.isEmpty) break;
   }
 
   // The planar map: each piece once, both ways round.
   final edges = <(_V, _V)>{};
-  for (var i = 0; i < segs.length; i++) {
-    final (a, b) = segs[i];
-    final dx = (b.$1 - a.$1).toDouble(), dy = (b.$2 - a.$2).toDouble();
-    final pts = cuts[i].toList()
-      ..sort((p, q) => ((p.$1 - a.$1) * dx + (p.$2 - a.$2) * dy).compareTo((q.$1 - a.$1) * dx + (q.$2 - a.$2) * dy));
-    for (var k = 0; k + 1 < pts.length; k++) {
-      final u = pts[k], v = pts[k + 1];
-      if (u == v || edges.contains((v, u))) continue;
-      edges.add((u, v));
-    }
+  for (final (u, v) in pieces) {
+    if (u == v || edges.contains((v, u))) continue;
+    edges.add((u, v));
   }
   final out = <_V, List<_V>>{};
   final parent = <_V, _V>{};
@@ -322,16 +283,104 @@ List<List<Pt>> fillFace(List<List<Pt>> rings, Pt at) {
   return res;
 }
 
+/// The hot pixels where two of [segs] cross away from their ends.
+Set<_V> _crossings(List<(_V, _V)> segs) {
+  final found = <_V>{};
+  // Swept left to right: only edges whose x ranges overlap are tried (every
+  // pair took seconds on a board with a few hundred circles).
+  final byX = List<int>.generate(segs.length, (i) => i)
+    ..sort((p, q) => math.min(segs[p].$1.$1, segs[p].$2.$1).compareTo(math.min(segs[q].$1.$1, segs[q].$2.$1)));
+  for (var ii = 0; ii < byX.length; ii++) {
+    final (a, b) = segs[byX[ii]];
+    final maxX = math.max(a.$1, b.$1);
+    for (var jj = ii + 1; jj < byX.length; jj++) {
+      final (c, d) = segs[byX[jj]];
+      if (math.min(c.$1, d.$1) > maxX) break;
+      if (math.max(a.$2, b.$2) < math.min(c.$2, d.$2) || math.max(c.$2, d.$2) < math.min(a.$2, b.$2)) continue;
+      final d1 = _cross(a, b, c), d2 = _cross(a, b, d);
+      if (d1 == 0 || d2 == 0 || (d1 > 0) == (d2 > 0)) continue;
+      final d3 = _cross(c, d, a), d4 = _cross(c, d, b);
+      if (d3 == 0 || d4 == 0 || (d3 > 0) == (d4 > 0)) continue;
+      final t = d1 / (d1 - d2);
+      found.add(((c.$1 + (d.$1 - c.$1) * t).round(), (c.$2 + (d.$2 - c.$2) * t).round()));
+    }
+  }
+  return found;
+}
+
+/// [segs] cut into pieces, each bent through every hot pixel (the unit
+/// square round a point of [hot]) it passes through.
+List<(_V, _V)> _route(List<(_V, _V)> segs, Set<_V> hot) {
+  const cell = 5000;
+  int key(int cx, int cy) => cx * 1000003 + cy;
+  final cells = <int, List<_V>>{};
+  for (final h in hot) {
+    (cells[key(h.$1 ~/ cell, h.$2 ~/ cell)] ??= <_V>[]).add(h);
+  }
+  final out = <(_V, _V)>{};
+  for (final (a, b) in segs) {
+    final near = <_V>{};
+    void look(int x0, int y0, int x1, int y1) {
+      for (var cx = x0 ~/ cell; cx <= x1 ~/ cell; cx++) {
+        for (var cy = y0 ~/ cell; cy <= y1 ~/ cell; cy++) {
+          for (final h in cells[key(cx, cy)] ?? const <_V>[]) {
+            if (_throughPixel(a, b, h)) near.add(h);
+          }
+        }
+      }
+    }
+
+    final dx = b.$1 - a.$1, dy = b.$2 - a.$2;
+    final len = math.sqrt((dx * dx + dy * dy).toDouble());
+    if (len <= cell) {
+      look(math.min(a.$1, b.$1) - 1, math.min(a.$2, b.$2) - 1, math.max(a.$1, b.$1) + 1, math.max(a.$2, b.$2) + 1);
+    } else {
+      // A long edge: only the cells along it, not its whole box.
+      final n = (len / (cell / 2)).ceil();
+      final seen = <int>{};
+      for (var i = 0; i <= n; i++) {
+        final x = a.$1 + dx * i ~/ n, y = a.$2 + dy * i ~/ n;
+        const m = cell ~/ 2 + 1;
+        for (var cx = (x - m) ~/ cell; cx <= (x + m) ~/ cell; cx++) {
+          for (var cy = (y - m) ~/ cell; cy <= (y + m) ~/ cell; cy++) {
+            if (!seen.add(key(cx, cy))) continue;
+            for (final h in cells[key(cx, cy)] ?? const <_V>[]) {
+              if (_throughPixel(a, b, h)) near.add(h);
+            }
+          }
+        }
+      }
+    }
+    near..add(a)..add(b);
+    final pts = near.toList()
+      ..sort((p, q) => ((p.$1 - a.$1) * dx + (p.$2 - a.$2) * dy).compareTo((q.$1 - a.$1) * dx + (q.$2 - a.$2) * dy));
+    for (var k = 0; k + 1 < pts.length; k++) {
+      final u = pts[k], v = pts[k + 1];
+      if (u != v && !out.contains((v, u))) out.add((u, v));
+    }
+  }
+  return out.toList();
+}
+
+/// The segment [a]-[b] meets the closed unit square round [h] (exactly: in
+/// half units).
+bool _throughPixel(_V a, _V b, _V h) {
+  final x0 = 2 * h.$1 - 1, x1 = 2 * h.$1 + 1, y0 = 2 * h.$2 - 1, y1 = 2 * h.$2 + 1;
+  final ax = 2 * a.$1, ay = 2 * a.$2, bx = 2 * b.$1, by = 2 * b.$2;
+  if (math.max(ax, bx) < x0 || math.min(ax, bx) > x1 || math.max(ay, by) < y0 || math.min(ay, by) > y1) return false;
+  final dx = bx - ax, dy = by - ay;
+  var pos = false, neg = false;
+  for (final (cx, cy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)]) {
+    final c = dx * (cy - ay) - dy * (cx - ax);
+    if (c >= 0) pos = true;
+    if (c <= 0) neg = true;
+  }
+  return pos && neg;
+}
+
 _V _snap(Pt p) => ((p.$1 * _q).round(), (p.$2 * _q).round());
 
 int _cross(_V o, _V a, _V b) => (a.$1 - o.$1) * (b.$2 - o.$2) - (a.$2 - o.$2) * (b.$1 - o.$1);
-
-bool _onSeg(_V a, _V b, _V p) =>
-    _cross(a, b, p) == 0 &&
-    p.$1 >= math.min(a.$1, b.$1) &&
-    p.$1 <= math.max(a.$1, b.$1) &&
-    p.$2 >= math.min(a.$2, b.$2) &&
-    p.$2 <= math.max(a.$2, b.$2);
 
 /// The same outline as [ring], to within a sliver: same box, corners on each other's outline.
 bool sameRing(List<Pt> a, List<Pt> b) {

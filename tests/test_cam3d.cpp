@@ -352,6 +352,23 @@ int main()
                                                           : "finish: the whole tool stays inside the boundary");
     }
 
+    // A V reaches only as far as its cone is wide at the deepest it goes: 3 mm
+    // deep with a 90 deg V is 3 mm, not the 6.35 mm radius (a wider band left).
+    {
+        c2d::Document doc;
+        const QJsonObject layer;
+        const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 40, 40, layer);
+        doc.addElement(e);
+        const QJsonObject vbit{{"number", 203}, {"diameter", 12.7}, {"type", 2}, {"angle", 90.0}};
+        QJsonObject j = toolpath("3d_finish_toolpath", vbit, {{"stepover", 1.0}, {"max_depth", "3"}});
+        j.insert("elements", QJsonArray{QJsonObject{{"uuid", e.id}}});
+        addToolpath(doc, j);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const c2d::JobStats st = c2d::computeStats(g.ops);
+        check(g.done.size() == 1 && st.minX >= 13 - 0.01 && st.minX <= 13.5 && st.maxX >= 46.5 && st.maxX <= 47 + 0.01,
+              "finish: a V keeps inside the boundary by its width at the deepest cut");
+    }
+
     // --- boundary vectors + offset, percent stepover, flat finish tool -----------
     {
         c2d::Document doc;
@@ -724,6 +741,16 @@ int main()
         c2d::ToolGeom ball; ball.kind = c2d::ToolGeom::Ball; ball.diameter = 3; ball.cornerRadius = 1.5;
         c2d::ToolGeom flat; flat.kind = c2d::ToolGeom::Flat; flat.diameter = 6.35;
         check(approx(c2d::compensatedZ(model, ball, 5, 5), -20.0, 1e-6), "compensatedZ: ball on the floor");
+        // A V's tip on a flat floor: the cone off-centre stands above it (a
+        // 60 deg V went 0.2 mm into the floor when the centre was missed).
+        for (const double angle : {60.0, 90.0}) {
+            c2d::ToolGeom v; v.kind = c2d::ToolGeom::VBit; v.diameter = 12.7; v.angle = angle;
+            double worst = 0;
+            for (double d = 0; d < 1; d += 0.07)
+                worst = std::fmin(worst, c2d::compensatedZ(model, v, 5.3 + d, 5.1 + 0.6 * d) + 20);
+            check(worst > -1e-6, angle < 75 ? "compensatedZ: 60 deg V on the floor"
+                                            : "compensatedZ: 90 deg V on the floor");
+        }
         // A flat tool centred on the apex rides on the highest point under its
         // disc, which is the apex itself. Compare against the model's own value
         // there: the sampled apex sits a few microns below 0 because no cell

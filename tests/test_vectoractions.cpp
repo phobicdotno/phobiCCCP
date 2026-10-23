@@ -718,6 +718,79 @@ int main(int argc, char *argv[])
                       && std::fabs(QLineF(a, b).length() - 8) < 1e-6,
                   "a red length on an open polyline holds after a parameter edit");
         }
+        // Nor when a folded square in another sketch on the same parameter
+        // keeps its own red: sketches are judged apart.
+        {
+            Document cd;
+            const Element g = Element::makePath({{-50, 10}, {50, 10}}, false, layer);
+            const Element c = Element::makePath({{0, 0}, {1, 10}, {1, 20}}, false, layer);
+            const Element sq = Element::makePath({{110, 10}, {140, 10}, {140, 30}, {110, 30}}, true, layer);
+            const Element t = Element::makePath({{110, 10}, {105, 10}}, false, layer);
+            cd.addElement(g);
+            cd.addElement(c);
+            cd.addElement(sq);
+            cd.addElement(t);
+            cd.parametricRef().params.append({QStringLiteral("h"), QStringLiteral("10"), QString()});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::VDistance, {GeoRef::origin(), ref(GeoRef::Point, g.id, 0)}, "h");
+            add(cd, Constraint::Fix, {ref(GeoRef::Point, c.id, 0)});
+            cd.parametricRef().constraints.last().at = QPointF(0, 0);
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, c.id, 1), ref(GeoRef::Line, g.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, c.id, 0)}, "8");
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, t.id, 0)});
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, t.id, 0)}, "5");
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, t.id, 0), ref(GeoRef::Point, sq.id, 0)});
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, t.id, 1)}, "105");
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, sq.id, 0)}, "h*3");
+            canvas->setDocument(&cd);
+            canvas->selectIds({sq.id, t.id});
+            va.rotate(180);
+            Parametric after = cd.parametric();
+            after.params.first().expr = QStringLiteral("5");
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b, p, q;
+            const bool lines = param::line(cd, ref(GeoRef::Line, c.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 0), &p, &q);
+            // (The square's free sides lean to meet its new width.)
+            check(lines && std::fabs(QLineF(a, b).length() - 8) < 1e-6 && std::fabs(QLineF(p, q).length() - 15) < 1e-6
+                      && param::unsatisfied(cd).size() == 1,
+                  "a folded shape's red does not keep a red in another sketch red");
+        }
+        // A red length on a line from a rectangle's corner holds by resizing
+        // the rectangle: a resize is not a fold.
+        {
+            Document cd;
+            const Element R = Element::makePath({{30, 40}, {70, 40}, {70, 60}, {30, 60}}, true, layer);
+            const Element L = Element::makePath({{70, 40}, {85, 40}}, false, layer);
+            const Element M = Element::makePath({{85, 40}, {85, 70}}, false, layer);
+            cd.addElement(R);
+            cd.addElement(L);
+            cd.addElement(M);
+            cd.parametricRef().params.append({QStringLiteral("h"), QStringLiteral("85"), QString()});
+            add(cd, Constraint::Fix, {ref(GeoRef::Point, R.id, 0)});
+            cd.parametricRef().constraints.last().at = QPointF(30, 40);
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, R.id, 0)});
+            add(cd, Constraint::Vertical, {ref(GeoRef::Line, R.id, 1)});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, R.id, 2)});
+            add(cd, Constraint::Vertical, {ref(GeoRef::Line, R.id, 3)});
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, L.id, 0), ref(GeoRef::Point, R.id, 1)});
+            add(cd, Constraint::Horizontal, {ref(GeoRef::Line, L.id, 0)});
+            add(cd, Constraint::Vertical, {ref(GeoRef::Line, M.id, 0)});
+            add(cd, Constraint::Coincident, {ref(GeoRef::Point, M.id, 0), ref(GeoRef::Point, L.id, 1)});
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, M.id, 0)}, "h");
+            add(cd, Constraint::Distance, {ref(GeoRef::Line, L.id, 0)}, "10");
+            canvas->setDocument(&cd);
+            check(param::unsatisfied(cd).size() == 1, "a length a rectangle holds back starts red");
+            Parametric after = cd.parametric();
+            after.params.first().expr = QStringLiteral("90");
+            canvas->applyParametric(after, QStringLiteral("parameter"), false);
+            QPointF a, b, p, q;
+            const bool lines = param::line(cd, ref(GeoRef::Line, L.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, R.id, 0), &p, &q);
+            check(lines && param::unsatisfied(cd).isEmpty() && std::fabs(QLineF(a, b).length() - 10) < 1e-6
+                      && std::fabs(QLineF(p, q).length() - 50) < 1e-6,
+                  "a red length holds by resizing a rectangle");
+        }
         // Moving, turning or mirroring a line merely tied to the red shape
         // (Parallel to an edge) does not bring the red dimension back to
         // fold it (a turn's holds counted as added constraints).

@@ -758,6 +758,11 @@ double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double
     // 0.1 mm grid is still slow, and exportGcode runs on the GUI thread.
     // That is a missing progress/cancel path, not a number to clamp away.
     if (rFlat < r - 1e-9) {
+        // The point under the centre, where a ball's or V's tip touches:
+        // the lines below may all miss it by up to a fraction of a cell,
+        // and a V's cone stands h / tan(half angle) above its tip there
+        // (a 60 deg V cut 0.2 mm into a flat floor).
+        best = qMax(best, m.sample(x, y));
         const int cellsAcross = qMax(1, int(std::ceil(2 * r / cell)));
         const int n = qBound(1, 64 / cellsAcross, 4);
         const int c0 = int(std::floor((x - r - m.originX) / cell - 0.5));
