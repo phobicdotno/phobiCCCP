@@ -528,7 +528,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         // A toolpath the export skipped is not in the program at all.
         if (!g.doneIds.contains(t.uuid))
             continue;
-        const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
+        const double toolR = numOr(j.value("tool").toObject().value("diameter"), 3.175) / 2;
         const bool external = j.value("side").toString() == QLatin1String("external");
         const double pitch = numOr(j.value("pitch"), 1.5);
         const int passes = qBound(1, int(numOr(j.value("passes"), 1)), 20);

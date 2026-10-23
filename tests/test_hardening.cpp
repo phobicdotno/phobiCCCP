@@ -391,6 +391,30 @@ int main(int argc, char *argv[])
               "gcode: a small part's tab stays off its corners when no lift fits");
     }
     {
+        // A part's outline and its hole in one cutout: the outline was cut
+        // through first whenever it lay nearer, freeing the part before its
+        // hole was cut. A loop inside another of the same toolpath goes first.
+        Rig r;
+        const c2d::Element outline = c2d::Element::makeRectangle({60, 60}, 120, 80, layer);
+        const c2d::Element hole = c2d::Element::makeCircle({100, 85}, 8, layer);
+        r.addShape(outline);
+        r.addShape(hole);
+        r.addToolpath("cutout", {{"cut_depth", QStringLiteral("6.000")},
+                                 {"break_through", QStringLiteral("0.000")},
+                                 {"depth_per_pass", 6.0},
+                                 {"ignore_tabs", true},
+                                 {"elements", QJsonArray{QJsonObject{{"uuid", outline.id}},
+                                                         QJsonObject{{"uuid", hole.id}}}}});
+        QPointF first(-1e9, -1e9);
+        for (const c2d::Op &o : c2d::exportGcode(r.doc).ops)
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -6.0 + 1e-6) {
+                first = QPointF(o.x, o.y);
+                break;
+            }
+        check(QLineF(first, QPointF(100, 85)).length() < 8.0,
+              "gcode: a part's hole is cut before its outline frees it");
+    }
+    {
         // An 8 x 1220 slot with tabs: no lift leaves a bridge (the far side
         // is always near), and trying every shorter lift at every slide took
         // over half a minute; tabs on a 40 x 20 part with a 1/4" lead came

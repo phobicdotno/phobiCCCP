@@ -34,6 +34,10 @@
     took 2 mm off the tab beside it).
   - A long, narrow slot with tabs (8 x 1220 mm) took over half a minute to export, minutes on a
     full sheet, while every shorter lift was tried where even the longest leaves no bridge.
+  - A part's outline and its holes in one Cutout or Contour were cut nearest first, so the
+    outline could cut the part free before its holes were cut (5 of 12 parts on a nested sheet);
+    the loose part shifts or is thrown. Loops inside another of the same toolpath now go first.
+  - A bit diameter stored as text sized tab lifts (and the tiled keyhole check) from 1/8".
   - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
 - **Machine:**

@@ -2399,8 +2399,23 @@ struct Deferred {
     double reach = 0.01;   // the tool radius (+0.01): how far its cut reaches past the centres
 };
 
-// Nearest-neighbor over all deferred jobs, with one rule: a job may not run
-// while an earlier toolpath still has an overlapping job pending. So at a
+// Whether a closed loop of `outer` goes round where `inner` starts: a hole
+// in a part, selected with its outline in one toolpath. The outline cut
+// through first left the part loose for the hole (moved, or thrown).
+static bool encloses(const Job &outer, const Job &inner)
+{
+    if (!outer.closed || !inner.closed || inner.rings.isEmpty())
+        return false;
+    const QPointF p = inner.start();
+    for (const QPolygonF &r : outer.rings)
+        if (r.size() > 3 && r.boundingRect().contains(p) && r.containsPoint(p, Qt::OddEvenFill))
+            return true;
+    return false;
+}
+
+// Nearest-neighbor over all deferred jobs, with two rules: a job may not run
+// while an earlier toolpath still has an overlapping job pending, nor while
+// a loop of its own toolpath inside it (a hole in the part) is pending. So at a
 // given hole the counterbore always precedes the through-hole, a pocket
 // precedes the cutout around it — but all work at one site finishes before
 // the spindle travels to the next.
@@ -2417,14 +2432,17 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
                 best = i;
             }
         }
-        for (bool again = true; again;) {
-            again = false;
+        // Bounded: loops whose starts each lie inside the other (crossing
+        // outlines) must not send this round for ever.
+        for (int round = 0, again = 1; again && round <= jobs.size(); ++round) {
+            again = 0;
             const QRectF b = jobBounds(jobs.at(best).job, jobs.at(best).reach);
             int pick = -1;
             double pickD = 0;
             for (int i = 0; i < jobs.size(); ++i) {
                 const Deferred &a = jobs.at(i), &o = jobs.at(best);
-                const bool earlier = a.tp < o.tp || (a.tp == o.tp && a.job.band < o.job.band);
+                const bool earlier = a.tp < o.tp || (a.tp == o.tp && a.job.band < o.job.band)
+                                     || (a.tp == o.tp && i != best && encloses(o.job, a.job));
                 if (!earlier
                     || !jobBounds(jobs.at(i).job, jobs.at(i).reach).intersects(b))
                     continue;
@@ -2436,7 +2454,7 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
             }
             if (pick >= 0) {
                 best = pick;
-                again = true;
+                again = 1;
             }
         }
         from = jobs.at(best).job.start();
@@ -2651,7 +2669,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 return;
             cp.tabTop = floor + numOr(j.value("tab_height"), 0);
             cp.tabWidth = qBound(1.0, numOr(j.value("tab_width"), 6.0), 30.0);
-            cp.tabToolR = qMax(0.0, j.value("tool").toObject().value("diameter").toDouble(3.175) / 2);
+            cp.tabToolR = qMax(0.0, numOr(j.value("tool").toObject().value("diameter"), 3.175) / 2);
         };
         if (cutout) {
             const double floor = depth(j.value("cut_depth"));
