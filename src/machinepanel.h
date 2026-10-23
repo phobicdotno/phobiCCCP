@@ -182,6 +182,7 @@ private:
     // QSettings, applied to the program at Run when switched on in the job.
     SurfaceMapProber *m_mapper = nullptr;
     SurfaceMap m_map;
+    double mapZeroAt(double wx, double wy) const;
     QCheckBox *m_useMap = nullptr;
     QLabel *m_mapLabel = nullptr;
     void startSurfaceMap();

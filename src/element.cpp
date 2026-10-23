@@ -4,6 +4,7 @@
 #include <QFontMetricsF>
 #include <QLineF>
 #include <QJsonArray>
+#include <QMutex>
 #include <QJsonDocument>
 #include <QPointF>
 #include <QPolygonF>
@@ -338,23 +339,53 @@ static QJsonArray contoursOf(const QPainterPath &mm)
 // the A) is drawn solid by the font, but every reader of `rendered` takes an
 // overlap as a hole: merged into one outline. Others keep their curves
 // (flattened finer later); simplified() flattens, so it runs 16x up.
-static QPainterPath solidGlyph(const QPainterPath &g)
+static QPainterPath solidGlyphOf(const QPainterPath &g);
+
+// Merged once per font, size and glyph: the same accented letter repeated
+// through a long text was merged again at every occurrence.
+static QPainterPath solidGlyph(const QRawFont &rf, quint32 index)
+{
+    static QMutex lock;
+    static QHash<QString, QPainterPath> cache;
+    const QString key = QStringLiteral("%1/%2/%3/%4").arg(rf.familyName(), rf.styleName())
+                            .arg(rf.pixelSize()).arg(index);
+    {
+        QMutexLocker l(&lock);
+        auto it = cache.constFind(key);
+        if (it != cache.constEnd())
+            return it.value();
+    }
+    const QPainterPath out = solidGlyphOf(rf.pathForGlyph(index));
+    QMutexLocker l(&lock);
+    if (cache.size() > 20000)
+        cache.clear();
+    cache.insert(key, out);
+    return out;
+}
+
+static QPainterPath solidGlyphOf(const QPainterPath &g)
 {
     if (g.isEmpty())
         return g;
-    // Cheap test first (text renders on every edit): only outlines whose
-    // boxes cross without one holding the other can overlap.
-    struct Box { double x0, y0, x1, y1; };
+    // Cheap test first (text renders on every edit): outlines whose boxes
+    // cross without one holding the other, or nested ones turning the same
+    // way (a counter turns against its outline; a part stored twice, as
+    // DejaVu's dot under "ệ", or a crossing inner part, turns with it).
+    struct Box { double x0, y0, x1, y1, area, sx, sy, lx, ly; };
     QVector<Box> boxes;
     for (int i = 0; i < g.elementCount(); ++i) {
         const QPainterPath::Element e = g.elementAt(i);
         if (e.isMoveTo() || boxes.isEmpty()) {
-            boxes.append({e.x, e.y, e.x, e.y});
-        } else {
-            Box &b = boxes.last();
-            b = {qMin(b.x0, e.x), qMin(b.y0, e.y), qMax(b.x1, e.x), qMax(b.y1, e.y)};
+            boxes.append({e.x, e.y, e.x, e.y, 0, e.x, e.y, e.x, e.y});
+            continue;
         }
+        // The control polygon's signed area (x2), closed below.
+        Box &b = boxes.last();
+        b = {qMin(b.x0, e.x), qMin(b.y0, e.y), qMax(b.x1, e.x), qMax(b.y1, e.y),
+             b.area + b.lx * e.y - e.x * b.ly, b.sx, b.sy, e.x, e.y};
     }
+    for (Box &b : boxes)
+        b.area += b.lx * b.sy - b.sx * b.ly;
     auto holds = [](const Box &o, const Box &i) {
         return o.x0 <= i.x0 && o.y0 <= i.y0 && o.x1 >= i.x1 && o.y1 >= i.y1;
     };
@@ -363,7 +394,7 @@ static QPainterPath solidGlyph(const QPainterPath &g)
         for (int b = a + 1; b < boxes.size() && !crossing; ++b) {
             const Box &x = boxes.at(a), &y = boxes.at(b);
             const bool meet = x.x0 <= y.x1 && y.x0 <= x.x1 && x.y0 <= y.y1 && y.y0 <= x.y1;
-            crossing = meet && !holds(x, y) && !holds(y, x);
+            crossing = meet && ((!holds(x, y) && !holds(y, x)) || (x.area > 0) == (y.area > 0));
         }
     if (!crossing)
         return g;
@@ -453,7 +484,7 @@ void Element::renderText(QJsonObject &o)
                         if (seen.contains(key))
                             continue;
                         seen.insert(key);
-                        c.glyphs.append({solidGlyph(rf.pathForGlyph(idx.at(i))), pos.at(i).x() - x0,
+                        c.glyphs.append({solidGlyph(rf, idx.at(i)), pos.at(i).x() - x0,
                                          pos.at(i).y() - baseline,
                                          i < advs.size() ? advs.at(i).x() : 0.0});
                     }

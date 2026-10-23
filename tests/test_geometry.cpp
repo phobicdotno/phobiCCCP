@@ -1150,6 +1150,17 @@ int main(int argc, char *argv[])
                   && c.json.value("depth_per_pass").toDouble() < dia * 0.5,
                   "a new pocket or cutout after an Adaptive keeps ordinary passes");
         }
+        // A corner rounding bit (written as CC type 0, like an end mill) is
+        // no default for a new pocket: its head gouged the part.
+        {
+            c2d::Document d3 = doc;
+            c2d::Toolpath r = c2d::makeToolpath(d3, QStringLiteral("contour"), {sq.id});
+            r.json.insert("tool", QJsonObject{{"number", 1040}, {"diameter", 2.0}, {"type", 0}});
+            d3.addToolpath(r);
+            const c2d::Toolpath p = c2d::makeToolpath(d3, QStringLiteral("pocket_toolpath"), {sq.id});
+            check(p.json.value("tool").toObject().value("number").toInt() != 1040,
+                  "a new pocket does not take a corner rounding bit as its end mill");
+        }
         check(a.json.value("name").toString() == QLatin1String("Contour Toolpath 1")
               && b.json.value("name").toString() == QLatin1String("Pocket Toolpath 1")
               && e.json.value("name").toString() == QLatin1String("Engrave 1"),

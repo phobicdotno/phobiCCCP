@@ -375,6 +375,30 @@ static void testDesktopEditsPadHas(const QString &dir)
         check(lost.isEmpty(), qPrintable(QStringLiteral("a new %1 at its defaults keeps the file the pad's (%2)")
                                              .arg(QLatin1String(type), lost.join(", "))));
     }
+    // After a Drill (no passes copied from it), in a material whose chart
+    // stepover is not 50%: the bit's own library numbers, as the pad builds.
+    {
+        QJsonObject ad = design(201, QStringLiteral("acrylic"));
+        QJsonArray tps;
+        for (const QJsonValue &v : ad.value("toolpaths").toArray()) {
+            const QString ty = v.toObject().value("type").toString();
+            if (ty == QLatin1String("pocket") || ty == QLatin1String("drill"))
+                tps.append(v);
+        }
+        ad.insert("toolpaths", tps);
+        for (const char *type : {"pocket_toolpath", "contour", "drilling_toolpath"}) {
+            const QString p = QDir(dir).filePath(QStringLiteral("acr-%1.c2d").arg(QLatin1String(type)));
+            padlink::buildDocument(ad, p, nullptr, &err);
+            Document doc;
+            doc.load(p, &err);
+            doc.addToolpath(makeToolpath(doc, QLatin1String(type), {doc.elements().first().id}));
+            doc.save(p, &err);
+            QStringList lost;
+            padlink::designFromDocument(p, ad, &lost, &err);
+            check(lost.isEmpty(), qPrintable(QStringLiteral("after a drill in acrylic, a new %1 keeps the file the pad's (%2)")
+                                                 .arg(QLatin1String(type), lost.join(", "))));
+        }
+    }
     const QString path = QDir(dir).filePath(QStringLiteral("bit.c2d"));
     padlink::buildDocument(d, path, nullptr, &err);
     Document doc;

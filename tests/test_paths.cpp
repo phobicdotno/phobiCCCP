@@ -18,6 +18,7 @@
 
 #include <QGuiApplication>
 #include <QFontDatabase>
+#include <tuple>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -297,6 +298,30 @@ int main(int argc, char *argv[])
                                                       QStringLiteral("Liberation Sans"), layer);
         check(t.raw.value("rendered").toArray().size() == 3,
               "overlapping glyph outlines merge (A, its counter, the ring's hole)");
+    }
+
+    // A part stored twice in the font (DejaVu Sans "ệ": the dot below) or
+    // the whole "e" twice (DejaVu Sans Bold "ḕ") cancelled under even-odd.
+    for (const auto &[family, bold, text] : {std::tuple<const char *, bool, QString>{"DejaVu Sans", false, QString::fromUtf8("Việt")},
+                                             {"DejaVu Sans", true, QString::fromUtf8("ḕ")}}) {
+        if (!QFontDatabase::families().contains(QLatin1String(family)))
+            continue;
+        c2d::Element t = c2d::Element::makeText(text, {0, 0}, 20, QLatin1String(family), layer);
+        if (bold)
+            t = c2d::Element::regenText(t, QJsonObject{{"bold", true}});
+        QPainterPath w, e;
+        for (const QJsonValue &cv : t.raw.value("rendered").toArray()) {
+            QPolygonF poly;
+            for (const QJsonValue &pv : cv.toArray())
+                poly << QPointF(pv.toArray().at(0).toDouble(), pv.toArray().at(1).toDouble()) * 16;
+            w.addPolygon(poly);
+            w.closeSubpath();
+        }
+        e = w;
+        w.setFillRule(Qt::WindingFill);
+        e.setFillRule(Qt::OddEvenFill);
+        check(w.simplified() == e.simplified(),
+              qPrintable(QStringLiteral("glyph parts stored twice are kept (%1)").arg(text)));
     }
 
     // --- text: straight, arc top, arc bottom, offset -------------------------------

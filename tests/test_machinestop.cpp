@@ -1081,6 +1081,30 @@ int main(int argc, char **argv)
         wait(1500);
         check(grbl.indexOf("G0 Z") >= 0, "maphigh: with Z zeroed low enough the map starts");
     }
+    if (mode == "mapzero") {
+        // Surface map on, Z zeroed at work X80 Y80 (a re-zero after a tool
+        // change): Z0 must stay the surface at X0 Y0 the offsets are from,
+        // or the job cuts 1.75 mm off over a 2 mm warp.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        check(grbl.indexOf("G10 L20 P1 Z1.750") >= 0, "mapzero: Zero Z with the map on keeps Z0 at the surface under X0 Y0");
+        panel.m_useMap->setChecked(false);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        check(grbl.events.contains("G10 L20 P1 Z0"), "mapzero: with the map off it is Z0 there");
+        panel.setSurfaceMap(c2d::SurfaceMap());
+    }
     if (mode == "bztap") {
         // BitZero Z only, BitSetter off. The operator taps Z+ on the pad
         // while the plate probe runs.

@@ -205,7 +205,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                 rootOf[j] = i;
                 break;
             }
-    QVector<int> writtenIn(subs.size(), -1);
+    QVector<QSet<int>> pathsOf(subs.size());
     int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
@@ -221,15 +221,24 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
         QVector<Seg> chain = subs[i].segs;
         QVector<int> owner(chain.size(), i);
         auto emitPath = [&](const QVector<Seg> &segs, const QVector<int> &own, bool closed) {
-            int in = -2;
+            // Dropped when one written path already holds every piece (or
+            // the piece it repeats): an outline or line drawn twice.
+            QSet<int> common;
+            bool first = true;
             for (int o : own) {
-                const int w = isCopy[o] ? writtenIn[rootOf[o]] : -1;
-                in = (in == -2 || in == w) ? w : -1;
+                const QSet<int> &w = pathsOf[rootOf[o]];
+                if (first)
+                    common = w;
+                else
+                    common.intersect(w);
+                first = false;
+                if (common.isEmpty())
+                    break;
             }
-            if (in >= 0)
+            if (!common.isEmpty())
                 return;
             for (int o : own)
-                writtenIn[o] = written;
+                pathsOf[rootOf[o]].insert(written);
             ++written;
             write(segs, closed);
         };
@@ -1099,6 +1108,33 @@ int main(int argc, char **argv)
                 }
                 check(c2d::elementsFromPath(c2d::joinSubpaths(poly, 0.01), QJsonObject()).size() == 1,
                       "joinSubpaths: an open path written twice imports once");
+                // Written twice with the copies interleaved (the first chain
+                // takes some copies, the originals land in the second).
+                auto lines = [](std::initializer_list<QLineF> ls) {
+                    QPainterPath p;
+                    for (const QLineF &l : ls) {
+                        p.moveTo(l.p1());
+                        p.lineTo(l.p2());
+                    }
+                    return p;
+                };
+                const QPainterPath inter = lines({{{0, 0}, {10, 0}}, {{10, 10}, {0, 10}}, {{10, 0}, {10, 10}},
+                                                  {{0, 10}, {0, 0}}, {{10, 10}, {0, 10}}, {{0, 0}, {10, 0}},
+                                                  {{0, 10}, {0, 0}}, {{10, 0}, {10, 10}}});
+                check(c2d::elementsFromPath(c2d::joinSubpaths(inter, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: a square written twice, interleaved, imports once");
+                const QPainterPath pl = lines({{{0, 0}, {5, 8}}, {{11, 10}, {25, 12}}, {{5, 8}, {11, 10}},
+                                               {{0, 0}, {5, 8}}, {{5, 8}, {11, 10}}, {{11, 10}, {25, 12}}});
+                check(c2d::elementsFromPath(c2d::joinSubpaths(pl, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: a polyline written out of order, then in order, imports once");
+                QPainterPath g2;
+                for (int k = 0; k < 2; ++k) {
+                    rect(g2, 0, 0, 10, 10);
+                    rect(g2, 10, 0, 10, 10);
+                }
+                check(closedCount(c2d::joinSubpaths(g2, 0.01)) == 2
+                      && c2d::elementsFromPath(c2d::joinSubpaths(g2, 0.01), QJsonObject()).size() == 2,
+                      "joinSubpaths: two touching squares written twice import as two");
             }
             QPainterPath twice;
             twice.moveTo(0, 0);

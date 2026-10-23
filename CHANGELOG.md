@@ -65,9 +65,15 @@
   - After an Adaptive, a new Pocket, Contour or Cutout took its one-diameter depth per pass and
     10% stepover (a cutout slotted 4x the library depth). New toolpaths take passes only from a
     comparable cut, else from the bit.
+  - A new toolpath after a Drill (or another type passes are not copied from) took half the
+    bit's width as stepover instead of the material's chart (40% in acrylic, HDPE, PVC), and a
+    corner rounding bit became the default "end mill" for new pockets and cutouts.
   - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
     under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
+  - With the surface map on, Zero Z (or BitZero Z) away from X0 Y0, as after a manual tool
+    change, set Z0 to the stock there while the map is measured from X0 Y0: over a 2 mm warp a
+    1 mm cut ran in the air. The zero now keeps Z0 at the surface under X0 Y0.
   - A controller left in a feed hold by an earlier session was no longer cleared on connect
     (GRBL refuses $$ while held); its leftover moves could run on Resume.
   - With $13=1, the work offset reported before the settings arrived was read as millimetres
@@ -119,6 +125,10 @@
     cancelled: a pocket on it cut nothing. Pieces that only repeat a path already imported are
     dropped again. Two shapes sharing an edge also close when the first one's pieces led into
     the second.
+  - An outline written twice with its copies interleaved, a polyline written out of order and
+    again in order, or a grid written twice still imported duplicates.
+  - Letters with a part stored twice in the font (DejaVu Sans "ệ" dot, Bold "ḕ", "Ⅷ") lost
+    that part; overlapping letters are merged once per glyph, so long accented text is quick.
   - Trim and Break (and their hover preview) froze for seconds with many lines around a long
     curve; the closest-point search skips segments that cannot be closer.
   - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.

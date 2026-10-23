@@ -187,7 +187,7 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         }
     };
     QVector<int> cand;
-    QVector<int> writtenIn(subs.size(), -1);   // which written path took each piece
+    QVector<QSet<int>> pathsOf(subs.size());   // written paths holding each piece or its copy
     int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
@@ -206,18 +206,25 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         std::deque<int> owner(chain.size(), i);   // the piece each segment came from
         // A chain never takes a piece and its copy: they fold back on each other.
         QSet<int> roots;
-        // Written, unless it is only copies of pieces in one path already
-        // written (an outline or line drawn twice: cut once).
         auto emitPath = [&](const std::deque<Seg> &segs, const std::deque<int> &own, bool closed) {
-            int in = -2;
+            // Dropped when one written path already holds every piece (or
+            // the piece it repeats): an outline or line drawn twice.
+            QSet<int> common;
+            bool first = true;
             for (int o : own) {
-                const int w = isCopy[o] ? writtenIn[rootOf[o]] : -1;
-                in = (in == -2 || in == w) ? w : -1;
+                const QSet<int> &w = pathsOf[rootOf[o]];
+                if (first)
+                    common = w;
+                else
+                    common.intersect(w);
+                first = false;
+                if (common.isEmpty())
+                    break;
             }
-            if (in >= 0)
+            if (!common.isEmpty())
                 return;
             for (int o : own)
-                writtenIn[o] = written;
+                pathsOf[rootOf[o]].insert(written);
             ++written;
             write(segs, closed);
         };

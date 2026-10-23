@@ -1999,6 +1999,13 @@ void MachinePanel::continueAfterToolChange()
     m_grbl->continueAfterToolChange(m_homed ? riseToTop() : QStringList{});
 }
 
+// What work Z the stock top at (wx, wy) reads, so Z0 stays the surface at
+// X0 Y0 that the map's offsets are measured from (0 with the map off).
+double MachinePanel::mapZeroAt(double wx, double wy) const
+{
+    return m_useMap->isChecked() && m_map.isValid() ? m_map.offsetAt(wx, wy) : 0.0;
+}
+
 // Set the work offset from where the machine now stands and the corner it
 // found: G10 L20 makes the current position read as the given work value.
 void MachinePanel::bitZeroApply()
@@ -2016,7 +2023,10 @@ void MachinePanel::bitZeroApply()
             // length offset first, as the Zero Z button does.
             cmds << QStringLiteral("G49");
             m_grbl->applyToolLengthOffset(0);
-            g10 += QStringLiteral(" Z%1").arg(st.mz - m_bzStockZ, 0, 'f', 3);
+            // The map's offset where it touched, as Zero Z does.
+            const double wx = m_bzWantX ? st.mx - m_bzCx : st.wx;
+            const double wy = m_bzWantY ? st.my - m_bzCy : st.wy;
+            g10 += QStringLiteral(" Z%1").arg(st.mz - m_bzStockZ + mapZeroAt(wx, wy), 0, 'f', 3);
         }
         cmds << g10;
         QString what;
@@ -3082,8 +3092,19 @@ void MachinePanel::zero(const QString &axes)
         m_grbl->applyToolLengthOffset(0);
     }
     QString g10 = QStringLiteral("G10 L20 P1");
-    for (const QChar ax : axes)
-        g10 += QStringLiteral(" %1").arg(ax) + QStringLiteral("0");   // " X0"
+    for (const QChar ax : axes) {
+        if (ax != QChar('Z')) {
+            g10 += QStringLiteral(" %1").arg(ax) + QStringLiteral("0");   // " X0"
+            continue;
+        }
+        // With the surface map on, Z0 stays the surface at X0 Y0: zeroed
+        // here, the job followed the map from the wrong height (a 2 mm warp
+        // left a 1 mm cut in the air).
+        const MachineStatus st = m_grbl->status();
+        const double z = mapZeroAt(axes.contains(QChar('X')) ? 0.0 : st.wx,
+                                   axes.contains(QChar('Y')) ? 0.0 : st.wy);
+        g10 += z == 0 ? QStringLiteral(" Z0") : QStringLiteral(" Z%1").arg(z, 0, 'f', 3);
+    }
     cmds << g10;
 
     const BitSetterConfig cfg = bitSetter();

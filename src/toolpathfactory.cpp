@@ -78,6 +78,8 @@ CutterKind kindOf(const QJsonObject &tool)
 ToolPick pickTool(const Document &doc, CutterKind kind)
 {
     ToolPick p;
+    ToolLibrary lib;
+    const bool haveLib = lib.loadDefault();
     const QVector<Toolpath> &tps = doc.toolpaths();
     for (int i = tps.size() - 1; i >= 0; --i) {
         const QJsonObject &j = tps.at(i).json;
@@ -88,6 +90,11 @@ ToolPick pickTool(const Document &doc, CutterKind kind)
             // A ball nose (CC type 1) from a 3D finish is no default for a
             // 2D cut, nor its fine 3D stepover and stepdown.
             if (kind == Flat && int(tool.value("type").toDouble(0)) == 1)
+                continue;
+            // Nor a corner rounding (or other shaped) bit, written as CC type
+            // 0 like an end mill: a pocket with it gouged by its head.
+            const LibraryTool *known = haveLib ? lib.byNumber(int(tool.value("number").toDouble())) : nullptr;
+            if (kind == Flat && known && known->kind != QLatin1String("endmill"))
                 continue;
             const bool pocketTool = QLatin1String(key) == QLatin1String("tool_pocket");
             p.tool = tool;
@@ -103,14 +110,29 @@ ToolPick pickTool(const Document &doc, CutterKind kind)
                                 : j.value(pocketTool ? "stepdown_pocket" : cutoutTp ? "depth_per_pass" : "stepdown");
             const QJsonValue so = !comparable || cutoutTp ? QJsonValue()
                                 : j.value(pocketTool ? "stepover_pocket" : "stepover");
+            // Otherwise the bit's own numbers for this material from the
+            // library (what a pad build takes), else its slot depth / half
+            // its diameter.
+            const ToolFeeds *lf = nullptr;
+            if (known && (!sd.isDouble() || !so.isDouble())) {
+                QString mat = lib.materialIdForCC(doc.params().value("material"));
+                if (mat.isEmpty())
+                    mat = QStringLiteral("softwood");
+                lf = known->feedsFor(mat);
+            }
+            const double dia = tool.value("diameter").toDouble(6.35);
             if (sd.isDouble() && sd.toDouble() > 0)
                 p.stepdown = sd.toDouble();
+            else if (lf && lf->stepdown > 0)
+                p.stepdown = lf->stepdown;
             else if (tool.value("slot_depth").toDouble() > 0)
                 p.stepdown = tool.value("slot_depth").toDouble();
             if (so.isDouble() && so.toDouble() > 0 && kind == Flat)
                 p.stepover = so.toDouble();
+            else if (kind == Flat && lf && lf->stepoverPct > 0)
+                p.stepover = dia * lf->stepoverPct / 100.0;
             else
-                p.stepover = tool.value("diameter").toDouble(6.35) / 2.0;
+                p.stepover = dia / 2.0;
             if (p.speeds.isEmpty()) {
                 p.speeds.insert(QStringLiteral("feedrate"), tool.value("slot_feedrate").toDouble(1905));
                 p.speeds.insert(QStringLiteral("plungerate"), tool.value("plungerate").toDouble(381));
@@ -121,9 +143,8 @@ ToolPick pickTool(const Document &doc, CutterKind kind)
     }
 
     // Library default.
-    ToolLibrary lib;
     const int number = kind == VBit ? 301 : kind == Engraver ? 501 : 201;
-    const LibraryTool *t = lib.loadDefault() ? lib.byNumber(number) : nullptr;
+    const LibraryTool *t = haveLib ? lib.byNumber(number) : nullptr;
     ToolFeeds f;
     if (t) {
         QString mat = lib.materialIdForCC(doc.params().value("material"));
