@@ -1468,6 +1468,23 @@ int main(int argc, char *argv[])
     }
 
     // -----------------------------------------------------------------------
+    // A Chamfer has no end depth (its bottom follows from its width): with a
+    // Start depth it was refused as "start depth is below end depth".
+    {
+        const QJsonObject layer;
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({50, 50}, 15, layer));
+        r.addToolpath("chamfer_toolpath", {{"start_depth", "3.000"},
+                                           {"tool", QJsonObject{{"number", 2}, {"diameter", 12.7}, {"type", 2}, {"angle", 90.0}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double deepest = 0;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc)
+                deepest = std::min(deepest, o.z);
+        check(g.done.size() == 1 && g.skipped.isEmpty() && deepest < -3, "chamfer: cut from a Start depth");
+    }
+
+    // -----------------------------------------------------------------------
     // V-carve reach is measured at the stock top: an inlay male starting 5.5
     // below it needs a 6 mm cone there, which a 6.35 mm 90° bit lacks (its
     // shank rubbed the stock with no note). Per pass 0 on a V-carve is one
@@ -1497,6 +1514,34 @@ int main(int argc, char *argv[])
                 widest = std::max(widest, -o.z);
         check(widest <= 3.175 + 1e-6 && (!mg.skipped.isEmpty() || !mg.notes.isEmpty()),
               "vcarve: an inlay male deeper than the cone at the stock top is refused with a note");
+        // An inlay male with no glue gap (start = end) clears its field like
+        // one with a hair of gap; it cut only the medial grooves and the plug
+        // could not seat.
+        {
+            const QJsonObject v90{{"diameter", 12.7}, {"number", 302}, {"angle", 90.0}, {"type", 2}};
+            double floorLen[2] = {0, 0};
+            for (int k = 0; k < 2; ++k) {
+                Rig r;
+                const c2d::Element b = c2d::Element::makeRectangle({100, 30}, 50, 34, layer);
+                const c2d::Element p = c2d::Element::makeRectangle({100, 30}, 30, 14, layer);
+                r.addShape(b);
+                r.addShape(p);
+                r.addToolpath("advanced_vcarve_toolpath",
+                              {{"start_depth", k == 0 ? "5.000" : "4.990"}, {"end_depth", "5.000"}, {"stepdown", 1.0},
+                               {"stepover", 0.2}, {"tool", v90},
+                               {"elements", QJsonArray{QJsonObject{{"uuid", b.id}}, QJsonObject{{"uuid", p.id}}}}});
+                const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+                QPointF prev;
+                for (const c2d::Op &o : g.ops) {
+                    if (o.kind == c2d::Op::Feed && o.z < -4.9)
+                        floorLen[k] += QLineF(prev, QPointF(o.x, o.y)).length();
+                    if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Arc)
+                        prev = QPointF(o.x, o.y);
+                }
+            }
+            check(floorLen[1] > 0 && floorLen[0] > 0.8 * floorLen[1],
+                  "vcarve: an inlay male with no glue gap clears its field");
+        }
         // A letter V-carved on a pocket's floor (Start 3) has its stock start
         // at that floor: it carves, and its passes start there, not in air.
         const QJsonObject v60{{"diameter", 6.35}, {"number", 301}, {"angle", 60.0}, {"type", 2}};

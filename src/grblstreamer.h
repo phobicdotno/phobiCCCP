@@ -96,6 +96,7 @@ public:
     // or `fallback` when it has not been seen on this connection (the list
     // is emptied on every connect: another machine may answer now).
     double setting(int n, double fallback) const { return m_settings.value(n, fallback); }
+    bool haveSettings() const { return !m_settings.isEmpty(); }   // a $$ listing came in
 
 public slots:
     bool sendCommand(const QString &line);      // jog / $X / G10 — immediate
@@ -181,6 +182,7 @@ private:
     MachineStatus m_status;
     QHash<int, double> m_settings;   // $n=value lines seen
     double m_wcoX = 0, m_wcoY = 0, m_wcoZ = 0;
+    double reportScale() const;   // 25.4 when $13=1 (reports in inches)
 
     QStringList m_queue;
     int m_nextIndex = 0;                        // next line to transmit

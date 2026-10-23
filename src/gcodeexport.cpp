@@ -2697,7 +2697,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         // start (deeper than the end asked for), a pocket cut at the end,
         // drilling emitted nothing and still reported done. (3D toolpaths
         // go by the relief and max_depth, not these two.)
-        if (cp.zTop < cp.zBot - 1e-9 && !rough3d && !finish3d) {
+        // (Chamfer and Texture have no end depth: a chamfer's bottom follows
+        // from its width below, so any Start was refused.)
+        if (cp.zTop < cp.zBot - 1e-9 && !rough3d && !finish3d && !chamfer && !texture) {
             res.skipped << QStringLiteral("%1 (start depth is below end depth)").arg(name);
             continue;
         }
@@ -3834,7 +3836,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     // bit's reach at full depth.
                     // No Per pass on file (0): one pass, as for the medial chains.
                     const double step = numOr(j.value("stepdown"), 1.0) > 1e-6 ? cp.stepdown : 1e9;
-                    if (medialDone && dMax > 1e-9) {
+                    // dMax 0 (an inlay male with no glue gap: start = end)
+                    // still clears: the rings start on the boundary.
+                    if (medialDone) {
                         double delta = dMax;
                         int guard = 0;
                         while (guard++ < 2000) {

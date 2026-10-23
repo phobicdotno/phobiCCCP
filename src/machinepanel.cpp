@@ -2595,7 +2595,9 @@ void MachinePanel::onStatus(const MachineStatus &st)
     // its position as long as it was not reset or power-cycled - and then it
     // boots in Alarm. Not in Alarm, and exactly where the last homed session
     // left it: still homed, no Initialize needed.
-    if (m_resumeCheck && st.valid && !st.state.isEmpty()) {
+    // After the $$ listing: with $13=1 the position reads in inches until it
+    // is known, and never matches where the last session left it.
+    if (m_resumeCheck && st.valid && !st.state.isEmpty() && m_grbl->haveSettings()) {
         m_resumeCheck = false;
         // Paused by a job this session never sent (the link dropped, the app
         // restarted, on a board that does not reset when the port opens):

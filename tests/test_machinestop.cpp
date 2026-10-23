@@ -458,6 +458,13 @@ int main(int argc, char **argv)
 
     if (qgetenv("R4MODE") == "connhold")
         grbl.held = true;   // left in a feed hold mid-job (the USB link dropped)
+    if (qgetenv("R4MODE") == "inch13") {
+        // $13=1: positions reported in inches. Machine (-100,-100,-30) mm,
+        // work zero (-200,-200,-60) mm.
+        grbl.travel += "$13=1\r\n";
+        grbl.mx = -100 / 25.4; grbl.my = -100 / 25.4; grbl.mz = -30 / 25.4;
+        grbl.wcoX = -200 / 25.4; grbl.wcoY = -200 / 25.4; grbl.wcoZ = -60 / 25.4;
+    }
     check(s->connectPort(QString::fromLatin1(name)), "connects to the fake controller");
     spin(1500, [&] { return panel.statusJson().value("homed").toBool(); });
     check(panel.statusJson().value("homed").toBool(), "homed (resumed where the last session left it)");
@@ -974,6 +981,32 @@ int main(int argc, char **argv)
         check(ok, "env: the job inside the travel runs");
         s->stopStream();
         wait(500);
+    }
+    if (mode == "inch13") {
+        // Read as mm, a jog went 86 mm the wrong way and Run refused a job
+        // that fits.
+        check(std::fabs(s->status().mx + 100) < 0.01 && std::fabs(s->status().wx - 100) < 0.01,
+              "inch13: inch reports read in mm");
+        bool refused = false;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("The program goes off the machine")) {
+                refused = true;
+                return QStringLiteral("OK");
+            }
+            return QStringLiteral("\u25b6 Start");
+        };
+        const bool ok = panel.runProgram();
+        check(ok && !refused, "inch13: a job inside the travel runs with $13=1");
+        if (ok) {
+            s->stopStream();
+            wait(500);
+        }
+        wait(800);
+        grbl.events.clear();
+        panel.forgetJogPlan();
+        panel.jogBy('X', -10, 1000);
+        wait(300);
+        check(lastJog().contains("X-110"), "inch13: a 10 mm X- jog goes to X-110");
     }
     if (mode == "connhold") {
         // Connected to a controller paused in a job this session never sent:

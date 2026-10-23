@@ -180,12 +180,13 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             out.closeSubpath();
     };
     // Repeated open pieces are dropped.
-    auto sameSegs = [](const QVector<Seg> &x, const QVector<Seg> &y) {
+    auto sameSegs = [tol](const QVector<Seg> &x, const QVector<Seg> &y) {
         if (x.size() != y.size())
             return false;
         for (int k = 0; k < x.size(); ++k) {
             const Seg &g = x.at(k), &h = y.at(k);
-            if (g.curve != h.curve || g.a != h.a || g.b != h.b || (g.curve && (g.c1 != h.c1 || g.c2 != h.c2)))
+            if (g.curve != h.curve || !samePt(g.a, h.a, tol) || !samePt(g.b, h.b, tol)
+                || (g.curve && (!samePt(g.c1, h.c1, tol) || !samePt(g.c2, h.c2, tol))))
                 return false;
         }
         return true;
@@ -234,10 +235,40 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                 grew = true;
             }
         }
-        const bool close = chain.size() > 1 && samePt(chain.first().a, chain.last().b, tol);
-        if (close)
-            chain.last().b = chain.first().a;
-        write(chain, close);
+        for (;;) {
+            const int n = chain.size();
+            if (n > 1 && samePt(chain.first().a, chain.last().b, tol)) {
+                chain.last().b = chain.first().a;
+                write(chain, true);
+                break;
+            }
+            int k = 1;
+            while (k < n && !samePt(chain.at(k).a, chain.last().b, tol))
+                ++k;
+            if (k < n) {
+                QVector<Seg> loop = chain.mid(k);
+                chain.resize(k);
+                if (loop.size() > 1) {
+                    loop.last().b = loop.first().a;
+                    write(loop, true);
+                }
+                continue;
+            }
+            k = n - 2;
+            while (k >= 0 && !samePt(chain.at(k).b, chain.first().a, tol))
+                --k;
+            if (k >= 0) {
+                QVector<Seg> loop = chain.mid(0, k + 1);
+                chain = chain.mid(k + 1);
+                if (loop.size() > 1) {
+                    loop.last().b = loop.first().a;
+                    write(loop, true);
+                }
+                continue;
+            }
+            write(chain, false);
+            break;
+        }
     }
     return out;
 }
@@ -798,12 +829,26 @@ int main(int argc, char **argv)
     // A rectangle of loose lines closes even with a stray line on a corner or
     // an edge drawn twice (before or after the rest): the outline is not
     // reopened by a piece touching its closed corner, and the copy is dropped.
-    for (int k = 0; k < 3; ++k) {
+    // Also with the stray line first, a partial repeat (three sides as one
+    // polyline, the bottom again on its own), or a copy 0.002 mm off.
+    for (int k = 0; k < 6; ++k) {
         QPainterPath in;
         auto line = [&in](QPointF a, QPointF b) { in.moveTo(a); in.lineTo(b); };
+        if (k == 3)
+            line({10, 10}, {5, 5});
+        if (k == 4) {
+            in.moveTo(0, 0);
+            in.lineTo(10, 0);
+            in.lineTo(10, 10);
+            in.lineTo(0, 10);
+            line({0, 0}, {10, 0});
+            line({0, 10}, {0, 0});
+        } else {
         if (k == 2)
             line({0, 0}, {10, 0});
         line({0, 0}, {10, 0});
+        if (k == 5)
+            line({0.002, 0.001}, {10.001, 0.002});
         line({10, 0}, {10, 10});
         line({10, 10}, {0, 10});
         line({0, 10}, {0, 0});
@@ -811,14 +856,18 @@ int main(int argc, char **argv)
             line({0, 0}, {-5, -5});
         if (k == 1)
             line({0, 0}, {10, 0});
+        }
         const QVector<c2d::Element> els = c2d::elementsFromPath(c2d::joinSubpaths(in), QJsonObject());
         int closedRects = 0;
         for (const c2d::Element &e : els)
             closedRects += isClosed(e) && countType(e, 1) == 4;
-        check(closedRects == 1 && els.size() == (k == 0 ? 2 : 1),
-              k == 0   ? "joinSubpaths: a stray line on a corner leaves the rectangle closed"
-              : k == 1 ? "joinSubpaths: an edge drawn again after leaves the rectangle closed"
-                       : "joinSubpaths: an edge drawn again first leaves the rectangle closed");
+        static const char *what[] = {"joinSubpaths: a stray line on a corner leaves the rectangle closed",
+                                     "joinSubpaths: an edge drawn again after leaves the rectangle closed",
+                                     "joinSubpaths: an edge drawn again first leaves the rectangle closed",
+                                     "joinSubpaths: a stray line before the outline leaves it closed",
+                                     "joinSubpaths: an edge repeated from a polyline leaves it closed",
+                                     "joinSubpaths: an edge copied 0.002 mm off leaves the rectangle closed"};
+        check(closedRects == 1 && els.size() == (k == 0 || k == 3 || k == 4 ? 2 : 1), what[k]);
     }
 
     // joinSubpaths with its endpoint grid: same output as the old O(n^2)

@@ -45,9 +45,16 @@
     bit radius outside, full depth in stock the 3D rough (which keeps the whole bit inside) never
     cleared. The finish keeps the whole bit inside too; a ball or V by its width at the deepest
     the finish goes, so it leaves no wider band than it must.
+  - An inlay male made with a glue gap of 0 cut only V grooves and left its field standing, so the
+    plug could not seat; it clears the field like any other gap.
+  - A Chamfer (or Texture) with a Start depth was refused as "start depth is below end depth"
+    (neither has an end depth).
   - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
     under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
+  - A controller set to report inches ($13=1) was read as millimetres: a 10 mm jog went 86 mm the
+    other way, Run refused jobs that fit, BitZero and probing were off by 25.4. Positions and
+    probe results are converted; "still homed" is judged once the settings are in.
   - Run streamed a job that went past the machine's travel at the current work zero (past an X/Y
     switch or the far hard stop, or an air cut lifted past the Z switch). It is refused, naming
     the axis and how far over it goes, as jogs, Park and the surface map already were.
@@ -115,7 +122,8 @@
   - Pattern on path with orientation turned copies on a corner one edge too little (four brackets
     round a square came out 0, 90, 180 degrees instead of 90, 180, 270).
   - Imported outlines of loose lines (DXF, HPGL, SVG lines) stayed open when a stray line touched a
-    corner or an edge was drawn twice; they close, and an exact repeat of a piece is dropped.
+    corner or an edge was drawn twice, in whichever order the file has them; they close, and a
+    repeat of a piece (to within the join tolerance) is dropped.
   - Selecting or highlighting shapes on a board with thousands of them took seconds; now instant.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
