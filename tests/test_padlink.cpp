@@ -7,6 +7,8 @@
 #include "../src/machineprofiles.h"
 #include "../src/element.h"
 #include "../src/padlink.h"
+#include "../src/toollibrary.h"
+#include "../src/toolpathfactory.h"
 
 #include <QDir>
 #include <QFile>
@@ -353,6 +355,50 @@ static void testBackToPad(const QString &dir)
     check(lost.size() == 2, qPrintable(QStringLiteral("own feeds and construction lines are named (%1)").arg(lost.join(", "))));
     check(edited.value("shapes").toArray().size() == 5 && padlink::check(edited).isEmpty(),
           "and the rest still goes to the pad");
+}
+
+// Edits made here that the pad also makes (a new toolpath left at its
+// defaults, a bit change) keep the file the pad's.
+static void testDesktopEditsPadHas(const QString &dir)
+{
+    QString err;
+    const QJsonObject d = design(201, QStringLiteral("softwood"));
+    for (const char *type : {"pocket_toolpath", "contour", "drilling_toolpath", "engrave_toolpath"}) {
+        const QString path = QDir(dir).filePath(QStringLiteral("new-%1.c2d").arg(QLatin1String(type)));
+        padlink::buildDocument(d, path, nullptr, &err);
+        Document doc;
+        doc.load(path, &err);
+        doc.addToolpath(makeToolpath(doc, QLatin1String(type), {doc.elements().first().id}));
+        doc.save(path, &err);
+        QStringList lost;
+        padlink::designFromDocument(path, d, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("a new %1 at its defaults keeps the file the pad's (%2)")
+                                             .arg(QLatin1String(type), lost.join(", "))));
+    }
+    const QString path = QDir(dir).filePath(QStringLiteral("bit.c2d"));
+    padlink::buildDocument(d, path, nullptr, &err);
+    Document doc;
+    doc.load(path, &err);
+    ToolLibrary lib;
+    lib.loadDefault();
+    const LibraryTool *t102 = lib.byNumber(102);
+    for (const Toolpath &t0 : doc.toolpaths()) {
+        if (t0.json.value("type").toString() == QLatin1String("engrave_toolpath"))
+            continue;
+        Toolpath t = t0;
+        ToolLibrary::applyToToolpath(t.json, *t102, *t102->feedsFor(QStringLiteral("softwood")));
+        doc.replaceToolpath(t);
+    }
+    doc.save(path, &err);
+    QStringList lost;
+    const QJsonObject back = padlink::designFromDocument(path, d, &lost, &err);
+    check(lost.isEmpty(), qPrintable(QStringLiteral("a bit changed here keeps the file the pad's (%1)").arg(lost.join(", "))));
+    Document pd;
+    padlink::buildDocument(back, QDir(dir).filePath(QStringLiteral("bit-pad.c2d")), nullptr, &err);
+    pd.load(QDir(dir).filePath(QStringLiteral("bit-pad.c2d")), &err);
+    check(std::abs(pd.toolpaths().last().json.value("lead_radius").toDouble()
+                   - doc.toolpaths().last().json.value("lead_radius").toDouble()) < 1e-9,
+          "the lead follows the new bit, as on the pad");
 }
 
 static void testLinks(const QString &dir)
@@ -982,6 +1028,7 @@ int main(int argc, char **argv)
     testBuild(tmp.path(), d);
     testPadFixture(tmp.path());
     testBackToPad(tmp.path());
+    testDesktopEditsPadHas(tmp.path());
     testRebuildKeepsRetract(tmp.path());
     testLayersAndGroupsLost(tmp.path());
     testLinks(tmp.path());

@@ -1482,6 +1482,47 @@ int main(int argc, char *argv[])
             if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc)
                 deepest = std::min(deepest, o.z);
         check(g.done.size() == 1 && g.skipped.isEmpty() && deepest < -3, "chamfer: cut from a Start depth");
+
+        // Its cone widens above the start depth up to the stock top: 9.5 mm
+        // there on a 6.35 mm radius bit, the shank cut a wall with no note.
+        const QJsonObject v90{{"number", 2}, {"diameter", 12.7}, {"type", 2}, {"angle", 90.0}};
+        Rig w;
+        w.addShape(c2d::Element::makeCircle({50, 50}, 15, layer));
+        w.addToolpath("chamfer_toolpath", {{"start_depth", "5.000"}, {"chamfer_width", 4.0},
+                                           {"tip_offset", 0.5}, {"tool", v90}});
+        const c2d::GcodeResult wg = c2d::exportGcode(w.doc);
+        check(wg.done.isEmpty() && wg.skipped.size() == 1, "chamfer: refused where the cone is wider than the bit at the stock top");
+        // A hand-edited absurd start never returned (or wrote Z-1e300).
+        for (const char *z : {"1e16", "1e300"}) {
+            Rig h;
+            h.addShape(c2d::Element::makeCircle({50, 50}, 15, layer));
+            h.addToolpath("chamfer_toolpath", {{"start_depth", z}, {"stepdown", 1.0}, {"tool", v90}});
+            const c2d::GcodeResult hg = c2d::exportGcode(h.doc);
+            check(hg.done.isEmpty() && hg.skipped.size() == 1, "chamfer: an absurd start depth is refused");
+        }
+    }
+
+    // A Texture's depths are measured from its Start depth (on a pocket's
+    // floor every stroke was in the air), and an absurd one is refused.
+    {
+        const QJsonObject layer;
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 60, 40, layer));
+        r.addToolpath("texture_toolpath", {{"start_depth", "3.000"}, {"min_depth", "0.000"},
+                                           {"max_depth", "1.000"}, {"stepover", 3}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double lo = 0, hi = -1e9;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Feed && o.z < -1e-6) {
+                lo = std::min(lo, o.z);
+                hi = std::max(hi, o.z);
+            }
+        check(g.done.size() == 1 && lo >= -4 - 1e-6 && hi <= -3 + 1e-6 && hi > -1e9,
+              "texture: strokes between the start depth and start + Deepest");
+        Rig h;
+        h.addShape(c2d::Element::makeRectangle({50, 50}, 60, 40, layer));
+        h.addToolpath("texture_toolpath", {{"start_depth", "1e17"}, {"min_depth", "0.000"}, {"max_depth", "1.000"}});
+        check(c2d::exportGcode(h.doc).done.isEmpty(), "texture: an absurd start depth is refused");
     }
 
     // -----------------------------------------------------------------------

@@ -1059,6 +1059,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_homed = false;                  // until a homing cycle on this connection
         m_unhomedWhy = QStringLiteral("not homed since connecting");
         m_resumeCheck = true;             // ...or the controller is where we left it
+        m_holdChecked = false;
         m_homingStarted = false;
         m_lastLimitPins.clear();
         // Travel ($130-$132) for the jog limits, and $21 (hard limits).
@@ -2595,10 +2596,8 @@ void MachinePanel::onStatus(const MachineStatus &st)
     // its position as long as it was not reset or power-cycled - and then it
     // boots in Alarm. Not in Alarm, and exactly where the last homed session
     // left it: still homed, no Initialize needed.
-    // After the $$ listing: with $13=1 the position reads in inches until it
-    // is known, and never matches where the last session left it.
-    if (m_resumeCheck && st.valid && !st.state.isEmpty() && m_grbl->haveSettings()) {
-        m_resumeCheck = false;
+    if (m_resumeCheck && st.valid && !st.state.isEmpty() && !m_holdChecked) {
+        m_holdChecked = true;
         // Paused by a job this session never sent (the link dropped, the app
         // restarted, on a board that does not reset when the port opens):
         // its leftover moves are still in GRBL's buffer with the spindle on,
@@ -2611,6 +2610,12 @@ void MachinePanel::onStatus(const MachineStatus &st)
                                "from here if it is to be finished"));
             holdResetThen({});
         }
+    }
+    // The position only after the $$ listing: with $13=1 it reads in inches
+    // until that is known, and never matches where the last session left it.
+    // (In Hold GRBL answers $$ with error:8, so the clear above cannot wait.)
+    if (m_resumeCheck && st.valid && !st.state.isEmpty() && m_grbl->haveSettings()) {
+        m_resumeCheck = false;
         QSettings s;
         const QVariantList last = s.value(QStringLiteral("machine/homedAt")).toList();
         if (last.size() == 3 && !st.state.startsWith(QLatin1String("Alarm"))

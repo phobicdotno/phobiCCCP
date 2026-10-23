@@ -290,6 +290,7 @@ private:
     bool m_homed = false;
     bool m_homingStarted = false;
     bool m_resumeCheck = false;          // first status after connecting
+    bool m_holdChecked = false;          // a hold left from before cleared
     QElapsedTimer m_busyClock;           // throttles the busy file
     QVariantList m_savedHomedAt;         // last homed position written to settings
     bool requireHomed(const QString &what);

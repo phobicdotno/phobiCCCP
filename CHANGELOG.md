@@ -49,9 +49,20 @@
     plug could not seat; it clears the field like any other gap.
   - A Chamfer (or Texture) with a Start depth was refused as "start depth is below end depth"
     (neither has an end depth).
+  - A Chamfer from a Start depth is refused when its cone would be wider than the bit at the
+    stock top (or the floor cleared above): the shank cut a wall with no note. An absurd Start
+    in a hand-edited file no longer hangs the export.
+  - A Texture's Shallowest and Deepest are measured from its Start depth (on a pocket's floor
+    every stroke was in the air).
+  - Cutout "Ramp angle" and "Leave", and "Leave" on drilling, keyhole and V-carve, did nothing;
+    the form no longer shows them there.
   - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
     under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
+  - A controller left in a feed hold by an earlier session was no longer cleared on connect
+    (GRBL refuses $$ while held); its leftover moves could run on Resume.
+  - With $13=1, the work offset reported before the settings arrived was read as millimetres
+    for a few seconds (Run refused a job that fits); the feed shown is in mm/min too.
   - A controller set to report inches ($13=1) was read as millimetres: a 10 mm jog went 86 mm the
     other way, Run refused jobs that fit, BitZero and probing were off by 25.4. Positions and
     probe results are converted; "still homed" is judged once the settings are in.
@@ -84,6 +95,9 @@
   - The tiled export refused a thread or keyhole "across a tile line" because of a shape in its
     selection it never cuts (the part outline, construction geometry).
 - **Drawing and import:**
+  - Import dropped an open path's dense end (points under 0.01 mm apart) or an end curl drawn
+    as one curve, without a word; and many loose lines from one point (a starburst) took
+    seconds to minutes to import.
   - Trim and Break (and their hover preview) froze for seconds with many lines around a long
     curve; the closest-point search skips segments that cannot be closer.
   - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.
@@ -128,6 +142,12 @@
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
 - **Pad:**
+  - Duplicate puts the copy right after the original, as on the computer (list order is cut
+    order: the copy ran after the profile freed the part).
+  - A new toolpath left at its defaults, or a bit changed from the computer, cut the file off
+    from pad edits (later ones went to a "(pad)" copy). A bit change on the computer now sizes
+    the lead-in, rest and helix to the new bit as the pad does, and a new Engrave takes the
+    bit's own depth per pass.
   - Open could open a design deleted on another pad or computer while the dialog was up, and
     edits on it were saved into the deletion and lost. It now says the design was deleted.
   - Area: lettering inside the area is selected with it, as on the computer, so a pocket leaves

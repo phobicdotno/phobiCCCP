@@ -339,7 +339,7 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         stem = QStringLiteral("Engrave");
         j.insert(QStringLiteral("automatic_parameters"), false);
         j.insert(QStringLiteral("end_depth"), depthString(doc, 0.5));
-        j.insert(QStringLiteral("stepdown"), 0.5);
+        j.insert(QStringLiteral("stepdown"), tp.stepdown);   // the bit's, as a pad build
         j.insert(QStringLiteral("mode"), QStringLiteral("outline"));
         j.insert(QStringLiteral("line_spacing"), 1.0);
         j.insert(QStringLiteral("angle"), 45);

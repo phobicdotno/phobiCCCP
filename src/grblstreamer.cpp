@@ -636,15 +636,17 @@ void GrblStreamer::handleLine(const QByteArray &line)
         bool haveM = false, haveW = false;
         double px = 0, py = 0, pz = 0;
         // $13=1 reports positions in inches; everything here works in mm
-        // (a jog went 86 mm the wrong way, Run refused a job that fit).
+        // (a jog went 86 mm the wrong way, Run refused a job that fit). The
+        // WCO is kept as reported: GRBL sends it rarely, the first one before
+        // the $$ listing says which unit it is in.
         const double k = reportScale();
         for (const QByteArray &p : parts) {
             if (p.startsWith("WCO:")) {
                 const QList<QByteArray> c = p.mid(4).split(',');
                 if (c.size() >= 3) {
-                    m_wcoX = c.at(0).toDouble() * k;
-                    m_wcoY = c.at(1).toDouble() * k;
-                    m_wcoZ = c.at(2).toDouble() * k;
+                    m_wcoX = c.at(0).toDouble();   // raw: scaled on use
+                    m_wcoY = c.at(1).toDouble();   // raw: scaled on use
+                    m_wcoZ = c.at(2).toDouble();   // raw: scaled on use
                 }
             } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
                 const QList<QByteArray> c = p.mid(5).split(',');
@@ -658,7 +660,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
             } else if (p.startsWith("FS:")) {
                 const QList<QByteArray> c = p.mid(3).split(',');
                 if (c.size() >= 2) {
-                    st.feed = c.at(0).toDouble();
+                    st.feed = c.at(0).toDouble() * k;   // inch/min with $13=1
                     st.spindle = c.at(1).toDouble();
                 }
             } else if (p.startsWith("Pn:")) {
@@ -670,10 +672,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         if (haveM) {
             st.mx = px; st.my = py; st.mz = pz;
-            st.wx = px - m_wcoX; st.wy = py - m_wcoY; st.wz = pz - m_wcoZ;
+            st.wx = px - m_wcoX * k; st.wy = py - m_wcoY * k; st.wz = pz - m_wcoZ * k;
         } else if (haveW) {
             st.wx = px; st.wy = py; st.wz = pz;
-            st.mx = px + m_wcoX; st.my = py + m_wcoY; st.mz = pz + m_wcoZ;
+            st.mx = px + m_wcoX * k; st.my = py + m_wcoY * k; st.mz = pz + m_wcoZ * k;
         }
         st.valid = true;
         m_status = st;

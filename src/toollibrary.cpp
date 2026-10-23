@@ -4,6 +4,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <cmath>
+#include <utility>
 
 // The library ships inside the core static library; referencing the resource
 // initializer from here keeps the linker from dropping qrc_tools.o.
@@ -198,6 +200,15 @@ QJsonObject ToolLibrary::toolObject(const LibraryTool &t, const ToolFeeds &f,
 
 void ToolLibrary::applyToToolpath(QJsonObject &tp, const LibraryTool &t, const ToolFeeds &f)
 {
+    // Lead-in, rest and helix sized to the old bit follow the new one, as
+    // a bit change on the pad does (a size typed in stays).
+    const double oldDia = tp.value("tool").toObject().value("diameter").toDouble();
+    for (const auto &[k, scale] : {std::pair<const char *, double>{"lead_radius", 0.5},
+                                   {"rest_diameter", 1.0}, {"helix_diameter", 1.0}}) {
+        const QJsonValue v = tp.value(QLatin1String(k));
+        if (oldDia > 0 && v.isDouble() && std::abs(v.toDouble() - scale * oldDia) < 1e-6)
+            tp.insert(QLatin1String(k), scale * t.diameter);
+    }
     tp.insert(QStringLiteral("tool"), toolObject(t, f, tp.value("tool").toObject()));
     QJsonObject speeds = tp.value("speeds").toObject();
     speeds.insert(QStringLiteral("feedrate"), f.feed);

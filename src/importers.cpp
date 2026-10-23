@@ -128,30 +128,29 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         return true;
     };
     {
-        // By the cell of each end; a copy within tol is in a neighbouring one.
-        QHash<std::pair<qint64, qint64>, QVector<int>> byEnd;
+        // By the cells of both ends (first, last); a copy within tol has each
+        // end in the same or a neighbouring cell. Both ends, so pieces that
+        // only share one point (a starburst) are never compared.
+        using Cell = std::pair<qint64, qint64>;
+        QHash<std::pair<Cell, Cell>, QVector<int>> byEnds;
         for (int j = 0; j < subs.size(); ++j) {
             if (subs[j].closed || subs[j].segs.isEmpty())
                 continue;
-            const auto a = cellOf(subs[j].segs.first().a);
+            const Cell a = cellOf(subs[j].segs.first().a), b = cellOf(subs[j].segs.last().b);
             const QVector<Seg> back = reversed(subs[j].segs);
-            QSet<int> tried;
-            for (qint64 dx = -1; dx <= 1 && !used[j]; ++dx)
-                for (qint64 dy = -1; dy <= 1 && !used[j]; ++dy)
-                    for (int i : byEnd.value({a.first + dx, a.second + dy}))
-                        if (!tried.contains(i)) {
-                            tried.insert(i);
-                            if (sameSegs(subs[i].segs, subs[j].segs) || sameSegs(subs[i].segs, back)) {
-                                used[j] = true;
-                                break;
-                            }
+            for (qint64 ax = -1; ax <= 1 && !used[j]; ++ax)
+                for (qint64 ay = -1; ay <= 1 && !used[j]; ++ay)
+                    for (qint64 bx = -1; bx <= 1 && !used[j]; ++bx)
+                        for (qint64 by = -1; by <= 1 && !used[j]; ++by) {
+                            const Cell ca{a.first + ax, a.second + ay}, cb{b.first + bx, b.second + by};
+                            for (int i : byEnds.value({ca, cb}))
+                                if (sameSegs(subs[i].segs, subs[j].segs)) { used[j] = true; break; }
+                            if (!used[j])
+                                for (int i : byEnds.value({cb, ca}))
+                                    if (sameSegs(subs[i].segs, back)) { used[j] = true; break; }
                         }
-            if (used[j])
-                continue;
-            byEnd[a].append(j);
-            const auto b = cellOf(subs[j].segs.last().b);
-            if (b != a)
-                byEnd[b].append(j);
+            if (!used[j])
+                byEnds[{a, b}].append(j);
         }
     }
     QHash<std::pair<qint64, qint64>, QVector<int>> grid;
@@ -249,7 +248,20 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         }
         // Still open with an end back on its own path (a stray or repeated
         // piece joined before the edge that closes the outline): the loop is
-        // written closed and the tail open.
+        // written closed and the tail open. Only a real loop: two pieces or
+        // more reaching past 2 tol. A dense end (points under tol apart) or
+        // a curl drawn as one curve stays part of the open path.
+        auto realLoop = [&](int lo, int hi, const QPointF &at) {
+            if (hi - lo < 2)
+                return false;
+            for (int m = lo; m < hi; ++m) {
+                const Seg &g = chain.at(m);
+                for (const QPointF &q : {g.a, g.b, g.c1, g.c2})
+                    if (std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol)
+                        return true;
+            }
+            return false;
+        };
         for (;;) {
             const int n = int(chain.size());
             if (n > 1 && samePoint(chain.front().a, chain.back().b, tol)) {
@@ -258,27 +270,25 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 break;
             }
             int k = 1;
-            while (k < n && !samePoint(chain.at(k).a, chain.back().b, tol))
+            while (k < n && !(samePoint(chain.at(k).a, chain.back().b, tol)
+                              && realLoop(k, n, chain.back().b)))
                 ++k;
             if (k < n) {
                 std::deque<Seg> loop(chain.begin() + k, chain.end());
                 chain.erase(chain.begin() + k, chain.end());
-                if (loop.size() > 1) {
-                    loop.back().b = loop.front().a;
-                    write(loop, true);
-                }
+                loop.back().b = loop.front().a;
+                write(loop, true);
                 continue;
             }
             k = n - 2;
-            while (k >= 0 && !samePoint(chain.at(k).b, chain.front().a, tol))
+            while (k >= 0 && !(samePoint(chain.at(k).b, chain.front().a, tol)
+                               && realLoop(0, k + 1, chain.front().a)))
                 --k;
             if (k >= 0) {
                 std::deque<Seg> loop(chain.begin(), chain.begin() + k + 1);
                 chain.erase(chain.begin(), chain.begin() + k + 1);
-                if (loop.size() > 1) {
-                    loop.back().b = loop.front().a;
-                    write(loop, true);
-                }
+                loop.back().b = loop.front().a;
+                write(loop, true);
                 continue;
             }
             write(chain, false);

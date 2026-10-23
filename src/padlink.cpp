@@ -359,7 +359,10 @@ const QStringList &ignoredToolpathKeys()
 {
     static const QStringList k = {QStringLiteral("uuid"), QStringLiteral("elements"),
                                   QStringLiteral("toolpath_group"), QStringLiteral("name"),
-                                  QStringLiteral("tool")};
+                                  QStringLiteral("tool"),
+                                  // set false by a library pick, true on a new
+                                  // toolpath here; nothing reads it
+                                  QStringLiteral("automatic_parameters")};
     return k;
 }
 

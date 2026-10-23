@@ -3572,6 +3572,40 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     jobs.append(job);
                 }
             }
+            // Started below the top, the cone widens above the start depth
+            // through the stock up to Z0, or to a floor cleared above that
+            // covers all the bit can reach: past the bit's radius the shank cuts.
+            if (cp.zTop < -1e-9 && !jobs.isEmpty()) {
+                double top = 0;
+                QList<QPolygonF> path;
+                for (const Job &jb : jobs)
+                    path += jb.rings;
+                const QPainterPath need = sweptRegion(path, vg.radius());
+                for (const Cleared &c : cleared) {
+                    const double cand = qMax(c.zBot, cp.zTop);
+                    if (!(cand < top))
+                        continue;
+                    QList<QPainterPath> regs;
+                    for (const Cleared &o : cleared)
+                        if (o.zBot <= c.zBot + 1e-6)
+                            regs << o.foot;
+                    double left = 0;
+                    for (const QPolygonF &g : subtractRegion(need, unionRegions(regs)).toSubpathPolygons())
+                        left += std::fabs(vec::ringArea(g));
+                    if (left < 0.01)
+                        top = cand;
+                }
+                const double reach = width + tip + (top - cp.zTop) * halfTan;
+                if (reach > vg.radius() + 1e-6) {
+                    res.skipped << QStringLiteral("%1 (from its start depth the V-bit would be %2 mm wide at the stock top, more than its radius %3 mm)")
+                                       .arg(name, QString::number(reach, 'f', 2), QString::number(vg.radius(), 'f', 2));
+                    continue;
+                }
+            }
+            if (!((cp.zTop - cp.zBot) / cp.stepdown < 100000.0) || !(cp.zBot > -10000.0)) {
+                res.skipped << QStringLiteral("%1 (cut depth needs too many passes)").arg(name);
+                continue;
+            }
         } else if (drilling || keyhole) {
             const double peck = numOr(j.value("peck_distance"), 0);
             const double slotLen = numOr(j.value("length"), 12.7);
@@ -3634,10 +3668,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             const double sVar = qBound(0.0, numOr(j.value("stepover_variation"), 0), 1.0);
             const double minL = qMax(1.0, numOr(j.value("min_length"), 15));
             const double maxL = qMax(minL, numOr(j.value("max_length"), 30));
-            const double zMin = depth(j.value("min_depth"));
-            const double zMax = depth(j.value("max_depth"));
+            // Measured from the start depth (a texture on a pocket's floor).
+            const double zMin = cp.zTop + depth(j.value("min_depth"));
+            const double zMax = cp.zTop + depth(j.value("max_depth"));
             if (!depthsOk) {
                 res.skipped << QStringLiteral("%1 (cut depth is not a number)").arg(name);
+                continue;
+            }
+            if (!(zMin > -10000.0) || !(zMax > -10000.0)) {
+                res.skipped << QStringLiteral("%1 (cut depth is not machinable)").arg(name);
                 continue;
             }
             Lcg rng(qHash(t.uuid));

@@ -242,28 +242,33 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                 write(chain, true);
                 break;
             }
+            auto realLoop = [&](int lo, int hi, const QPointF &at) {
+                if (hi - lo < 2)
+                    return false;
+                for (int m = lo; m < hi; ++m)
+                    for (const QPointF &q : {chain.at(m).a, chain.at(m).b, chain.at(m).c1, chain.at(m).c2})
+                        if (std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol)
+                            return true;
+                return false;
+            };
             int k = 1;
-            while (k < n && !samePt(chain.at(k).a, chain.last().b, tol))
+            while (k < n && !(samePt(chain.at(k).a, chain.last().b, tol) && realLoop(k, n, chain.last().b)))
                 ++k;
             if (k < n) {
                 QVector<Seg> loop = chain.mid(k);
                 chain.resize(k);
-                if (loop.size() > 1) {
-                    loop.last().b = loop.first().a;
-                    write(loop, true);
-                }
+                loop.last().b = loop.first().a;
+                write(loop, true);
                 continue;
             }
             k = n - 2;
-            while (k >= 0 && !samePt(chain.at(k).b, chain.first().a, tol))
+            while (k >= 0 && !(samePt(chain.at(k).b, chain.first().a, tol) && realLoop(0, k + 1, chain.first().a)))
                 --k;
             if (k >= 0) {
                 QVector<Seg> loop = chain.mid(0, k + 1);
                 chain = chain.mid(k + 1);
-                if (loop.size() > 1) {
-                    loop.last().b = loop.first().a;
-                    write(loop, true);
-                }
+                loop.last().b = loop.first().a;
+                write(loop, true);
                 continue;
             }
             write(chain, false);
@@ -917,6 +922,62 @@ int main(int argc, char **argv)
             moves += joined.elementAt(i).isMoveTo();
         check(moves == 1 && joined.elementCount() == 100001, "joinSubpaths: 100k lines into one chain");
         check(t.elapsed() < 5000, "joinSubpaths: 100k lines in seconds, not a minute");
+
+        // Nothing is lost: a dense head or tail (points under tol apart) and
+        // a curl drawn as one curve stay on the open path.
+        {
+            QPainterPath dense;
+            dense.moveTo(0, 0);
+            dense.lineTo(30, 0);
+            for (int i = 1; i <= 1000; ++i)
+                dense.lineTo(30 + i * 0.008, (i % 2) * 0.004);
+            QPainterPath head;
+            head.moveTo(-8, 0);
+            for (int i = 1; i <= 1000; ++i)
+                head.lineTo(-8 + i * 0.008, (i % 2) * 0.004);
+            head.lineTo(30, 0);
+            QPainterPath curl;
+            curl.moveTo(10, 50);
+            curl.lineTo(40, 50);
+            curl.cubicTo(60, 30, 20, 30, 40, 50);
+            QPainterPath curlFront;
+            curlFront.moveTo(40, 50);
+            curlFront.cubicTo(60, 30, 20, 30, 40, 50);
+            curlFront.lineTo(10, 50);
+            const QPainterPath ins[] = {dense, head, curl, curlFront};
+            static const char *what[] = {"joinSubpaths: a dense tail is kept",
+                                         "joinSubpaths: a dense head is kept",
+                                         "joinSubpaths: a curl at the end is kept",
+                                         "joinSubpaths: a curl at the start is kept"};
+            for (int k = 0; k < 4; ++k) {
+                const QPainterPath o = c2d::joinSubpaths(ins[k], 0.01);
+                check(std::abs(o.length() - ins[k].length()) < 1e-6, what[k]);
+            }
+            QPainterPath tail;
+            tail.moveTo(0, 0);
+            tail.lineTo(50, 0);
+            for (int i = 1; i <= 20000; ++i)
+                tail.lineTo(50 + i * 0.008, (i % 2) * 0.004);
+            QElapsedTimer tt;
+            tt.start();
+            const QPainterPath o = c2d::joinSubpaths(tail, 0.01);
+            check(std::abs(o.length() - tail.length()) < 1e-6 && tt.elapsed() < 500,
+                  "joinSubpaths: a 20000-point dense tail kept, quickly");
+        }
+        // Lines sharing only one end (a starburst) are not compared as copies.
+        {
+            QPainterPath star;
+            for (int i = 0; i < 20000; ++i) {
+                const double a = i * 2 * M_PI / 20000;
+                star.moveTo(0, 0);
+                star.lineTo(100 * std::cos(a), 100 * std::sin(a));
+            }
+            QElapsedTimer tt;
+            tt.start();
+            const QPainterPath o = c2d::joinSubpaths(star, 0.01);
+            check(tt.elapsed() < 3000 && std::abs(o.length() - star.length()) < 1e-3,
+                  "joinSubpaths: a 20000-line starburst in seconds, nothing dropped");
+        }
     }
 
     // SPLINE flattening is bounded: a 1000-point spline zig-zagging over a

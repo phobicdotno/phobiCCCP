@@ -545,6 +545,18 @@ static bool hiddenKey(const QString &k)
     return h.contains(k);
 }
 
+// Keys this type carries (written by the factory, kept for Carbide Create)
+// that the export does not use for it: a field there would do nothing.
+static bool unusedFor(const QString &type, const QString &k)
+{
+    if (k == QLatin1String("ramp_angle"))
+        return type == QLatin1String("cutout");
+    if (k == QLatin1String("stock_to_leave"))
+        return type == QLatin1String("cutout") || type == QLatin1String("drilling_toolpath")
+            || type == QLatin1String("keyhole_toolpath") || type == QLatin1String("advanced_vcarve_toolpath");
+    return false;
+}
+
 ToolpathForm::ToolpathForm(QWidget *parent)
     : QWidget(parent)
 {
@@ -811,7 +823,8 @@ void ToolpathForm::rebuild()
     QSet<QString> designed;
     QHash<QString, QList<QPair<QString, Field>>> byCard;
     for (const auto &kf : catalog(m_type)) {
-        if (!flatGet(m_json, kf.first).isUndefined() && !designed.contains(kf.first)) {
+        if (!flatGet(m_json, kf.first).isUndefined() && !designed.contains(kf.first)
+            && !unusedFor(m_type, kf.first)) {
             byCard[kf.second.card].append(kf);
             designed.insert(kf.first);
         }
@@ -853,7 +866,7 @@ void ToolpathForm::rebuild()
         QVBoxLayout *body = nullptr;
         QStringList rest;
         for (const QString &k : m_keys)
-            if (!designed.contains(k) && !hiddenKey(k))
+            if (!designed.contains(k) && !hiddenKey(k) && !unusedFor(m_type, k))
                 rest << k;
         if (!rest.isEmpty()) {
             m_lay->addWidget(card(QStringLiteral("advanced"),

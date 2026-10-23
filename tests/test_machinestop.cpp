@@ -114,6 +114,7 @@ struct FakeGrbl {
     double probeZ = -50;
     double wcoX = -200, wcoY = -200;   // a work zero inside the travel (Run checks it)
     double wcoZ = -40;                    // work Z offset the status reports carry (zero under the switch)
+    int wcoEvery = 0, wcoCount = 0;       // >0: WCO only on the first report and every Nth (real GRBL)
     // A V1 block model. Probes and G0 moves track the position.
     bool geo = false, rel = false, noiseOnce = false;
     QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
@@ -188,7 +189,7 @@ struct FakeGrbl {
                     continue; }
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : running ? "Run" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:" + num(wcoX) + "," + num(wcoY) + "," + num(wcoZ) + ">\r\n");
+                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + (wcoEvery > 0 && wcoCount-- > 0 ? QByteArray() : (wcoCount = wcoEvery - 1, "|WCO:" + num(wcoX) + "," + num(wcoY) + "," + num(wcoZ))) + ">\r\n");
             } else if (c == '!') {
                 if (!held) holdClock.start();
                 held = true;
@@ -238,7 +239,9 @@ struct FakeGrbl {
                     line.clear();
                     continue;
                 }
-                if (line == "$$")
+                if (line == "$$" && held)
+                    reply = "error:8\r\n";   // GRBL refuses $$ in a hold
+                else if (line == "$$")
                     send(travel);
                 else if (line == "$H" && rejectHome)
                     reply = "error:5\r\n";
@@ -458,6 +461,14 @@ int main(int argc, char **argv)
 
     if (qgetenv("R4MODE") == "connhold")
         grbl.held = true;   // left in a feed hold mid-job (the USB link dropped)
+    if (qgetenv("R4MODE") == "inch13wco") {
+        // $13=1 with WCO only every 10th report: the offset that came before
+        // $$ was answered is read in inches too.
+        grbl.travel += "$13=1\r\n";
+        grbl.wcoEvery = 10;
+        grbl.mx = -100 / 25.4; grbl.my = -100 / 25.4; grbl.mz = -30 / 25.4;
+        grbl.wcoX = -200 / 25.4; grbl.wcoY = -200 / 25.4; grbl.wcoZ = -60 / 25.4;
+    }
     if (qgetenv("R4MODE") == "inch13") {
         // $13=1: positions reported in inches. Machine (-100,-100,-30) mm,
         // work zero (-200,-200,-60) mm.
@@ -982,6 +993,26 @@ int main(int argc, char **argv)
         s->stopStream();
         wait(500);
     }
+    if (mode == "inch13wco") {
+        // The offset reported before $$ (in inches) was read as mm: Run saw
+        // the job 25 times nearer zero and refused one that fits.
+        bool refused = false;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith(QLatin1String("The program goes off the machine"))) {
+                refused = true;
+                return QStringLiteral("OK");
+            }
+            return QStringLiteral("\u25b6 Start");
+        };
+        check(std::abs(s->status().wx - 100) < 0.01 && std::abs(s->status().wz - 30) < 0.01,
+              "inch13wco: work position from the early offset in mm");
+        const bool ok = panel.runProgram();
+        check(ok && !refused, "inch13wco: a job inside the travel runs right after connect");
+        if (ok) {
+            s->stopStream();
+            wait(500);
+        }
+    }
     if (mode == "inch13") {
         // Read as mm, a jog went 86 mm the wrong way and Run refused a job
         // that fits.
@@ -1010,8 +1041,9 @@ int main(int argc, char **argv)
     }
     if (mode == "connhold") {
         // Connected to a controller paused in a job this session never sent:
-        // its leftover moves are cleared, so no Resume can run them.
-        wait(1000);
+        // its leftover moves are cleared, so no Resume can run them (GRBL
+        // answers $$ with error:8 while held).
+        spin(5000, [&] { return grbl.events.contains("^X") && !grbl.held; });
         check(grbl.events.contains("^X") && !grbl.held, "connhold: a held job left from before is cleared on connect");
         check(!panel.m_machineState.startsWith(QLatin1String("Hold")), "connhold: not left in a hold");
     }

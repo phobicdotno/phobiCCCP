@@ -957,8 +957,9 @@ class _MainWindowState extends State<MainWindow> {
             onDuplicate: (i) {
               if (_changedUnder(d)) return;
               final t = d.toolpaths[i];
-              _commit(d.copyWith(toolpaths: [...d.toolpaths, t.copyWith(name: '${t.name} copy')]));
-              setState(() => _tp = d.toolpaths.length);
+              // Right after the original, as on the computer: list order is cut order.
+              _commit(d.copyWith(toolpaths: [...d.toolpaths]..insert(i + 1, t.copyWith(name: '${t.name} copy'))));
+              setState(() => _tp = i + 1);
             },
             onDelete: (i) {
               if (_changedUnder(d)) return;
