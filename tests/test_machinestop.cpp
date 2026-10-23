@@ -239,8 +239,8 @@ struct FakeGrbl {
                     line.clear();
                     continue;
                 }
-                if (line == "$$" && held)
-                    reply = "error:8\r\n";   // GRBL refuses $$ in a hold
+                if (line == "$$" && (held || running))
+                    reply = "error:8\r\n";   // GRBL refuses $$ in a hold or a cycle
                 else if (line == "$$")
                     send(travel);
                 else if (line == "$H" && rejectHome)
@@ -459,6 +459,14 @@ int main(int argc, char **argv)
         return {};
     };
 
+    if (qgetenv("R4MODE") == "connrun") {
+        // Still finishing the buffered moves of a job from before the link dropped.
+        grbl.running = true;
+        grbl.travel += "$13=1\r\n";
+        grbl.mx = -100 / 25.4; grbl.my = -100 / 25.4; grbl.mz = -30 / 25.4;
+        grbl.wcoX = -200 / 25.4; grbl.wcoY = -200 / 25.4; grbl.wcoZ = -60 / 25.4;
+        QTimer::singleShot(2000, [&] { grbl.running = false; });
+    }
     if (qgetenv("R4MODE") == "connhold")
         grbl.held = true;   // left in a feed hold mid-job (the USB link dropped)
     if (qgetenv("R4MODE") == "inch13wco") {
@@ -478,7 +486,8 @@ int main(int argc, char **argv)
     }
     check(s->connectPort(QString::fromLatin1(name)), "connects to the fake controller");
     spin(1500, [&] { return panel.statusJson().value("homed").toBool(); });
-    check(panel.statusJson().value("homed").toBool(), "homed (resumed where the last session left it)");
+    if (qgetenv("R4MODE") != "connrun")   // moving: not where it was left
+        check(panel.statusJson().value("homed").toBool(), "homed (resumed where the last session left it)");
     wait(800);   // $$ answered
     // One scenario per run (ctest runs each): R4MODE = cancelstop, cancelend
     // or disconnend.
@@ -992,6 +1001,14 @@ int main(int argc, char **argv)
         check(ok, "env: the job inside the travel runs");
         s->stopStream();
         wait(500);
+    }
+    if (mode == "connrun") {
+        // Connected while GRBL still ran moves from before (it answers $$
+        // with error:8): the listing was never read, so $13=1 positions
+        // stayed 25.4 times too small all session.
+        spin(8000, [&] { return s->haveSettings(); });
+        check(s->haveSettings(), "connrun: the $$ listing is read once the leftover moves end");
+        check(std::abs(s->status().wx - 100) < 0.01, "connrun: and positions read in mm");
     }
     if (mode == "inch13wco") {
         // The offset reported before $$ (in inches) was read as mm: Run saw

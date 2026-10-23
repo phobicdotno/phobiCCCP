@@ -127,6 +127,13 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         }
         return true;
     };
+    // A copy is still joined like any piece: a shared edge drawn once for
+    // each of two touching shapes is a "copy" too, and the second shape
+    // needs it. Only a copy left on its own is dropped.
+    QVector<bool> isCopy(subs.size(), false);
+    QVector<int> rootOf(subs.size());   // the piece a copy repeats, else itself
+    for (int j = 0; j < subs.size(); ++j)
+        rootOf[j] = j;
     {
         // By the cells of both ends (first, last); a copy within tol has each
         // end in the same or a neighbouring cell. Both ends, so pieces that
@@ -138,18 +145,18 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 continue;
             const Cell a = cellOf(subs[j].segs.first().a), b = cellOf(subs[j].segs.last().b);
             const QVector<Seg> back = reversed(subs[j].segs);
-            for (qint64 ax = -1; ax <= 1 && !used[j]; ++ax)
-                for (qint64 ay = -1; ay <= 1 && !used[j]; ++ay)
-                    for (qint64 bx = -1; bx <= 1 && !used[j]; ++bx)
-                        for (qint64 by = -1; by <= 1 && !used[j]; ++by) {
+            for (qint64 ax = -1; ax <= 1 && !isCopy[j]; ++ax)
+                for (qint64 ay = -1; ay <= 1 && !isCopy[j]; ++ay)
+                    for (qint64 bx = -1; bx <= 1 && !isCopy[j]; ++bx)
+                        for (qint64 by = -1; by <= 1 && !isCopy[j]; ++by) {
                             const Cell ca{a.first + ax, a.second + ay}, cb{b.first + bx, b.second + by};
                             for (int i : byEnds.value({ca, cb}))
-                                if (sameSegs(subs[i].segs, subs[j].segs)) { used[j] = true; break; }
-                            if (!used[j])
+                                if (sameSegs(subs[i].segs, subs[j].segs)) { isCopy[j] = true; rootOf[j] = i; break; }
+                            if (!isCopy[j])
                                 for (int i : byEnds.value({cb, ca}))
-                                    if (sameSegs(subs[i].segs, back)) { used[j] = true; break; }
+                                    if (sameSegs(subs[i].segs, back)) { isCopy[j] = true; rootOf[j] = i; break; }
                         }
-            if (!used[j])
+            if (!isCopy[j])
                 byEnds[{a, b}].append(j);
         }
     }
@@ -194,6 +201,8 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             continue;
         }
         std::deque<Seg> chain(subs[i].segs.begin(), subs[i].segs.end());
+        // A chain never takes a piece and its copy: they fold back on each other.
+        QSet<int> roots{rootOf[i]};
         // The same joins in the same order as sweeping j = 0..n-1 over and
         // over until a sweep adds nothing: the next join is the lowest
         // matching j after the last one, else (if this sweep grew) the lowest
@@ -209,7 +218,7 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             int best = -1, wrap = -1;
             int how = 0, wrapHow = 0;
             for (int j : cand) {
-                if (used[j] || (best >= 0 && j >= best && wrap >= 0 && j >= wrap))
+                if (used[j] || (best >= 0 && j >= best && wrap >= 0 && j >= wrap) || roots.contains(rootOf[j]))
                     continue;
                 const QVector<Seg> &o = subs[j].segs;
                 int h = 0;
@@ -243,24 +252,28 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 chain.insert(chain.begin(), r.begin(), r.end());
             }
             used[best] = true;
+            roots.insert(rootOf[best]);
             grew = true;
             from = best + 1;
         }
+        // A copy nothing joined (a CAD export repeating an edge): cut once.
+        if (isCopy[i] && int(chain.size()) == subs[i].segs.size()
+            && !samePoint(chain.front().a, chain.back().b, tol))
+            continue;
         // Still open with an end back on its own path (a stray or repeated
         // piece joined before the edge that closes the outline): the loop is
         // written closed and the tail open. Only a real loop: two pieces or
         // more reaching past 2 tol. A dense end (points under tol apart) or
         // a curl drawn as one curve stays part of the open path.
-        auto realLoop = [&](int lo, int hi, const QPointF &at) {
-            if (hi - lo < 2)
-                return false;
-            for (int m = lo; m < hi; ++m) {
+        // far[m]: some point of segment m lies past 2 tol from `at`.
+        auto farFrom = [&](const QPointF &at) {
+            QVector<bool> far(int(chain.size()));
+            for (int m = 0; m < far.size(); ++m) {
                 const Seg &g = chain.at(m);
                 for (const QPointF &q : {g.a, g.b, g.c1, g.c2})
-                    if (std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol)
-                        return true;
+                    far[m] = far[m] || std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol;
             }
-            return false;
+            return far;
         };
         for (;;) {
             const int n = int(chain.size());
@@ -269,9 +282,13 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 write(chain, true);
                 break;
             }
+            // reach[k]: a segment from k to the end reaches past 2 tol.
+            const QVector<bool> farB = farFrom(chain.back().b);
+            QVector<bool> reach(n + 1, false);
+            for (int m = n - 1; m >= 0; --m)
+                reach[m] = reach[m + 1] || farB[m];
             int k = 1;
-            while (k < n && !(samePoint(chain.at(k).a, chain.back().b, tol)
-                              && realLoop(k, n, chain.back().b)))
+            while (k < n && !(n - k >= 2 && reach[k] && samePoint(chain.at(k).a, chain.back().b, tol)))
                 ++k;
             if (k < n) {
                 std::deque<Seg> loop(chain.begin() + k, chain.end());
@@ -280,9 +297,13 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 write(loop, true);
                 continue;
             }
+            // upTo[k]: a segment from the start to k reaches past 2 tol.
+            const QVector<bool> farA = farFrom(chain.front().a);
+            QVector<bool> upTo(n, false);
+            for (int m = 0; m < n; ++m)
+                upTo[m] = (m > 0 && upTo[m - 1]) || farA[m];
             k = n - 2;
-            while (k >= 0 && !(samePoint(chain.at(k).b, chain.front().a, tol)
-                               && realLoop(0, k + 1, chain.front().a)))
+            while (k >= 0 && !(k + 1 >= 2 && upTo[k] && samePoint(chain.at(k).b, chain.front().a, tol)))
                 --k;
             if (k >= 0) {
                 std::deque<Seg> loop(chain.begin(), chain.begin() + k + 1);

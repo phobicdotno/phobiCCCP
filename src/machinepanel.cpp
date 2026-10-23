@@ -1063,6 +1063,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_homingStarted = false;
         m_lastLimitPins.clear();
         // Travel ($130-$132) for the jog limits, and $21 (hard limits).
+        m_settingsAsked.start();
         QTimer::singleShot(600, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
         saveSettings();
     });
@@ -2596,6 +2597,15 @@ void MachinePanel::onStatus(const MachineStatus &st)
     // its position as long as it was not reset or power-cycled - and then it
     // boots in Alarm. Not in Alarm, and exactly where the last homed session
     // left it: still homed, no Initialize needed.
+    // GRBL answers $$ with error:8 while it runs or holds (moves left from
+    // before the link dropped): asked again once it is Idle, or the travel,
+    // $21 and the $13 inch reports went unread for the whole session.
+    if (st.valid && !m_grbl->haveSettings() && m_settingsAsked.isValid() && m_settingsAsked.elapsed() > 2000
+        && (st.state == QLatin1String("Idle") || st.state.startsWith(QLatin1String("Alarm")))
+        && !m_grbl->isStreaming()) {
+        m_settingsAsked.start();
+        m_grbl->sendCommand(QStringLiteral("$$"));
+    }
     if (m_resumeCheck && st.valid && !st.state.isEmpty() && !m_holdChecked) {
         m_holdChecked = true;
         // Paused by a job this session never sent (the link dropped, the app

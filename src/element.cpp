@@ -334,6 +334,25 @@ static QJsonArray contoursOf(const QPainterPath &mm)
     return rendered;
 }
 
+// A glyph whose outlines overlap (Liberation Sans "Å": the ring dips into
+// the A) is drawn solid by the font, but every reader of `rendered` takes an
+// overlap as a hole: merged into one outline. Others keep their curves
+// (flattened finer later); simplified() flattens, so it runs 16x up.
+static QPainterPath solidGlyph(const QPainterPath &g)
+{
+    if (g.isEmpty())
+        return g;
+    QTransform up;
+    up.scale(16, 16);
+    QPainterPath w = up.map(g), e = w;
+    w.setFillRule(Qt::WindingFill);
+    e.setFillRule(Qt::OddEvenFill);
+    const QPainterPath ws = w.simplified();
+    if (ws == e.simplified())
+        return g;
+    return up.inverted().map(ws);
+}
+
 // Rebuild `rendered` from the element's own keys. Layout is in local Y-up
 // space with the straight baseline on y = 0 starting at x = 0 (what CC
 // writes: the first glyph's left bearing is the smallest x). font_height is
@@ -409,7 +428,7 @@ void Element::renderText(QJsonObject &o)
                         if (seen.contains(key))
                             continue;
                         seen.insert(key);
-                        c.glyphs.append({rf.pathForGlyph(idx.at(i)), pos.at(i).x() - x0,
+                        c.glyphs.append({solidGlyph(rf.pathForGlyph(idx.at(i))), pos.at(i).x() - x0,
                                          pos.at(i).y() - baseline,
                                          i < advs.size() ? advs.at(i).x() : 0.0});
                     }

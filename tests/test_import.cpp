@@ -14,9 +14,11 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
+#include <QSet>
 #include <QJsonObject>
 
 #include <cmath>
+#include <functional>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QFile>
@@ -179,7 +181,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
         if (close)
             out.closeSubpath();
     };
-    // Repeated open pieces are dropped.
+    // Repeated open pieces are joined like any; one left alone is dropped.
     auto sameSegs = [tol](const QVector<Seg> &x, const QVector<Seg> &y) {
         if (x.size() != y.size())
             return false;
@@ -191,11 +193,16 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
         }
         return true;
     };
+    QVector<bool> isCopy(subs.size(), false);
+    QVector<int> rootOf(subs.size());
+    for (int j = 0; j < subs.size(); ++j)
+        rootOf[j] = j;
     for (int j = 0; j < subs.size(); ++j)
         for (int i = 0; i < j && !subs[j].closed && !subs[j].segs.isEmpty(); ++i)
-            if (!used[i] && !subs[i].closed
+            if (!isCopy[i] && !subs[i].closed
                 && (sameSegs(subs[i].segs, subs[j].segs) || sameSegs(subs[i].segs, reversed(subs[j].segs)))) {
-                used[j] = true;
+                isCopy[j] = true;
+                rootOf[j] = i;
                 break;
             }
     for (int i = 0; i < subs.size(); ++i) {
@@ -210,6 +217,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             continue;
         }
         QVector<Seg> chain = subs[i].segs;
+        QSet<int> roots{rootOf[i]};
         for (bool grew = true; grew;) {
             grew = false;
             for (int j = 0; j < subs.size(); ++j) {
@@ -217,7 +225,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                     grew = false;
                     break;
                 }
-                if (used[j] || subs[j].closed || subs[j].segs.isEmpty())
+                if (used[j] || subs[j].closed || subs[j].segs.isEmpty() || roots.contains(rootOf[j]))
                     continue;
                 const QVector<Seg> &o = subs[j].segs;
                 if (samePt(chain.last().b, o.first().a, tol)) {
@@ -232,9 +240,12 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                     continue;
                 }
                 used[j] = true;
+                roots.insert(rootOf[j]);
                 grew = true;
             }
         }
+        if (isCopy[i] && chain.size() == subs[i].segs.size() && !samePt(chain.first().a, chain.last().b, tol))
+            continue;
         for (;;) {
             const int n = chain.size();
             if (n > 1 && samePt(chain.first().a, chain.last().b, tol)) {
@@ -963,6 +974,53 @@ int main(int argc, char **argv)
             const QPainterPath o = c2d::joinSubpaths(tail, 0.01);
             check(std::abs(o.length() - tail.length()) < 1e-6 && tt.elapsed() < 500,
                   "joinSubpaths: a 20000-point dense tail kept, quickly");
+        }
+        // A shared edge drawn once for each of two touching shapes closes both
+        // (the second copy was dropped as a repeat: one rectangle left open).
+        {
+            auto closedCount = [](const QPainterPath &o) {
+                int closed = 0;
+                for (const c2d::Element &e : c2d::elementsFromPath(o, QJsonObject()))
+                    closed += isClosed(e);
+                return closed;
+            };
+            auto rect = [](QPainterPath &p, double x, double y, double w, double h) {
+                const QPointF c[4] = {{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}};
+                for (int k = 0; k < 4; ++k) {
+                    p.moveTo(c[k]);
+                    p.lineTo(c[(k + 1) % 4]);
+                }
+            };
+            QPainterPath two;
+            rect(two, 0, 0, 10, 10);
+            rect(two, 10, 0, 10, 10);
+            const QPainterPath o2 = c2d::joinSubpaths(two, 0.01);
+            check(closedCount(o2) == 2 && std::abs(o2.length() - 80) < 1e-6,
+                  "joinSubpaths: two rectangles sharing an edge both close");
+            QPainterPath grid;
+            for (int gx = 0; gx < 3; ++gx)
+                for (int gy = 0; gy < 3; ++gy)
+                    rect(grid, gx * 10, gy * 10, 10, 10);
+            check(closedCount(c2d::joinSubpaths(grid, 0.01)) == 9, "joinSubpaths: a 3x3 grid of cells all close");
+            check(samePath(c2d::joinSubpaths(grid, 0.01), joinSubpathsSlow(grid, 0.01)),
+                  "joinSubpaths: grid same as the quadratic version");
+            QPainterPath twice;
+            twice.moveTo(0, 0);
+            twice.lineTo(20, 0);
+            twice.moveTo(20, 0);
+            twice.lineTo(0, 0);
+            check(closedCount(c2d::joinSubpaths(twice, 0.01)) == 0, "joinSubpaths: a line drawn twice stays one open line");
+            // An end in a dense jittery cluster: the split stays linear.
+            QPainterPath jit;
+            jit.moveTo(0, 0);
+            jit.lineTo(50, 0);
+            std::srand(3);
+            for (int i = 0; i < 20000; ++i)
+                jit.lineTo(50 + (std::rand() % 1000) * 2e-6, (std::rand() % 1000) * 2e-6);
+            QElapsedTimer tt;
+            tt.start();
+            c2d::joinSubpaths(jit, 0.01);
+            check(tt.elapsed() < 1000, "joinSubpaths: a dense cluster at an end in well under a second");
         }
         // Lines sharing only one end (a starburst) are not compared as copies.
         {

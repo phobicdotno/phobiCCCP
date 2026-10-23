@@ -56,6 +56,12 @@
     every stroke was in the air).
   - Cutout "Ramp angle" and "Leave", and "Leave" on drilling, keyhole and V-carve, did nothing;
     the form no longer shows them there.
+  - Other fields that did nothing are hidden too: Ramp in/Ramp angle on Drill, Keyhole, V-Carve,
+    Face, Bore, Thread and Slot; Per pass and Stepover on Drill and Keyhole, Per pass on Thread;
+    Angle on Pocket, Drill and V-Carve; Start on 3D Rough and Finish. Circular and Adaptive
+    always enter on their ramp, so their "Ramp in" switch (which read off) is gone.
+  - Picking a smaller bit from the tool library for a rest pocket set its "Bigger tool" to the
+    new bit, so rest machining went off and the whole pocket was cleared again with no note.
   - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
     under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
@@ -63,6 +69,9 @@
     (GRBL refuses $$ while held); its leftover moves could run on Resume.
   - With $13=1, the work offset reported before the settings arrived was read as millimetres
     for a few seconds (Run refused a job that fits); the feed shown is in mm/min too.
+  - Connected while the controller still ran moves from before (GRBL refuses $$ then), the
+    settings were never read that session: travel, hard limits and $13 inch reports fell back
+    to defaults. $$ is asked again once it is Idle.
   - A controller set to report inches ($13=1) was read as millimetres: a 10 mm jog went 86 mm the
     other way, Run refused jobs that fit, BitZero and probing were off by 25.4. Positions and
     probe results are converted; "still homed" is judged once the settings are in.
@@ -98,6 +107,11 @@
   - Import dropped an open path's dense end (points under 0.01 mm apart) or an end curl drawn
     as one curve, without a word; and many loose lines from one point (a starburst) took
     seconds to minutes to import.
+  - Two touching shapes drawn as loose lines, sharing an edge drawn once for each, left the
+    second open (its copy of the edge was dropped as a repeat). A copy is now joined like any
+    piece; only one left on its own is dropped, and a chain never takes a piece and its copy.
+  - Letters whose outlines overlap (Liberation Sans "Å", the default font on Linux) got a hole
+    where they overlap; a pocket left a sliver of wall between the ring and the A.
   - Trim and Break (and their hover preview) froze for seconds with many lines around a long
     curve; the closest-point search skips segments that cannot be closer.
   - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.
@@ -148,6 +162,8 @@
     from pad edits (later ones went to a "(pad)" copy). A bit change on the computer now sizes
     the lead-in, rest and helix to the new bit as the pad does, and a new Engrave takes the
     bit's own depth per pass.
+  - In files made before pads sized lead-ins by their own bit, a bit changed here on one
+    toolpath still cut the file off from the pad.
   - Open could open a design deleted on another pad or computer while the dialog was up, and
     edits on it were saved into the deletion and lost. It now says the design was deleted.
   - Area: lettering inside the area is selected with it, as on the computer, so a pocket leaves

@@ -200,11 +200,12 @@ QJsonObject ToolLibrary::toolObject(const LibraryTool &t, const ToolFeeds &f,
 
 void ToolLibrary::applyToToolpath(QJsonObject &tp, const LibraryTool &t, const ToolFeeds &f)
 {
-    // Lead-in, rest and helix sized to the old bit follow the new one, as
-    // a bit change on the pad does (a size typed in stays).
+    // Lead-in and helix sized to the old bit follow the new one, as a bit
+    // change on the pad does (a size typed in stays). Not the rest pass's
+    // "Bigger tool": that is the earlier cutter, often the bit replaced here.
     const double oldDia = tp.value("tool").toObject().value("diameter").toDouble();
     for (const auto &[k, scale] : {std::pair<const char *, double>{"lead_radius", 0.5},
-                                   {"rest_diameter", 1.0}, {"helix_diameter", 1.0}}) {
+                                   {"helix_diameter", 1.0}}) {
         const QJsonValue v = tp.value(QLatin1String(k));
         if (oldDia > 0 && v.isDouble() && std::abs(v.toDouble() - scale * oldDia) < 1e-6)
             tp.insert(QLatin1String(k), scale * t.diameter);

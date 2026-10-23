@@ -17,6 +17,7 @@
 #include "../src/vectorops.h"
 
 #include <QGuiApplication>
+#include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -286,6 +287,16 @@ int main(int argc, char *argv[])
               && s.nodes.at(1).kind == c2d::PathNode::Corner, "Alt-drag breaks symmetry");
         s.retract(1);
         check(!s.nodes.at(1).hasIn() && !s.nodes.at(1).hasOut(), "retract pulls both handles in");
+    }
+
+    // --- text: a glyph whose outlines overlap is one solid outline -------------------
+    // Liberation Sans "Å": the ring dips into the A; read even-odd the overlap
+    // was a hole cutting the ring off.
+    if (QFontDatabase::families().contains(QStringLiteral("Liberation Sans"))) {
+        const c2d::Element t = c2d::Element::makeText(QString(QChar(0x00C5)), {0, 0}, 20,
+                                                      QStringLiteral("Liberation Sans"), layer);
+        check(t.raw.value("rendered").toArray().size() == 3,
+              "overlapping glyph outlines merge (A, its counter, the ring's hole)");
     }
 
     // --- text: straight, arc top, arc bottom, offset -------------------------------
