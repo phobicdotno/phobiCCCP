@@ -415,6 +415,61 @@ int main(int argc, char *argv[])
               "gcode: a part's hole is cut before its outline frees it");
     }
     {
+        // Rest bands of one pocket: the deeper band's rings go round where
+        // the shallower one starts, and the holes-first rule had it cut
+        // first, plunging 6 mm through the stock band 0 had to clear.
+        // Pocket A (an annulus, 4 deep) leaves the middle for B's rest band;
+        // F only sets where B starts from.
+        for (int v = 0; v < 2; ++v) {
+            c2d::Document doc;
+            doc.setParam(QStringLiteral("width"), QStringLiteral("200"));
+            doc.setParam(QStringLiteral("height"), QStringLiteral("200"));
+            doc.setParam(QStringLiteral("thickness"), QStringLiteral("20"));
+            const c2d::Element outer = c2d::Element::makeCircle({100, 100}, 30, layer);
+            const c2d::Element inner = c2d::Element::makeCircle({100, 100}, 10, layer);
+            const c2d::Element disc = c2d::Element::makeCircle({100, 100}, 30, layer);
+            const c2d::Element far = c2d::Element::makeCircle({100, v ? 160.0 : 40.0}, 5, layer);
+            for (const c2d::Element &e : {outer, inner, disc, far})
+                doc.addElement(e);
+            auto pocket = [&](const char *uuid, const char *name, const QStringList &els, const QJsonObject &extra,
+                              double dia) {
+                QJsonObject j{{"type", "pocket_toolpath"}, {"name", name}, {"enabled", true}, {"uuid", uuid},
+                              {"start_depth", "0.000"}, {"end_depth", "4.000"}, {"stepdown", 2.0},
+                              {"stock_to_leave", 0.0},
+                              {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+                              {"tool", QJsonObject{{"diameter", dia}, {"number", dia > 5 ? 201 : 202}}}};
+                QJsonArray a;
+                for (const QString &e : els)
+                    a.append(QJsonObject{{"uuid", e}});
+                j.insert("elements", a);
+                for (const QString &k : extra.keys())
+                    j.insert(k, extra.value(k));
+                c2d::Toolpath t;
+                t.uuid = QLatin1String(uuid);
+                t.type = QStringLiteral("pocket_toolpath");
+                t.json = j;
+                doc.addToolpath(t);
+            };
+            pocket("{a}", "A", {outer.id, inner.id}, {}, 6.35);
+            pocket("{f}", "F", {far.id}, {{"end_depth", "1.000"}}, 3.175);
+            pocket("{b}", "B", {disc.id}, {{"end_depth", "10.000"}, {"rest_auto", true}}, 3.175);
+            // B's first cut is band 0's first level, 2 mm down.
+            bool inB = false;
+            double first = 0;
+            for (const c2d::Op &o : c2d::exportGcode(doc).ops) {
+                if (o.kind == c2d::Op::Comment) {
+                    inB = o.text == QLatin1String("B");
+                    continue;
+                }
+                if (inB && (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -1e-6) {
+                    first = o.z;
+                    break;
+                }
+            }
+            check(first < 0 && first >= -2.0 - 1e-6, "gcode: a pocket's deeper rest band waits for the shallower one");
+        }
+    }
+    {
         // An 8 x 1220 slot with tabs: no lift leaves a bridge (the far side
         // is always near), and trying every shorter lift at every slide took
         // over half a minute; tabs on a 40 x 20 part with a 1/4" lead came

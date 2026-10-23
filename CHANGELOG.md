@@ -36,7 +36,8 @@
     full sheet, while every shorter lift was tried where even the longest leaves no bridge.
   - A part's outline and its holes in one Cutout or Contour were cut nearest first, so the
     outline could cut the part free before its holes were cut (5 of 12 parts on a nested sheet);
-    the loose part shifts or is thrown. Loops inside another of the same toolpath now go first.
+    the loose part shifts or is thrown. Loops inside another of the same toolpath now go first
+    (within one rest band: a pocket's deeper band still waits for the shallower one).
   - A bit diameter stored as text sized tab lifts (and the tiled keyhole check) from 1/8".
   - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
     had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
@@ -51,6 +52,9 @@
   - Connecting to a controller left paused in a job (the link dropped, on a board that does not
     reset when the port opens) kept that job's leftover moves; Resume ran them with nothing
     tracking them. They are cleared on connect (the spindle stops).
+  - Gamepad: a stick held about half way wobbled round the threshold and each wobble was a tap,
+    a full jog step (six 10 mm steps for one push). It now lets go only well below the threshold.
+    A D-pad let go while the link was down, then pressed again after reconnecting, did nothing.
 - **Updates:**
   - The "↑ Install" link stayed clickable while an install ran; a second click started a second
     fetch and build on the same checkout. It now brings the running install to the front.
@@ -92,6 +96,8 @@
     change that moves the rest of its sketch lets a red dimension there hold if it now can, but
     not one on the same shape (a turned rectangle's width parameter folded it into a bow-tie).
     A red dimension whose parameter had an error now holds once the error is fixed.
+    Typing a new value into such a shape's own width, or changing the width of a shape tied to it
+    (Parallel, Equal), no longer folds it either.
   - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
     its edge after a quarter turn).
 - **Pad:**
@@ -115,7 +121,7 @@
     a rectangle's W and H, dragging on the canvas and drawing stay in range too, and text is
     limited the way the computer counts it (an emoji counts twice). No side or radius, typed or
     drawn, goes over 10000 mm. W or H on a rectangle from the computer already past the edge
-    no longer throws; it can be made smaller.
+    no longer throws; it can be made smaller, its corner kept within range.
   - Text typed in the Text box went into another design when the computer opened one on the pad
     meanwhile (File > Send to pad); it is dropped instead.
   - After a two-finger pinch, the finger left on the screen picked up and dragged the shape under

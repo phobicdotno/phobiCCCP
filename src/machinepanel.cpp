@@ -2340,15 +2340,23 @@ void MachinePanel::gamepadAxis(int number, int value)
 {
     if (m_padMapping)
         return;
-    if (number > 1 || !m_grbl->isConnected())
+    if (number > 1)
         return;
     // A D-pad reports its rest position as 0 and a direction as full scale;
     // an analogue stick needs the same treatment with a dead zone, so both are
-    // reduced to -1, 0 or +1 here.
-    const int dir = value > 16000 ? 1 : (value < -16000 ? -1 : 0);
-    if (dir == m_padAxisDir[number])
+    // reduced to -1, 0 or +1 here. A stick held about half way wobbles round
+    // the threshold: it lets go only well below it, or each wobble was a tap
+    // and a full jog step.
+    const int was = m_padAxisDir[number];
+    const int dir = value > 16000 ? 1 : (value < -16000 ? -1
+                  : (was != 0 && value * was > 8000 ? was : 0));
+    if (dir == was)
         return;
+    // Kept while not connected too: a direction held across a dropped link
+    // and let go there, then pressed again, was taken for no change.
     m_padAxisDir[number] = dir;
+    if (!m_grbl->isConnected())
+        return;
     if (dir == 0) {
         endHoldJog();
         return;

@@ -411,6 +411,37 @@ int main(int argc, char **argv)
         wait(1500);
     }
 
+    // A stick held about half way wobbles round the 16000 threshold: each
+    // drop under it was a tap, a full jog step (six steps for one push).
+    // And a D-pad let go while the link was down, then pressed again after
+    // reconnecting, was taken for no change and jogged nothing.
+    {
+        wait(800);
+        grbl.events.clear();
+        for (int v : {15900, 16100, 15950, 16080, 15920, 16120, 15980, 16050, 15900, 16100}) {
+            emit pad->axisChanged(0, v);
+            wait(120);
+        }
+        emit pad->axisChanged(0, 0);
+        wait(1500);
+        check(grbl.count("$J=") <= 4, "gamepad: a half-held stick is one push, not a tap per wobble");
+
+        emit pad->axisChanged(1, -32767);
+        wait(100);
+        s->disconnectPort();
+        wait(100);
+        emit pad->axisChanged(1, 0);
+        check(s->connectPort(QString::fromLatin1(name)), "gamepad: reconnects");
+        spin(3000, [&] { return panel.statusJson().value("homed").toBool(); });
+        wait(1200);
+        grbl.events.clear();
+        emit pad->axisChanged(1, -32767);
+        wait(100);
+        emit pad->axisChanged(1, 0);
+        wait(1500);
+        check(grbl.count("$J=") == 1, "gamepad: a press after a dropped link jogs");
+    }
+
     // Tool changes: the second pause, same number, names the second bit.
     // BitSetter off: close the prompt, zero Z by hand, then Continue.
     {

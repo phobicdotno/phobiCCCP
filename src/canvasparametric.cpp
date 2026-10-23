@@ -84,7 +84,10 @@ bool stayedPut(const Element &was, const Element &now)
 // by folding the shape they are on - a dimension from the origin broken by
 // a rotation was met at the next move of some other line, turning a
 // rectangle into a triangle with no word.
-QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<QString> &keep)
+// `onlyValued` gets the red ones let back in only because a dimension's value
+// changed elsewhere in their sketch (see distortedBy).
+QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<QString> &keep,
+                       QSet<QString> *onlyValued = nullptr)
 {
     const Parametric &now = nowDoc.parametric();
     // A dimension is the same while its value is: renaming it or a parameter
@@ -125,11 +128,11 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
             const int k = now.indexOfUid(c.uid);
             if (k >= 0 && same(c, now.constraints.at(k)))
                 continue;
-            // A dimension whose value alone changed (its parameter did): see
-            // `valued` below.
+            // A dimension whose value alone changed (its parameter, or the
+            // number typed into it): see `valued` below.
             if (k >= 0 && c.isDimension() && c.refs == now.constraints.at(k).refs
                 && c.type == now.constraints.at(k).type && c.sense == now.constraints.at(k).sense
-                && c.at == now.constraints.at(k).at && c.expr == now.constraints.at(k).expr) {
+                && c.at == now.constraints.at(k).at) {
                 for (const GeoRef &r : c.refs)
                     valued.insert(r.id);
                 continue;
@@ -198,10 +201,63 @@ QSet<QString> inertRed(const Document &was, const Document &nowDoc, const QSet<Q
             hit = hit || (!r.isOrigin() && (edited.contains(r.id) || releasedRoots.contains(root(r.id))));
             shares = shares || valued.contains(r.id);
         }
+        bool viaValue = false;
         if (!shares)
             for (const GeoRef &r : c1.refs)
-                hit = hit || (!r.isOrigin() && valuedRoots.contains(root(r.id)));
-        if (!hit)
+                viaValue = viaValue || (!r.isOrigin() && valuedRoots.contains(root(r.id)));
+        if (!hit && viaValue && onlyValued)
+            onlyValued->insert(uid);
+        if (!hit && !viaValue)
+            out.insert(uid);
+    }
+    return out;
+}
+
+// Of `reds` (let back in by a value change elsewhere in their sketch), those
+// that now hold only by bending a shape they are on: a turned rectangle's
+// red position, tied by Parallel to one whose width changed, was met by
+// folding it. A length dimension on a plain line is free to change it.
+QSet<QString> distortedBy(const Document &before, const Document &after, const QSet<QString> &reds)
+{
+    QSet<QString> out;
+    if (reds.isEmpty())
+        return out;
+    const QStringList still = param::unsatisfied(after);
+    QHash<QString, const Element *> was, now;
+    for (const Element &e : before.elements())
+        was.insert(e.id, &e);
+    for (const Element &e : after.elements())
+        now.insert(e.id, &e);
+    // Each subpath's side lengths and its nodes' distances from its first.
+    auto shape = [](const Element &e) {
+        QVector<double> d;
+        for (const SubPath &sp : Element::pathModel(e).subs)
+            for (int i = 1; i < sp.nodes.size(); ++i)
+                d << QLineF(sp.nodes.at(i - 1).p, sp.nodes.at(i).p).length()
+                  << QLineF(sp.nodes.first().p, sp.nodes.at(i).p).length();
+        return d;
+    };
+    for (const QString &uid : reds) {
+        const int k = after.parametric().indexOfUid(uid);
+        if (k < 0 || still.contains(uid))
+            continue;
+        const Constraint &c = after.parametric().constraints.at(k);
+        bool bent = false;
+        for (const GeoRef &r : c.refs) {
+            const Element *a = was.value(r.id), *b = now.value(r.id);
+            if (r.isOrigin() || !a || !b)
+                continue;
+            const PathModel m = Element::pathModel(*b);
+            if (c.isDimension() && c.refs.size() == 1 && r.kind == GeoRef::Line && m.subs.size() == 1
+                && m.subs.first().nodes.size() == 2)
+                continue;
+            const QVector<double> da = shape(*a), db = shape(*b);
+            bool same = da.size() == db.size();
+            for (int i = 0; same && i < da.size(); ++i)
+                same = std::fabs(da.at(i) - db.at(i)) < 1e-6;
+            bent = bent || !same;
+        }
+        if (bent)
             out.insert(uid);
     }
     return out;
@@ -646,8 +702,15 @@ void Canvas::pushEdit(QUndoCommand *cmd, const QStringList &touched, const QTran
         m_doc->setParametric(p);
     }
     const QSet<QString> touchedSet(touched.begin(), touched.end());
-    const QSet<QString> inert = inertRed(before, *m_doc, touchedSet);
+    QSet<QString> onlyValued;
+    QSet<QString> inert = inertRed(before, *m_doc, touchedSet, &onlyValued);
+    const QVector<Element> preSolve = m_doc->elements();
     param::SolveResult r = solveOmitting(*m_doc, touchedSet, inert);
+    if (const QSet<QString> bent = distortedBy(before, *m_doc, onlyValued); !bent.isEmpty()) {
+        m_doc->setElements(preSolve);
+        inert |= bent;
+        r = solveOmitting(*m_doc, touchedSet, inert);
+    }
     bool partSolved = false;
     if (rigid && !r.ok) {
         // One constraint the held shapes can't meet (a dimension from the
@@ -725,8 +788,15 @@ bool Canvas::applyParametric(const Parametric &after, const QString &text, bool 
     Document was = *m_doc;
     was.setElements(s0.els);
     was.setParametric(s0.par);
-    const QSet<QString> inert = inertRed(was, *m_doc, keep);
+    QSet<QString> onlyValued;
+    QSet<QString> inert = inertRed(was, *m_doc, keep, &onlyValued);
+    const QVector<Element> preSolve = m_doc->elements();
     param::SolveResult r = solveOmitting(*m_doc, keep, inert, false);
+    if (const QSet<QString> bent = distortedBy(was, *m_doc, onlyValued); !bent.isEmpty()) {
+        m_doc->setElements(preSolve);
+        inert |= bent;
+        r = solveOmitting(*m_doc, keep, inert, false);
+    }
     if (!r.ok && !allowFailing) {
         // Constraints that were red before don't block an unrelated edit;
         // one the rest of the sketch can't follow is refused. A forced solve

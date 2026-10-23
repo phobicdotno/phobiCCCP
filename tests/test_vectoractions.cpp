@@ -633,6 +633,40 @@ int main(int argc, char *argv[])
                       && param::unsatisfied(cd).size() == 1,
                   "a parameter edit on a red shape's own width keeps its position red");
         }
+        // Nor typing the width in, nor a width on a second rectangle tied to
+        // it by Parallel: both folded the turned one (a crossed quad).
+        for (int k = 0; k < 2; ++k) {
+            Document cd;
+            const Element sq = Element::makePath({{10, 10}, {40, 10}, {40, 30}, {10, 30}}, true, layer);
+            const Element r2 = Element::makePath({{60, 10}, {90, 10}, {90, 30}, {60, 30}}, true, layer);
+            cd.addElement(sq);
+            if (k == 1)
+                cd.addElement(r2);
+            cd.parametricRef().params.append({QStringLiteral("w"), QStringLiteral("30"), QString()});
+            add(cd, Constraint::HDistance, {GeoRef::origin(), ref(GeoRef::Point, sq.id, 0)}, "10");
+            if (k == 0) {
+                add(cd, Constraint::Distance, {ref(GeoRef::Line, sq.id, 0)}, "30");
+            } else {
+                add(cd, Constraint::Parallel, {ref(GeoRef::Line, sq.id, 0), ref(GeoRef::Line, r2.id, 0)});
+                add(cd, Constraint::Distance, {ref(GeoRef::Line, r2.id, 0)}, "w");
+            }
+            canvas->setDocument(&cd);
+            canvas->selectIds(k == 0 ? QStringList{sq.id} : QStringList{sq.id, r2.id});
+            va.rotate(180);
+            Parametric after = cd.parametric();
+            if (k == 0)
+                after.constraints.last().expr = QStringLiteral("31");
+            else
+                after.params.first().expr = QStringLiteral("31");
+            canvas->applyParametric(after, QStringLiteral("edit"), false);
+            QPointF a, b, c, e;
+            const bool lines = param::line(cd, ref(GeoRef::Line, sq.id, 0), &a, &b)
+                               && param::line(cd, ref(GeoRef::Line, sq.id, 1), &c, &e);
+            check(lines && std::fabs(QLineF(a, b).length() - (k == 0 ? 31 : 30)) < 1e-6
+                      && std::fabs(QLineF(c, e).length() - 20) < 0.05 && param::unsatisfied(cd).size() == 1,
+                  k == 0 ? "typing a red shape's own width keeps its position red"
+                         : "a width on a tied shape keeps a red shape's position red");
+        }
         // Moving, turning or mirroring a line merely tied to the red shape
         // (Parallel to an edge) does not bring the red dimension back to
         // fold it (a turn's holds counted as added constraints).

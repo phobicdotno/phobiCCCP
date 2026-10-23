@@ -2401,7 +2401,9 @@ struct Deferred {
 
 // Whether a closed loop of `outer` goes round where `inner` starts: a hole
 // in a part, selected with its outline in one toolpath. The outline cut
-// through first left the part loose for the hole (moved, or thrown).
+// through first left the part loose for the hole (moved, or thrown). Only
+// within one rest band: a deeper band's rings go round the shallower one's
+// start, and it was cut first, plunging through what that band had to clear.
 static bool encloses(const Job &outer, const Job &inner)
 {
     if (!outer.closed || !inner.closed || inner.rings.isEmpty())
@@ -2442,7 +2444,8 @@ static QList<Deferred> orderDeferred(QList<Deferred> jobs, QPointF from)
             for (int i = 0; i < jobs.size(); ++i) {
                 const Deferred &a = jobs.at(i), &o = jobs.at(best);
                 const bool earlier = a.tp < o.tp || (a.tp == o.tp && a.job.band < o.job.band)
-                                     || (a.tp == o.tp && i != best && encloses(o.job, a.job));
+                                     || (a.tp == o.tp && a.job.band == o.job.band && i != best
+                                         && encloses(o.job, a.job));
                 if (!earlier
                     || !jobBounds(jobs.at(i).job, jobs.at(i).reach).intersects(b))
                     continue;
