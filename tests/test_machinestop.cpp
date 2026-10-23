@@ -1081,6 +1081,52 @@ int main(int argc, char **argv)
         wait(1500);
         check(grbl.indexOf("G0 Z") >= 0, "maphigh: with Z zeroed low enough the map starts");
     }
+    if (mode == "mapzeropad") {
+        // r45: Zero Z with the map on at work X80 Y80 (surface there 1.75 above X0 Y0),
+        // then the pad's start: refused until the map is switched off; off,
+        // the job runs with Z0 1.75 mm under the surface that was touched.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        std::printf("mapzeropad: zero sent G10 Z1.750: %d\n", sent175);
+        // what the controller now has: work Z reads 1.75 with the bit on the stock
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        QString why;
+        bool started = panel.startFromRemote(&why);
+        std::printf("mapzeropad: pad start with map on: %d (%s)\n", started, qPrintable(why));
+        panel.m_useMap->setChecked(false);      // as the refusal says
+        wait(300);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        why.clear();
+        started = panel.startFromRemote(&why);
+        std::printf("mapzeropad: pad start with map off: %d (%s), work Z at the touched surface %.3f\n",
+                    started, qPrintable(why), s->status().wz);
+        check(!(sent175 && started), "mapzeropad: the pad's start does not run with Z0 1.75 mm under the touched surface");
+        if (started) { s->stopStream(); wait(500); }
+        // And the other way: zeroed with the map off, then the map on.
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        grbl.wcoZ = grbl.mz;
+        panel.m_useMap->setChecked(true);
+        wait(300);
+        why.clear();
+        started = panel.startFromRemote(&why);
+        std::printf("mapzeropad: pad start, zeroed with the map off, map on: %d (%s)\n", started, qPrintable(why));
+        check(!started, "mapzeropad: a start with the map on after a zero with it off is refused");
+        if (started) { s->stopStream(); wait(500); }
+    }
     if (mode == "mapzero") {
         // Surface map on, Z zeroed at work X80 Y80 (a re-zero after a tool
         // change): Z0 must stay the surface at X0 Y0 the offsets are from,

@@ -324,6 +324,29 @@ int main(int argc, char *argv[])
               qPrintable(QStringLiteral("glyph parts stored twice are kept (%1)").arg(text)));
     }
 
+    // A slant Qt makes up for a face the font lacks (DejaVu Sans has no
+    // italic) keeps the family and style name: the upright glyph was reused.
+    if (QFontDatabase::families().contains(QStringLiteral("DejaVu Sans"))) {
+        auto maxX = [](const QJsonObject &o) {
+            double m = -1e9;
+            for (const QJsonValue &cv : o.value("rendered").toArray())
+                for (const QJsonValue &pv : cv.toArray())
+                    m = std::max(m, pv.toArray().at(0).toDouble());
+            return m;
+        };
+        QJsonObject up{{"text", "Hello"}, {"font", "DejaVu Sans-Regular"}, {"font_height", 10.0}};
+        QJsonObject it{{"text", "Hello"}, {"font", "DejaVu Sans-Italic"}, {"font_height", 10.0}};
+        c2d::Element::renderText(up);
+        c2d::Element::renderText(it);
+        check(QJsonDocument(up.value("rendered").toArray()) != QJsonDocument(it.value("rendered").toArray())
+                  && maxX(it) > maxX(up) + 0.3,
+              "made-up italic is slanted after the upright text");
+        QJsonObject up2 = up;
+        c2d::Element::renderText(up2);
+        check(QJsonDocument(up2.value("rendered").toArray()) == QJsonDocument(up.value("rendered").toArray()),
+              "upright text stays upright after the italic");
+    }
+
     // --- text: straight, arc top, arc bottom, offset -------------------------------
     {
         const double h = 12;

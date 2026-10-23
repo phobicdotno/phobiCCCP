@@ -341,21 +341,29 @@ static QJsonArray contoursOf(const QPainterPath &mm)
 // (flattened finer later); simplified() flattens, so it runs 16x up.
 static QPainterPath solidGlyphOf(const QPainterPath &g);
 
-// Merged once per font, size and glyph: the same accented letter repeated
-// through a long text was merged again at every occurrence.
+// Merged once per outline: the same accented letter repeated through a long
+// text was merged again at every occurrence. Keyed on the outline itself, as
+// a slanted or stretched face Qt makes up keeps the font's family and style.
 static QPainterPath solidGlyph(const QRawFont &rf, quint32 index)
 {
     static QMutex lock;
-    static QHash<QString, QPainterPath> cache;
-    const QString key = QStringLiteral("%1/%2/%3/%4").arg(rf.familyName(), rf.styleName())
-                            .arg(rf.pixelSize()).arg(index);
+    static QHash<QByteArray, QPainterPath> cache;
+    const QPainterPath g = rf.pathForGlyph(index);
+    QByteArray key;
+    key.reserve(g.elementCount() * int(2 * sizeof(double) + 1));
+    for (int i = 0; i < g.elementCount(); ++i) {
+        const QPainterPath::Element e = g.elementAt(i);
+        const double xy[2] = {e.x, e.y};
+        key.append(char(e.type));
+        key.append(reinterpret_cast<const char *>(xy), sizeof xy);
+    }
     {
         QMutexLocker l(&lock);
         auto it = cache.constFind(key);
         if (it != cache.constEnd())
             return it.value();
     }
-    const QPainterPath out = solidGlyphOf(rf.pathForGlyph(index));
+    const QPainterPath out = solidGlyphOf(g);
     QMutexLocker l(&lock);
     if (cache.size() > 20000)
         cache.clear();

@@ -5,6 +5,8 @@
 > Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
 
 - **Toolpaths:**
+  - A user's own end mill that carried a library bit's number (another size) was skipped as a new
+    toolpath's default and could take that library bit's feeds; only the library bit itself is.
   - A tile could end with the bit still down in its last cut, the spindle stopped, when the next
     toolpath with the same bit cut nothing in that tile; each tile now retracts from its last move.
   - Adaptive with a Start depth hopped and entered its first level just above Start, as if the
@@ -71,6 +73,11 @@
   - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
     under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
+  - Z zeroed with the surface map on and then run with it off (as a pad start asks) cut every
+    depth deeper by the map's height at the touched spot, and the other way round too; Run and a
+    pad start now refuse a map state other than the one Z was zeroed with, until Z is zeroed again.
+  - Zeroing Z with the surface map on now says in the log that Z0 was set to the surface at X0 Y0
+    and how far that is from here, as the readout no longer shows 0.
   - With the surface map on, Zero Z (or BitZero Z) away from X0 Y0, as after a manual tool
     change, set Z0 to the stock there while the map is measured from X0 Y0: over a 2 mm warp a
     1 mm cut ran in the air. The zero now keeps Z0 at the surface under X0 Y0.
@@ -113,6 +120,10 @@
   - The tiled export refused a thread or keyhole "across a tile line" because of a shape in its
     selection it never cuts (the part outline, construction geometry).
 - **Drawing and import:**
+  - Text in a font without an italic (or bold) face could come out upright with Italic ticked, or
+    slanted without it, depending on what was drawn first: the made-up slant shared a cache entry.
+  - A polyline that closes a loop partway (a lead-in line into a square, a single-stroke "e")
+    lost the part outside the loop on import.
   - Import dropped an open path's dense end (points under 0.01 mm apart) or an end curl drawn
     as one curve, without a word; and many loose lines from one point (a starburst) took
     seconds to minutes to import.

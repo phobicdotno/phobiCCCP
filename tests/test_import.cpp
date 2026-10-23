@@ -206,6 +206,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                 break;
             }
     QVector<QSet<int>> pathsOf(subs.size());
+    QVector<QSet<int>> selfIn(subs.size());
     int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
@@ -226,7 +227,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             QSet<int> common;
             bool first = true;
             for (int o : own) {
-                const QSet<int> &w = pathsOf[rootOf[o]];
+                const QSet<int> w = pathsOf[rootOf[o]] - selfIn[o];
                 if (first)
                     common = w;
                 else
@@ -238,7 +239,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             if (!common.isEmpty())
                 return;
             for (int o : own)
-                pathsOf[rootOf[o]].insert(written);
+                { pathsOf[rootOf[o]].insert(written); selfIn[o].insert(written); }
             ++written;
             write(segs, closed);
         };
@@ -1082,6 +1083,22 @@ int main(int argc, char **argv)
                 }
                 check(bad2 == 0, qPrintable(QStringLiteral("joinSubpaths: two squares sharing an edge, in either order (%1 of 200 wrong)").arg(bad2)));
                 check(badGrid == 0, qPrintable(QStringLiteral("joinSubpaths: a 3x3 grid, cells in any order (%1 of 200 wrong)").arg(badGrid)));
+            }
+            // A polyline that closes a loop partway keeps the rest: a lead-in
+            // line into a square, or a single-stroke "e" through its start.
+            {
+                QPainterPath a;
+                a.moveTo(-10, 0); a.lineTo(0, 0); a.lineTo(10, 0); a.lineTo(10, 10); a.lineTo(0, 10); a.lineTo(0, 0);
+                check(std::abs(c2d::joinSubpaths(a, 0.01).length() - 50) < 1e-6,
+                      "joinSubpaths: a lead-in line into a square keeps the line");
+                QPainterPath e;
+                const double pts[][2] = {{3, 8}, {15, 8}, {15, 10}, {14, 12}, {13, 13}, {11, 14}, {8, 14}, {6, 13}, {4, 11},
+                                         {3, 8}, {3, 6}, {4, 3}, {6, 1}, {8, 0}, {11, 0}, {13, 1}, {15, 3}};
+                e.moveTo(pts[0][0], pts[0][1]);
+                for (int k = 1; k < 17; ++k)
+                    e.lineTo(pts[k][0], pts[k][1]);
+                check(std::abs(c2d::joinSubpaths(e, 0.01).length() - e.length()) < 1e-6,
+                      "joinSubpaths: a single-stroke e keeps its tail");
             }
             // An outline or a line drawn twice is cut once.
             {

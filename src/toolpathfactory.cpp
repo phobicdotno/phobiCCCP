@@ -1,3 +1,4 @@
+#include <cmath>
 #include "toolpathfactory.h"
 #include "toollibrary.h"
 
@@ -93,7 +94,11 @@ ToolPick pickTool(const Document &doc, CutterKind kind)
                 continue;
             // Nor a corner rounding (or other shaped) bit, written as CC type
             // 0 like an end mill: a pocket with it gouged by its head.
+            // Only the library bit itself: a user's own end mill that took a
+            // library number (another size) is theirs.
             const LibraryTool *known = haveLib ? lib.byNumber(int(tool.value("number").toDouble())) : nullptr;
+            if (known && std::abs(known->diameter - tool.value("diameter").toDouble(-1)) > 0.01)
+                known = nullptr;
             if (kind == Flat && known && known->kind != QLatin1String("endmill"))
                 continue;
             const bool pocketTool = QLatin1String(key) == QLatin1String("tool_pocket");

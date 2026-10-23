@@ -1161,6 +1161,18 @@ int main(int argc, char *argv[])
             check(p.json.value("tool").toObject().value("number").toInt() != 1040,
                   "a new pocket does not take a corner rounding bit as its end mill");
         }
+        // A user's own end mill that happens to carry a library number (6 mm,
+        // numbered 1040) is still theirs: it was skipped and given the
+        // rounding bit's feeds.
+        {
+            c2d::Document d4 = doc;
+            c2d::Toolpath r = c2d::makeToolpath(d4, QStringLiteral("contour"), {sq.id});
+            r.json.insert("tool", QJsonObject{{"number", 1040}, {"diameter", 6.0}, {"type", 0}});
+            d4.addToolpath(r);
+            const c2d::Toolpath p = c2d::makeToolpath(d4, QStringLiteral("pocket_toolpath"), {sq.id});
+            check(approx(p.json.value("tool").toObject().value("diameter").toDouble(), 6.0),
+                  "a user's own end mill numbered like a library bit is still picked");
+        }
         check(a.json.value("name").toString() == QLatin1String("Contour Toolpath 1")
               && b.json.value("name").toString() == QLatin1String("Pocket Toolpath 1")
               && e.json.value("name").toString() == QLatin1String("Engrave 1"),

@@ -188,6 +188,7 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
     };
     QVector<int> cand;
     QVector<QSet<int>> pathsOf(subs.size());   // written paths holding each piece or its copy
+    QVector<QSet<int>> selfIn(subs.size());    // written paths holding (part of) the piece itself
     int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
@@ -212,7 +213,7 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             QSet<int> common;
             bool first = true;
             for (int o : own) {
-                const QSet<int> &w = pathsOf[rootOf[o]];
+                const QSet<int> w = pathsOf[rootOf[o]] - selfIn[o];
                 if (first)
                     common = w;
                 else
@@ -223,8 +224,10 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             }
             if (!common.isEmpty())
                 return;
-            for (int o : own)
+            for (int o : own) {
                 pathsOf[rootOf[o]].insert(written);
+                selfIn[o].insert(written);
+            }
             ++written;
             write(segs, closed);
         };

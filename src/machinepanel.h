@@ -183,6 +183,12 @@ private:
     SurfaceMapProber *m_mapper = nullptr;
     SurfaceMap m_map;
     double mapZeroAt(double wx, double wy) const;
+    // The last Z zero this connection: with the map on or off, the offset it
+    // sent, and the machine XY it was touched at (Run refuses a map state
+    // that would put Z0 elsewhere).
+    void noteZZero(double mx, double my, double sent);
+    bool m_zZeroKnown = false, m_zZeroWithMap = false;
+    double m_zZeroSent = 0, m_zZeroMx = 0, m_zZeroMy = 0;
     QCheckBox *m_useMap = nullptr;
     QLabel *m_mapLabel = nullptr;
     void startSurfaceMap();
