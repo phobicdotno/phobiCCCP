@@ -481,8 +481,12 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         padIds[e.id].append(s.value(QStringLiteral("id")).toString());
         shapes.append(s);
     };
-    const QJsonValue firstLayer = doc.elements().isEmpty() ? QJsonValue()
-                                                           : doc.elements().first().raw.value(QStringLiteral("layer"));
+    // A rebuilt file has one layer, DEFAULT, and one toolpath group.
+    if (doc.toolpathGroups().size() > 1)
+        lose(QStringLiteral("toolpath groups"));
+    for (const Toolpath &t : doc.toolpaths())
+        if (t.json.value(QStringLiteral("toolpath_group")).toString() != doc.defaultToolpathGroup())
+            lose(QStringLiteral("toolpath groups"));
     for (const Element &e : doc.elements()) {
         if (Element::isConstruction(e)) {
             lose(QStringLiteral("construction lines"));
@@ -491,7 +495,8 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         // The pad puts every shape on one layer, in no group.
         const QJsonValue group = e.raw.value(QStringLiteral("group_id"));
         if ((group.isArray() ? !group.toArray().isEmpty() : !group.toString().isEmpty())
-            || e.raw.value(QStringLiteral("layer")) != firstLayer)
+            || e.raw.value(QStringLiteral("layer")).toObject().value(QStringLiteral("name")).toString()
+                   != QLatin1String("DEFAULT"))
             lose(QStringLiteral("layers and groups"));
         if (!e.raw.value(QStringLiteral("tabs")).toArray().isEmpty())
             lose(QStringLiteral("tabs"));
@@ -612,6 +617,15 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         if (!tool || !feeds || !feeds->valid()) {
             lose(QStringLiteral("toolpaths with a bit the pad does not know"));
             continue;
+        }
+        {
+            // The bit in the file is its own copy: one edited after the
+            // toolpath was made would turn into the library's here.
+            const QJsonObject have = t.json.value(QStringLiteral("tool")).toObject();
+            if (have.contains(QStringLiteral("diameter"))
+                && (std::abs(have.value(QStringLiteral("diameter")).toDouble() - tool->diameter) > 1e-6
+                    || have.value(QStringLiteral("type")).toInt(tool->ccType()) != tool->ccType()))
+                lose(QStringLiteral("toolpath settings made here (feeds, passes, ramps, ...)"));
         }
         QJsonArray refs;
         QStringList elementIds;

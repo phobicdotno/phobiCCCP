@@ -1233,6 +1233,33 @@ int main(int argc, char **argv)
         check(!(sent175 && started), "maptlo: a tool length offset does not hide a zero taken with the map on");
         if (started) { s->stopStream(); wait(500); }
     }
+    if (mode == "tlo2") {
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80; grbl.my = grbl.wcoY + 80;
+        wait(800);
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        s->applyToolLengthOffset(0.4);
+        wait(800);
+        grbl.wcoZ = grbl.mz - 1.75 + 0.4;
+        wait(800);
+        s->applyToolLengthOffset(0.7);   // second measure; report still shows +0.4
+        panel.m_useMap->setChecked(false);
+        wait(10);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("tlo2: started %d (%s)\n", started, qPrintable(why));
+        check(!started, "tlo2: a second tool length offset before the next WCO report does not hide the zero record");
+        if (started) { s->stopStream(); wait(500); }
+    }
     if (mode == "mapzero") {
         // Surface map on, Z zeroed at work X80 Y80 (a re-zero after a tool
         // change): Z0 must stay the surface at X0 Y0 the offsets are from,

@@ -4,7 +4,13 @@
 
 > Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
 
+- **Machine:**
+  - Run missed the Z-zero refusal when two different tool length offsets were measured within one
+    WCO report; a new machine profile no longer copies the other machine's Z-zero record.
+- **Pad:** a pad edit now says it loses toolpath groups, a named layer, or a bit edited in the file
+  (the rebuild dropped them silently).
 - **Toolpaths:**
+  - The V-bit waterline chord retry probes fewer reaches (export was up to 4x slower on domes).
   - 3D waterline finish with a V-bit could cut through a ridge narrower than the grid between two
     contour crossings (up to 0.3 mm into the model); the chord is refined from further probes.
   - A Thread whose depth leaves a sliver of a turn: the fold now works on the chord (inch pitches

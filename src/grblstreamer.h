@@ -94,6 +94,7 @@ public:
     double toolLengthOffset() const { return m_tlo; }
     // The work offset's Z (G54, mm) as last reported on this connection.
     bool hasWorkOffset() const { return m_haveWco; }
+    double toolLengthOffsetAtWco() const { return m_tloAtWco; }
     double workOffsetZ() const { return m_wcoZ * reportScale(); }
     // A setting from the controller's `$$` listing ($130 = X max travel…),
     // or `fallback` when it has not been seen on this connection (the list
@@ -186,6 +187,7 @@ private:
     QHash<int, double> m_settings;   // $n=value lines seen
     double m_wcoX = 0, m_wcoY = 0, m_wcoZ = 0;
     bool m_haveWco = false;
+    double m_tloAtWco = 0.0;
     double reportScale() const;   // 25.4 when $13=1 (reports in inches)
 
     QStringList m_queue;

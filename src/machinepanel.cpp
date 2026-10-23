@@ -3612,7 +3612,8 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     // on its way.
     const double wcoNow = m_grbl->hasWorkOffset() ? m_grbl->workOffsetZ() : qQNaN();
     if (m_zZeroKnown && (std::abs(wcoNow - m_zZeroWco) < 0.005
-                         || std::abs(wcoNow - m_grbl->toolLengthOffset() - m_zZeroWco) < 0.005)) {
+                         || std::abs(wcoNow - m_grbl->toolLengthOffset() - m_zZeroWco) < 0.005
+                         || std::abs(wcoNow - m_grbl->toolLengthOffsetAtWco() - m_zZeroWco) < 0.005)) {
         const MachineStatus st = m_grbl->status();
         const bool mapNow = m_useMap->isChecked() && m_map.isValid();
         const double want = mapNow ? m_map.offsetAt(m_zZeroMx - (st.mx - st.wx), m_zZeroMy - (st.my - st.wy)) : 0.0;

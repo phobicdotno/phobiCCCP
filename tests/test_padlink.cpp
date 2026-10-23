@@ -219,6 +219,39 @@ static void testLayersAndGroupsLost(const QString &dir)
     lost.clear();
     padlink::designFromDocument(path, d, &lost, &err);
     check(lost.contains(QStringLiteral("layers and groups")), "a group is reported as lost to the pad");
+    // r49: a named layer, a toolpath group row and an edited embedded bit
+    // are lost on a rebuild too, and used to go unreported.
+    {
+        const QString p2 = QDir(dir).filePath("layers2.c2d");
+        check(padlink::buildDocument(d, p2, nullptr, &err), "layers2 fixture builds");
+        Document d2;
+        d2.load(p2, &err);
+        for (const Element &e : d2.elements()) {
+            QJsonObject r = e.raw;
+            QJsonObject l = r.value("layer").toObject();
+            l.insert("name", "Cut");
+            r.insert("layer", l);
+            d2.replaceElement(Element::fromJson(r));
+        }
+        d2.save(p2, &err);
+        lost.clear();
+        padlink::designFromDocument(p2, d, &lost, &err);
+        check(lost.contains(QStringLiteral("layers and groups")), "a layer named Cut on every shape is reported as lost");
+        Document d3;
+        d3.load(path, &err);
+        if (!d3.toolpaths().isEmpty()) {
+            Toolpath t = d3.toolpaths().first();
+            QJsonObject tool = t.json.value("tool").toObject();
+            tool.insert("diameter", tool.value("diameter").toDouble() + 1.0);
+            t.json.insert("tool", tool);
+            d3.replaceToolpath(t);
+            const QString p3 = QDir(dir).filePath("layers3.c2d");
+            d3.save(p3, &err);
+            lost.clear();
+            padlink::designFromDocument(p3, d, &lost, &err);
+            check(!lost.isEmpty(), "an embedded bit edited after the toolpath was made is reported as lost");
+        }
+    }
 }
 
 // A design from a pad, saved here, goes back to the pads unchanged; once

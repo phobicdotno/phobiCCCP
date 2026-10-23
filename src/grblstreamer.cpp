@@ -648,6 +648,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     m_wcoX = c.at(0).toDouble();   // raw: scaled on use
                     m_wcoY = c.at(1).toDouble();   // raw: scaled on use
                     m_wcoZ = c.at(2).toDouble();   // raw: scaled on use
+                    m_tloAtWco = m_tlo;            // what this WCO Z carries, if G43.1 was sent
                     m_haveWco = true;
                 }
             } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
