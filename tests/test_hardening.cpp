@@ -26,6 +26,7 @@
 #include <QDateTime>
 #include <QLockFile>
 #include <QLineF>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -1800,6 +1801,59 @@ int main(int argc, char *argv[])
         const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("nt")), 25.0);
         check(te.error.isEmpty() && te.notes.join(" ").contains("without tabs"),
               "tabs: the tiled export keeps the export's notes");
+    }
+
+    // A Thread whose depth leaves a sliver of a turn: the last arc ended on
+    // its own start once rounded to 3 decimals, which GRBL cuts as a whole
+    // extra circle (#10-32: R 2.413, pitch 0.7938, end depth 6.763).
+    {
+        c2d::Document doc;
+        const QJsonObject layer;
+        const c2d::Element e = c2d::Element::makeCircle({30, 30}, 2.413, layer);
+        doc.addElement(e);
+        QJsonObject j{{"type", "thread_toolpath"}, {"name", "t"}, {"enabled", true}, {"uuid", "{tp-1}"},
+                      {"start_depth", "2.000"}, {"end_depth", "6.763"}, {"pitch", 0.7938}, {"thread_depth", 0},
+                      {"side", "internal"}, {"left_hand", false}, {"passes", 4}, {"climb", true},
+                      {"speeds", QJsonObject{{"feedrate", 500}, {"plungerate", 200}, {"rpm", 12000}}},
+                      {"tool", QJsonObject{{"diameter", 3.556}, {"number", 301}, {"type", 0}}},
+                      {"elements", QJsonArray{QJsonObject{{"uuid", e.id}}}}};
+        c2d::Toolpath tp;
+        tp.uuid = "{tp-1}";
+        tp.type = "thread_toolpath";
+        tp.json = j;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        check(g.done.size() == 1, "sliver thread exports");
+        double x = 0, y = 0, worst = 0;
+        int modal = 0;
+        auto word = [](const QString &l, QChar c, double *v) {
+            const int i = l.indexOf(c);
+            if (i < 0)
+                return false;
+            *v = l.mid(i + 1).split(QRegularExpression("[^0-9.-]")).first().toDouble();
+            return true;
+        };
+        for (const QString &l : g.gcode.split('\n')) {
+            double v, nx = x, ny = y;
+            if (word(l, 'X', &v)) nx = v;
+            if (word(l, 'Y', &v)) ny = v;
+            if (l.startsWith("G0")) modal = 0;
+            else if (l.startsWith("G1")) modal = 1;
+            else if (l.startsWith("G2")) modal = 2;
+            else if (l.startsWith("G3")) modal = 3;
+            if ((modal == 2 || modal == 3) && l.contains('I')) {
+                double I = 0, J = 0;
+                word(l, 'I', &I);
+                word(l, 'J', &J);
+                const double t0 = nx - (x + I), t1 = ny - (y + J);
+                double a = std::atan2(-I * t1 - -J * t0, -I * t0 + -J * t1);
+                if (modal == 2) { if (a >= -5e-7) a -= 2 * M_PI; } else { if (a <= 5e-7) a += 2 * M_PI; }
+                worst = std::max(worst, std::fabs(a));
+            }
+            x = nx;
+            y = ny;
+        }
+        check(worst <= M_PI + 0.01, "a thread's sliver of a turn is not cut as a full circle by GRBL");
     }
 
     std::printf("test_hardening: %d checks OK\n", g_checks);

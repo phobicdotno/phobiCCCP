@@ -5,6 +5,10 @@
 > Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
 
 - **Toolpaths:**
+  - 3D waterline finish with a V-bit could cut through a ridge narrower than the grid between two
+    contour crossings (up to 0.3 mm into the model); the chord is refined from further probes.
+  - A Thread whose depth leaves a sliver of a turn: the fold now works on the chord (inch pitches
+    like #10-32 at some depths still ended an arc on its own start after rounding).
   - A Thread whose depth left a sliver of a turn could end its last arc on its own start once
     rounded, which GRBL cuts as a whole extra circle; the sliver joins the half turn before it.
   - Picking a library bit for an Adaptive gave it the chart's pocket stepover and depth (half the

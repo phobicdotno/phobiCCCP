@@ -982,6 +982,47 @@ int main()
               "3D boundary: an open vector is not taken as an area");
     }
 
+    // A V-bit waterline over a dome: a contour chord crossing a ridge
+    // narrower than the grid had both probes above the level, and was cut
+    // straight through the wall (0.3 mm below the bit's own surface).
+    {
+        c2d::HeightModel m;
+        m.cell = 0.5;
+        m.baseZ = -10;
+        m.resize(80, 80, -10.0f);
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c) {
+                const double x = (c + 0.5) * m.cell - 20, y = (r + 0.5) * m.cell - 20, d = std::hypot(x, y);
+                m.ref(c, r) = float(d < 12 ? -10 + 8 * std::sqrt(1 - d * d / 144) : -10);
+            }
+        c2d::Document doc;
+        QJsonObject j{{"type", "3d_finish_toolpath"}, {"name", "wl"}, {"enabled", true}, {"uuid", "{t}"},
+                      {"elements", QJsonArray()},
+                      {"tool", QJsonObject{{"number", 301}, {"diameter", 6.35}, {"type", 2}, {"angle", 30}}},
+                      {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+                      {"strategy", "waterline"}, {"stepdown", 1.0}, {"stepover", 0.5},
+                      {"stock_to_leave", 0.0}, {"direction", "climb"}};
+        addToolpath(doc, j);
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
+        const c2d::ToolGeom tg = c2d::toolGeometry(doc).value(301);
+        double px = 0, py = 0, pz = 50, worst = 0;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Feed)
+                for (int k = 0; k <= 40; ++k) {
+                    const double t = k / 40.0, x = px + (o.x - px) * t, y = py + (o.y - py) * t,
+                                 z = pz + (o.z - pz) * t;
+                    worst = std::max(worst, c2d::compensatedZ(m, tg, x, y) - z);
+                }
+            if (o.kind == Op::Feed || o.kind == Op::Rapid) {
+                px = o.x;
+                py = o.y;
+                pz = o.z;
+            }
+        }
+        std::fprintf(stderr, "V-bit waterline over a dome: at most %.4f mm below the bit's surface\n", worst);
+        check(g.done.size() == 1 && worst < 0.05, "V-bit waterline stays out of the model between contour crossings");
+    }
+
     std::printf("test_cam3d: %d checks OK\n", g_checks);
     return 0;
 }
