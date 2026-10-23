@@ -207,6 +207,7 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             }
     QVector<QSet<int>> pathsOf(subs.size());
     QVector<QSet<int>> selfIn(subs.size());
+    QVector<QVector<Seg>> closedSeen;
     int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
@@ -216,12 +217,37 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             QVector<Seg> segs = subs[i].segs;
             if (segs.size() > 1)
                 segs.last().b = segs.first().a;
+            // The same outline twice (any start, either way) is kept once.
+            bool copy = false;
+            const QVector<Seg> &fwd = subs[i].segs, back = reversed(fwd);
+            for (const QVector<Seg> &o : closedSeen)
+                for (const QVector<Seg> *x : {&fwd, &back})
+                    for (int k = 0; k < x->size() && !copy && x->size() == o.size(); ++k)
+                        copy = samePt(x->at(k).a, o.at(0).a, tol) && sameSegs(x->mid(k) + x->mid(0, k), o);
+            if (copy)
+                continue;
+            closedSeen.append(subs[i].segs);
             write(segs, segs.size() > 1);
             continue;
         }
         QVector<Seg> chain = subs[i].segs;
         QVector<int> owner(chain.size(), i);
-        auto emitPath = [&](const QVector<Seg> &segs, const QVector<int> &own, bool closed) {
+        auto emitPath = [&](QVector<Seg> segs, QVector<int> own, bool closed) {
+            // An open path's ends that repeat pieces already written (a copy
+            // rejoined to a tail after its loop was split off) are cut once.
+            if (!closed) {
+                auto done = [&](int o) { return !(pathsOf[rootOf[o]] - selfIn[o]).isEmpty(); };
+                while (!own.empty() && done(own.first())) {
+                    const int o = own.first();
+                    while (!own.empty() && own.first() == o) { own.removeFirst(); segs.removeFirst(); }
+                }
+                while (!own.empty() && done(own.last())) {
+                    const int o = own.last();
+                    while (!own.empty() && own.last() == o) { own.removeLast(); segs.removeLast(); }
+                }
+                if (own.empty())
+                    return;
+            }
             // Dropped when one written path already holds every piece (or
             // the piece it repeats): an outline or line drawn twice.
             QSet<int> common;
@@ -1099,6 +1125,33 @@ int main(int argc, char **argv)
                     e.lineTo(pts[k][0], pts[k][1]);
                 check(std::abs(c2d::joinSubpaths(e, 0.01).length() - e.length()) < 1e-6,
                       "joinSubpaths: a single-stroke e keeps its tail");
+            }
+            // A closed outline written twice (any start, either direction)
+            // imports once: two coincident outlines made a pocket cut nothing.
+            {
+                auto box = [](QPainterPath &p, double w, double h) {
+                    p.moveTo(0, 0); p.lineTo(w, 0); p.lineTo(w, h); p.lineTo(0, h); p.closeSubpath();
+                };
+                QPainterPath dbl;
+                box(dbl, 40, 20);
+                dbl.moveTo(40, 20); dbl.lineTo(40, 0); dbl.lineTo(0, 0); dbl.lineTo(0, 20); dbl.closeSubpath();
+                const QPainterPath o = c2d::joinSubpaths(dbl, 0.01);
+                check(std::abs(o.length() - 120) < 1e-6, "joinSubpaths: a closed outline written twice imports once");
+                QPainterPath two;
+                box(two, 40, 20);
+                box(two, 40, 21);
+                check(std::abs(c2d::joinSubpaths(two, 0.01).length() - 242) < 1e-6,
+                      "joinSubpaths: two different outlines are both kept");
+            }
+            // A copy of a piece in a loop split off a chain does not rejoin
+            // the open tail: two sides of the square were cut twice.
+            {
+                QPainterPath q;
+                q.moveTo(0, 0); q.lineTo(0, 10); q.lineTo(10, 10);
+                q.moveTo(10, 10); q.lineTo(10, 0); q.lineTo(0, 0); q.lineTo(-10, 0);
+                q.moveTo(10, 10); q.lineTo(0, 10); q.lineTo(0, 0);
+                check(std::abs(c2d::joinSubpaths(q, 0.01).length() - 50) < 1e-6,
+                      "joinSubpaths: a copied piece inside a split loop is not cut again with the tail");
             }
             // An outline or a line drawn twice is cut once.
             {

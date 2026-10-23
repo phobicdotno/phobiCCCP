@@ -1127,6 +1127,77 @@ int main(int argc, char **argv)
         check(!started, "mapzeropad: a start with the map on after a zero with it off is refused");
         if (started) { s->stopStream(); wait(500); }
     }
+    if (mode == "mapremeasure") {
+        // r46: yesterday's map still on, a new board: Zero Z at work X80 Y80
+        // takes the old map's offset there (1.75), then the new board is
+        // mapped (flat) and the job run with it.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        std::printf("mapremeasure: zero sent Z1.750: %d\n", sent175);
+        grbl.wcoZ = grbl.mz - 1.75;
+        c2d::SurfaceMap flat = m;
+        flat.z = {-40.0, -40.0, -40.0, -40.0};
+        panel.setSurfaceMap(flat);           // as SurfaceMapProber::finished does
+        panel.m_useMap->setChecked(true);
+        wait(300);
+        answer = [&](const Seen &v) {
+            std::printf("prompt: %s | %s\n", qPrintable(v.headline), qPrintable(v.body));
+            return v.headline.startsWith(QStringLiteral("Stream")) ? QStringLiteral("\u25b6 Start") : QStringLiteral("OK");
+        };
+        const bool started = panel.runProgram();
+        std::printf("mapremeasure: run with the new map: %d, work Z of the touched surface %.3f\n",
+                    started, s->status().wz);
+        check(!started, "mapremeasure: a zero taken from the old map is not run with the new one");
+        if (started) { s->stopStream(); wait(500); }
+    }
+    if (mode == "mapzeroreconn") {
+        // r46: Zero Z with the map on at work X80 Y80 (sent Z1.750), then the
+        // USB link drops / the app restarts; reconnect (homed resumes), map
+        // switched off as the pad's refusal asks, pad start.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        s->disconnectPort();
+        wait(500);
+        QSettings().setValue(QStringLiteral("machine/homedAt"), QVariantList{grbl.mx, grbl.my, grbl.mz});
+        check(s->connectPort(QString::fromLatin1(name)), "reconnects");
+        spin(1500, [&] { return panel.statusJson().value("homed").toBool(); });
+        wait(1000);
+        std::printf("mapzeroreconn: homed after reconnect: %d, map still on: %d\n",
+                    panel.statusJson().value("homed").toBool(), panel.m_useMap->isChecked());
+        panel.m_useMap->setChecked(false);
+        wait(300);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("mapzeroreconn: sent175 %d, pad start with map off after reconnect: %d (%s), work Z at touched surface %.3f\n",
+                    sent175, started, qPrintable(why), s->status().wz);
+        check(!(sent175 && started), "mapzeroreconn: pad start after a reconnect does not run 1.75 mm deep");
+        if (started) { s->stopStream(); wait(500); }
+    }
     if (mode == "mapzero") {
         // Surface map on, Z zeroed at work X80 Y80 (a re-zero after a tool
         // change): Z0 must stay the surface at X0 Y0 the offsets are from,

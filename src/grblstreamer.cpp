@@ -108,6 +108,7 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     // whose settings changed. Until the new $$ arrives the fallbacks apply.
     m_settings.clear();
     m_wcoX = m_wcoY = m_wcoZ = 0;
+    m_haveWco = false;
     m_statusTimer->start();
     emit connected(portName);
     return true;
@@ -647,6 +648,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     m_wcoX = c.at(0).toDouble();   // raw: scaled on use
                     m_wcoY = c.at(1).toDouble();   // raw: scaled on use
                     m_wcoZ = c.at(2).toDouble();   // raw: scaled on use
+                    m_haveWco = true;
                 }
             } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
                 const QList<QByteArray> c = p.mid(5).split(',');

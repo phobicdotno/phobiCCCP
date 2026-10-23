@@ -341,29 +341,25 @@ static QJsonArray contoursOf(const QPainterPath &mm)
 // (flattened finer later); simplified() flattens, so it runs 16x up.
 static QPainterPath solidGlyphOf(const QPainterPath &g);
 
-// Merged once per outline: the same accented letter repeated through a long
-// text was merged again at every occurrence. Keyed on the outline itself, as
-// a slanted or stretched face Qt makes up keeps the font's family and style.
+// Merged once per font, size and glyph: the same accented letter repeated
+// through a long text was merged again at every occurrence. A slant or
+// stretch Qt makes up keeps the font's family and style name, so its style,
+// weight and the glyph's advance are in the key too.
 static QPainterPath solidGlyph(const QRawFont &rf, quint32 index)
 {
     static QMutex lock;
-    static QHash<QByteArray, QPainterPath> cache;
-    const QPainterPath g = rf.pathForGlyph(index);
-    QByteArray key;
-    key.reserve(g.elementCount() * int(2 * sizeof(double) + 1));
-    for (int i = 0; i < g.elementCount(); ++i) {
-        const QPainterPath::Element e = g.elementAt(i);
-        const double xy[2] = {e.x, e.y};
-        key.append(char(e.type));
-        key.append(reinterpret_cast<const char *>(xy), sizeof xy);
-    }
+    static QHash<QString, QPainterPath> cache;
+    const QVector<QPointF> adv = rf.advancesForGlyphIndexes(QVector<quint32>{index});
+    const QString key = QStringLiteral("%1/%2/%3/%4/%5/%6/%7").arg(rf.familyName(), rf.styleName())
+                            .arg(rf.pixelSize()).arg(index).arg(int(rf.style())).arg(rf.weight())
+                            .arg(adv.isEmpty() ? 0.0 : adv.first().x(), 0, 'g', 10);
     {
         QMutexLocker l(&lock);
         auto it = cache.constFind(key);
         if (it != cache.constEnd())
             return it.value();
     }
-    const QPainterPath out = solidGlyphOf(g);
+    const QPainterPath out = solidGlyphOf(rf.pathForGlyph(index));
     QMutexLocker l(&lock);
     if (cache.size() > 20000)
         cache.clear();
@@ -568,9 +564,11 @@ Element Element::regenText(const Element &src, const QJsonObject &changes)
     bool fontChanged = false;
     for (auto it = changes.begin(); it != changes.end(); ++it) {
         const QString k = it.key();
-        if (k == QLatin1String("family")) { f.setFamily(it.value().toString()); fontChanged = true; }
-        else if (k == QLatin1String("bold")) { f.setBold(it.value().toBool()); fontChanged = true; }
-        else if (k == QLatin1String("italic")) { f.setItalic(it.value().toBool()); fontChanged = true; }
+        // A style name stored with the font (",Bold") outranks the bold and
+        // italic flags: unticking Bold left the outline bold.
+        if (k == QLatin1String("family")) { f.setFamily(it.value().toString()); f.setStyleName(QString()); fontChanged = true; }
+        else if (k == QLatin1String("bold")) { f.setBold(it.value().toBool()); f.setStyleName(QString()); fontChanged = true; }
+        else if (k == QLatin1String("italic")) { f.setItalic(it.value().toBool()); f.setStyleName(QString()); fontChanged = true; }
         else o.insert(k, it.value());
     }
     if (fontChanged) {

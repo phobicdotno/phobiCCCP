@@ -1060,7 +1060,6 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_unhomedWhy = QStringLiteral("not homed since connecting");
         m_resumeCheck = true;             // ...or the controller is where we left it
         m_holdChecked = false;
-        m_zZeroKnown = false;             // a zero made before is not ours to judge
         m_homingStarted = false;
         m_lastLimitPins.clear();
         // Travel ($130-$132) for the jog limits, and $21 (hard limits).
@@ -2007,13 +2006,21 @@ double MachinePanel::mapZeroAt(double wx, double wy) const
     return m_useMap->isChecked() && m_map.isValid() ? m_map.offsetAt(wx, wy) : 0.0;
 }
 
-void MachinePanel::noteZZero(double mx, double my, double sent)
+void MachinePanel::noteZZero(double mx, double my, double sent, double wcoZ)
 {
     m_zZeroKnown = true;
     m_zZeroWithMap = m_useMap->isChecked() && m_map.isValid();
     m_zZeroSent = sent;
     m_zZeroMx = mx;
     m_zZeroMy = my;
+    m_zZeroWco = wcoZ;
+    QSettings s;
+    s.beginGroup(QStringLiteral("machine"));
+    s.setValue(QStringLiteral("zzero/withMap"), m_zZeroWithMap);
+    s.setValue(QStringLiteral("zzero/sent"), sent);
+    s.setValue(QStringLiteral("zzero/mx"), mx);
+    s.setValue(QStringLiteral("zzero/my"), my);
+    s.setValue(QStringLiteral("zzero/wco"), wcoZ);
 }
 
 // Set the work offset from where the machine now stands and the corner it
@@ -2038,7 +2045,7 @@ void MachinePanel::bitZeroApply()
             const double wy = m_bzWantY ? st.my - m_bzCy : st.wy;
             const double mz = mapZeroAt(wx, wy);
             g10 += QStringLiteral(" Z%1").arg(st.mz - m_bzStockZ + mz, 0, 'f', 3);
-            noteZZero(st.mx, st.my, mz);
+            noteZZero(st.mx, st.my, mz, m_bzStockZ - mz);
             if (mz != 0)
                 log(QStringLiteral("surface map: Z0 set to the surface at X0 Y0, %1 mm from the plate"
                                    " (keep the map on for this zero)").arg(-mz, 0, 'f', 3));
@@ -2529,6 +2536,12 @@ void MachinePanel::loadSettings()
     QSettings s;
     s.beginGroup(QStringLiteral("machine"));
     m_bsEnabled->setChecked(s.value(QStringLiteral("bitsetter/enabled"), false).toBool());
+    m_zZeroKnown = s.contains(QStringLiteral("zzero/wco"));
+    m_zZeroWithMap = s.value(QStringLiteral("zzero/withMap")).toBool();
+    m_zZeroSent = s.value(QStringLiteral("zzero/sent")).toDouble();
+    m_zZeroMx = s.value(QStringLiteral("zzero/mx")).toDouble();
+    m_zZeroMy = s.value(QStringLiteral("zzero/my")).toDouble();
+    m_zZeroWco = s.value(QStringLiteral("zzero/wco")).toDouble();
     m_bsX->setValue(s.value(QStringLiteral("bitsetter/x"), -20.0).toDouble());
     m_bsY->setValue(s.value(QStringLiteral("bitsetter/y"), -20.0).toDouble());
     m_bsSafeZ->setValue(s.value(QStringLiteral("bitsetter/safeZ"), -5.0).toDouble());
@@ -3119,7 +3132,7 @@ void MachinePanel::zero(const QString &axes)
         const double z = mapZeroAt(axes.contains(QChar('X')) ? 0.0 : st.wx,
                                    axes.contains(QChar('Y')) ? 0.0 : st.wy);
         g10 += z == 0 ? QStringLiteral(" Z0") : QStringLiteral(" Z%1").arg(z, 0, 'f', 3);
-        noteZZero(st.mx, st.my, z);
+        noteZZero(st.mx, st.my, z, st.mz - z);
         // The readout shows that height here, not 0: say why (and that it
         // holds only with the map on).
         if (z != 0)
@@ -3591,20 +3604,24 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("The surface map is switched on at the computer."),
                       QStringLiteral("Turn it off there, or start the job at the computer."));
     // Z zeroed with the map on puts Z0 at the surface under X0 Y0, with it
-    // off at the touched spot: run the other way, every depth was off by the
-    // map's height there (a pad start, which wants the map off, cut 1.75 mm
-    // too deep).
-    if (m_zZeroKnown && m_zZeroWithMap != (m_useMap->isChecked() && m_map.isValid())) {
+    // off at the touched spot: run the other way, or with a map measured
+    // again since, every depth was off by the map's height there (a pad
+    // start, which wants the map off, cut 1.75 mm too deep).
+    if (m_zZeroKnown && m_grbl->hasWorkOffset() && std::abs(m_grbl->workOffsetZ() - m_zZeroWco) < 0.005) {
         const MachineStatus st = m_grbl->status();
-        const double off = m_zZeroWithMap ? m_zZeroSent
-                         : m_map.isValid() ? m_map.offsetAt(m_zZeroMx - (st.mx - st.wx), m_zZeroMy - (st.my - st.wy))
-                                           : 0.0;
-        if (std::abs(off) > 0.05)
-            return refuse(QStringLiteral("Z was zeroed with the surface map %1, and it is %2 now: every depth would be %3 mm off.")
-                              .arg(m_zZeroWithMap ? QStringLiteral("on") : QStringLiteral("off"),
-                                   m_zZeroWithMap ? QStringLiteral("off") : QStringLiteral("on"))
-                              .arg(std::abs(off), 0, 'f', 2),
-                          QStringLiteral("Zero Z again, or switch the map back."));
+        const bool mapNow = m_useMap->isChecked() && m_map.isValid();
+        const double want = mapNow ? m_map.offsetAt(m_zZeroMx - (st.mx - st.wx), m_zZeroMy - (st.my - st.wy)) : 0.0;
+        const double off = want - m_zZeroSent;
+        if (std::abs(off) > 0.05) {
+            const bool same = m_zZeroWithMap == mapNow;
+            const QString why = same
+                ? QStringLiteral("Z was zeroed with another surface map than the one measured since")
+                : QStringLiteral("Z was zeroed with the surface map %1, and it is %2 now")
+                      .arg(m_zZeroWithMap ? QStringLiteral("on") : QStringLiteral("off"),
+                           mapNow ? QStringLiteral("on") : QStringLiteral("off"));
+            return refuse(QStringLiteral("%1: every depth would be %2 mm off.").arg(why).arg(std::abs(off), 0, 'f', 2),
+                          same ? QStringLiteral("Zero Z again.") : QStringLiteral("Zero Z again, or switch the map back."));
+        }
     }
     if (remote && m_airCut->isChecked())
         return refuse(QStringLiteral("Air cut is switched on at the computer."),

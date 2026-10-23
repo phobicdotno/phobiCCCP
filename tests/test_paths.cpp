@@ -17,6 +17,8 @@
 #include "../src/vectorops.h"
 
 #include <QGuiApplication>
+#include <QFont>
+#include <QRawFont>
 #include <QFontDatabase>
 #include <tuple>
 #include <QJsonArray>
@@ -338,13 +340,46 @@ int main(int argc, char *argv[])
         QJsonObject it{{"text", "Hello"}, {"font", "DejaVu Sans-Italic"}, {"font_height", 10.0}};
         c2d::Element::renderText(up);
         c2d::Element::renderText(it);
-        check(QJsonDocument(up.value("rendered").toArray()) != QJsonDocument(it.value("rendered").toArray())
-                  && maxX(it) > maxX(up) + 0.3,
-              "made-up italic is slanted after the upright text");
+        // Only where the platform slants it at all (a CI runner's fontconfig
+        // may not): asked of Qt directly, past the cache.
+        QFont uf(QStringLiteral("DejaVu Sans")), itf(QStringLiteral("DejaVu Sans"));
+        uf.setPixelSize(100);
+        itf.setPixelSize(100);
+        itf.setItalic(true);
+        const QRawFont ru = QRawFont::fromFont(uf), ri = QRawFont::fromFont(itf);
+        const QVector<quint32> gl = ru.glyphIndexesForString(QStringLiteral("l"));
+        const bool slants = !gl.isEmpty() && ru.pathForGlyph(gl.first()).boundingRect().width() + 1
+                                                 < ri.pathForGlyph(gl.first()).boundingRect().width();
+        if (slants)
+            check(QJsonDocument(up.value("rendered").toArray()) != QJsonDocument(it.value("rendered").toArray())
+                      && maxX(it) > maxX(up) + 0.3,
+                  "made-up italic is slanted after the upright text");
         QJsonObject up2 = up;
         c2d::Element::renderText(up2);
         check(QJsonDocument(up2.value("rendered").toArray()) == QJsonDocument(up.value("rendered").toArray()),
               "upright text stays upright after the italic");
+        // A stretch made up the same way: advances halved, glyphs full width.
+        QFont nf(QStringLiteral("DejaVu Sans"));
+        nf.setStretch(50);
+        QJsonObject st{{"text", "Hello"}, {"qtfont", nf.toString()}, {"font_height", 10.0}};
+        c2d::Element::renderText(st);
+        QFont sf = uf;
+        sf.setStretch(50);
+        const QRawFont rs = QRawFont::fromFont(sf);
+        if (!gl.isEmpty() && rs.pathForGlyph(gl.first()).boundingRect().width() + 1
+                                 < ru.pathForGlyph(gl.first()).boundingRect().width())
+            check(maxX(st) < maxX(up) * 0.75, "made-up stretch narrows the glyphs after the plain text");
+        // A style name stored with the font outranks Bold: unticking it did nothing.
+        QFont bf(QStringLiteral("DejaVu Sans"));
+        bf.setStyleName(QStringLiteral("Bold"));
+        c2d::Element bt = c2d::Element::makeText(QStringLiteral("Hello"), {0, 0}, 10, QStringLiteral("DejaVu Sans"), layer);
+        QJsonObject braw = bt.raw;
+        braw.insert("qtfont", bf.toString());
+        c2d::Element::renderText(braw);
+        bt.raw = braw;
+        const c2d::Element unb = c2d::Element::regenText(bt, QJsonObject{{"bold", false}});
+        check(QJsonDocument(unb.raw.value("rendered").toArray()) != QJsonDocument(braw.value("rendered").toArray()),
+              "unticking Bold on a font stored with its style name makes it regular");
     }
 
     // --- text: straight, arc top, arc bottom, offset -------------------------------

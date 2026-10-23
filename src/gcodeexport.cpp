@@ -3064,9 +3064,13 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     em.feedAt(s0, z, feed);
                     // Half turns, the last one cut short to `sweep`.
                     QPointF from = s0;
-                    for (int half = 0; half * M_PI < sweep - 1e-9; ++half) {
+                    // A last sliver of a turn (an unrounded depth) is folded
+                    // into the half before it: an arc ending on its own start
+                    // once rounded runs as a whole extra circle in GRBL.
+                    for (int half = 0; half * M_PI < sweep - 1e-3; ++half) {
                         const double step = qMin(M_PI, sweep - half * M_PI);
-                        z += (up ? pitch : -pitch) * step / (2 * M_PI);
+                        const double rest = sweep - half * M_PI - step;
+                        z += (up ? pitch : -pitch) * (rest < 1e-3 ? step + rest : step) / (2 * M_PI);
                         const double a = (ccw ? 1 : -1) * (half * M_PI + step);
                         const QPointF to = step > M_PI - 1e-9 ? (half % 2 ? s0 : s1)
                                                               : ctr + pr * QPointF(std::cos(a), std::sin(a));

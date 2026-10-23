@@ -186,6 +186,31 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 }
         }
     };
+    // Closed outlines written so far, by segment count and the cell of the
+    // mean of their starts (the same from any start, in either direction).
+    QHash<std::pair<int, std::pair<qint64, qint64>>, QVector<QVector<Seg>>> closedSeen;
+    auto closedCopy = [&](const QVector<Seg> &segs) {
+        QPointF m;
+        for (const Seg &g : segs)
+            m += g.a;
+        m /= segs.size();
+        const auto c = cellOf(m);
+        const int n = segs.size();
+        const QVector<Seg> back = reversed(segs);
+        for (qint64 dx = -1; dx <= 1; ++dx)
+            for (qint64 dy = -1; dy <= 1; ++dy)
+                for (const QVector<Seg> &o : closedSeen.value({n, {c.first + dx, c.second + dy}}))
+                    for (const QVector<Seg> *x : {&segs, &back})
+                        for (int k = 0; k < n; ++k) {
+                            if (!samePoint(x->at(k).a, o.at(0).a, tol))
+                                continue;
+                            QVector<Seg> rot = x->mid(k) + x->mid(0, k);
+                            if (sameSegs(rot, o))
+                                return true;
+                        }
+        closedSeen[{n, c}].append(segs);
+        return false;
+    };
     QVector<int> cand;
     QVector<QSet<int>> pathsOf(subs.size());   // written paths holding each piece or its copy
     QVector<QSet<int>> selfIn(subs.size());    // written paths holding (part of) the piece itself
@@ -200,6 +225,11 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             std::deque<Seg> segs(subs[i].segs.begin(), subs[i].segs.end());
             if (segs.size() > 1)
                 segs.back().b = segs.front().a;
+            // The same outline drawn twice (a DXF repeating a polyline, an
+            // SVG path filled and stroked) is kept once: two coincident
+            // outlines cancel as a pocket's region and cut nothing.
+            if (closedCopy(subs[i].segs))
+                continue;
             write(segs, segs.size() > 1);
             continue;
         }
@@ -207,7 +237,22 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         std::deque<int> owner(chain.size(), i);   // the piece each segment came from
         // A chain never takes a piece and its copy: they fold back on each other.
         QSet<int> roots;
-        auto emitPath = [&](const std::deque<Seg> &segs, const std::deque<int> &own, bool closed) {
+        auto emitPath = [&](std::deque<Seg> segs, std::deque<int> own, bool closed) {
+            // An open path's ends that repeat pieces already written (a copy
+            // rejoined to a tail after its loop was split off) are cut once.
+            if (!closed) {
+                auto done = [&](int o) { return !(pathsOf[rootOf[o]] - selfIn[o]).isEmpty(); };
+                while (!own.empty() && done(own.front())) {
+                    const int o = own.front();
+                    while (!own.empty() && own.front() == o) { own.pop_front(); segs.pop_front(); }
+                }
+                while (!own.empty() && done(own.back())) {
+                    const int o = own.back();
+                    while (!own.empty() && own.back() == o) { own.pop_back(); segs.pop_back(); }
+                }
+                if (own.empty())
+                    return;
+            }
             // Dropped when one written path already holds every piece (or
             // the piece it repeats): an outline or line drawn twice.
             QSet<int> common;

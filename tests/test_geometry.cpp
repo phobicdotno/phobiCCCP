@@ -908,6 +908,15 @@ int main(int argc, char *argv[])
         check(g.gcode.contains(QStringLiteral("M03S%1").arg(int(f.rpm)))
                   && g.gcode.contains(QStringLiteral("F%1").arg(f.feed, 0, 'f', 1)),
               "exporter picks up the new speeds");
+        // An Adaptive keeps its light bite with the new bit: the chart's
+        // pocket stepover made it a slotting cut.
+        {
+            QJsonObject ad{{"type", "adaptive_toolpath"}, {"stepdown", 6.35}, {"stepover", 0.635},
+                           {"tool", QJsonObject{{"diameter", 6.35}}}};
+            c2d::ToolLibrary::applyToToolpath(ad, *t102, *t102->feedsFor(QStringLiteral("softwood")));
+            check(approx(ad.value("stepdown").toDouble(), 3.175) && approx(ad.value("stepover").toDouble(), 0.3175),
+                  "a library bit on an Adaptive keeps a tenth of the bit as stepover");
+        }
     }
 
     // --- unsupported type is skipped ----------------------------------------
