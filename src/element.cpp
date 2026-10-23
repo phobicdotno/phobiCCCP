@@ -342,6 +342,31 @@ static QPainterPath solidGlyph(const QPainterPath &g)
 {
     if (g.isEmpty())
         return g;
+    // Cheap test first (text renders on every edit): only outlines whose
+    // boxes cross without one holding the other can overlap.
+    struct Box { double x0, y0, x1, y1; };
+    QVector<Box> boxes;
+    for (int i = 0; i < g.elementCount(); ++i) {
+        const QPainterPath::Element e = g.elementAt(i);
+        if (e.isMoveTo() || boxes.isEmpty()) {
+            boxes.append({e.x, e.y, e.x, e.y});
+        } else {
+            Box &b = boxes.last();
+            b = {qMin(b.x0, e.x), qMin(b.y0, e.y), qMax(b.x1, e.x), qMax(b.y1, e.y)};
+        }
+    }
+    auto holds = [](const Box &o, const Box &i) {
+        return o.x0 <= i.x0 && o.y0 <= i.y0 && o.x1 >= i.x1 && o.y1 >= i.y1;
+    };
+    bool crossing = false;
+    for (int a = 0; a < boxes.size() && !crossing; ++a)
+        for (int b = a + 1; b < boxes.size() && !crossing; ++b) {
+            const Box &x = boxes.at(a), &y = boxes.at(b);
+            const bool meet = x.x0 <= y.x1 && y.x0 <= x.x1 && x.y0 <= y.y1 && y.y0 <= x.y1;
+            crossing = meet && !holds(x, y) && !holds(y, x);
+        }
+    if (!crossing)
+        return g;
     QTransform up;
     up.scale(16, 16);
     QPainterPath w = up.map(g), e = w;

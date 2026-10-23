@@ -62,6 +62,9 @@
     always enter on their ramp, so their "Ramp in" switch (which read off) is gone.
   - Picking a smaller bit from the tool library for a rest pocket set its "Bigger tool" to the
     new bit, so rest machining went off and the whole pocket was cleared again with no note.
+  - After an Adaptive, a new Pocket, Contour or Cutout took its one-diameter depth per pass and
+    10% stepover (a cutout slotted 4x the library depth). New toolpaths take passes only from a
+    comparable cut, else from the bit.
   - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
     under the tip was never checked, only grid lines near it, where the cone stands higher.
 - **Machine:**
@@ -112,6 +115,10 @@
     piece; only one left on its own is dropped, and a chain never takes a piece and its copy.
   - Letters whose outlines overlap (Liberation Sans "Å", the default font on Linux) got a hole
     where they overlap; a pocket left a sliver of wall between the ring and the A.
+  - An outline written twice (doubled CAD entities) imported as two coincident outlines that
+    cancelled: a pocket on it cut nothing. Pieces that only repeat a path already imported are
+    dropped again. Two shapes sharing an edge also close when the first one's pieces led into
+    the second.
   - Trim and Break (and their hover preview) froze for seconds with many lines around a long
     curve; the closest-point search skips segments that cannot be closer.
   - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.

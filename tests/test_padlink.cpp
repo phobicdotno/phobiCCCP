@@ -412,34 +412,29 @@ static void testDesktopEditsPadHas(const QString &dir)
         check(std::abs(j.value("rest_diameter").toDouble() - 6.35) < 1e-9, "a bit change keeps a rest pass's bigger tool");
     }
 
-    // A file from before the pad_sizing mark: a later toolpath's lead sized
-    // from an earlier one's bit, which is then changed here.
+    // A file from before the pad_sizing mark: a lead typed here that happens
+    // to be half of some other bit (#201) is still an edit, not hidden.
     {
+        QJsonObject od = d;
         auto tp = [](const char *n, const char *sh, int tool) {
             return QJsonObject{{"name", n}, {"type", "profile"}, {"side", "outside"}, {"shapes", QJsonArray{sh}},
                                {"tool", tool}, {"depth", 3}};
         };
-        QJsonObject od = d;
-        od.insert("toolpaths", QJsonArray{tp("A", "r", 201), tp("B", "c", 102)});
-        const QString op = QDir(dir).filePath(QStringLiteral("old-sizing.c2d"));
+        od.insert("toolpaths", QJsonArray{tp("A", "r", 102), tp("B", "c", 102)});
+        const QString op = QDir(dir).filePath(QStringLiteral("old-lead.c2d"));
         padlink::buildDocument(od, op, nullptr, &err);
         Document o;
         o.load(op, &err);
         Toolpath b = o.toolpaths().at(1);
-        b.json.insert("lead_radius", 0.5 * lib.byNumber(201)->diameter);
+        b.json.insert("lead_radius", 3.175);
         o.replaceToolpath(b);
         o.save(op, &err);
         Document::writeParam(op, QStringLiteral("pad_sizing"), QStringLiteral("old"), &err);
-        Document o2;
-        o2.load(op, &err);
-        Toolpath a = o2.toolpaths().at(0);
-        ToolLibrary::applyToToolpath(a.json, *t102, *t102->feedsFor(QStringLiteral("softwood")));
-        o2.replaceToolpath(a);
-        o2.save(op, &err);
         QStringList ol;
         padlink::designFromDocument(op, od, &ol, &err);
-        check(ol.isEmpty(), qPrintable(QStringLiteral("an old file keeps the pad's after a bit change here (%1)").arg(ol.join(", "))));
+        check(!ol.isEmpty(), "an old file: a lead typed here is named, not taken for the pad's");
     }
+
 }
 
 static void testLinks(const QString &dir)

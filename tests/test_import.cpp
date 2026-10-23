@@ -205,6 +205,8 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                 rootOf[j] = i;
                 break;
             }
+    QVector<int> writtenIn(subs.size(), -1);
+    int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
             continue;
@@ -217,40 +219,59 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             continue;
         }
         QVector<Seg> chain = subs[i].segs;
-        QSet<int> roots{rootOf[i]};
-        for (bool grew = true; grew;) {
-            grew = false;
-            for (int j = 0; j < subs.size(); ++j) {
-                if (chain.size() > 1 && samePt(chain.first().a, chain.last().b, tol)) {
-                    grew = false;
-                    break;
-                }
-                if (used[j] || subs[j].closed || subs[j].segs.isEmpty() || roots.contains(rootOf[j]))
-                    continue;
-                const QVector<Seg> &o = subs[j].segs;
-                if (samePt(chain.last().b, o.first().a, tol)) {
-                    chain += o;
-                } else if (samePt(chain.last().b, o.last().b, tol)) {
-                    chain += reversed(o);
-                } else if (samePt(chain.first().a, o.last().b, tol)) {
-                    chain = o + chain;
-                } else if (samePt(chain.first().a, o.first().a, tol)) {
-                    chain = reversed(o) + chain;
-                } else {
-                    continue;
-                }
-                used[j] = true;
-                roots.insert(rootOf[j]);
-                grew = true;
+        QVector<int> owner(chain.size(), i);
+        auto emitPath = [&](const QVector<Seg> &segs, const QVector<int> &own, bool closed) {
+            int in = -2;
+            for (int o : own) {
+                const int w = isCopy[o] ? writtenIn[rootOf[o]] : -1;
+                in = (in == -2 || in == w) ? w : -1;
             }
-        }
-        if (isCopy[i] && chain.size() == subs[i].segs.size() && !samePt(chain.first().a, chain.last().b, tol))
-            continue;
+            if (in >= 0)
+                return;
+            for (int o : own)
+                writtenIn[o] = written;
+            ++written;
+            write(segs, closed);
+        };
         for (;;) {
+            QSet<int> roots;
+            for (int o : owner)
+                roots.insert(rootOf[o]);
+            for (bool grew = true; grew;) {
+                grew = false;
+                for (int j = 0; j < subs.size(); ++j) {
+                    if (chain.size() > 1 && samePt(chain.first().a, chain.last().b, tol)) {
+                        grew = false;
+                        break;
+                    }
+                    if (used[j] || subs[j].closed || subs[j].segs.isEmpty() || roots.contains(rootOf[j]))
+                        continue;
+                    const QVector<Seg> &o = subs[j].segs;
+                    const QVector<int> ow(o.size(), j);
+                    if (samePt(chain.last().b, o.first().a, tol)) {
+                        chain += o;
+                        owner += ow;
+                    } else if (samePt(chain.last().b, o.last().b, tol)) {
+                        chain += reversed(o);
+                        owner += ow;
+                    } else if (samePt(chain.first().a, o.last().b, tol)) {
+                        chain = o + chain;
+                        owner = ow + owner;
+                    } else if (samePt(chain.first().a, o.first().a, tol)) {
+                        chain = reversed(o) + chain;
+                        owner = ow + owner;
+                    } else {
+                        continue;
+                    }
+                    used[j] = true;
+                    roots.insert(rootOf[j]);
+                    grew = true;
+                }
+            }
             const int n = chain.size();
             if (n > 1 && samePt(chain.first().a, chain.last().b, tol)) {
                 chain.last().b = chain.first().a;
-                write(chain, true);
+                emitPath(chain, owner, true);
                 break;
             }
             auto realLoop = [&](int lo, int hi, const QPointF &at) {
@@ -267,9 +288,11 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                 ++k;
             if (k < n) {
                 QVector<Seg> loop = chain.mid(k);
+                const QVector<int> lo = owner.mid(k);
                 chain.resize(k);
+                owner.resize(k);
                 loop.last().b = loop.first().a;
-                write(loop, true);
+                emitPath(loop, lo, true);
                 continue;
             }
             k = n - 2;
@@ -277,12 +300,14 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
                 --k;
             if (k >= 0) {
                 QVector<Seg> loop = chain.mid(0, k + 1);
+                const QVector<int> lo = owner.mid(0, k + 1);
                 chain = chain.mid(k + 1);
+                owner = owner.mid(k + 1);
                 loop.last().b = loop.first().a;
-                write(loop, true);
+                emitPath(loop, lo, true);
                 continue;
             }
-            write(chain, false);
+            emitPath(chain, owner, false);
             break;
         }
     }
@@ -1004,6 +1029,77 @@ int main(int argc, char **argv)
             check(closedCount(c2d::joinSubpaths(grid, 0.01)) == 9, "joinSubpaths: a 3x3 grid of cells all close");
             check(samePath(c2d::joinSubpaths(grid, 0.01), joinSubpathsSlow(grid, 0.01)),
                   "joinSubpaths: grid same as the quadratic version");
+            // Each shape's edges in perimeter order from any corner, shapes in
+            // any order, lines in random directions. (Edges shuffled within a
+            // shape can still leave one open: the join takes the lowest index
+            // at a junction, not the turn that keeps to one shape.)
+            {
+                std::srand(11);
+                int bad2 = 0, badGrid = 0;
+                for (int trial = 0; trial < 200; ++trial) {
+                    QVector<QLineF> ls;
+                    auto sq = [&](double x, double y, bool shuffle) {
+                        QVector<QLineF> e = {{{x, y}, {x + 10, y}}, {{x + 10, y}, {x + 10, y + 10}},
+                                             {{x + 10, y + 10}, {x, y + 10}}, {{x, y + 10}, {x, y}}};
+                        for (QLineF &l : e)
+                            if (std::rand() % 2)
+                                l = QLineF(l.p2(), l.p1());
+                        std::rotate(e.begin(), e.begin() + std::rand() % 4, e.end());
+                        if (shuffle)
+                            std::reverse(e.begin(), e.end());
+                        ls += e;
+                    };
+                    auto run = [&](const QVector<QLineF> &v) {
+                        QPainterPath p;
+                        for (const QLineF &l : v) {
+                            p.moveTo(l.p1());
+                            p.lineTo(l.p2());
+                        }
+                        return c2d::joinSubpaths(p, 0.01);
+                    };
+                    ls.clear();
+                    const bool first = std::rand() % 2;
+                    sq(first ? 0 : 10, 0, std::rand() % 2);
+                    sq(first ? 10 : 0, 0, std::rand() % 2);
+                    const QPainterPath o = run(ls);
+                    bad2 += closedCount(o) != 2 || std::abs(o.length() - 80) > 1e-6;
+                    ls.clear();
+                    QVector<int> cells = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+                    for (int k = 8; k > 0; --k)
+                        std::swap(cells[k], cells[std::rand() % (k + 1)]);
+                    for (int c : cells)
+                        sq(c / 3 * 10, c % 3 * 10, std::rand() % 2);
+                    badGrid += closedCount(run(ls)) != 9;
+                }
+                check(bad2 == 0, qPrintable(QStringLiteral("joinSubpaths: two squares sharing an edge, in either order (%1 of 200 wrong)").arg(bad2)));
+                check(badGrid == 0, qPrintable(QStringLiteral("joinSubpaths: a 3x3 grid, cells in any order (%1 of 200 wrong)").arg(badGrid)));
+            }
+            // An outline or a line drawn twice is cut once.
+            {
+                QPainterPath dbl;
+                rect(dbl, 0, 0, 40, 20);
+                rect(dbl, 0, 0, 40, 20);
+                const QPainterPath o = c2d::joinSubpaths(dbl, 0.01);
+                check(c2d::elementsFromPath(o, QJsonObject()).size() == 1 && std::abs(o.length() - 120) < 1e-6,
+                      "joinSubpaths: a rectangle written twice imports once");
+                QPainterPath extra;
+                rect(extra, 0, 0, 40, 20);
+                extra.moveTo(0, 0);
+                extra.lineTo(40, 0);
+                extra.moveTo(40, 0);
+                extra.lineTo(40, 20);
+                check(c2d::elementsFromPath(c2d::joinSubpaths(extra, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: a rectangle and two of its edges again import as the rectangle");
+                QPainterPath poly;
+                for (int k = 0; k < 2; ++k) {
+                    poly.moveTo(0, 0);
+                    poly.lineTo(10, 0);
+                    poly.moveTo(10, 0);
+                    poly.lineTo(10, 10);
+                }
+                check(c2d::elementsFromPath(c2d::joinSubpaths(poly, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: an open path written twice imports once");
+            }
             QPainterPath twice;
             twice.moveTo(0, 0);
             twice.lineTo(20, 0);

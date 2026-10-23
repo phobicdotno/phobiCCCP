@@ -92,8 +92,17 @@ ToolPick pickTool(const Document &doc, CutterKind kind)
             const bool pocketTool = QLatin1String(key) == QLatin1String("tool_pocket");
             p.tool = tool;
             p.speeds = j.value(pocketTool ? "speeds_pocket" : "speeds").toObject();
-            const QJsonValue sd = j.value(pocketTool ? "stepdown_pocket" : "stepdown");
-            const QJsonValue so = j.value(pocketTool ? "stepover_pocket" : "stepover");
+            // Depth per pass and stepover only from a comparable cut: an
+            // Adaptive's one-diameter passes (its light sideways bite), or a
+            // drill's or thread's, slotted a new cutout 4x too deep.
+            const QString type = j.value("type").toString();
+            const bool cutoutTp = type == QLatin1String("cutout");
+            const bool comparable = pocketTool || cutoutTp || type == QLatin1String("contour")
+                                 || type == QLatin1String("pocket_toolpath");
+            const QJsonValue sd = !comparable ? QJsonValue()
+                                : j.value(pocketTool ? "stepdown_pocket" : cutoutTp ? "depth_per_pass" : "stepdown");
+            const QJsonValue so = !comparable || cutoutTp ? QJsonValue()
+                                : j.value(pocketTool ? "stepover_pocket" : "stepover");
             if (sd.isDouble() && sd.toDouble() > 0)
                 p.stepdown = sd.toDouble();
             else if (tool.value("slot_depth").toDouble() > 0)

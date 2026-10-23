@@ -187,6 +187,8 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         }
     };
     QVector<int> cand;
+    QVector<int> writtenIn(subs.size(), -1);   // which written path took each piece
+    int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
             continue;
@@ -201,85 +203,98 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             continue;
         }
         std::deque<Seg> chain(subs[i].segs.begin(), subs[i].segs.end());
+        std::deque<int> owner(chain.size(), i);   // the piece each segment came from
         // A chain never takes a piece and its copy: they fold back on each other.
-        QSet<int> roots{rootOf[i]};
-        // The same joins in the same order as sweeping j = 0..n-1 over and
-        // over until a sweep adds nothing: the next join is the lowest
-        // matching j after the last one, else (if this sweep grew) the lowest
-        // from the start.
-        int from = 0;
-        bool grew = false;
-        for (;;) {
-            // Closed: a piece touching its corner (a stray line) starts its
-            // own path rather than reopening the outline.
-            if (chain.size() > 1 && samePoint(chain.front().a, chain.back().b, tol))
-                break;
-            nearby(chain.front().a, chain.back().b, cand);
-            int best = -1, wrap = -1;
-            int how = 0, wrapHow = 0;
-            for (int j : cand) {
-                if (used[j] || (best >= 0 && j >= best && wrap >= 0 && j >= wrap) || roots.contains(rootOf[j]))
-                    continue;
-                const QVector<Seg> &o = subs[j].segs;
-                int h = 0;
-                if (samePoint(chain.back().b, o.first().a, tol)) h = 1;
-                else if (samePoint(chain.back().b, o.last().b, tol)) h = 2;
-                else if (samePoint(chain.front().a, o.last().b, tol)) h = 3;
-                else if (samePoint(chain.front().a, o.first().a, tol)) h = 4;
-                if (!h)
-                    continue;
-                if (j >= from && (best < 0 || j < best)) { best = j; how = h; }
-                if (wrap < 0 || j < wrap) { wrap = j; wrapHow = h; }
+        QSet<int> roots;
+        // Written, unless it is only copies of pieces in one path already
+        // written (an outline or line drawn twice: cut once).
+        auto emitPath = [&](const std::deque<Seg> &segs, const std::deque<int> &own, bool closed) {
+            int in = -2;
+            for (int o : own) {
+                const int w = isCopy[o] ? writtenIn[rootOf[o]] : -1;
+                in = (in == -2 || in == w) ? w : -1;
             }
-            if (best < 0) {
-                if (!grew || wrap < 0)
-                    break;
-                best = wrap;
-                how = wrapHow;
-            }
-            if (best < from)
-                grew = false;   // a new sweep began
-            const QVector<Seg> &o = subs[best].segs;
-            if (how == 1) {
-                chain.insert(chain.end(), o.begin(), o.end());
-            } else if (how == 2) {
-                const QVector<Seg> r = reversed(o);
-                chain.insert(chain.end(), r.begin(), r.end());
-            } else if (how == 3) {
-                chain.insert(chain.begin(), o.begin(), o.end());
-            } else {
-                const QVector<Seg> r = reversed(o);
-                chain.insert(chain.begin(), r.begin(), r.end());
-            }
-            used[best] = true;
-            roots.insert(rootOf[best]);
-            grew = true;
-            from = best + 1;
-        }
-        // A copy nothing joined (a CAD export repeating an edge): cut once.
-        if (isCopy[i] && int(chain.size()) == subs[i].segs.size()
-            && !samePoint(chain.front().a, chain.back().b, tol))
-            continue;
-        // Still open with an end back on its own path (a stray or repeated
-        // piece joined before the edge that closes the outline): the loop is
-        // written closed and the tail open. Only a real loop: two pieces or
-        // more reaching past 2 tol. A dense end (points under tol apart) or
-        // a curl drawn as one curve stays part of the open path.
-        // far[m]: some point of segment m lies past 2 tol from `at`.
-        auto farFrom = [&](const QPointF &at) {
-            QVector<bool> far(int(chain.size()));
-            for (int m = 0; m < far.size(); ++m) {
-                const Seg &g = chain.at(m);
-                for (const QPointF &q : {g.a, g.b, g.c1, g.c2})
-                    far[m] = far[m] || std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol;
-            }
-            return far;
+            if (in >= 0)
+                return;
+            for (int o : own)
+                writtenIn[o] = written;
+            ++written;
+            write(segs, closed);
         };
         for (;;) {
+            roots.clear();
+            for (int o : owner)
+                roots.insert(rootOf[o]);
+            // The same joins in the same order as sweeping j = 0..n-1 over and
+            // over until a sweep adds nothing: the next join is the lowest
+            // matching j after the last one, else (if this sweep grew) the
+            // lowest from the start.
+            int from = 0;
+            bool grew = false;
+            for (;;) {
+                // Closed: a piece touching its corner (a stray line) starts its
+                // own path rather than reopening the outline.
+                if (chain.size() > 1 && samePoint(chain.front().a, chain.back().b, tol))
+                    break;
+                nearby(chain.front().a, chain.back().b, cand);
+                int best = -1, wrap = -1;
+                int how = 0, wrapHow = 0;
+                for (int j : cand) {
+                    if (used[j] || (best >= 0 && j >= best && wrap >= 0 && j >= wrap) || roots.contains(rootOf[j]))
+                        continue;
+                    const QVector<Seg> &o = subs[j].segs;
+                    int h = 0;
+                    if (samePoint(chain.back().b, o.first().a, tol)) h = 1;
+                    else if (samePoint(chain.back().b, o.last().b, tol)) h = 2;
+                    else if (samePoint(chain.front().a, o.last().b, tol)) h = 3;
+                    else if (samePoint(chain.front().a, o.first().a, tol)) h = 4;
+                    if (!h)
+                        continue;
+                    if (j >= from && (best < 0 || j < best)) { best = j; how = h; }
+                    if (wrap < 0 || j < wrap) { wrap = j; wrapHow = h; }
+                }
+                if (best < 0) {
+                    if (!grew || wrap < 0)
+                        break;
+                    best = wrap;
+                    how = wrapHow;
+                }
+                if (best < from)
+                    grew = false;   // a new sweep began
+                const QVector<Seg> &o = subs[best].segs;
+                const QVector<Seg> r = how == 2 || how == 4 ? reversed(o) : o;
+                if (how <= 2) {
+                    chain.insert(chain.end(), r.begin(), r.end());
+                    owner.insert(owner.end(), r.size(), best);
+                } else {
+                    chain.insert(chain.begin(), r.begin(), r.end());
+                    owner.insert(owner.begin(), r.size(), best);
+                }
+                used[best] = true;
+                roots.insert(rootOf[best]);
+                grew = true;
+                from = best + 1;
+            }
+            // Still open with an end back on its own path (a stray or repeated
+            // piece joined before the edge that closes the outline): the loop
+            // is written closed, and the tail joins on without that loop's
+            // pieces (a shared edge's copy may close it). Only a real loop: two
+            // pieces or more reaching past 2 tol. A dense end (points under tol
+            // apart) or a curl drawn as one curve stays part of the open path.
+            // far[m]: some point of segment m lies past 2 tol from `at`.
+            auto farFrom = [&](const QPointF &at) {
+                QVector<bool> far(int(chain.size()));
+                for (int m = 0; m < far.size(); ++m) {
+                    const Seg &g = chain.at(m);
+                    for (const QPointF &q : {g.a, g.b, g.c1, g.c2})
+                        far[m] = far[m] || std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol;
+                }
+                return far;
+            };
             const int n = int(chain.size());
             if (n > 1 && samePoint(chain.front().a, chain.back().b, tol)) {
                 chain.back().b = chain.front().a;
-                write(chain, true);
+                emitPath(chain, owner, true);
                 break;
             }
             // reach[k]: a segment from k to the end reaches past 2 tol.
@@ -292,9 +307,11 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 ++k;
             if (k < n) {
                 std::deque<Seg> loop(chain.begin() + k, chain.end());
+                const std::deque<int> lo(owner.begin() + k, owner.end());
                 chain.erase(chain.begin() + k, chain.end());
+                owner.erase(owner.begin() + k, owner.end());
                 loop.back().b = loop.front().a;
-                write(loop, true);
+                emitPath(loop, lo, true);
                 continue;
             }
             // upTo[k]: a segment from the start to k reaches past 2 tol.
@@ -307,12 +324,14 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 --k;
             if (k >= 0) {
                 std::deque<Seg> loop(chain.begin(), chain.begin() + k + 1);
+                const std::deque<int> lo(owner.begin(), owner.begin() + k + 1);
                 chain.erase(chain.begin(), chain.begin() + k + 1);
+                owner.erase(owner.begin(), owner.begin() + k + 1);
                 loop.back().b = loop.front().a;
-                write(loop, true);
+                emitPath(loop, lo, true);
                 continue;
             }
-            write(chain, false);
+            emitPath(chain, owner, false);
             break;
         }
     }

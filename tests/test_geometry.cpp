@@ -1138,6 +1138,18 @@ int main(int argc, char *argv[])
         doc.addToolpath(b);
         const c2d::Toolpath e = c2d::makeToolpath(doc, QStringLiteral("engrave_toolpath"), {sq.id});
         doc.addToolpath(e);
+        // After an Adaptive (one-diameter passes, 10% stepover), a new
+        // pocket or cutout does not take its passes: a cutout slotted 4x deep.
+        {
+            c2d::Document d2 = doc;
+            d2.addToolpath(c2d::makeToolpath(d2, QStringLiteral("adaptive_toolpath"), {sq.id}));
+            const c2d::Toolpath p = c2d::makeToolpath(d2, QStringLiteral("pocket_toolpath"), {sq.id});
+            const c2d::Toolpath c = c2d::makeToolpath(d2, QStringLiteral("cutout"), {sq.id});
+            const double dia = p.json.value("tool").toObject().value("diameter").toDouble();
+            check(p.json.value("stepdown").toDouble() < dia * 0.5 && p.json.value("stepover").toDouble() > dia * 0.3
+                  && c.json.value("depth_per_pass").toDouble() < dia * 0.5,
+                  "a new pocket or cutout after an Adaptive keeps ordinary passes");
+        }
         check(a.json.value("name").toString() == QLatin1String("Contour Toolpath 1")
               && b.json.value("name").toString() == QLatin1String("Pocket Toolpath 1")
               && e.json.value("name").toString() == QLatin1String("Engrave 1"),
