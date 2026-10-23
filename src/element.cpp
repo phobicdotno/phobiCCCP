@@ -4,6 +4,7 @@
 #include <QFontMetricsF>
 #include <QLineF>
 #include <QJsonArray>
+#include <QFontInfo>
 #include <QMutex>
 #include <QJsonDocument>
 #include <QPointF>
@@ -350,16 +351,25 @@ static QPainterPath solidGlyph(const QRawFont &rf, quint32 index)
     static QMutex lock;
     static QHash<QString, QPainterPath> cache;
     const QVector<QPointF> adv = rf.advancesForGlyphIndexes(QVector<quint32>{index});
-    const QString key = QStringLiteral("%1/%2/%3/%4/%5/%6/%7").arg(rf.familyName(), rf.styleName())
-                            .arg(rf.pixelSize()).arg(index).arg(int(rf.style())).arg(rf.weight())
-                            .arg(adv.isEmpty() ? 0.0 : adv.first().x(), 0, 'g', 10);
+    QString key = QStringLiteral("%1/%2/%3/%4/%5/%6/%7").arg(rf.familyName(), rf.styleName())
+                      .arg(rf.pixelSize()).arg(index).arg(int(rf.style())).arg(rf.weight())
+                      .arg(adv.isEmpty() ? 0.0 : adv.first().x(), 0, 'g', 10);
+    // A combining mark has no advance to tell a stretched face from the
+    // plain one: keyed on its outline too (marks are few and small).
+    QPainterPath g;
+    const bool noAdvance = adv.isEmpty() || adv.first().x() == 0;
+    if (noAdvance) {
+        g = rf.pathForGlyph(index);
+        for (int i = 0; i < g.elementCount(); ++i)
+            key += QStringLiteral("/%1,%2").arg(g.elementAt(i).x, 0, 'g', 10).arg(g.elementAt(i).y, 0, 'g', 10);
+    }
     {
         QMutexLocker l(&lock);
         auto it = cache.constFind(key);
         if (it != cache.constEnd())
             return it.value();
     }
-    const QPainterPath out = solidGlyphOf(rf.pathForGlyph(index));
+    const QPainterPath out = solidGlyphOf(noAdvance ? g : rf.pathForGlyph(index));
     QMutexLocker l(&lock);
     if (cache.size() > 20000)
         cache.clear();
@@ -568,7 +578,14 @@ Element Element::regenText(const Element &src, const QJsonObject &changes)
         // italic flags: unticking Bold left the outline bold.
         if (k == QLatin1String("family")) { f.setFamily(it.value().toString()); f.setStyleName(QString()); fontChanged = true; }
         else if (k == QLatin1String("bold")) { f.setBold(it.value().toBool()); f.setStyleName(QString()); fontChanged = true; }
-        else if (k == QLatin1String("italic")) { f.setItalic(it.value().toBool()); f.setStyleName(QString()); fontChanged = true; }
+        else if (k == QLatin1String("italic")) {
+            // The face's weight stays (a Light face named only by its style).
+            const int w = QFontInfo(f).weight();
+            f.setStyleName(QString());
+            f.setWeight(QFont::Weight(w));
+            f.setItalic(it.value().toBool());
+            fontChanged = true;
+        }
         else o.insert(k, it.value());
     }
     if (fontChanged) {

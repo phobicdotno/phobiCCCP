@@ -274,6 +274,10 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 selfIn[o].insert(written);
             }
             ++written;
+            // A loop of pieces that repeats a closed outline (a polyline
+            // next to its exploded copy) is kept once, as two closed ones are.
+            if (closed && closedCopy(QVector<Seg>(segs.begin(), segs.end())))
+                return;
             write(segs, closed);
         };
         for (;;) {

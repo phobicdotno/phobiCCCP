@@ -1198,6 +1198,41 @@ int main(int argc, char **argv)
         check(!(sent175 && started), "mapzeroreconn: pad start after a reconnect does not run 1.75 mm deep");
         if (started) { s->stopStream(); wait(500); }
     }
+    if (mode == "maptlo") {
+        // r47: Zero Z with the map on at work X80 Y80 (sent Z1.750), then a
+        // bit is measured (or a job's tool change measured one): G43.1 Z0.4.
+        // GRBL's WCO includes the tool length offset (report.c), so the
+        // reported WCO Z is the G54 Z + 0.4. Map off, pad start.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        s->applyToolLengthOffset(0.4);
+        wait(800);
+        const bool g431 = grbl.indexOf("G43.1 Z0.400") >= 0;
+        grbl.wcoZ = grbl.mz - 1.75 + 0.4;   // as GRBL reports it with G43.1 active
+        wait(800);
+        panel.m_useMap->setChecked(false);
+        wait(300);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("maptlo: sent175 %d, G43.1 sent %d, pad start with map off: %d (%s)\n",
+                    sent175, g431, started, qPrintable(why));
+        check(!(sent175 && started), "maptlo: a tool length offset does not hide a zero taken with the map on");
+        if (started) { s->stopStream(); wait(500); }
+    }
     if (mode == "mapzero") {
         // Surface map on, Z zeroed at work X80 Y80 (a re-zero after a tool
         // change): Z0 must stay the surface at X0 Y0 the offsets are from,

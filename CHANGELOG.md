@@ -83,6 +83,8 @@
   - The same for a surface map measured again after Z was zeroed with the old one on.
   - That check now holds across a reconnect or restart while the controller keeps the same Z
     offset; before, reconnecting forgot how Z was zeroed.
+  - The check also holds after a bit is measured: GRBL's reported work offset carries the tool
+    length offset, which made the zero look like someone else's and skipped the check.
   - Zeroing Z with the surface map on now says in the log that Z0 was set to the surface at X0 Y0
     and how far that is from here, as the readout no longer shows 0.
   - With the surface map on, Zero Z (or BitZero Z) away from X0 Y0, as after a manual tool
@@ -128,11 +130,15 @@
     selection it never cuts (the part outline, construction geometry).
 - **Drawing and import:**
   - The same closed outline drawn twice (a DXF polyline repeated, an SVG path filled and stroked)
-    imported as two outlines that cancelled out: a pocket on them cut nothing. It is kept once.
+    imported as two outlines that cancelled out: a pocket on them cut nothing. It is kept once,
+    also when one copy is loose pieces (a polyline next to its exploded lines).
   - A copy of a piece inside a loop split off a polyline could rejoin the open rest, so those
     edges were cut twice.
   - Unticking Bold or Italic did nothing on text whose font was stored with a style name.
   - Text rendering is fast again after round 45's glyph cache fix.
+  - A combining mark (an umlaut, Hebrew or Thai points) in stretched text could take the plain
+    text's mark, or the other way round, depending on which was drawn first.
+  - Ticking Italic on a Light (or other weight) face named only by its style kept the weight.
   - Text in a font without an italic (or bold) face could come out upright with Italic ticked, or
     slanted without it, depending on what was drawn first: the made-up slant shared a cache entry.
   - A polyline that closes a loop partway (a lead-in line into a square, a single-stroke "e")

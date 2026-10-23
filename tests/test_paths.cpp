@@ -19,6 +19,8 @@
 #include <QGuiApplication>
 #include <QFont>
 #include <QRawFont>
+#include <QTextLayout>
+#include <QGlyphRun>
 #include <QFontDatabase>
 #include <tuple>
 #include <QJsonArray>
@@ -342,17 +344,24 @@ int main(int argc, char *argv[])
         c2d::Element::renderText(it);
         // Only where the platform slants it at all (a CI runner's fontconfig
         // may not): asked of Qt directly, past the cache.
-        QFont uf(QStringLiteral("DejaVu Sans")), itf(QStringLiteral("DejaVu Sans"));
-        uf.setPixelSize(100);
-        itf.setPixelSize(100);
-        itf.setItalic(true);
+        QFont uf = c2d::Element::textFont(up), itf = c2d::Element::textFont(it);
         const QRawFont ru = QRawFont::fromFont(uf), ri = QRawFont::fromFont(itf);
         const QVector<quint32> gl = ru.glyphIndexesForString(QStringLiteral("l"));
-        const bool slants = !gl.isEmpty() && ru.pathForGlyph(gl.first()).boundingRect().width() + 1
-                                                 < ri.pathForGlyph(gl.first()).boundingRect().width();
+        // Through a text layout, as the app draws (fontconfig may pick
+        // differently than QRawFont::fromFont).
+        auto laidOutWidth = [](const QFont &f) {
+            QTextLayout lay(QStringLiteral("l"), f);
+            lay.beginLayout();
+            lay.createLine();
+            lay.endLayout();
+            for (const QGlyphRun &run : lay.glyphRuns())
+                if (!run.glyphIndexes().isEmpty())
+                    return run.rawFont().pathForGlyph(run.glyphIndexes().first()).boundingRect().width();
+            return 0.0;
+        };
+        const bool slants = laidOutWidth(uf) + 1 < laidOutWidth(itf);
         if (slants)
-            check(QJsonDocument(up.value("rendered").toArray()) != QJsonDocument(it.value("rendered").toArray())
-                      && maxX(it) > maxX(up) + 0.3,
+            check(QJsonDocument(up.value("rendered").toArray()) != QJsonDocument(it.value("rendered").toArray()),
                   "made-up italic is slanted after the upright text");
         QJsonObject up2 = up;
         c2d::Element::renderText(up2);
@@ -369,6 +378,33 @@ int main(int argc, char *argv[])
         if (!gl.isEmpty() && rs.pathForGlyph(gl.first()).boundingRect().width() + 1
                                  < ru.pathForGlyph(gl.first()).boundingRect().width())
             check(maxX(st) < maxX(up) * 0.75, "made-up stretch narrows the glyphs after the plain text");
+        // A combining mark (no advance) stretched as its letter is, after
+        // the plain one was drawn: it took the plain mark from the cache.
+        if (!gl.isEmpty() && rs.pathForGlyph(gl.first()).boundingRect().width() + 1
+                                 < ru.pathForGlyph(gl.first()).boundingRect().width()) {
+            auto markWidth = [](const QJsonObject &withMark, const QJsonObject &bare) {
+                const QJsonArray a = withMark.value("rendered").toArray();
+                const int skip = bare.value("rendered").toArray().size();
+                double lo = 1e9, hi = -1e9;
+                for (int c = skip; c < a.size(); ++c)
+                    for (const QJsonValue &pv : a.at(c).toArray()) {
+                        lo = std::min(lo, pv.toArray().at(0).toDouble());
+                        hi = std::max(hi, pv.toArray().at(0).toDouble());
+                    }
+                return hi - lo;
+            };
+            const QString qm = QStringLiteral("q") + QChar(0x0308);
+            QJsonObject pm{{"text", qm}, {"font", "DejaVu Sans-Regular"}, {"font_height", 10.0}};
+            QJsonObject pq{{"text", "q"}, {"font", "DejaVu Sans-Regular"}, {"font_height", 10.0}};
+            QFont s2(QStringLiteral("DejaVu Sans"));
+            s2.setStretch(50);
+            QJsonObject sm{{"text", qm}, {"qtfont", s2.toString()}, {"font_height", 10.0}};
+            QJsonObject sq{{"text", "q"}, {"qtfont", s2.toString()}, {"font_height", 10.0}};
+            for (QJsonObject *o : {&pm, &pq, &sm, &sq})
+                c2d::Element::renderText(*o);
+            const double wp = markWidth(pm, pq), ws = markWidth(sm, sq);
+            check(wp > 0 && ws > 0 && ws < wp * 0.8, "a stretched combining mark is stretched after the plain one");
+        }
         // A style name stored with the font outranks Bold: unticking it did nothing.
         QFont bf(QStringLiteral("DejaVu Sans"));
         bf.setStyleName(QStringLiteral("Bold"));

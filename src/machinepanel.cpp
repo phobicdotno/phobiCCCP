@@ -3607,7 +3607,12 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     // off at the touched spot: run the other way, or with a map measured
     // again since, every depth was off by the map's height there (a pad
     // start, which wants the map off, cut 1.75 mm too deep).
-    if (m_zZeroKnown && m_grbl->hasWorkOffset() && std::abs(m_grbl->workOffsetZ() - m_zZeroWco) < 0.005) {
+    // GRBL's reported WCO Z carries the tool length offset (G43.1 after a
+    // bit is measured); the zero left none. Either, as a G43.1 may still be
+    // on its way.
+    const double wcoNow = m_grbl->hasWorkOffset() ? m_grbl->workOffsetZ() : qQNaN();
+    if (m_zZeroKnown && (std::abs(wcoNow - m_zZeroWco) < 0.005
+                         || std::abs(wcoNow - m_grbl->toolLengthOffset() - m_zZeroWco) < 0.005)) {
         const MachineStatus st = m_grbl->status();
         const bool mapNow = m_useMap->isChecked() && m_map.isValid();
         const double want = mapNow ? m_map.offsetAt(m_zZeroMx - (st.mx - st.wx), m_zZeroMy - (st.my - st.wy)) : 0.0;
