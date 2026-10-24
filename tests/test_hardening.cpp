@@ -433,10 +433,13 @@ int main(int argc, char *argv[])
         check(atLevel.size() == 3, "ramp: three depth levels");
         bool oneLap = !atLevel.isEmpty();
         for (auto it = atLevel.cbegin(); it != atLevel.cend(); ++it)
-            oneLap = oneLap && it.value() > perim - 0.05 && it.value() < perim + (W - 2 * toolR) + 0.05;
+            oneLap = oneLap && it.value() > perim - 0.05 && it.value() < perim + 0.05;
         check(oneLap, "ramp: each depth is cut as one lap plus the ramp span, not twice");
-        check(maxJump < (W - 2 * toolR) + 0.05,
-              "ramp: every ramp move runs along an edge, never a chord across the part");
+        // 1.5 mm at 20 degrees is a 4.12 mm run: the dive stops there, mid
+        // edge, instead of spreading the drop over the whole edge.
+        const double run = 1.5 / std::tan(20.0 * M_PI / 180.0);
+        check(maxJump > run - 0.05 && maxJump < run + 0.05,
+              "ramp: the dive is the angle's run, not the length of the edge it is on");
     }
     {
         // Finishing rings lift at the roughing ring's tabs. Tabs were laid

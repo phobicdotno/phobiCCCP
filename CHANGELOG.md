@@ -2,7 +2,7 @@
 
 ## v1.3.5 (build 95) — 2026-10-24
 
-> Ramped contours and pockets no longer cut every depth level twice
+> Ramped contours and pockets no longer cut every depth level twice, and the ramp stops where its angle reaches depth instead of running the whole edge
 
 - **Toolpaths:**
   - With ramping on, each pass ramped down along the ring, carried on round the whole
@@ -10,6 +10,9 @@
     window of a 600 mm frame, six times over, 2026-10-24). A pass is now the ramp, the
     rest of the loop, and the ramp's own span re-cut at depth - once each. The next
     pass ramps on from where that lap ended instead of jumping back to the ring start.
+  - The ramp only checked its depth at the ring's corners, so on a long edge the whole
+    edge was the dive (3 mm spread over 500 mm). It now stops part way along the edge
+    where the ramp angle reaches depth (17 mm for 3 mm at 10 degrees).
 
 ## v1.3.4 (build 94) — 2026-10-24
 

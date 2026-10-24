@@ -1235,15 +1235,6 @@ static bool asStadium(const QPolygonF &polyIn, QPointF *c1, QPointF *c2, double 
     return true;
 }
 
-// The vertex of `ring` that p stands on (within a micron), else -1.
-static int vertexAt(const QPolygonF &ring, const QPointF &p)
-{
-    for (int i = 0; i + 1 < ring.size(); ++i)
-        if (QLineF(ring.at(i), p).length() < 1e-6)
-            return i;
-    return -1;
-}
-
 // The closed ring restarted at its vertex k, so a lap from where a ramp
 // reached depth covers the rest of the loop and then the ramp's own span
 // at depth - each once. k outside (0, size-1) returns the ring as it is.
@@ -1617,30 +1608,52 @@ public:
     }
 
     // Descend along the ring at rampAngle instead of a straight plunge,
-    // walking the loop (multiple laps if needed) until z is reached, from
-    // the vertex we stand on (the end of the last pass's lap). Returns the
-    // vertex where depth was reached: the lap that follows starts there
-    // (restartAt), so the rest of the loop and then the ramp's span are
-    // each cut once at depth. It used to carry on round to vertex 0 here
-    // and the caller then cut the whole ring again: every ramped pass ran
-    // its loop twice (seen on the shop floor 2026-10-24).
-    int rampDescend(const QPolygonF &ring, double zFrom, double zTo, double angleDeg)
+    // from where we stand (restarted there: the end of the last pass's lap
+    // can be mid-edge), until z is reached - mid-edge if that is where the
+    // angle gets there, that point inserted as a vertex, or round the loop
+    // more than once when the ring is short. On return `ring` is the ring
+    // as this pass should cut it and the result is the index of the vertex
+    // where depth was reached: the lap starts there (restartAt), so the
+    // rest of the loop and the ramp's span are each cut once at depth.
+    // It used to feed to the next vertex whatever its length (a 3 mm drop
+    // spread over a 500 mm edge, "the dive uses 50 cm") and then carry on
+    // round to vertex 0 at depth while the caller cut the whole ring again
+    // (every ramped level twice) - both seen on the shop floor 2026-10-24.
+    int rampDescend(QPolygonF &ring, double zFrom, double zTo, double angleDeg)
     {
         if (ring.size() < 2) {
             plungeTo(pos(), zTo);
             return 0;
         }
+        if (distToPoly(pos(), ring) < 1e-6)
+            ring = startNearest(ring, pos());
         const double slope = qTan(qDegreesToRadians(qBound(1.0, angleDeg, 45.0)));
         double z = zFrom;
-        int at = qMax(0, vertexAt(ring, pos()));     // vertex we stand on
+        int at = 0;                                    // vertex we stand on
         const int maxSteps = 20 * (ring.size() - 1);   // ~20 laps, as before
         for (int st = 0; st < maxSteps && z > zTo + 1e-9; ++st) {
             const int next = at + 1 < ring.size() ? at + 1 : 1;  // last == first
-            const double L = QLineF(ring.at(at), ring.at(next)).length();
+            const QPointF a = ring.at(at), b = ring.at(next);
+            const double L = QLineF(a, b).length();
+            const double need = (z - zTo) / slope;     // run left to reach depth
+            if (L > need + 1e-6) {
+                // Depth is reached part way along this edge: stop the ramp
+                // there, and make that point a vertex so the lap can start
+                // on it. (next == 1 wraps past the duplicate last vertex.)
+                const QPointF p = a + (b - a) * (need / L);
+                const int ins = next;          // before b; after vertex 0 when wrapped
+                ring.insert(ins, p);
+                z = zTo;
+                m_ops.append(Op::feedTo(p.x(), p.y(), z, m_plunge));
+                m_x = p.x();
+                m_y = p.y();
+                at = ins;
+                break;
+            }
             z = qMax(zTo, z - L * slope);
-            m_ops.append(Op::feedTo(ring.at(next).x(), ring.at(next).y(), z, m_plunge));
-            m_x = ring.at(next).x();
-            m_y = ring.at(next).y();
+            m_ops.append(Op::feedTo(b.x(), b.y(), z, m_plunge));
+            m_x = b.x();
+            m_y = b.y();
             at = next;
         }
         // A ring too short for the drop runs out of laps above zTo (a
@@ -2077,20 +2090,29 @@ public:
             // tab before the tabbed lap below lifts over them. Plunge there
             // instead (vertex 0 is never inside a tab).
             const bool ramp = cp.rampAngle > 0 && !hasTabs(firstRing, z, cp);
-            int rampAt = 0;                   // vertex of firstRing the ramp reached depth at
+            // The ring as this pass cuts it: restarted where the machine
+            // stands (mid-edge after a ramp), with the ramp's end inserted.
+            QPolygonF lap = firstRing;
+            int rampAt = 0;                   // vertex of `lap` the ramp reached depth at
             if (first) {
                 if (ramp && job.closed) {
                     plungeTo(firstRing.first(), cp.zTop);
-                    rampAt = rampDescend(firstRing, cp.zTop, z, cp.rampAngle);
+                    rampAt = rampDescend(lap, cp.zTop, z, cp.rampAngle);
                 } else {
                     plungeTo(firstRing.first(), z);
                 }
                 first = false;
             } else if (job.closed) {
-                if (ramp)
-                    rampAt = rampDescend(firstRing, z + cp.stepdown, z, cp.rampAngle);
-                else
+                if (ramp) {
+                    rampAt = rampDescend(lap, z + cp.stepdown, z, cp.rampAngle);
+                } else {
                     plungeTo(pos(), z);   // in place — we ended here last pass
+                    // ...which can be mid-edge (where the last ramp got to
+                    // depth): the lap starts there, never with a chord to
+                    // vertex 0 at depth.
+                    if (distToPoly(pos(), lap) < 1e-6)
+                        lap = startNearest(lap, pos());
+                }
             } else {
                 retract();
                 rapidTo(job.start());
@@ -2102,7 +2124,7 @@ public:
                 // reached depth, or the vertex the last pass's lap ended on
                 // (a plunge in place). Starting it at vertex 0 instead meant
                 // a second lap after a ramp, or a chord to vertex 0 at depth.
-                const QPolygonF ring = oi == 0 ? restartAt(firstRing, rampAt > 0 ? rampAt : vertexAt(firstRing, pos()))
+                const QPolygonF ring = oi == 0 ? restartAt(lap, rampAt)
                                      : nearest ? startNearest(job.rings.at(order.at(oi)), pos())
                                                : job.rings.at(order.at(oi));
                 const QPointF rs = ring.first();
