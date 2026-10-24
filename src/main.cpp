@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "phobiversion.h"
 #include "cccpfile.h"
 #include "shopdialog.h"
 #include "gamepadmapdialog.h"
@@ -758,6 +759,8 @@ int main(int argc, char *argv[])
         bool haveRef = false;
         double refZ = 0;
         int changes = 0;
+        bool preValid = false;               // where the program parked (machine X/Y)
+        double preX = 0, preY = 0;
         QObject::connect(&grbl, &c2d::GrblStreamer::consoleLine,
                          [](const QString &l) { if (!l.startsWith(QLatin1String("ok"))) qInfo().noquote() << "RX:" << l; });
         QObject::connect(&grbl, &c2d::GrblStreamer::errorOccurred,
@@ -765,6 +768,9 @@ int main(int argc, char *argv[])
         QObject::connect(&grbl, &c2d::GrblStreamer::toolChangeRequested, [&](int t) {
             ++changes;
             qInfo().noquote() << QStringLiteral("TOOLCHANGE T%1 parked (acked so far ok)").arg(t);
+            preValid = grbl.status().valid;
+            preX = grbl.status().mx;
+            preY = grbl.status().my;
             if (cfg.enabled)
                 grbl.measureTool(cfg, false);
             else
@@ -786,7 +792,15 @@ int main(int argc, char *argv[])
                 grbl.applyToolLengthOffset(tlo);
                 qInfo().noquote() << QStringLiteral("TLO %1 (contactZ=%2)").arg(tlo, 0, 'f', 3).arg(grbl.lastProbeZ(), 0, 'f', 3);
             }
-            grbl.continueAfterToolChange();
+            // Back over the job at the top before the program moves: its
+            // first retract is in work Z and may lie below the BitSetter.
+            QStringList first;
+            if (preValid) {
+                first << QStringLiteral("G90") << QStringLiteral("G53 G0 Z%1").arg(-cfg.safeZ, 0, 'f', 3)
+                      << QStringLiteral("G53 G0 X%1 Y%2").arg(preX, 0, 'f', 3).arg(preY, 0, 'f', 3);
+                qInfo().noquote() << QStringLiteral("RETURN X%1 Y%2").arg(preX, 0, 'f', 3).arg(preY, 0, 'f', 3);
+            }
+            grbl.continueAfterToolChange(first);
         });
         QObject::connect(&grbl, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
             qInfo().noquote() << (ok ? QStringLiteral("RUN_OK toolchanges=%1 tlo=%2").arg(changes).arg(grbl.toolLengthOffset(), 0, 'f', 3)

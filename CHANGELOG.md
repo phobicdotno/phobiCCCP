@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.3 (build 93) — 2026-10-22
+## v1.3.8 (build 98) — 2026-10-24
 
 > Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
 
@@ -254,6 +254,65 @@
     meanwhile (File > Send to pad); it is dropped instead.
   - After a two-finger pinch, the finger left on the screen picked up and dragged the shape under
     it, or drew a new one. It now only pans until every finger is lifted.
+
+## v1.3.7 (build 97) — 2026-10-24
+
+> Faster builds: a version bump no longer recompiles the whole program and every test
+
+- **Build:**
+  - The version number reaches the code through a small generated header instead of a
+    compiler flag on every file, so bumping it rebuilds a handful of files, not everything.
+
+## v1.3.6 (build 96) — 2026-10-24
+
+> While a job runs, the Machine page shows the job's steps and time left instead of the jog pad and zeroing buttons
+
+- **Machine:**
+  - Start a job and the middle of the page becomes the job view: every toolpath and
+    depth pass in order, what each one does, the time each should take, what is
+    cutting now with a bar for the pass, the time left on it and on the whole job,
+    and the finish time. Done steps show how long they really took. The feed override
+    scales the estimates.
+  - The per-axis Zero buttons, Zero X and Y, Zero all, Go to X0 Y0, Measure bit, Probe
+    zero, Initialize and Park hide while the job streams: nothing to press by mistake.
+    They come back at a tool-change pause (jog and zero as before) and when the job ends.
+
+## v1.3.5 (build 95) — 2026-10-24
+
+> Ramped contours and pockets no longer cut every depth level twice, and the ramp stops where its angle reaches depth instead of running the whole edge
+
+- **Toolpaths:**
+  - With ramping on, each pass ramped down along the ring, carried on round the whole
+    loop at depth, and then cut the whole loop again: every level ran twice (the 2.3 m
+    window of a 600 mm frame, six times over, 2026-10-24). A pass is now the ramp, the
+    rest of the loop, and the ramp's own span re-cut at depth - once each. The next
+    pass ramps on from where that lap ended instead of jumping back to the ring start.
+  - The ramp only checked its depth at the ring's corners, so on a long edge the whole
+    edge was the dive (3 mm spread over 500 mm). It now stops part way along the edge
+    where the ramp angle reaches depth (17 mm for 3 mm at 10 degrees).
+
+## v1.3.4 (build 94) — 2026-10-24
+
+> The feed override percentage is shown live beside the −10 % / 100 % / +10 % buttons
+
+- **Machine:**
+  - The controller's own override report (feed, rapid, spindle) is read and shown next
+    to the override buttons, amber when off 100 %. The status line under the position
+    also says FEED n % while the feed override is not 100 %.
+
+## v1.3.3 (build 93) — 2026-10-24
+
+> After a tool change the machine goes back over the job at the top before the program moves, and Zero X/Y warns when the machine is not homed
+
+- **Machine:**
+  - After the BitSetter measured the new bit, the program continued right over the
+    BitSetter, and its first line - a retract to the job's safe height in work Z - was
+    a rapid down into the button whenever the stock top sits below it (16.7 mm below
+    on 2026-10-24: the bit went into the BitSetter). The resume now rises to the top,
+    returns over where the program parked, and only then hands over to the program.
+  - Zero X/Y while the machine is not homed asks first: homing redefines the machine
+    coordinates, so that zero points somewhere else afterwards. If zeroed anyway, the
+    next Initialize says the zero moved and must be set again.
 
 ## v1.3.2 (build 92) — 2026-10-20
 

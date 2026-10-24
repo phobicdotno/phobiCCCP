@@ -1,4 +1,5 @@
 #include "projectreceiver.h"
+#include "phobiversion.h"
 
 #include <QDir>
 #include <QFile>

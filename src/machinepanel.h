@@ -35,6 +35,8 @@ class Document;
 // work zero, measure tools on the BitSetter, and stream the document's
 // generated g-code with automatic tool-change stops — a Carbide-Motion
 // replacement.
+class JobView;
+
 class MachinePanel : public QWidget
 {
     Q_OBJECT
@@ -150,6 +152,15 @@ private:
     // The right-hand card of the Machine page: the job, or one of the pages
     // that used to be pop-ups (BitZero probing, BitSetter settings).
     QStackedWidget *m_rightStack = nullptr;
+    // The middle column: the jog card, or - while a job streams - the job
+    // view (every toolpath and pass with its time left). The zeroing and
+    // machine-action buttons that are not in use while cutting hide with
+    // it; they come back at a tool-change pause (jog, zero Z) and at the end.
+    QStackedWidget *m_midStack = nullptr;
+    JobView *m_jobView = nullptr;
+    QList<QWidget *> m_idleOnly;
+    bool m_jobShown = false;
+    void setJobRunning(bool on);
     QWidget *m_jobPage = nullptr;
     QWidget *m_bsPage = nullptr;
 
@@ -192,6 +203,7 @@ private:
     double m_zZeroSent = 0, m_zZeroMx = 0, m_zZeroMy = 0, m_zZeroWco = 0;
     QCheckBox *m_useMap = nullptr;
     QLabel *m_mapLabel = nullptr;
+    QLabel *m_ovLabel = nullptr;         // live feed/rapid/spindle override, beside the +/- buttons
     void startSurfaceMap();
     void setSurfaceMap(const SurfaceMap &map);
     void refreshMapUi();
@@ -311,6 +323,16 @@ private:
     bool bitSetterReachable(const BitSetterConfig &cfg, const QString &what);
     bool jobWindingDown(const QString &what);
     QString m_unhomedWhy = QStringLiteral("not connected");
+    // Where the program stood (machine X/Y, last report) when it parked for
+    // a tool change. The resume goes back there at the top of Z before the
+    // program's own lines: those start with a retract to the program's safe
+    // height in WORK Z, which can be below the BitSetter button (2026-10-24:
+    // 16.7 mm below it, and the rapid drove the bit into the button).
+    bool m_preParkValid = false;
+    double m_preParkX = 0, m_preParkY = 0;
+    // An X/Y zero set before homing on this connection: homing redefines
+    // machine coordinates, so that zero points somewhere else afterwards.
+    bool m_zeroedUnhomed = false;
     QString m_lastLimitPins;
     bool m_limitWarned = false;
     QPushButton *m_padMapBtn = nullptr;

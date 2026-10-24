@@ -1,4 +1,5 @@
 #include "machinepanel.h"
+#include "jobview.h"
 #include "shopdialog.h"
 #include "toollibrary.h"
 #include "toolstrip.h"
@@ -389,6 +390,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         z->setToolTip(QString::fromLatin1(axisTips[i]));
         const QString axes = QString::fromLatin1(axisNames[i]);
         connect(z, &QPushButton::clicked, this, [this, axes] { zero(axes); });
+        m_idleOnly << z;
         row->addWidget(name);
         row->addWidget(m_wAxis[i], 1);
         row->addWidget(z);
@@ -411,22 +413,26 @@ MachinePanel::MachinePanel(QWidget *parent)
     zeroRow->addWidget(zeroXY, 2);
     zeroRow->addWidget(zeroAll, 1);
     pv->addLayout(zeroRow);
+    m_idleOnly << zeroXY << zeroAll;
     auto *gotoBtn = bigBtn(new QPushButton(QStringLiteral("Go to X0 Y0"), posCard), 46);
     gotoBtn->setToolTip(QStringLiteral("Raise to safe Z, then rapid to work X0 Y0"));
     connect(gotoBtn, &QPushButton::clicked, this, [this] { goToXY0(); });
     pv->addWidget(gotoBtn);
+    m_idleOnly << gotoBtn;
     auto *measureBig = bigBtn(new QPushButton(QStringLiteral("Measure bit (BitSetter)"), posCard), 46);
     measureBig->setToolTip(QStringLiteral(
         "Go to the button, probe twice, come back. The first measurement after "
         "zeroing Z is the reference; later ones set the G43.1 length offset."));
     connect(measureBig, &QPushButton::clicked, this, [this] { measureTool(Phase::MeasureManual); });
     pv->addWidget(measureBig);
+    m_idleOnly << measureBig;
     auto *probeBig = bigBtn(new QPushButton(QStringLiteral("Probe zero (BitZero)…"), posCard), 46);
     probeBig->setToolTip(QStringLiteral(
         "Find the stock corner, or one edge, or the surface, with Carbide's BitZero V2 "
         "touch plate and set work zero there."));
     connect(probeBig, &QPushButton::clicked, this, [this] { openBitZero(); });
     pv->addWidget(probeBig);
+    m_idleOnly << probeBig;
     cols->addWidget(posCard, 10);
 
     // ---- Jog card ----------------------------------------------------------
@@ -579,7 +585,18 @@ MachinePanel::MachinePanel(QWidget *parent)
     padMap->setToolTip(QStringLiteral("Map the gamepad: choose what each button does"));
     connect(padMap, &QPushButton::clicked, this, [this] { editGamepadMapping(); });
     jv->addWidget(padMap, 0, Qt::AlignRight);
-    cols->addWidget(jogCard, 11);
+    // The middle column swaps the jog card for the job view while a job
+    // streams: what is cutting now, every pass to come, and the time left.
+    m_midStack = new CurrentPageStack(body);
+    m_midStack->addWidget(jogCard);
+    QFrame *jobViewCard = card(body);
+    auto *jvv = static_cast<QVBoxLayout *>(jobViewCard->layout());
+    jvv->addWidget(caption(QStringLiteral("Job progress"), jobViewCard));
+    m_jobView = new JobView(jobViewCard);
+    jvv->addWidget(m_jobView, 1);
+    m_midStack->addWidget(jobViewCard);
+    m_midStack->setCurrentIndex(0);
+    cols->addWidget(m_midStack, 11);
 
     // ---- Job card ----------------------------------------------------------
     QFrame *jobCard = card(body);
@@ -673,6 +690,14 @@ MachinePanel::MachinePanel(QWidget *parent)
     ovBtn(QStringLiteral("−10%"), char(0x92));
     ovBtn(QStringLiteral("100%"), char(0x90));
     ovBtn(QStringLiteral("+10%"), char(0x91));
+    // What the controller actually runs at (its Ov: report), so three taps
+    // show as 130 % instead of having to be counted.
+    m_ovLabel = new QLabel(QStringLiteral("feed 100 %"), more);
+    m_ovLabel->setObjectName(QStringLiteral("ovLabel"));
+    m_ovLabel->setToolTip(QStringLiteral("Feed, rapid and spindle override as the controller "
+                                         "reports them. Every job starts at 100 %."));
+    m_ovLabel->setStyleSheet(QStringLiteral("font-size: 16px; font-weight: 600; padding-left: 8px;"));
+    ovRow->addWidget(m_ovLabel);
     ovRow->addStretch(1);
     mv->addLayout(ovRow);
     auto *airRow = new QHBoxLayout;
@@ -732,6 +757,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     auto *bsBtn = bigBtn(new QPushButton(QStringLiteral("BitSetter"), body), 44);
     bsBtn->setToolTip(QStringLiteral("BitSetter position, probe feeds, tool-change spot, "
                                      "reference and rehearsal"));
+    m_idleOnly << homeBtn << parkBtn;
     foot->addWidget(homeBtn);
     foot->addWidget(parkBtn);
     foot->addWidget(unlockBtn);
@@ -1091,6 +1117,8 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_grbl, &GrblStreamer::progressChanged, this, [this](int a, int t) {
         m_progress->setMaximum(qMax(1, t));
         m_progress->setValue(a);
+        if (m_jobView)
+            m_jobView->setProgress(a, t);
     });
     connect(m_grbl, &GrblStreamer::consoleLine, this, [this](const QString &l) {
         log(l);
@@ -1204,6 +1232,11 @@ MachinePanel::MachinePanel(QWidget *parent)
                : QStringLiteral("== program stopped =="));
         const bool endJob = m_endOfJobPending && ok && !rehearsal;
         m_endOfJobPending = false;
+        if (m_jobView) {
+            m_jobView->setProgress(ok ? m_progress->maximum() : m_progress->value(), m_progress->maximum());
+            m_jobView->setParked(false);
+        }
+        setJobRunning(false);
         const bool wasHeld = m_held;
         resetFlow();
         // Held in the last seconds: the last lines went into the planner
@@ -1996,7 +2029,43 @@ void MachinePanel::continueAfterToolChange()
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_onIdle = nullptr;                  // a prompt still waiting for Idle is void now
-    m_grbl->continueAfterToolChange(m_homed ? riseToTop() : QStringList{});
+    QStringList first = m_homed ? riseToTop() : QStringList{};
+    // After the measurement the spindle stands over the BitSetter, and the
+    // program's first line is a retract to ITS safe height in work Z: with
+    // the stock top below the button that is a rapid down into the button
+    // (2026-10-24, 16.7 mm into it). So, still at the top of Z, go back to
+    // where the program parked - or, without a position, to the tool-change
+    // spot, which is beside the button and clear by definition.
+    if (m_homed) {
+        const double x = m_preParkValid ? m_preParkX : m_tcX->value();
+        const double y = m_preParkValid ? m_preParkY : m_tcY->value();
+        first << QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3);
+        log(QStringLiteral("continuing: up to the top, back over %1 (machine X%2 Y%3), then the program")
+                .arg(m_preParkValid ? QStringLiteral("where the program parked")
+                                    : QStringLiteral("the tool-change spot (no position report)"))
+                .arg(x, 0, 'f', 3).arg(y, 0, 'f', 3));
+    }
+    if (m_jobView) {
+        m_jobView->linesInserted(first.size());
+        m_jobView->setParked(false);
+    }
+    setJobRunning(m_jobView && m_jobView->hasPlan());
+    m_grbl->continueAfterToolChange(first);
+}
+
+// While a job streams the middle column shows the job view and the
+// buttons that are not in use while cutting (zeroing, go to zero, measure,
+// probe, Initialize, Park) hide: nothing to press by mistake, and the room
+// goes to what is happening. A tool-change pause and the end bring them back.
+void MachinePanel::setJobRunning(bool on)
+{
+    if (on == m_jobShown)
+        return;
+    m_jobShown = on;
+    if (m_midStack)
+        m_midStack->setCurrentIndex(on ? 1 : 0);
+    for (QWidget *w : std::as_const(m_idleOnly))
+        w->setVisible(!on);
 }
 
 // What work Z the stock top at (wx, wy) reads, so Z0 stays the surface at
@@ -2733,6 +2802,15 @@ void MachinePanel::onStatus(const MachineStatus &st)
         m_limitWarned = false;
         forgetJogPlan();
         log(QStringLiteral("homed: machine position known, jog limits on"));
+        if (m_zeroedUnhomed) {
+            m_zeroedUnhomed = false;
+            log(QStringLiteral("!! the X/Y zero was set BEFORE this homing: it points somewhere "
+                               "else now - jog to the stock corner and zero X/Y again"));
+            shopTell(this, QStringLiteral("Machine"), QStringLiteral("Zero X/Y again"),
+                     QStringLiteral("The X/Y zero was set before this homing. Homing redefined the "
+                                    "machine coordinates, so that zero now points somewhere else.\n\n"
+                                    "Jog to the stock corner and zero X/Y again before running a job."));
+        }
     }
     if (alarm)
         m_homingStarted = false;
@@ -2797,7 +2875,23 @@ void MachinePanel::onStatus(const MachineStatus &st)
         extra += QStringLiteral("   TLO %1").arg(m_grbl->toolLengthOffset(), 0, 'f', 3);
     if (st.probePin)
         extra += QStringLiteral("   PROBE");
+    // An override off 100 % is worth seeing without unfolding "More".
+    if (st.ovFeed != 100)
+        extra += QStringLiteral("   FEED %1 %").arg(st.ovFeed);
     m_extra->setText(extra);
+    if (m_jobView)
+        m_jobView->setOverride(st.ovFeed);
+    if (m_ovLabel) {
+        QString ov = QStringLiteral("feed %1 %").arg(st.ovFeed);
+        if (st.ovRapid != 100)
+            ov += QStringLiteral("   rapid %1 %").arg(st.ovRapid);
+        if (st.ovSpindle != 100)
+            ov += QStringLiteral("   spindle %1 %").arg(st.ovSpindle);
+        m_ovLabel->setText(ov);
+        m_ovLabel->setStyleSheet(st.ovFeed == 100 && st.ovRapid == 100 && st.ovSpindle == 100
+            ? QStringLiteral("font-size: 16px; font-weight: 600; padding-left: 8px;")
+            : QStringLiteral("font-size: 16px; font-weight: 600; padding-left: 8px; color: #f0a830;"));
+    }
     emit livePosition(st.wx, st.wy, st.wz, true);
 
     // Deferred actions wait for two consecutive Idle reports: the `ok` of a
@@ -3091,6 +3185,27 @@ void MachinePanel::zero(const QString &axes)
         return;
     if (!zeroAllowed(axes.contains(QChar('X')) || axes.contains(QChar('Y'))))
         return;
+    // Homing redefines the machine coordinates, and G54 is stored in them:
+    // an X/Y zero set now points somewhere else once the machine is homed
+    // (2026-10-24: zeroed, then Initialize, then "go to zero" went elsewhere).
+    if ((axes.contains(QChar('X')) || axes.contains(QChar('Y'))) && !m_homed) {
+        ShopAsk a;
+        a.title = QStringLiteral("Machine");
+        a.headline = QStringLiteral("X/Y zero before Initialize");
+        a.body = QStringLiteral("The machine is not homed (%1).\n\nInitialize (homing) redefines "
+                                "the machine coordinates, so a zero set now points somewhere else "
+                                "after homing. Press Initialize first, then jog to the stock corner "
+                                "and zero X/Y.").arg(m_unhomedWhy);
+        a.note = QStringLiteral("Zero anyway only if you will not home before this job.");
+        a.noteDanger = true;
+        a.okText = QStringLiteral("Zero anyway");
+        a.okDanger = true;
+        a.defaultOk = false;
+        if (!shopAsk(this, a))
+            return;
+        m_zeroedUnhomed = true;
+        log(QStringLiteral("!! X/Y zeroed while not homed: zero X/Y again after any Initialize"));
+    }
     // The end-of-job rise would land in the middle of a BitSetter reference
     // measure and fail it.
     if (jobWindingDown(QStringLiteral("Zero")))
@@ -3232,6 +3347,17 @@ void MachinePanel::onToolChange(int tool, int ordinal)
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_runBtn->setText(QStringLiteral("▶ Continue"));
+    // Parked: the operator may need to jog and zero, so the controls come
+    // back; the job view's clock waits.
+    if (m_jobView)
+        m_jobView->setParked(true);
+    setJobRunning(false);
+    // Remember where the program stands: the resume returns here before
+    // the program moves again (see continueAfterToolChange()).
+    const MachineStatus st = m_grbl->status();
+    m_preParkValid = st.valid && m_homed;
+    m_preParkX = st.mx;
+    m_preParkY = st.my;
     parkForTool();
 }
 
@@ -3831,6 +3957,14 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
     m_jobTools = toolChanges(ops);
+    if (m_jobView) {
+        const QString jobName = m_doc->filePath().isEmpty()
+                                    ? QStringLiteral("Untitled job")
+                                    : QFileInfo(m_doc->filePath()).completeBaseName();
+        m_jobView->setPlan(planJob(lines, ops, m_doc, qMin(m_grbl->setting(110, 5000), m_grbl->setting(111, 5000))),
+                           air ? jobName + QStringLiteral("  (air cut)") : jobName);
+    }
+    setJobRunning(true);
     // GRBL keeps overrides until M2 or a reset, and the job's M2 is stripped:
     // three +10 % taps ran every later job at 130 %. Each job starts at 100 %.
     m_grbl->sendRealtime(char(0x90));   // feed

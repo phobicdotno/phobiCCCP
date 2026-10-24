@@ -666,6 +666,13 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     st.feed = c.at(0).toDouble() * k;   // inch/min with $13=1
                     st.spindle = c.at(1).toDouble();
                 }
+            } else if (p.startsWith("Ov:")) {
+                const QList<QByteArray> c = p.mid(3).split(',');
+                if (c.size() >= 3) {
+                    st.ovFeed = c.at(0).toInt();
+                    st.ovRapid = c.at(1).toInt();
+                    st.ovSpindle = c.at(2).toInt();
+                }
             } else if (p.startsWith("Pn:")) {
                 st.probePin = p.indexOf('P', 3) >= 0;   // past the "Pn:" itself
                 for (char a : {'X', 'Y', 'Z', 'A'})

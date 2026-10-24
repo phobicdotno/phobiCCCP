@@ -90,7 +90,7 @@ struct FakeGrbl {
                 send("<Idle|MPos:" + pos() + "|WCO:10.000,20.000,0.000>\r\n");
             } else if (c == '?') {
                 send(held ? "<Hold:0|MPos:0.000,0.000,0.000|FS:0,18000>\r\n"
-                          : "<Run|MPos:0.000,0.000,0.000|FS:500,18000>\r\n");
+                          : "<Run|MPos:0.000,0.000,0.000|FS:500,18000|Ov:120,100,90>\r\n");
             } else if (c == '!') {
                 held = true;
             } else if (c == 0x18) {
@@ -162,6 +162,8 @@ int main(int argc, char **argv)
             finishedOk = ok;
         });
         spin(300, [] { return false; });   // a few status reports: Run
+        check(s.status().ovFeed == 120 && s.status().ovRapid == 100 && s.status().ovSpindle == 90,
+              "status: the Ov: field is parsed (feed 120, rapid 100, spindle 90)");
         s.startStream({QStringLiteral("G90"), QStringLiteral("M03S18000"),
                        QStringLiteral("G1X1F500"), QStringLiteral("G1X2 BAD"),
                        QStringLiteral("G1X3"), QStringLiteral("G1X4"), QStringLiteral("M05")});

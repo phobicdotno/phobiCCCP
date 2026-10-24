@@ -19,6 +19,7 @@
 #include "../src/zlibutil.h"
 
 #include <QCoreApplication>
+#include <QMap>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonArray>
@@ -660,6 +661,52 @@ int main(int argc, char *argv[])
         }
         check(worst > ringR - 0.15,
               "gcode: a ramped outside contour never cuts inside its own ring");
+    }
+    {
+        // A ramped pass used to run its loop twice: the ramp carried on round
+        // to vertex 0 at depth, then the lap cut the whole ring again (every
+        // 3 mm level of a 2.3 m window cut twice, 2026-10-24). Each depth must
+        // be one lap plus the ramp's own span re-cut at depth, and the ramp
+        // must start where the last lap ended, not jump to vertex 0.
+        const double W = 100.0, H = 60.0, toolR = 6.35 / 2;
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({80, 80}, W, H, layer));
+        r.addToolpath("contour", {{"ofset_dir", -1},
+                                  {"end_depth", QStringLiteral("4.500")},
+                                  {"stepdown", 1.5},
+                                  {"enable_ramping", true},
+                                  {"ramp_angle", 20.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        const double perim = 2 * (W - 2 * toolR) + 2 * (H - 2 * toolR);
+        QMap<int, double> atLevel;          // feed length cut flat at each depth (um key)
+        double px = 0, py = 0, pz = 0, maxJump = 0;
+        bool have = false;
+        for (const c2d::Op &o : g.ops) {
+            const bool motion = o.kind == c2d::Op::Feed || o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Arc;
+            if (o.kind == c2d::Op::Feed && have && o.z < -1e-6) {
+                const double d = std::hypot(o.x - px, o.y - py);
+                if (std::abs(o.z - pz) < 1e-9)
+                    atLevel[int(std::lround(o.z * 1000))] += d;
+                else
+                    maxJump = qMax(maxJump, d);   // a ramp move: along one edge at most
+            }
+            if (motion) {
+                px = o.x;
+                py = o.y;
+                pz = o.z;
+                have = true;
+            }
+        }
+        check(atLevel.size() == 3, "ramp: three depth levels");
+        bool oneLap = !atLevel.isEmpty();
+        for (auto it = atLevel.cbegin(); it != atLevel.cend(); ++it)
+            oneLap = oneLap && it.value() > perim - 0.05 && it.value() < perim + 0.05;
+        check(oneLap, "ramp: each depth is cut as one lap plus the ramp span, not twice");
+        // 1.5 mm at 20 degrees is a 4.12 mm run: the dive stops there, mid
+        // edge, instead of spreading the drop over the whole edge.
+        const double run = 1.5 / std::tan(20.0 * M_PI / 180.0);
+        check(maxJump > run - 0.05 && maxJump < run + 0.05,
+              "ramp: the dive is the angle's run, not the length of the edge it is on");
     }
     {
         // Finishing rings lift at the roughing ring's tabs. Tabs were laid

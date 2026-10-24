@@ -17,6 +17,9 @@ struct MachineStatus {
     double mx = 0, my = 0, mz = 0;       // machine coordinates
     double wx = 0, wy = 0, wz = 0;       // work coordinates (G54 + TLO applied)
     double feed = 0, spindle = 0;        // FS: field
+    // Ov: field - feed / rapid / spindle override, percent. GRBL sends it
+    // only every few reports and after a change, so the last seen stays.
+    int ovFeed = 100, ovRapid = 100, ovSpindle = 100;
     bool probePin = false;               // Pn:P — the probe input is closed
     QString limitPins;                   // Pn: limit inputs that are active (X, Y, Z, A)
     bool valid = false;

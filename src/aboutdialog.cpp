@@ -1,4 +1,5 @@
 #include "aboutdialog.h"
+#include "phobiversion.h"
 #include "brandlogo.h"
 
 #include <QDialogButtonBox>
