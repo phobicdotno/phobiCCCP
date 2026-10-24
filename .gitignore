@@ -8,3 +8,8 @@ CMakeFiles/
 *.autosave
 .cache/
 compile_commands.json
+
+# Android release signing (the key lives in GitHub secrets and ClaudeBrain)
+Android/android/key.properties
+Android/android/app/*.jks
+*.jks
