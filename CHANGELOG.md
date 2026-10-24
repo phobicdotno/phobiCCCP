@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.10 (build 100) — 2026-10-24
+
+> Answers to the open questions: Z-zero record per controller, tab height setting, contours start outside
+
+- **Machine:** the Z-zero record (what the surface map was when Z was zeroed) is kept per controller,
+  under its port, not per machine profile: two profiles on one board share it, and a profile used with
+  another board starts without one.
+- **Toolpaths:**
+  - A new contour starts outside (it was inside; the pad already started outside), so desktop and pad
+    agree. Holes in the selection still come out inside, and a cut through the stock still takes the
+    holes before the outline (a test now holds that).
+  - Settings has a Tab height: what a new contour's tabs start with (3 mm until set; each toolpath can
+    still change its own).
+
 ## v1.3.9 (build 99) — 2026-10-24
 
 > Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top

@@ -27,6 +27,7 @@
 #include <QMap>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QSettings>
 #include <QTest>
 #include <QStatusBar>
 #include <QTimer>
@@ -87,6 +88,16 @@ int main(int argc, char *argv[])
     c2d::Toolpath k = c2d::makeToolpath(d, "contour", {c.id});
     k.json.insert("name", "Ring");
     d.insertToolpath(1, k);
+    // Settings > Tab height is what a new contour starts with; a contour
+    // starts outside (holes in it still come out inside).
+    check(k.json.value("tab_height").toDouble() == 3.0 && k.json.value("ofset_dir").toInt() == 1,
+          "a new contour: 3 mm tabs, outside");
+    {
+        QSettings().setValue("defaults/tabHeight", 5.5);
+        const c2d::Toolpath t5 = c2d::makeToolpath(d, "contour", {c.id});
+        QSettings().remove("defaults/tabHeight");
+        check(t5.json.value("tab_height").toDouble() == 5.5, "the tab height setting is a new contour's tab height");
+    }
 
     w.setMode(c2d::MainWindow::Mode::Toolpaths, true);   // turns Preview on
     check(w.m_previewAct->isChecked(), "Toolpaths mode turns Preview on");
