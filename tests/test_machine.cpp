@@ -255,8 +255,10 @@ int main(int argc, char **argv)
             check(a.name == QLatin1String("Pocket A") && a.kind == c2d::JobSection::Toolpath, "plan: first toolpath named from its comment");
             check(a.passes.size() == 2 && std::abs(a.passes.at(0).z + 1.5) < 1e-6 && std::abs(a.passes.at(1).z + 3.0) < 1e-6,
                   "plan: a pocket cut in two levels is two passes, at their floors");
-            // Pass 1: plunge 6.5 mm at F300 (1.3 s) + 40 mm at F1000 (2.4 s); pass 2: 1.5 mm plunge + the lap.
-            check(a.passes.size() == 2 && std::abs(a.passes.at(0).estSec - 3.7) < 0.05 && std::abs(a.passes.at(1).estSec - 2.7) < 0.05,
+            // Pass 1: plunge 6.5 mm at F300 (1.3 s) + 40 mm at F1000 (2.4 s); pass 2: 1.5 mm
+            // plunge + the lap + the 8 mm retract rapid at 5000 that ends the toolpath (0.1 s).
+            check(a.passes.size() == 2 && std::abs(a.passes.at(0).estSec - 3.7) < 0.05
+                      && std::abs(a.passes.at(1).estSec - (2.7 + 8.0 / 5000 * 60)) < 0.05,
                   "plan: pass times from feed and distance");
             check(a.estSec > 3.7 + 2.7 + 2.9, "plan: the toolpath's own time counts the spin-up dwell too");
             check(tc.kind == c2d::JobSection::ToolChange && tc.detail.startsWith(QLatin1String("T2")), "plan: the tool change is its own step");
