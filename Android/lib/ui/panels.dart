@@ -573,6 +573,17 @@ class ToolpathsPanel extends StatelessWidget {
               ),
             ),
           ),
+        if (t.type == 'profile')
+          PCard(
+            title: 'Tabs',
+            child: Column(children: [
+              _row('Tabs', Switch(value: t.tabs, onChanged: (v) => onChange(i, t.copyWith(tabs: v)))),
+              if (t.tabs) ...[
+                _row('Height', StepperField(t.tabHeight ?? 3, (v) => onChange(i, t.copyWith(tabHeight: v)), min: 0.1, max: 50, decimals: 2)),
+                _row('Width', StepperField(t.tabWidth ?? 12, (v) => onChange(i, t.copyWith(tabWidth: v)), min: 1, max: 30, decimals: 1)),
+              ],
+            ]),
+          ),
         PCard(
           title: 'Vectors',
           child: Column(

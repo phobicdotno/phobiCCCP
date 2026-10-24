@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.11 (build 101) — 2026-10-24
+
+> Tab fields on the pad
+
+- **Pad app:** a profile has a Tabs card: the switch, the tab height and the tab width, as on the
+  computer. A pad profile now carries them to the computer, and an edit of a file with tabs set up no
+  longer drops them on the way back (they were not reported as lost, because they were not carried).
+
 ## v1.3.10 (build 100) — 2026-10-24
 
 > Answers to the open questions: Z-zero record per controller, tab height setting, contours start outside
