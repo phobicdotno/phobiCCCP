@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.11 (build 101) — 2026-10-25
+
+> A new Drill toolpath goes to the full depth in one movement
+
+- **Toolpaths:**
+  - A new Drill toolpath started with a 3.175 mm peck, so a hole through a 18 mm sheet was drilled in
+    six steps with a retract between each. It now starts with Peck 0, one plunge to the bottom. A peck
+    can still be set on the toolpath for a deep hole in a hard material; existing Drill toolpaths keep
+    the peck they were saved with (set Peck to 0 for one go).
+
 ## v1.3.10 (build 100) — 2026-10-24
 
 > A small hole inside a bigger outline can be clicked again, whatever order the shapes were added in

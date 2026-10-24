@@ -305,7 +305,10 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         stem = QStringLiteral("Drilling Toolpath");
         j.insert(QStringLiteral("angle"), 0);
         j.insert(QStringLiteral("drill_type"), 0);
-        j.insert(QStringLiteral("peck_distance"), 3.175);
+        // 0 = one plunge to the full depth. Carbide Create starts at 1/8 in (3.175 mm), which
+        // steps a through hole in pieces; a drill is meant to go through in ONE movement
+        // (owner, 2026-10-25). A peck is still there to set for a deep hole in a hard material.
+        j.insert(QStringLiteral("peck_distance"), 0);
         // phobiCCCP keys: dwell seconds at the bottom; chip_break pecks back
         // off chip_retract mm instead of leaving the hole.
         j.insert(QStringLiteral("dwell"), 0);
