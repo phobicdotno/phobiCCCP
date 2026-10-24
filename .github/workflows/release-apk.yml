@@ -37,6 +37,22 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="$(cat ../VERSION)"; fi
           echo "V=$v" >> "$GITHUB_ENV"
 
+      - name: Release signing key
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          # One fixed key for every release, so a pad can update in place and keep its
+          # data. Without the secrets the build would sign with a throwaway debug key and
+          # no pad could install it over the last one: fail instead.
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ]; then
+            echo "::error::ANDROID_KEYSTORE_B64 / _PASSWORD / ANDROID_KEY_ALIAS secrets are not set"; exit 1
+          fi
+          echo "$KS_B64" | base64 -d > android/app/release.jks
+          printf "storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n" \
+            "$KS_PASS" "$KS_ALIAS" "$KS_PASS" > android/key.properties
+
       - name: Build APK
         run: |
           flutter pub get

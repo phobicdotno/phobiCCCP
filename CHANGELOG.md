@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.8 (build 98) — 2026-10-24
+
+> The pad app is signed with one fixed key, so a new release installs over the old one and keeps its designs
+
+- **Pad app:**
+  - Every release used to be signed with a throwaway debug key made fresh on the build
+    machine, so Android refused to install any release over the previous one and the
+    only way was to uninstall first, losing the pad's data. Releases are now signed with
+    one fixed key kept in the repository's secrets. This one release has to be installed
+    fresh; every release after it updates in place.
+
 ## v1.3.7 (build 97) — 2026-10-24
 
 > Faster builds: a version bump no longer recompiles the whole program and every test
