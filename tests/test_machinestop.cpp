@@ -1277,6 +1277,15 @@ int main(int argc, char **argv)
         panel.zero(QStringLiteral("Z"));
         wait(800);
         check(grbl.indexOf("G10 L20 P1 Z1.750") >= 0, "mapzero: Zero Z with the map on keeps Z0 at the surface under X0 Y0");
+        {
+            // The record belongs to the controller (its port), not the profile.
+            QSettings st;
+            QString key = QString::fromLatin1(name);
+            key.replace('/', '_').replace('\\', '_');
+            check(st.contains(QStringLiteral("controllers/%1/zzero/wco").arg(key))
+                      && !st.contains(QStringLiteral("machine/zzero/wco")),
+                  "mapzero: the Z-zero record is kept per controller");
+        }
         panel.m_useMap->setChecked(false);
         grbl.events.clear();
         panel.zero(QStringLiteral("Z"));

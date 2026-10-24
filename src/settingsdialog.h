@@ -49,6 +49,7 @@ private:
     QComboBox *m_machine;
     QDoubleSpinBox *m_customW;
     QDoubleSpinBox *m_customH;
+    QDoubleSpinBox *m_tabHeight;
     int m_scaleWas = 100;
 };
 

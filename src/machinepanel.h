@@ -199,6 +199,9 @@ private:
     // across restarts; judged only while the controller still has that
     // offset). Run refuses a map state that would put Z0 elsewhere.
     void noteZZero(double mx, double my, double sent, double wcoZ);
+    QString zzeroGroup() const;
+    void loadZZero();
+    QString m_connectedPort;             // the port the streamer opened
     bool m_zZeroKnown = false, m_zZeroWithMap = false;
     double m_zZeroSent = 0, m_zZeroMx = 0, m_zZeroMy = 0, m_zZeroWco = 0;
     QCheckBox *m_useMap = nullptr;
