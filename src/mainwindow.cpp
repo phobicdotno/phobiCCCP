@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "phobiversion.h"
 #include "importers.h"
 #include "cccpfile.h"
 #include "shopdialog.h"

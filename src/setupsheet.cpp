@@ -1,4 +1,5 @@
 #include "setupsheet.h"
+#include "phobiversion.h"
 #include "c2ddocument.h"
 #include "gcodeexport.h"
 #include "heightmodel.h"

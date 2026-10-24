@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.7 (build 97) — 2026-10-24
+
+> Faster builds: a version bump no longer recompiles the whole program and every test
+
+- **Build:**
+  - The version number reaches the code through a small generated header instead of a
+    compiler flag on every file, so bumping it rebuilds a handful of files, not everything.
+
 ## v1.3.6 (build 96) — 2026-10-24
 
 > While a job runs, the Machine page shows the job's steps and time left instead of the jog pad and zeroing buttons

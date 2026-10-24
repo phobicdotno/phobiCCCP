@@ -1,5 +1,6 @@
 // About dialog: the changelog summary and the dialog itself (offscreen).
 #include "../src/aboutdialog.h"
+#include "phobiversion.h"
 
 #include <QApplication>
 #include <QFile>
