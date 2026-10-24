@@ -660,11 +660,13 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     });
     connect(m_form, &ToolpathForm::changeToolRequested, this, [this] { pickTool(); });
 
-    // Replace the toolpath's vector list with the canvas selection.
+    // Replace the toolpath's vector list with the canvas selection. At the
+    // top of the settings, right under the list: it is the first thing done
+    // to a new toolpath.
     auto *assign = new QPushButton(QStringLiteral("Assign selected vectors"), this);
     assign->setToolTip(QStringLiteral(
         "Set this toolpath's vectors to the elements selected on the canvas"));
-    lay->addWidget(assign);
+    lay->insertWidget(lay->indexOf(m_form), assign);
     connect(assign, &QPushButton::clicked, this, [this] {
         flushForm();
         if (!m_doc || m_uuid.isEmpty())

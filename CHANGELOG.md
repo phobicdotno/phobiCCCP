@@ -12,6 +12,8 @@
     shows only what is left for it. Selecting it outlines that remainder in amber on the drawing, over
     a faint outline of its own shapes, and its thumbnails do the same. A pocket above counts when it is
     switched on and goes at least as deep.
+  - "Assign selected vectors" moved from the bottom of the toolpath settings to the top, right under
+    the list (the pad's Vectors card too): it is the first thing done to a new toolpath.
 
 ## v1.3.11 (build 101) — 2026-10-25
 

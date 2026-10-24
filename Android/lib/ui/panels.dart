@@ -593,6 +593,30 @@ class ToolpathsPanel extends StatelessWidget {
             ),
           ],
         ),
+        // At the top, as on the computer: the first thing done to a new toolpath.
+        PCard(
+          title: 'Vectors',
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                child: Text('${t.shapes.length} assigned · ${inSel.length} selected', style: const TextStyle(color: C.label)),
+              ),
+              if (openPathsLeftOut(design, t) > 0)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Text(openPathsWords(openPathsLeftOut(design, t)), style: const TextStyle(color: C.amber)),
+                ),
+              PushBtn(
+                'Assign selected vectors',
+                height: 34,
+                fontSize: 13,
+                onTap: inSel.isEmpty ? null : () => onChange(i, t.copyWith(shapes: inSel)),
+              ),
+            ],
+          ),
+        ),
         PCard(
           padding: const EdgeInsets.all(10),
           child: Row(
@@ -636,29 +660,6 @@ class ToolpathsPanel extends StatelessWidget {
               ),
             ),
           ),
-        PCard(
-          title: 'Vectors',
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                child: Text('${t.shapes.length} assigned · ${inSel.length} selected', style: const TextStyle(color: C.label)),
-              ),
-              if (openPathsLeftOut(design, t) > 0)
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                  child: Text(openPathsWords(openPathsLeftOut(design, t)), style: const TextStyle(color: C.amber)),
-                ),
-              PushBtn(
-                'Assign selected vectors',
-                height: 34,
-                fontSize: 13,
-                onTap: inSel.isEmpty ? null : () => onChange(i, t.copyWith(shapes: inSel)),
-              ),
-            ],
-          ),
-        ),
       ],
     );
   }
