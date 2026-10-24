@@ -1958,7 +1958,23 @@ void MachinePanel::continueAfterToolChange()
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_onIdle = nullptr;                  // a prompt still waiting for Idle is void now
-    m_grbl->continueAfterToolChange(m_homed ? riseToTop() : QStringList{});
+    QStringList first = m_homed ? riseToTop() : QStringList{};
+    // After the measurement the spindle stands over the BitSetter, and the
+    // program's first line is a retract to ITS safe height in work Z: with
+    // the stock top below the button that is a rapid down into the button
+    // (2026-10-24, 16.7 mm into it). So, still at the top of Z, go back to
+    // where the program parked - or, without a position, to the tool-change
+    // spot, which is beside the button and clear by definition.
+    if (m_homed) {
+        const double x = m_preParkValid ? m_preParkX : m_tcX->value();
+        const double y = m_preParkValid ? m_preParkY : m_tcY->value();
+        first << QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3);
+        log(QStringLiteral("continuing: up to the top, back over %1 (machine X%2 Y%3), then the program")
+                .arg(m_preParkValid ? QStringLiteral("where the program parked")
+                                    : QStringLiteral("the tool-change spot (no position report)"))
+                .arg(x, 0, 'f', 3).arg(y, 0, 'f', 3));
+    }
+    m_grbl->continueAfterToolChange(first);
 }
 
 // Set the work offset from where the machine now stands and the corner it
@@ -2606,6 +2622,15 @@ void MachinePanel::onStatus(const MachineStatus &st)
         m_limitWarned = false;
         forgetJogPlan();
         log(QStringLiteral("homed: machine position known, jog limits on"));
+        if (m_zeroedUnhomed) {
+            m_zeroedUnhomed = false;
+            log(QStringLiteral("!! the X/Y zero was set BEFORE this homing: it points somewhere "
+                               "else now - jog to the stock corner and zero X/Y again"));
+            shopTell(this, QStringLiteral("Machine"), QStringLiteral("Zero X/Y again"),
+                     QStringLiteral("The X/Y zero was set before this homing. Homing redefined the "
+                                    "machine coordinates, so that zero now points somewhere else.\n\n"
+                                    "Jog to the stock corner and zero X/Y again before running a job."));
+        }
     }
     if (alarm)
         m_homingStarted = false;
@@ -2964,6 +2989,27 @@ void MachinePanel::zero(const QString &axes)
         return;
     if (!zeroAllowed(axes.contains(QChar('X')) || axes.contains(QChar('Y'))))
         return;
+    // Homing redefines the machine coordinates, and G54 is stored in them:
+    // an X/Y zero set now points somewhere else once the machine is homed
+    // (2026-10-24: zeroed, then Initialize, then "go to zero" went elsewhere).
+    if ((axes.contains(QChar('X')) || axes.contains(QChar('Y'))) && !m_homed) {
+        ShopAsk a;
+        a.title = QStringLiteral("Machine");
+        a.headline = QStringLiteral("X/Y zero before Initialize");
+        a.body = QStringLiteral("The machine is not homed (%1).\n\nInitialize (homing) redefines "
+                                "the machine coordinates, so a zero set now points somewhere else "
+                                "after homing. Press Initialize first, then jog to the stock corner "
+                                "and zero X/Y.").arg(m_unhomedWhy);
+        a.note = QStringLiteral("Zero anyway only if you will not home before this job.");
+        a.noteDanger = true;
+        a.okText = QStringLiteral("Zero anyway");
+        a.okDanger = true;
+        a.defaultOk = false;
+        if (!shopAsk(this, a))
+            return;
+        m_zeroedUnhomed = true;
+        log(QStringLiteral("!! X/Y zeroed while not homed: zero X/Y again after any Initialize"));
+    }
     // The end-of-job rise would land in the middle of a BitSetter reference
     // measure and fail it.
     if (jobWindingDown(QStringLiteral("Zero")))
@@ -3088,6 +3134,12 @@ void MachinePanel::onToolChange(int tool, int ordinal)
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_runBtn->setText(QStringLiteral("▶ Continue"));
+    // Remember where the program stands: the resume returns here before
+    // the program moves again (see continueAfterToolChange()).
+    const MachineStatus st = m_grbl->status();
+    m_preParkValid = st.valid && m_homed;
+    m_preParkX = st.mx;
+    m_preParkY = st.my;
     parkForTool();
 }
 

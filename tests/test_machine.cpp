@@ -753,6 +753,66 @@ int main(int argc, char **argv)
         spin(1500, [&] { return !panel.isBusy(); });
     }
 
+    // Resume after a BitSetter measurement: the spindle stands over the
+    // button, and the program's first line is a retract to ITS safe height
+    // in work Z - below the button when the stock top is. The resume must
+    // rise to the top and go back over where the program parked (machine
+    // X/Y of the last report) BEFORE any program line goes out. 2026-10-24:
+    // it did not, and the rapid drove the bit 16.7 mm into the BitSetter.
+    {
+        wait(800);
+        QToolButton *bs = nullptr;
+        for (QToolButton *b : panel.findChildren<QToolButton *>())
+            if (b->text() == QLatin1String("BitSetter on"))
+                bs = b;
+        bs->setChecked(true);
+        grbl.mx = -123.5;
+        grbl.my = -234.25;
+        wait(800);                           // the panel sees the new position
+        // A fresh reference with the BitSetter on (Zero Z measures it).
+        grbl.events.clear();
+        button(QStringLiteral("Zero"), QStringLiteral("work Z0"))->click();
+        spin(4000, [&] { return grbl.count("G38.2") >= 2 && !s->isMacroRunning(); });
+        wait(600);
+        seen.clear();
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("TOOL CHANGE"))
+                return QStringLiteral("Measure and continue");
+            return QStringLiteral("OK");
+        };
+        bool finished = false, finishedOk = false;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        grbl.events.clear();
+        s->startStream({QStringLiteral("G90"), QStringLiteral("M0 ;T2"), QStringLiteral("G90G21"),
+                        QStringLiteral("G0Z5.000"), QStringLiteral("X25.100Y24.900")});
+        spin(8000, [&] { return finished; });
+        check(finished && finishedOk, "resume: the job runs to the end");
+        const int measured = grbl.indexOf("G43.1");
+        const int back = grbl.indexOf("G53 G0 X-123.500 Y-234.250");
+        const int program = grbl.indexOf("G90G21");
+        const int retract = grbl.indexOf("G0Z5.000");
+        check(measured >= 0 && back > measured,
+              "resume: after the measurement it goes back over where the program parked");
+        check(back >= 0 && program > back && retract > back,
+              "resume: the return move goes out BEFORE the program's own retract");
+        int rise = -1;
+        for (int i = grbl.events.size() - 1; i >= 0; --i)
+            if (i < back && grbl.events.at(i).startsWith("G53 G0 Z")) {
+                rise = i;
+                break;
+            }
+        check(rise >= 0 && rise > measured, "resume: and rises to the top first");
+        QObject::disconnect(c);
+        bs->setChecked(false);
+        spin(1500, [&] { return !panel.isBusy(); });
+        grbl.mx = -100;
+        grbl.my = -100;
+        wait(800);
+    }
+
     // A pad button mapped to home: never at a tool change, where the
     // operator's hands are at the collet; from Idle it homes and parks.
     {

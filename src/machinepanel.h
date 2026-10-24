@@ -298,6 +298,16 @@ private:
     bool bitSetterReachable(const BitSetterConfig &cfg, const QString &what);
     bool jobWindingDown(const QString &what);
     QString m_unhomedWhy = QStringLiteral("not connected");
+    // Where the program stood (machine X/Y, last report) when it parked for
+    // a tool change. The resume goes back there at the top of Z before the
+    // program's own lines: those start with a retract to the program's safe
+    // height in WORK Z, which can be below the BitSetter button (2026-10-24:
+    // 16.7 mm below it, and the rapid drove the bit into the button).
+    bool m_preParkValid = false;
+    double m_preParkX = 0, m_preParkY = 0;
+    // An X/Y zero set before homing on this connection: homing redefines
+    // machine coordinates, so that zero points somewhere else afterwards.
+    bool m_zeroedUnhomed = false;
     QString m_lastLimitPins;
     bool m_limitWarned = false;
     QPushButton *m_padMapBtn = nullptr;

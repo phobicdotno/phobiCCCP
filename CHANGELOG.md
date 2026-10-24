@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.3 (build 93) — 2026-10-24
+
+> After a tool change the machine goes back over the job at the top before the program moves, and Zero X/Y warns when the machine is not homed
+
+- **Machine:**
+  - After the BitSetter measured the new bit, the program continued right over the
+    BitSetter, and its first line - a retract to the job's safe height in work Z - was
+    a rapid down into the button whenever the stock top sits below it (16.7 mm below
+    on 2026-10-24: the bit went into the BitSetter). The resume now rises to the top,
+    returns over where the program parked, and only then hands over to the program.
+  - Zero X/Y while the machine is not homed asks first: homing redefines the machine
+    coordinates, so that zero points somewhere else afterwards. If zeroed anyway, the
+    next Initialize says the zero moved and must be set again.
+
 ## v1.3.2 (build 92) — 2026-10-20
 
 > Recursive bug hunt, round 4: inlays seat at their depth, marks stay on their letters, and closing during an export no longer hangs
