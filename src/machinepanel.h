@@ -181,6 +181,7 @@ private:
     SurfaceMap m_map;
     QCheckBox *m_useMap = nullptr;
     QLabel *m_mapLabel = nullptr;
+    QLabel *m_ovLabel = nullptr;         // live feed/rapid/spindle override, beside the +/- buttons
     void startSurfaceMap();
     void setSurfaceMap(const SurfaceMap &map);
     void refreshMapUi();

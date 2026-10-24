@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.4 (build 94) — 2026-10-24
+
+> The feed override percentage is shown live beside the −10 % / 100 % / +10 % buttons
+
+- **Machine:**
+  - The controller's own override report (feed, rapid, spindle) is read and shown next
+    to the override buttons, amber when off 100 %. The status line under the position
+    also says FEED n % while the feed override is not 100 %.
+
 ## v1.3.3 (build 93) — 2026-10-24
 
 > After a tool change the machine goes back over the job at the top before the program moves, and Zero X/Y warns when the machine is not homed

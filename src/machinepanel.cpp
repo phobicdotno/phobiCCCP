@@ -673,6 +673,14 @@ MachinePanel::MachinePanel(QWidget *parent)
     ovBtn(QStringLiteral("−10%"), char(0x92));
     ovBtn(QStringLiteral("100%"), char(0x90));
     ovBtn(QStringLiteral("+10%"), char(0x91));
+    // What the controller actually runs at (its Ov: report), so three taps
+    // show as 130 % instead of having to be counted.
+    m_ovLabel = new QLabel(QStringLiteral("feed 100 %"), more);
+    m_ovLabel->setObjectName(QStringLiteral("ovLabel"));
+    m_ovLabel->setToolTip(QStringLiteral("Feed, rapid and spindle override as the controller "
+                                         "reports them. Every job starts at 100 %."));
+    m_ovLabel->setStyleSheet(QStringLiteral("font-size: 16px; font-weight: 600; padding-left: 8px;"));
+    ovRow->addWidget(m_ovLabel);
     ovRow->addStretch(1);
     mv->addLayout(ovRow);
     auto *airRow = new QHBoxLayout;
@@ -2695,7 +2703,21 @@ void MachinePanel::onStatus(const MachineStatus &st)
         extra += QStringLiteral("   TLO %1").arg(m_grbl->toolLengthOffset(), 0, 'f', 3);
     if (st.probePin)
         extra += QStringLiteral("   PROBE");
+    // An override off 100 % is worth seeing without unfolding "More".
+    if (st.ovFeed != 100)
+        extra += QStringLiteral("   FEED %1 %").arg(st.ovFeed);
     m_extra->setText(extra);
+    if (m_ovLabel) {
+        QString ov = QStringLiteral("feed %1 %").arg(st.ovFeed);
+        if (st.ovRapid != 100)
+            ov += QStringLiteral("   rapid %1 %").arg(st.ovRapid);
+        if (st.ovSpindle != 100)
+            ov += QStringLiteral("   spindle %1 %").arg(st.ovSpindle);
+        m_ovLabel->setText(ov);
+        m_ovLabel->setStyleSheet(st.ovFeed == 100 && st.ovRapid == 100 && st.ovSpindle == 100
+            ? QStringLiteral("font-size: 16px; font-weight: 600; padding-left: 8px;")
+            : QStringLiteral("font-size: 16px; font-weight: 600; padding-left: 8px; color: #f0a830;"));
+    }
     emit livePosition(st.wx, st.wy, st.wz, true);
 
     // Deferred actions wait for two consecutive Idle reports: the `ok` of a
