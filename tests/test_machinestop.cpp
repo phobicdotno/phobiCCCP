@@ -112,6 +112,43 @@ struct FakeGrbl {
     bool locked = false;      // after ALARM:1: deaf until ctrl-X
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
+    double wcoX = -200, wcoY = -200;   // a work zero inside the travel (Run checks it)
+    double wcoZ = -40;                    // work Z offset the status reports carry (zero under the switch)
+    int wcoEvery = 0, wcoCount = 0;       // >0: WCO only on the first report and every Nth (real GRBL)
+    // A V1 block model. Probes and G0 moves track the position.
+    bool geo = false, rel = false, noiseOnce = false;
+    QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
+    double bx = -130, by = -130, topZ = -40, r = 3.175, minZ = 1e9;
+    double val(const QByteArray &l, char ax, bool &has) const {
+        const int i = l.indexOf(ax); has = i >= 0; if (!has) return 0;
+        int j = i + 1; while (j < l.size() && (l[j]=='-'||l[j]=='.'||(l[j]>='0'&&l[j]<='9'))) ++j;
+        return l.mid(i + 1, j - i - 1).toDouble(); }
+    bool geoLine(const QByteArray &l, QByteArray &reply) {
+        if (l.contains("G91")) rel = true;
+        if (l.contains("G90")) rel = false;
+        const bool g53 = l.contains("G53");
+        const bool probe = l.contains("G38.");
+        if (!probe && !l.contains("G0") && !l.contains("G1")) return false;
+        bool hx, hy, hz; const double X = val(l, 'X', hx), Y = val(l, 'Y', hy), Z = val(l, 'Z', hz);
+        double tx = mx, ty = my, tz = mz;
+        if (hx) tx = (rel && !g53) ? mx + X : X;
+        if (hy) ty = (rel && !g53) ? my + Y : Y;
+        if (hz) tz = (rel && !g53) ? mz + Z : Z;
+        if (!probe) { mx = tx; my = ty; mz = tz; minZ = qMin(minZ, mz); return true; }
+        bool hit = false; double cx = tx, cy = ty, cz = tz;
+        const bool overBlock = mx >= bx && mx <= bx + 60 && my >= by && my <= by + 60;
+        if (hz && tz < mz && overBlock && mz >= topZ && tz <= topZ) { hit = true; cz = topZ; }
+        if (hx && tx > mx && mz < topZ && my >= by && my <= by + 60) {
+            if (noiseOnce && l.contains("G38.3")) { noiseOnce = false; hit = true; cx = mx + 2; }
+            else if (mx <= bx - r && tx >= bx - r) { hit = true; cx = bx - r; }
+        }
+        if (hy && ty > my && mz < topZ && mx >= bx && mx <= bx + 60 && my <= by - r && ty >= by - r) { hit = true; cy = by - r; }
+        mx = cx; my = cy; mz = cz; minZ = qMin(minZ, mz);
+        send("[PRB:" + num(mx) + "," + num(my) + "," + num(mz) + (hit ? ":1]\r\n" : ":0]\r\n"));
+        if (!hit && l.contains("G38.2")) { send("ALARM:5\r\n"); alarm = true; reply = "ok\r\n"; }
+        events << ("AT " + num(mx) + "," + num(my) + "," + num(mz));
+        return true;
+    }
     bool running = false;
     QByteArray pins;
     double mx = -100, my = -100, mz = -30;
@@ -152,7 +189,7 @@ struct FakeGrbl {
                     continue; }
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdClock.isValid() && holdClock.elapsed() < holdSettleMs ? "Hold:1" : "Hold:0") : home ? "Home" : jogging() ? "Jog" : running ? "Run" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + "|WCO:0.000,0.000,0.000>\r\n");
+                     + "|FS:0,0" + (pins.isEmpty() ? QByteArray() : "|Pn:" + pins) + (wcoEvery > 0 && wcoCount-- > 0 ? QByteArray() : (wcoCount = wcoEvery - 1, "|WCO:" + num(wcoX) + "," + num(wcoY) + "," + num(wcoZ))) + ">\r\n");
             } else if (c == '!') {
                 if (!held) holdClock.start();
                 held = true;
@@ -188,6 +225,13 @@ struct FakeGrbl {
                     continue;
                 }
                 QByteArray reply = "ok\r\n";
+                if (!rebootOn.isEmpty() && line.startsWith(rebootOn)) {
+                    rebootOn.clear();
+                    mx = my = mz = 0; alarm = true; events << "REBOOT";
+                    send("\r\nGrbl 1.1h ['$' for help]\r\n[MSG:'$H'|'$X' to unlock]\r\n");
+                    line.clear();
+                    continue;
+                }
                 if (!alarmOn.isEmpty() && line.startsWith(alarmOn)) {
                     alarmOn.clear();
                     locked = true;
@@ -195,7 +239,9 @@ struct FakeGrbl {
                     line.clear();
                     continue;
                 }
-                if (line == "$$")
+                if (line == "$$" && (held || running))
+                    reply = "error:8\r\n";   // GRBL refuses $$ in a hold or a cycle
+                else if (line == "$$")
                     send(travel);
                 else if (line == "$H" && rejectHome)
                     reply = "error:5\r\n";
@@ -208,6 +254,8 @@ struct FakeGrbl {
                     alarm = false;
                 else if (alarm && !line.isEmpty() && line[0] != '$')
                     reply = "error:9\r\n";
+                else if (geo && geoLine(line, reply))
+                    ;
                 else if (line.contains("G38.2") || line.contains("G38.3"))
                     send("[PRB:" + num(mx) + "," + num(my) + "," + num(probeZ) + ":1]\r\n");
                 else if (line.startsWith("$J="))
@@ -411,9 +459,35 @@ int main(int argc, char **argv)
         return {};
     };
 
+    if (qgetenv("R4MODE") == "connrun") {
+        // Still finishing the buffered moves of a job from before the link dropped.
+        grbl.running = true;
+        grbl.travel += "$13=1\r\n";
+        grbl.mx = -100 / 25.4; grbl.my = -100 / 25.4; grbl.mz = -30 / 25.4;
+        grbl.wcoX = -200 / 25.4; grbl.wcoY = -200 / 25.4; grbl.wcoZ = -60 / 25.4;
+        QTimer::singleShot(2000, [&] { grbl.running = false; });
+    }
+    if (qgetenv("R4MODE") == "connhold")
+        grbl.held = true;   // left in a feed hold mid-job (the USB link dropped)
+    if (qgetenv("R4MODE") == "inch13wco") {
+        // $13=1 with WCO only every 10th report: the offset that came before
+        // $$ was answered is read in inches too.
+        grbl.travel += "$13=1\r\n";
+        grbl.wcoEvery = 10;
+        grbl.mx = -100 / 25.4; grbl.my = -100 / 25.4; grbl.mz = -30 / 25.4;
+        grbl.wcoX = -200 / 25.4; grbl.wcoY = -200 / 25.4; grbl.wcoZ = -60 / 25.4;
+    }
+    if (qgetenv("R4MODE") == "inch13") {
+        // $13=1: positions reported in inches. Machine (-100,-100,-30) mm,
+        // work zero (-200,-200,-60) mm.
+        grbl.travel += "$13=1\r\n";
+        grbl.mx = -100 / 25.4; grbl.my = -100 / 25.4; grbl.mz = -30 / 25.4;
+        grbl.wcoX = -200 / 25.4; grbl.wcoY = -200 / 25.4; grbl.wcoZ = -60 / 25.4;
+    }
     check(s->connectPort(QString::fromLatin1(name)), "connects to the fake controller");
     spin(1500, [&] { return panel.statusJson().value("homed").toBool(); });
-    check(panel.statusJson().value("homed").toBool(), "homed (resumed where the last session left it)");
+    if (qgetenv("R4MODE") != "connrun")   // moving: not where it was left
+        check(panel.statusJson().value("homed").toBool(), "homed (resumed where the last session left it)");
     wait(800);   // $$ answered
     // One scenario per run (ctest runs each): R4MODE = cancelstop, cancelend
     // or disconnend.
@@ -886,6 +960,330 @@ int main(int argc, char **argv)
         for (int i = grbl.indexOf("$J="); i >= 0 && i < grbl.events.size(); ++i) std::printf("  ev: %s\n", grbl.events.at(i).constData());
         check(during >= 3, "r13rehdeaf: status keeps coming while the rehearsal summary is open");
     }
+    if (mode == "envxy" || mode == "envz") {
+        // A job past the travel at the current zero is refused: with the XY
+        // zero at the switches it ran to machine X +48; with Z zeroed 30 mm
+        // under the switch, an air cut lifted 30 mm rapided past it.
+        if (mode == "envxy") {
+            grbl.wcoX = 0;
+            grbl.wcoY = 0;
+            grbl.wcoZ = -60;
+        } else {
+            grbl.wcoZ = -30;
+            grbl.wcoX = -200;
+            grbl.wcoY = -200;
+            panel.m_airCut->setChecked(true);
+            panel.m_airLift->setValue(30);
+        }
+        wait(800);
+        grbl.events.clear();
+        bool refused = false;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("The program goes off the machine")) {
+                refused = true;
+                return QStringLiteral("OK");
+            }
+            if (v.headline.startsWith("Insert tool"))
+                return QStringLiteral("Same length: continue");
+            return QStringLiteral("\u25b6 Start");
+        };
+        const bool started = panel.runProgram();
+        wait(1500);
+        check(refused && !started && !s->isStreaming(), mode == "envxy" ? "envxy: a job past the X/Y travel is refused"
+                                                             : "envz: an air cut lifted past the Z switch is refused");
+        // Inside the travel the same job runs.
+        grbl.wcoX = -200;
+        grbl.wcoY = -200;
+        grbl.wcoZ = -60;
+        panel.m_airCut->setChecked(false);
+        wait(800);
+        const bool ok = panel.runProgram();
+        check(ok, "env: the job inside the travel runs");
+        s->stopStream();
+        wait(500);
+    }
+    if (mode == "connrun") {
+        // Connected while GRBL still ran moves from before (it answers $$
+        // with error:8): the listing was never read, so $13=1 positions
+        // stayed 25.4 times too small all session.
+        spin(8000, [&] { return s->haveSettings(); });
+        check(s->haveSettings(), "connrun: the $$ listing is read once the leftover moves end");
+        check(std::abs(s->status().wx - 100) < 0.01, "connrun: and positions read in mm");
+    }
+    if (mode == "inch13wco") {
+        // The offset reported before $$ (in inches) was read as mm: Run saw
+        // the job 25 times nearer zero and refused one that fits.
+        bool refused = false;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith(QLatin1String("The program goes off the machine"))) {
+                refused = true;
+                return QStringLiteral("OK");
+            }
+            return QStringLiteral("\u25b6 Start");
+        };
+        check(std::abs(s->status().wx - 100) < 0.01 && std::abs(s->status().wz - 30) < 0.01,
+              "inch13wco: work position from the early offset in mm");
+        const bool ok = panel.runProgram();
+        check(ok && !refused, "inch13wco: a job inside the travel runs right after connect");
+        if (ok) {
+            s->stopStream();
+            wait(500);
+        }
+    }
+    if (mode == "inch13") {
+        // Read as mm, a jog went 86 mm the wrong way and Run refused a job
+        // that fits.
+        check(std::fabs(s->status().mx + 100) < 0.01 && std::fabs(s->status().wx - 100) < 0.01,
+              "inch13: inch reports read in mm");
+        bool refused = false;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("The program goes off the machine")) {
+                refused = true;
+                return QStringLiteral("OK");
+            }
+            return QStringLiteral("\u25b6 Start");
+        };
+        const bool ok = panel.runProgram();
+        check(ok && !refused, "inch13: a job inside the travel runs with $13=1");
+        if (ok) {
+            s->stopStream();
+            wait(500);
+        }
+        wait(800);
+        grbl.events.clear();
+        panel.forgetJogPlan();
+        panel.jogBy('X', -10, 1000);
+        wait(300);
+        check(lastJog().contains("X-110"), "inch13: a 10 mm X- jog goes to X-110");
+    }
+    if (mode == "connhold") {
+        // Connected to a controller paused in a job this session never sent:
+        // its leftover moves are cleared, so no Resume can run them (GRBL
+        // answers $$ with error:8 while held).
+        spin(5000, [&] { return grbl.events.contains("^X") && !grbl.held; });
+        check(grbl.events.contains("^X") && !grbl.held, "connhold: a held job left from before is cleared on connect");
+        check(!panel.m_machineState.startsWith(QLatin1String("Hold")), "connhold: not left in a hold");
+    }
+    if (mode == "maphigh") {
+        // Z zeroed high (tall stock, short bit): the map's travel height,
+        // plate top plus travel in work Z, lands past the Z switch.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Map)->click();
+        grbl.wcoZ = -15;
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(1500);
+        check(grbl.indexOf("G0 Z") < 0 && !panel.m_mapper->isRunning(),
+              "maphigh: a surface map that would travel past the Z switch is refused");
+        grbl.wcoZ = -60;
+        wait(600);
+        panel.bitZeroBegin();
+        wait(1500);
+        check(grbl.indexOf("G0 Z") >= 0, "maphigh: with Z zeroed low enough the map starts");
+    }
+    if (mode == "mapzeropad") {
+        // r45: Zero Z with the map on at work X80 Y80 (surface there 1.75 above X0 Y0),
+        // then the pad's start: refused until the map is switched off; off,
+        // the job runs with Z0 1.75 mm under the surface that was touched.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        std::printf("mapzeropad: zero sent G10 Z1.750: %d\n", sent175);
+        // what the controller now has: work Z reads 1.75 with the bit on the stock
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        QString why;
+        bool started = panel.startFromRemote(&why);
+        std::printf("mapzeropad: pad start with map on: %d (%s)\n", started, qPrintable(why));
+        panel.m_useMap->setChecked(false);      // as the refusal says
+        wait(300);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        why.clear();
+        started = panel.startFromRemote(&why);
+        std::printf("mapzeropad: pad start with map off: %d (%s), work Z at the touched surface %.3f\n",
+                    started, qPrintable(why), s->status().wz);
+        check(!(sent175 && started), "mapzeropad: the pad's start does not run with Z0 1.75 mm under the touched surface");
+        if (started) { s->stopStream(); wait(500); }
+        // And the other way: zeroed with the map off, then the map on.
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        grbl.wcoZ = grbl.mz;
+        panel.m_useMap->setChecked(true);
+        wait(300);
+        why.clear();
+        started = panel.startFromRemote(&why);
+        std::printf("mapzeropad: pad start, zeroed with the map off, map on: %d (%s)\n", started, qPrintable(why));
+        check(!started, "mapzeropad: a start with the map on after a zero with it off is refused");
+        if (started) { s->stopStream(); wait(500); }
+    }
+    if (mode == "mapremeasure") {
+        // r46: yesterday's map still on, a new board: Zero Z at work X80 Y80
+        // takes the old map's offset there (1.75), then the new board is
+        // mapped (flat) and the job run with it.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        std::printf("mapremeasure: zero sent Z1.750: %d\n", sent175);
+        grbl.wcoZ = grbl.mz - 1.75;
+        c2d::SurfaceMap flat = m;
+        flat.z = {-40.0, -40.0, -40.0, -40.0};
+        panel.setSurfaceMap(flat);           // as SurfaceMapProber::finished does
+        panel.m_useMap->setChecked(true);
+        wait(300);
+        answer = [&](const Seen &v) {
+            std::printf("prompt: %s | %s\n", qPrintable(v.headline), qPrintable(v.body));
+            return v.headline.startsWith(QStringLiteral("Stream")) ? QStringLiteral("\u25b6 Start") : QStringLiteral("OK");
+        };
+        const bool started = panel.runProgram();
+        std::printf("mapremeasure: run with the new map: %d, work Z of the touched surface %.3f\n",
+                    started, s->status().wz);
+        check(!started, "mapremeasure: a zero taken from the old map is not run with the new one");
+        if (started) { s->stopStream(); wait(500); }
+    }
+    if (mode == "mapzeroreconn") {
+        // r46: Zero Z with the map on at work X80 Y80 (sent Z1.750), then the
+        // USB link drops / the app restarts; reconnect (homed resumes), map
+        // switched off as the pad's refusal asks, pad start.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        s->disconnectPort();
+        wait(500);
+        QSettings().setValue(QStringLiteral("machine/homedAt"), QVariantList{grbl.mx, grbl.my, grbl.mz});
+        check(s->connectPort(QString::fromLatin1(name)), "reconnects");
+        spin(1500, [&] { return panel.statusJson().value("homed").toBool(); });
+        wait(1000);
+        std::printf("mapzeroreconn: homed after reconnect: %d, map still on: %d\n",
+                    panel.statusJson().value("homed").toBool(), panel.m_useMap->isChecked());
+        panel.m_useMap->setChecked(false);
+        wait(300);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("mapzeroreconn: sent175 %d, pad start with map off after reconnect: %d (%s), work Z at touched surface %.3f\n",
+                    sent175, started, qPrintable(why), s->status().wz);
+        check(!(sent175 && started), "mapzeroreconn: pad start after a reconnect does not run 1.75 mm deep");
+        if (started) { s->stopStream(); wait(500); }
+    }
+    if (mode == "maptlo") {
+        // r47: Zero Z with the map on at work X80 Y80 (sent Z1.750), then a
+        // bit is measured (or a job's tool change measured one): G43.1 Z0.4.
+        // GRBL's WCO includes the tool length offset (report.c), so the
+        // reported WCO Z is the G54 Z + 0.4. Map off, pad start.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        const bool sent175 = grbl.indexOf("G10 L20 P1 Z1.750") >= 0;
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        s->applyToolLengthOffset(0.4);
+        wait(800);
+        const bool g431 = grbl.indexOf("G43.1 Z0.400") >= 0;
+        grbl.wcoZ = grbl.mz - 1.75 + 0.4;   // as GRBL reports it with G43.1 active
+        wait(800);
+        panel.m_useMap->setChecked(false);
+        wait(300);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("maptlo: sent175 %d, G43.1 sent %d, pad start with map off: %d (%s)\n",
+                    sent175, g431, started, qPrintable(why));
+        check(!(sent175 && started), "maptlo: a tool length offset does not hide a zero taken with the map on");
+        if (started) { s->stopStream(); wait(500); }
+    }
+    if (mode == "tlo2") {
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80; grbl.my = grbl.wcoY + 80;
+        wait(800);
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        grbl.wcoZ = grbl.mz - 1.75;
+        wait(800);
+        s->applyToolLengthOffset(0.4);
+        wait(800);
+        grbl.wcoZ = grbl.mz - 1.75 + 0.4;
+        wait(800);
+        s->applyToolLengthOffset(0.7);   // second measure; report still shows +0.4
+        panel.m_useMap->setChecked(false);
+        wait(10);
+        answer = [&](const Seen &v) { std::printf("prompt: %s\n", qPrintable(v.headline)); return QStringLiteral("\u25b6 Start"); };
+        QString why;
+        const bool started = panel.startFromRemote(&why);
+        std::printf("tlo2: started %d (%s)\n", started, qPrintable(why));
+        check(!started, "tlo2: a second tool length offset before the next WCO report does not hide the zero record");
+        if (started) { s->stopStream(); wait(500); }
+    }
+    if (mode == "mapzero") {
+        // Surface map on, Z zeroed at work X80 Y80 (a re-zero after a tool
+        // change): Z0 must stay the surface at X0 Y0 the offsets are from,
+        // or the job cuts 1.75 mm off over a 2 mm warp.
+        panel.m_bsEnabled->setChecked(false);
+        c2d::SurfaceMap m;
+        m.x0 = 10; m.y0 = 10; m.x1 = 90; m.y1 = 90; m.cols = 2; m.rows = 2;
+        m.z = {-40.0, -39.0, -39.0, -38.0};
+        panel.setSurfaceMap(m);
+        panel.m_useMap->setChecked(true);
+        grbl.mx = grbl.wcoX + 80;
+        grbl.my = grbl.wcoY + 80;
+        wait(800);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        check(grbl.indexOf("G10 L20 P1 Z1.750") >= 0, "mapzero: Zero Z with the map on keeps Z0 at the surface under X0 Y0");
+        panel.m_useMap->setChecked(false);
+        grbl.events.clear();
+        panel.zero(QStringLiteral("Z"));
+        wait(800);
+        check(grbl.events.contains("G10 L20 P1 Z0"), "mapzero: with the map off it is Z0 there");
+        panel.setSurfaceMap(c2d::SurfaceMap());
+    }
     if (mode == "bztap") {
         // BitZero Z only, BitSetter off. The operator taps Z+ on the pad
         // while the plate probe runs.
@@ -1087,6 +1485,46 @@ int main(int argc, char **argv)
         wait(1500);
         std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G43.1"));
         check(refused >= 1 && grbl.count("G43.1") > refused, "a refused tool offset is sent again");
+    }
+    if (mode == "v1miss") {
+        grbl.geo = true;
+        grbl.noiseOnce = true;            // one false contact on the X side's fast search
+        panel.m_bzPanel->m_plates->button(1)->click();     // V1
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Corner)->click();
+        wait(600);
+        const double stockTop = grbl.topZ - 22.0;
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(5000);
+        for (const QByteArray &e : grbl.events) std::printf("  1st: %s\n", e.constData());
+        std::printf("after the failed side probe: pin at X%.3f Y%.3f Z%.3f (block X %.1f..%.1f, top %.1f, stock top %.1f), busy=%d\n",
+                    grbl.mx, grbl.my, grbl.mz, grbl.bx, grbl.bx + 60, grbl.topZ, stockTop, int(panel.m_bzPanel->m_busy));
+        check(grbl.mz > grbl.topZ, "v1miss: after a failed side probe the pin goes back up over the block");
+        grbl.events.clear();
+        grbl.minZ = 1e9;
+        panel.bitZeroBegin();   // Begin again, no jog
+        wait(4000);
+        for (const QByteArray &e : grbl.events) std::printf("  2nd: %s\n", e.constData());
+        std::printf("2nd Begin: lowest pin Z %.3f = %.3f mm below the stock top\n", grbl.minZ, stockTop - grbl.minZ);
+        check(grbl.minZ >= stockTop, "v1miss: Begin again does not drive the pin below the stock top");
+    }
+
+    if (mode == "v1reboot") {
+        grbl.geo = true;
+        panel.m_bzPanel->m_plates->button(1)->click();     // V1
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Corner)->click();
+        wait(600);
+        grbl.rebootOn = "G0 Z-";          // the side stage's descent beside the block
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(3000);
+        std::printf("after reboot: onIdle pending=%d busy=%d\n", int(bool(panel.m_onIdle)), int(panel.isBusy()));
+        grbl.events.clear();
+        panel.unlock();                   // the operator unlocks the rebooted controller
+        wait(3000);
+        for (const QByteArray &e : grbl.events) std::printf("  after unlock: %s\n", e.constData());
+        std::printf("pin now at machine X%.3f Y%.3f Z%.3f (controller believed 0,0,0 after reboot)\n", grbl.mx, grbl.my, grbl.mz);
+        check(grbl.count("G53 G0") == 0, "v1reboot: nothing from before the reboot moves the machine after it");
     }
     if (mode == "homerej") {
         // A refused $H must not leave the park pending (it blocked every jog).

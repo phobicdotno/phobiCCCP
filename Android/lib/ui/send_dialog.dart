@@ -49,6 +49,8 @@ class SendDialog extends StatefulWidget {
 class _SendDialogState extends State<SendDialog> {
   String? _computer, _machine;
   bool _start = false, _busy = false;
+  // Picked from the list, not just the machine the computer had in use.
+  bool _machineByHand = false;
   String? _error;
 
   AppState get app => widget.app;
@@ -74,7 +76,17 @@ class _SendDialogState extends State<SendDialog> {
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {
+      // Follow the computer's machine in use until one is picked by hand:
+      // sending to the one in use when the dialog opened switched the
+      // computer back to it, reconnecting and losing its homing.
+      if (!_machineByHand) {
+        final c = _reachable().where((c) => c.desktop.id == _computer).firstOrNull;
+        final now = c?.info?.activeMachine;
+        if (now != null) _machine = now;
+      }
+    });
   }
 
   List<Computer> _reachable() => app.computers.where((c) => c.reachable(app.now)).toList();
@@ -105,17 +117,21 @@ class _SendDialogState extends State<SendDialog> {
   Future<void> _go() async {
     final c = _reachable().where((c) => c.desktop.id == _computer).firstOrNull;
     if (c == null) return;
+    // The machine named in the question is the one sent to: the dialog
+    // follows the computer's machine in use, which can change while the
+    // question is open, and must not start a machine nobody confirmed.
+    final machineId = _machine;
     if (_start) {
-      final machine = c.info?.machines.where((m) => m.id == _machine).firstOrNull?.name ?? 'the machine';
+      final machine = c.info?.machines.where((m) => m.id == machineId).firstOrNull?.name ?? 'the machine';
       if (!await confirmStart(context, widget.design.name, machine, c.name)) return;
     }
     setState(() {
       _busy = true;
       _error = null;
     });
-    app.lastTarget = '${c.desktop.id}/${_machine ?? ''}';
+    app.lastTarget = '${c.desktop.id}/${machineId ?? ''}';
     try {
-      final r = await app.send(widget.design, c, _machine ?? '', _start);
+      final r = await app.send(widget.design, c, machineId ?? '', _start);
       if (!mounted) return;
       Navigator.pop(context, sendWords(r, _start, c.name));
     } catch (e) {
@@ -167,6 +183,7 @@ class _SendDialogState extends State<SendDialog> {
                     groupValue: _computer,
                     onChanged: (v) => setState(() {
                       _computer = v;
+                      _machineByHand = false;
                       _machine = reach.where((x) => x.desktop.id == v).firstOrNull?.info?.activeMachine;
                     }),
                     child: Column(children: [
@@ -182,7 +199,10 @@ class _SendDialogState extends State<SendDialog> {
                     const Text('Machine', style: TextStyle(color: C.sub, fontSize: 12)),
                     RadioGroup<String>(
                       groupValue: _machine,
-                      onChanged: (v) => setState(() => _machine = v),
+                      onChanged: (v) => setState(() {
+                        _machine = v;
+                        _machineByHand = true;
+                      }),
                       child: Column(children: [
                         for (final m in info!.machines)
                           RadioListTile<String>(

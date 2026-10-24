@@ -4,6 +4,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <cmath>
+#include <utility>
 
 // The library ships inside the core static library; referencing the resource
 // initializer from here keeps the linker from dropping qrc_tools.o.
@@ -198,6 +200,16 @@ QJsonObject ToolLibrary::toolObject(const LibraryTool &t, const ToolFeeds &f,
 
 void ToolLibrary::applyToToolpath(QJsonObject &tp, const LibraryTool &t, const ToolFeeds &f)
 {
+    // Lead-in and helix sized to the old bit follow the new one, as a bit
+    // change on the pad does (a size typed in stays). Not the rest pass's
+    // "Bigger tool": that is the earlier cutter, often the bit replaced here.
+    const double oldDia = tp.value("tool").toObject().value("diameter").toDouble();
+    for (const auto &[k, scale] : {std::pair<const char *, double>{"lead_radius", 0.5},
+                                   {"helix_diameter", 1.0}}) {
+        const QJsonValue v = tp.value(QLatin1String(k));
+        if (oldDia > 0 && v.isDouble() && std::abs(v.toDouble() - scale * oldDia) < 1e-6)
+            tp.insert(QLatin1String(k), scale * t.diameter);
+    }
     tp.insert(QStringLiteral("tool"), toolObject(t, f, tp.value("tool").toObject()));
     QJsonObject speeds = tp.value("speeds").toObject();
     speeds.insert(QStringLiteral("feedrate"), f.feed);
@@ -207,18 +219,29 @@ void ToolLibrary::applyToToolpath(QJsonObject &tp, const LibraryTool &t, const T
 
     // Depth per pass / stepover live under type-specific names; only touch
     // keys the payload already has so no type gains a key CC does not expect.
+    // An Adaptive keeps its own light bite (a tenth of the bit, one diameter
+    // deep, as a new one gets): the chart's pocket numbers made it a slotting
+    // cut at about 90 degrees of engagement.
+    const bool adaptive = tp.value("type").toString() == QLatin1String("adaptive_toolpath") && t.diameter > 0;
     const double stepover = t.diameter * f.stepoverPct / 100.0;
-    if (f.stepdown > 0) {
-        if (tp.contains(QStringLiteral("stepdown")))
-            tp.insert(QStringLiteral("stepdown"), f.stepdown);
-        if (tp.contains(QStringLiteral("depth_per_pass")))
-            tp.insert(QStringLiteral("depth_per_pass"), f.stepdown);
+    if (adaptive) {
+        tp.insert(QStringLiteral("stepdown"), t.diameter);
+        tp.insert(QStringLiteral("stepover"), 0.1 * t.diameter);
+        if (tp.contains(QStringLiteral("automatic_parameters")))
+            tp.insert(QStringLiteral("automatic_parameters"), false);
+    } else {
+        if (f.stepdown > 0) {
+            if (tp.contains(QStringLiteral("stepdown")))
+                tp.insert(QStringLiteral("stepdown"), f.stepdown);
+            if (tp.contains(QStringLiteral("depth_per_pass")))
+                tp.insert(QStringLiteral("depth_per_pass"), f.stepdown);
+        }
+        if (stepover > 0 && tp.contains(QStringLiteral("stepover"))
+            && tp.value("type").toString() != QLatin1String("advanced_vcarve_toolpath"))
+            tp.insert(QStringLiteral("stepover"), stepover);
+        if (tp.contains(QStringLiteral("automatic_parameters")))
+            tp.insert(QStringLiteral("automatic_parameters"), false);
     }
-    if (stepover > 0 && tp.contains(QStringLiteral("stepover"))
-        && tp.value("type").toString() != QLatin1String("advanced_vcarve_toolpath"))
-        tp.insert(QStringLiteral("stepover"), stepover);
-    if (tp.contains(QStringLiteral("automatic_parameters")))
-        tp.insert(QStringLiteral("automatic_parameters"), false);
 
     // The new bit's numbers replace any expression those fields were bound
     // to; left bound, the next parameter edit would put the old numbers back.
@@ -226,11 +249,11 @@ void ToolLibrary::applyToToolpath(QJsonObject &tp, const LibraryTool &t, const T
     if (!binds.isEmpty()) {
         for (const char *k : {"speeds.feedrate", "speeds.plungerate", "speeds.rpm"})
             binds.remove(QLatin1String(k));
-        if (f.stepdown > 0) {
+        if (f.stepdown > 0 || adaptive) {
             binds.remove(QStringLiteral("stepdown"));
             binds.remove(QStringLiteral("depth_per_pass"));
         }
-        if (stepover > 0 && tp.value("type").toString() != QLatin1String("advanced_vcarve_toolpath"))
+        if ((stepover > 0 || adaptive) && tp.value("type").toString() != QLatin1String("advanced_vcarve_toolpath"))
             binds.remove(QStringLiteral("stepover"));
         if (binds.isEmpty())
             tp.remove(QStringLiteral("phobic_expr"));

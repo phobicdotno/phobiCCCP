@@ -42,6 +42,7 @@ struct TiledExport {
     QStringList gcode;      // the programs, tile order
     QStringList done;       // toolpaths exported (from exportGcode)
     QStringList skipped;
+    QStringList notes;      // the export's notes (left uncut, no tabs, ...)
     double tileHeight = 0;
     QStringList stale;      // <base>_tileN.nc left over from a longer export
     QString error;          // non-empty on failure

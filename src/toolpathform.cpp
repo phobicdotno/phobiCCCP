@@ -545,6 +545,38 @@ static bool hiddenKey(const QString &k)
     return h.contains(k);
 }
 
+// Keys this type carries (written by the factory, kept for Carbide Create)
+// that the export does not use for it: a field there would do nothing.
+static bool unusedFor(const QString &type, const QString &k)
+{
+    auto is = [&type](std::initializer_list<const char *> types) {
+        for (const char *t : types)
+            if (type == QLatin1String(t))
+                return true;
+        return false;
+    };
+    // Circular and Adaptive always enter on their own ramp or helix at
+    // ramp_angle: a "Ramp in" switch there read off while they ramped.
+    if (k == QLatin1String("enable_ramping"))
+        return is({"drilling_toolpath", "keyhole_toolpath", "advanced_vcarve_toolpath", "face_toolpath",
+                   "bore_toolpath", "thread_toolpath", "slot_toolpath", "circular_toolpath",
+                   "adaptive_toolpath"});
+    if (k == QLatin1String("ramp_angle"))
+        return is({"cutout", "drilling_toolpath", "keyhole_toolpath", "advanced_vcarve_toolpath",
+                   "face_toolpath", "bore_toolpath", "thread_toolpath", "slot_toolpath"});
+    if (k == QLatin1String("stock_to_leave"))
+        return is({"cutout", "drilling_toolpath", "keyhole_toolpath", "advanced_vcarve_toolpath"});
+    if (k == QLatin1String("stepdown"))
+        return is({"drilling_toolpath", "keyhole_toolpath", "thread_toolpath"});   // peck, pitch
+    if (k == QLatin1String("stepover"))
+        return is({"drilling_toolpath", "keyhole_toolpath"});
+    if (k == QLatin1String("angle"))
+        return is({"pocket_toolpath", "drilling_toolpath", "advanced_vcarve_toolpath"});
+    if (k == QLatin1String("start_depth"))
+        return is({"3d_rough_toolpath", "3d_finish_toolpath"});
+    return false;
+}
+
 ToolpathForm::ToolpathForm(QWidget *parent)
     : QWidget(parent)
 {
@@ -811,7 +843,8 @@ void ToolpathForm::rebuild()
     QSet<QString> designed;
     QHash<QString, QList<QPair<QString, Field>>> byCard;
     for (const auto &kf : catalog(m_type)) {
-        if (!flatGet(m_json, kf.first).isUndefined() && !designed.contains(kf.first)) {
+        if (!flatGet(m_json, kf.first).isUndefined() && !designed.contains(kf.first)
+            && !unusedFor(m_type, kf.first)) {
             byCard[kf.second.card].append(kf);
             designed.insert(kf.first);
         }
@@ -853,7 +886,7 @@ void ToolpathForm::rebuild()
         QVBoxLayout *body = nullptr;
         QStringList rest;
         for (const QString &k : m_keys)
-            if (!designed.contains(k) && !hiddenKey(k))
+            if (!designed.contains(k) && !hiddenKey(k) && !unusedFor(m_type, k))
                 rest << k;
         if (!rest.isEmpty()) {
             m_lay->addWidget(card(QStringLiteral("advanced"),

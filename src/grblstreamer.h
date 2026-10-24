@@ -95,10 +95,15 @@ public:
     bool lastProbeOk() const { return m_probeOk; }
     double lastProbeZ() const { return m_probeZ; }      // machine Z at contact
     double toolLengthOffset() const { return m_tlo; }
+    // The work offset's Z (G54, mm) as last reported on this connection.
+    bool hasWorkOffset() const { return m_haveWco; }
+    double toolLengthOffsetAtWco() const { return m_tloAtWco; }
+    double workOffsetZ() const { return m_wcoZ * reportScale(); }
     // A setting from the controller's `$$` listing ($130 = X max travel…),
     // or `fallback` when it has not been seen on this connection (the list
     // is emptied on every connect: another machine may answer now).
     double setting(int n, double fallback) const { return m_settings.value(n, fallback); }
+    bool haveSettings() const { return !m_settings.isEmpty(); }   // a $$ listing came in
 
 public slots:
     bool sendCommand(const QString &line);      // jog / $X / G10 — immediate
@@ -184,6 +189,9 @@ private:
     MachineStatus m_status;
     QHash<int, double> m_settings;   // $n=value lines seen
     double m_wcoX = 0, m_wcoY = 0, m_wcoZ = 0;
+    bool m_haveWco = false;
+    double m_tloAtWco = 0.0;
+    double reportScale() const;   // 25.4 when $13=1 (reports in inches)
 
     QStringList m_queue;
     int m_nextIndex = 0;                        // next line to transmit

@@ -27,6 +27,7 @@
 #include <QDateTime>
 #include <QLockFile>
 #include <QLineF>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -131,6 +132,56 @@ static double feedLengthAt(const QVector<c2d::Op> &ops, double z, double eps = 1
         have = true;
     }
     return len;
+}
+
+// The lengths of the separate feed runs at height z (tab lifts).
+static QVector<double> feedRunsAt(const QVector<c2d::Op> &ops, double z, double eps = 1e-6)
+{
+    QVector<double> runs;
+    double len = 0, px = 0, py = 0;
+    bool have = false, in = false;
+    for (const c2d::Op &o : ops) {
+        if (o.kind != c2d::Op::Feed && o.kind != c2d::Op::Rapid && o.kind != c2d::Op::Arc)
+            continue;
+        const bool at = o.kind == c2d::Op::Feed && std::fabs(o.z - z) < eps;
+        if (have && at)
+            len += QLineF(px, py, o.x, o.y).length();
+        if (in && !at) {
+            runs << len;
+            len = 0;
+        }
+        in = at && have;
+        px = o.x;
+        py = o.y;
+        have = true;
+    }
+    if (in)
+        runs << len;
+    return runs;
+}
+
+// The straight distance between the ends of each feed run at height z: where
+// a tab lift leaves the cut and where it comes back down.
+static QVector<double> feedRunChordsAt(const QVector<c2d::Op> &ops, double z, double eps = 1e-6)
+{
+    QVector<double> out;
+    QPointF from, prev;
+    bool have = false, in = false;
+    for (const c2d::Op &o : ops) {
+        if (o.kind != c2d::Op::Feed && o.kind != c2d::Op::Rapid && o.kind != c2d::Op::Arc)
+            continue;
+        const bool at = o.kind == c2d::Op::Feed && std::fabs(o.z - z) < eps;
+        if (at && !in && have)
+            from = prev;
+        if (in && !at)
+            out << QLineF(from, prev).length();
+        in = at && have;
+        prev = QPointF(o.x, o.y);
+        have = true;
+    }
+    if (in)
+        out << QLineF(from, prev).length();
+    return out;
 }
 
 int main(int argc, char *argv[])
@@ -278,6 +329,222 @@ int main(int argc, char *argv[])
                                        {"ignore_tabs", true}});
         check(feedLengthAt(c2d::exportGcode(noTabs.doc).ops, -3.0) < 1e-6,
               "gcode: ignore_tabs still means no tabs");
+    }
+    {
+        // Small parts with a 1/4" bit: a 12 x 8 outside contour keeps a real
+        // bridge at each tab (the lift was capped to a third of the loop,
+        // leaving 0.3 mm; now over a millimetre, still noted as under 1.5);
+        // a 14 mm hole has no room and says so.
+        for (int k = 0; k < 2; ++k) {
+            Rig r;
+            if (k == 0)
+                r.addShape(c2d::Element::makeRectangle({40, 40}, 12, 8, layer));
+            else
+                r.addShape(c2d::Element::makeCircle({40, 40}, 7, layer));
+            r.addToolpath("contour", {{"ofset_dir", k == 0 ? 1 : -1},
+                                      {"end_depth", QStringLiteral("10.000")},
+                                      {"stepdown", 10.0},
+                                      {"ignore_tabs", false},
+                                      {"tab_height", 3.0},
+                                      {"tab_width", 6.0}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            const bool noted = g.notes.join(QLatin1Char('\n')).contains(QStringLiteral("too small for its tabs"));
+            const QVector<double> lifts = feedRunsAt(g.ops, -7.0);
+            if (k == 0)
+                check(lifts.size() >= 3 && *std::min_element(lifts.begin(), lifts.end()) > 6.35 + 1.0,
+                      "gcode: a small part's tab lifts run past the bit's width");
+            else
+                check(noted, "gcode: a hole too small for its tabs says so");
+        }
+    }
+    {
+        // A tab on a corner of a 30 x 20 hole's ring: the lift went round the
+        // corner and came down 6.6 mm from where it rose, a 0.3 mm bridge for
+        // a 3 mm tab with a 1/4" bit. Each lift now ends a tab and a bit
+        // apart in a straight line (off the corner if need be).
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 30, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", -1},
+                                  {"end_depth", QStringLiteral("10.000")},
+                                  {"stepdown", 10.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 3.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        const QVector<double> chords = feedRunChordsAt(g.ops, -7.0);
+        check(chords.size() == 3 && *std::min_element(chords.begin(), chords.end()) >= 3.0 + 6.35 - 1e-6
+                  && !g.notes.join(QLatin1Char('\n')).contains(QStringLiteral("too small for its tabs")),
+              "gcode: a tab on a hole's corner keeps its width across the cut");
+    }
+    {
+        // A 15 x 20 outside part with 6 mm tabs: the lift budget left no
+        // shift that fit, and the fallback put a tab round a corner with a
+        // 3 mm bridge. The best shift now keeps it on an edge (5.5 mm).
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 15, 20, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1},
+                                  {"end_depth", QStringLiteral("10.000")},
+                                  {"stepdown", 10.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 6.0}});
+        const QVector<double> chords = feedRunChordsAt(c2d::exportGcode(r.doc).ops, -7.0);
+        check(!chords.isEmpty() && *std::min_element(chords.begin(), chords.end()) >= 5.0 + 6.35,
+              "gcode: a small part's tab stays off its corners when no lift fits");
+    }
+    {
+        // A part's outline and its hole in one cutout: the outline was cut
+        // through first whenever it lay nearer, freeing the part before its
+        // hole was cut. A loop inside another of the same toolpath goes first.
+        Rig r;
+        const c2d::Element outline = c2d::Element::makeRectangle({60, 60}, 120, 80, layer);
+        const c2d::Element hole = c2d::Element::makeCircle({100, 85}, 8, layer);
+        r.addShape(outline);
+        r.addShape(hole);
+        r.addToolpath("cutout", {{"cut_depth", QStringLiteral("6.000")},
+                                 {"break_through", QStringLiteral("0.000")},
+                                 {"depth_per_pass", 6.0},
+                                 {"ignore_tabs", true},
+                                 {"elements", QJsonArray{QJsonObject{{"uuid", outline.id}},
+                                                         QJsonObject{{"uuid", hole.id}}}}});
+        QPointF first(-1e9, -1e9);
+        for (const c2d::Op &o : c2d::exportGcode(r.doc).ops)
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -6.0 + 1e-6) {
+                first = QPointF(o.x, o.y);
+                break;
+            }
+        check(QLineF(first, QPointF(100, 85)).length() < 8.0,
+              "gcode: a part's hole is cut before its outline frees it");
+    }
+    {
+        // Rest bands of one pocket: the deeper band's rings go round where
+        // the shallower one starts, and the holes-first rule had it cut
+        // first, plunging 6 mm through the stock band 0 had to clear.
+        // Pocket A (an annulus, 4 deep) leaves the middle for B's rest band;
+        // F only sets where B starts from.
+        for (int v = 0; v < 2; ++v) {
+            c2d::Document doc;
+            doc.setParam(QStringLiteral("width"), QStringLiteral("200"));
+            doc.setParam(QStringLiteral("height"), QStringLiteral("200"));
+            doc.setParam(QStringLiteral("thickness"), QStringLiteral("20"));
+            const c2d::Element outer = c2d::Element::makeCircle({100, 100}, 30, layer);
+            const c2d::Element inner = c2d::Element::makeCircle({100, 100}, 10, layer);
+            const c2d::Element disc = c2d::Element::makeCircle({100, 100}, 30, layer);
+            const c2d::Element far = c2d::Element::makeCircle({100, v ? 160.0 : 40.0}, 5, layer);
+            for (const c2d::Element &e : {outer, inner, disc, far})
+                doc.addElement(e);
+            auto pocket = [&](const char *uuid, const char *name, const QStringList &els, const QJsonObject &extra,
+                              double dia) {
+                QJsonObject j{{"type", "pocket_toolpath"}, {"name", name}, {"enabled", true}, {"uuid", uuid},
+                              {"start_depth", "0.000"}, {"end_depth", "4.000"}, {"stepdown", 2.0},
+                              {"stock_to_leave", 0.0},
+                              {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+                              {"tool", QJsonObject{{"diameter", dia}, {"number", dia > 5 ? 201 : 202}}}};
+                QJsonArray a;
+                for (const QString &e : els)
+                    a.append(QJsonObject{{"uuid", e}});
+                j.insert("elements", a);
+                for (const QString &k : extra.keys())
+                    j.insert(k, extra.value(k));
+                c2d::Toolpath t;
+                t.uuid = QLatin1String(uuid);
+                t.type = QStringLiteral("pocket_toolpath");
+                t.json = j;
+                doc.addToolpath(t);
+            };
+            pocket("{a}", "A", {outer.id, inner.id}, {}, 6.35);
+            pocket("{f}", "F", {far.id}, {{"end_depth", "1.000"}}, 3.175);
+            pocket("{b}", "B", {disc.id}, {{"end_depth", "10.000"}, {"rest_auto", true}}, 3.175);
+            // B's first cut is band 0's first level, 2 mm down.
+            bool inB = false;
+            double first = 0;
+            for (const c2d::Op &o : c2d::exportGcode(doc).ops) {
+                if (o.kind == c2d::Op::Comment) {
+                    inB = o.text == QLatin1String("B");
+                    continue;
+                }
+                if (inB && (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -1e-6) {
+                    first = o.z;
+                    break;
+                }
+            }
+            check(first < 0 && first >= -2.0 - 1e-6, "gcode: a pocket's deeper rest band waits for the shallower one");
+        }
+    }
+    {
+        // An 8 x 1220 slot with tabs: no lift leaves a bridge (the far side
+        // is always near), and trying every shorter lift at every slide took
+        // over half a minute; tabs on a 40 x 20 part with a 1/4" lead came
+        // within the lead's sweep of the start and lost 2 mm of their width.
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({620, 50}, 1220, 8, layer));
+        r.addToolpath("contour", {{"ofset_dir", -1},
+                                  {"end_depth", QStringLiteral("8.000")},
+                                  {"stepdown", 2.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 6.0}});
+        QElapsedTimer t;
+        t.start();
+        c2d::exportGcode(r.doc);
+        check(t.elapsed() < 5000, "gcode: a long narrow slot with tabs exports in seconds");
+
+        Rig p;
+        p.addShape(c2d::Element::makeRectangle({100, 50}, 40, 20, layer));
+        p.addToolpath("contour", {{"ofset_dir", 1},
+                                  {"end_depth", QStringLiteral("8.000")},
+                                  {"stepdown", 2.0},
+                                  {"ignore_tabs", false},
+                                  {"tab_height", 3.0},
+                                  {"tab_width", 12.0},
+                                  {"lead_radius", 6.35}});
+        // Every lift (a run at the tab top) ends at least the lead's radius
+        // from where the lead joins the ring (the end of the first arc).
+        const QVector<c2d::Op> ops = c2d::exportGcode(p.doc).ops;
+        QPointF join, prev;
+        bool joined = false, in = false;
+        double nearest = 1e9;
+        for (const c2d::Op &o : ops) {
+            if (o.kind != c2d::Op::Feed && o.kind != c2d::Op::Rapid && o.kind != c2d::Op::Arc)
+                continue;
+            const QPointF at(o.x, o.y);
+            if (o.kind == c2d::Op::Arc && !joined) {
+                join = at;
+                joined = true;
+            }
+            const bool lift = o.kind == c2d::Op::Feed && std::fabs(o.z + 5.0) < 1e-6;
+            if (joined && lift != in)
+                nearest = std::min(nearest, QLineF(join, prev).length());
+            in = lift;
+            prev = at;
+        }
+        check(joined && nearest < 1e9 && nearest >= 6.35, "gcode: a lead's sweep keeps clear of the tabs");
+    }
+    {
+        // An 8 mm lead in a 60 x 20 hole with tabs: the lead's centre line
+        // came within a bit of the far wall's, so the feed back across it at
+        // depth cut the tab there off the slug. Below the tab top a lead now
+        // leaves 1.5 mm between the kerfs; without tabs it keeps its radius.
+        for (const bool tabs : {true, false}) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({50, 50}, 60, 20, layer));
+            r.addToolpath("contour", {{"ofset_dir", -1},
+                                      {"end_depth", QStringLiteral("8.000")},
+                                      {"stepdown", 2.0},
+                                      {"ignore_tabs", !tabs},
+                                      {"tab_height", 3.0},
+                                      {"tab_width", 12.0},
+                                      {"lead_radius", 8.0}});
+            double maxR = 0;
+            for (const c2d::Op &o : c2d::exportGcode(r.doc).ops)
+                if (o.kind == c2d::Op::Arc && o.z < -3.0 - 1e-6)
+                    maxR = std::max(maxR, std::hypot(o.ci, o.cj));
+            if (tabs)
+                check(maxR > 0 && maxR <= 20 - 6.35 - (6.35 + 1.5) + 1e-6,
+                      "gcode: a lead in a tabbed hole stays clear of the far tab");
+            else
+                check(std::fabs(maxR - 8.0) < 1e-6, "gcode: a lead without tabs keeps its radius");
+        }
     }
     {
         // A 20 mm square cutout: three 30 mm tabs used to tile its whole
@@ -956,6 +1223,74 @@ int main(int argc, char *argv[])
         }
     }
 
+    // A thread or keyhole the export skipped is not in the program: it does
+    // not refuse the tiled job (a thread circle too small to cut, a keyhole
+    // whose start lies below its end).
+    {
+        QTemporaryDir d;
+        for (int v : {0, 1}) {
+            Rig r;
+            r.addShape(c2d::Element::makePath({{80, 0}, {80, 100}}, false, layer));
+            r.addToolpath("contour", {{"ofset_dir", 0}, {"uuid", "{tp-0}"}});
+            if (v == 0) {
+                r.addShape(c2d::Element::makeCircle({40, 25}, 0.5, layer));
+                r.addToolpath("thread_toolpath", {{"pitch", 1.75}, {"side", "external"}, {"end_depth", "6.000"}});
+            } else {
+                r.addShape(c2d::Element::makePoint({40, 20}, layer));
+                r.addToolpath("keyhole_toolpath", {{"angle", 90}, {"length", 12.7}, {"start_depth", "8.000"},
+                                                   {"end_depth", "6.000"}});
+            }
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("sk")), 25.0);
+            check(te.error.isEmpty() && !te.skipped.isEmpty(),
+                  v == 0 ? "tiling: a thread too small to cut does not refuse the tiled job"
+                         : "tiling: a skipped keyhole does not refuse the tiled job");
+        }
+    }
+
+    // Cancel after the G-code was made but while the tiles are written: none
+    // of the new tiles is committed (the old set stays whole), and the
+    // result says cancelled.
+    {
+        QTemporaryDir d;
+        Rig r;
+        r.addShape(c2d::Element::makePath({{60, 0}, {60, 100}}, false, layer));
+        r.addToolpath("contour", {{"ofset_dir", 0}});
+        const QString base = d.filePath(QStringLiteral("cx"));
+        { QFile f(base + QStringLiteral("_tile1.nc")); check(f.open(QIODevice::WriteOnly), "tile cancel: old tile");
+          f.write("(old)\n"); }
+        for (int at : {0, 2}) {
+            int seen = 0;
+            c2d::ExportWatch w;
+            w.step = [&seen, at](int, int, const QString &what) {
+                return what != QStringLiteral("tiles") || seen++ < at;
+            };
+            const c2d::TiledExport te = c2d::exportTiled(r.doc, base, 25.0, &w);
+            QFile f(base + QStringLiteral("_tile1.nc"));
+            check(f.open(QIODevice::ReadOnly) && f.readAll() == "(old)\n" && te.error == QStringLiteral("cancelled")
+                      && te.files.isEmpty() && !QFile::exists(base + QStringLiteral("_tile2.nc")),
+                  "tile cancel: a Cancel while tiles are written commits none of them");
+        }
+    }
+
+    // A thread's selection holding the part outline across a tile line: the
+    // thread cuts only its circle, so the tiled export goes ahead.
+    {
+        QTemporaryDir d;
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({5, 5}, 60, 80, layer));
+        const QString outline = r.shapeId;
+        r.addShape(c2d::Element::makeCircle({40, 62}, 6, layer));
+        const QString upper = r.shapeId;
+        r.addShape(c2d::Element::makeCircle({40, 12}, 6, layer));
+        r.addToolpath("thread_toolpath", {{"pitch", 1.75}, {"side", "internal"}, {"end_depth", "6.000"},
+                                          {"elements", QJsonArray{QJsonObject{{"uuid", outline}},
+                                                                  QJsonObject{{"uuid", upper}},
+                                                                  QJsonObject{{"uuid", r.shapeId}}}}});
+        const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("to")), 25.0);
+        check(te.error.isEmpty() && !te.files.isEmpty(),
+              "tiling: a thread is not refused for an outline in its selection it never cuts");
+    }
+
     // A base name with "%2" in it (a browser-saved "Sign%2C v2") kept it.
     {
         QTemporaryDir d;
@@ -1181,6 +1516,64 @@ int main(int argc, char *argv[])
     }
 
     // -----------------------------------------------------------------------
+    // A Chamfer has no end depth (its bottom follows from its width): with a
+    // Start depth it was refused as "start depth is below end depth".
+    {
+        const QJsonObject layer;
+        Rig r;
+        r.addShape(c2d::Element::makeCircle({50, 50}, 15, layer));
+        r.addToolpath("chamfer_toolpath", {{"start_depth", "3.000"},
+                                           {"tool", QJsonObject{{"number", 2}, {"diameter", 12.7}, {"type", 2}, {"angle", 90.0}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double deepest = 0;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc)
+                deepest = std::min(deepest, o.z);
+        check(g.done.size() == 1 && g.skipped.isEmpty() && deepest < -3, "chamfer: cut from a Start depth");
+
+        // Its cone widens above the start depth up to the stock top: 9.5 mm
+        // there on a 6.35 mm radius bit, the shank cut a wall with no note.
+        const QJsonObject v90{{"number", 2}, {"diameter", 12.7}, {"type", 2}, {"angle", 90.0}};
+        Rig w;
+        w.addShape(c2d::Element::makeCircle({50, 50}, 15, layer));
+        w.addToolpath("chamfer_toolpath", {{"start_depth", "5.000"}, {"chamfer_width", 4.0},
+                                           {"tip_offset", 0.5}, {"tool", v90}});
+        const c2d::GcodeResult wg = c2d::exportGcode(w.doc);
+        check(wg.done.isEmpty() && wg.skipped.size() == 1, "chamfer: refused where the cone is wider than the bit at the stock top");
+        // A hand-edited absurd start never returned (or wrote Z-1e300).
+        for (const char *z : {"1e16", "1e300"}) {
+            Rig h;
+            h.addShape(c2d::Element::makeCircle({50, 50}, 15, layer));
+            h.addToolpath("chamfer_toolpath", {{"start_depth", z}, {"stepdown", 1.0}, {"tool", v90}});
+            const c2d::GcodeResult hg = c2d::exportGcode(h.doc);
+            check(hg.done.isEmpty() && hg.skipped.size() == 1, "chamfer: an absurd start depth is refused");
+        }
+    }
+
+    // A Texture's depths are measured from its Start depth (on a pocket's
+    // floor every stroke was in the air), and an absurd one is refused.
+    {
+        const QJsonObject layer;
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({50, 50}, 60, 40, layer));
+        r.addToolpath("texture_toolpath", {{"start_depth", "3.000"}, {"min_depth", "0.000"},
+                                           {"max_depth", "1.000"}, {"stepover", 3}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double lo = 0, hi = -1e9;
+        for (const c2d::Op &o : g.ops)
+            if (o.kind == c2d::Op::Feed && o.z < -1e-6) {
+                lo = std::min(lo, o.z);
+                hi = std::max(hi, o.z);
+            }
+        check(g.done.size() == 1 && lo >= -4 - 1e-6 && hi <= -3 + 1e-6 && hi > -1e9,
+              "texture: strokes between the start depth and start + Deepest");
+        Rig h;
+        h.addShape(c2d::Element::makeRectangle({50, 50}, 60, 40, layer));
+        h.addToolpath("texture_toolpath", {{"start_depth", "1e17"}, {"min_depth", "0.000"}, {"max_depth", "1.000"}});
+        check(c2d::exportGcode(h.doc).done.isEmpty(), "texture: an absurd start depth is refused");
+    }
+
+    // -----------------------------------------------------------------------
     // V-carve reach is measured at the stock top: an inlay male starting 5.5
     // below it needs a 6 mm cone there, which a 6.35 mm 90° bit lacks (its
     // shank rubbed the stock with no note). Per pass 0 on a V-carve is one
@@ -1210,6 +1603,34 @@ int main(int argc, char *argv[])
                 widest = std::max(widest, -o.z);
         check(widest <= 3.175 + 1e-6 && (!mg.skipped.isEmpty() || !mg.notes.isEmpty()),
               "vcarve: an inlay male deeper than the cone at the stock top is refused with a note");
+        // An inlay male with no glue gap (start = end) clears its field like
+        // one with a hair of gap; it cut only the medial grooves and the plug
+        // could not seat.
+        {
+            const QJsonObject v90{{"diameter", 12.7}, {"number", 302}, {"angle", 90.0}, {"type", 2}};
+            double floorLen[2] = {0, 0};
+            for (int k = 0; k < 2; ++k) {
+                Rig r;
+                const c2d::Element b = c2d::Element::makeRectangle({100, 30}, 50, 34, layer);
+                const c2d::Element p = c2d::Element::makeRectangle({100, 30}, 30, 14, layer);
+                r.addShape(b);
+                r.addShape(p);
+                r.addToolpath("advanced_vcarve_toolpath",
+                              {{"start_depth", k == 0 ? "5.000" : "4.990"}, {"end_depth", "5.000"}, {"stepdown", 1.0},
+                               {"stepover", 0.2}, {"tool", v90},
+                               {"elements", QJsonArray{QJsonObject{{"uuid", b.id}}, QJsonObject{{"uuid", p.id}}}}});
+                const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+                QPointF prev;
+                for (const c2d::Op &o : g.ops) {
+                    if (o.kind == c2d::Op::Feed && o.z < -4.9)
+                        floorLen[k] += QLineF(prev, QPointF(o.x, o.y)).length();
+                    if (o.kind == c2d::Op::Feed || o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Arc)
+                        prev = QPointF(o.x, o.y);
+                }
+            }
+            check(floorLen[1] > 0 && floorLen[0] > 0.8 * floorLen[1],
+                  "vcarve: an inlay male with no glue gap clears its field");
+        }
         // A letter V-carved on a pocket's floor (Start 3) has its stock start
         // at that floor: it carves, and its passes start there, not in air.
         const QJsonObject v60{{"diameter", 6.35}, {"number", 301}, {"angle", 60.0}, {"type", 2}};
@@ -1369,6 +1790,117 @@ int main(int argc, char *argv[])
         check(c2d::Recovery(recDir).write(doc, source, false, &err).isEmpty(),
               "recovery: a copy held by a live session (this one) is not taken over");
         next.discard();
+    }
+
+    // Adaptive from Start 3 with nothing cut above: its first level hops and
+    // enters from above the stock top (it rapided at Z-2 through wood).
+    {
+        Rig ad;
+        ad.addShape(c2d::Element::makeRectangle({50, 50}, 40, 30, layer));
+        ad.addToolpath("adaptive_toolpath", {{"start_depth", "3.000"}, {"end_depth", "6.000"}, {"stepdown", 1.0},
+                                             {"stepover", 1.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(ad.doc);
+        bool deeper = false, ok = !g.ops.isEmpty() && g.skipped.isEmpty();
+        for (const c2d::Op &o : g.ops) {
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -4 + 1e-6)
+                deeper = true;   // the first level (Z-4) is reached
+            if (!deeper && o.kind == c2d::Op::Rapid && o.z < -1e-6)
+                ok = false;
+        }
+        check(ok && deeper, "adaptive: no rapid below the stock top before its first level is cut");
+    }
+    // The same through rest machining: the band opening at Start, around a
+    // shallow pocket, is still under uncut stock outside that pocket.
+    {
+        Rig ad;
+        ad.doc.setParam(QStringLiteral("width"), QStringLiteral("120"));
+        ad.doc.setParam(QStringLiteral("height"), QStringLiteral("120"));
+        const c2d::Element a = c2d::Element::makeRectangle({60, 60}, 20, 20, layer);
+        const QRectF cutA = a.painterPath.boundingRect().adjusted(-1, -1, 1, 1);
+        ad.addShape(a);
+        ad.addToolpath("pocket_toolpath", {{"end_depth", "2.000"}});
+        ad.addShape(c2d::Element::makeRectangle({60, 60}, 60, 50, layer));
+        ad.addToolpath("adaptive_toolpath", {{"start_depth", "3.000"}, {"end_depth", "8.000"}, {"stepdown", 2.0},
+                                             {"stepover", 1.5}, {"rest_auto", true}, {"uuid", "{tp-2}"}});
+        const c2d::GcodeResult g = c2d::exportGcode(ad.doc);
+        bool deeper = false, ok = !g.ops.isEmpty() && g.skipped.isEmpty();
+        for (const c2d::Op &o : g.ops) {
+            // Through the whole first level (Z-5): every hop is under
+            // stock that is still at Z0 above it, outside the pocket.
+            if ((o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) && o.z < -7 + 1e-6)
+                deeper = true;
+            const bool inA = cutA.contains(QPointF(o.x, o.y));
+            if (!deeper && o.kind == c2d::Op::Rapid && o.z < -1e-6 && !inA)
+                ok = false;
+        }
+        check(ok && deeper, "adaptive rest band from Start: no rapid below the stock top outside what was cut");
+    }
+    // Tabs on an on-the-line contour of an outline whose ends miss by a hair:
+    // cut with no tabs, so it says so.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makePath({{20, 20}, {120, 20}, {120, 80}, {20, 80}, {20.1, 20}}, false, layer));
+        r.addToolpath("contour", {{"end_depth", "12.000"}, {"stepdown", 3.0}, {"ofset_dir", 0},
+                                  {"ignore_tabs", false}, {"tab_height", 3.0}, {"tab_width", 8.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.notes.join(" ").contains("without tabs"), "tabs: an open outline cut on the line says it has no tabs");
+        QTemporaryDir d;
+        const c2d::TiledExport te = c2d::exportTiled(r.doc, d.filePath(QStringLiteral("nt")), 25.0);
+        check(te.error.isEmpty() && te.notes.join(" ").contains("without tabs"),
+              "tabs: the tiled export keeps the export's notes");
+    }
+
+    // A Thread whose depth leaves a sliver of a turn: the last arc ended on
+    // its own start once rounded to 3 decimals, which GRBL cuts as a whole
+    // extra circle (#10-32: R 2.413, pitch 0.7938, end depth 6.763).
+    {
+        c2d::Document doc;
+        const QJsonObject layer;
+        const c2d::Element e = c2d::Element::makeCircle({30, 30}, 2.413, layer);
+        doc.addElement(e);
+        QJsonObject j{{"type", "thread_toolpath"}, {"name", "t"}, {"enabled", true}, {"uuid", "{tp-1}"},
+                      {"start_depth", "2.000"}, {"end_depth", "6.763"}, {"pitch", 0.7938}, {"thread_depth", 0},
+                      {"side", "internal"}, {"left_hand", false}, {"passes", 4}, {"climb", true},
+                      {"speeds", QJsonObject{{"feedrate", 500}, {"plungerate", 200}, {"rpm", 12000}}},
+                      {"tool", QJsonObject{{"diameter", 3.556}, {"number", 301}, {"type", 0}}},
+                      {"elements", QJsonArray{QJsonObject{{"uuid", e.id}}}}};
+        c2d::Toolpath tp;
+        tp.uuid = "{tp-1}";
+        tp.type = "thread_toolpath";
+        tp.json = j;
+        doc.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        check(g.done.size() == 1, "sliver thread exports");
+        double x = 0, y = 0, worst = 0;
+        int modal = 0;
+        auto word = [](const QString &l, QChar c, double *v) {
+            const int i = l.indexOf(c);
+            if (i < 0)
+                return false;
+            *v = l.mid(i + 1).split(QRegularExpression("[^0-9.-]")).first().toDouble();
+            return true;
+        };
+        for (const QString &l : g.gcode.split('\n')) {
+            double v, nx = x, ny = y;
+            if (word(l, 'X', &v)) nx = v;
+            if (word(l, 'Y', &v)) ny = v;
+            if (l.startsWith("G0")) modal = 0;
+            else if (l.startsWith("G1")) modal = 1;
+            else if (l.startsWith("G2")) modal = 2;
+            else if (l.startsWith("G3")) modal = 3;
+            if ((modal == 2 || modal == 3) && l.contains('I')) {
+                double I = 0, J = 0;
+                word(l, 'I', &I);
+                word(l, 'J', &J);
+                const double t0 = nx - (x + I), t1 = ny - (y + J);
+                double a = std::atan2(-I * t1 - -J * t0, -I * t0 + -J * t1);
+                if (modal == 2) { if (a >= -5e-7) a -= 2 * M_PI; } else { if (a <= 5e-7) a += 2 * M_PI; }
+                worst = std::max(worst, std::fabs(a));
+            }
+            x = nx;
+            y = ny;
+        }
+        check(worst <= M_PI + 0.01, "a thread's sliver of a turn is not cut as a full circle by GRBL");
     }
 
     std::printf("test_hardening: %d checks OK\n", g_checks);

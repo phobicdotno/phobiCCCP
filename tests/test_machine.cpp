@@ -79,6 +79,7 @@ struct FakeGrbl {
     bool alarm = false;       // Alarm state: G-code answered error:9
     double probeZ = -50;
     double mx = -100, my = -100, mz = -30;
+    double wcoZ = -40;   // work Z offset in the status reports (zero under the switch)
     // A jog reports Jog for `jogMs` after its line (it does not move the
     // position: tests set that), or until a jog cancel.
     int jogMs = 300;
@@ -112,7 +113,7 @@ struct FakeGrbl {
                     --homeReports;
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? "Hold:0" : home ? "Home" : jogging() ? "Jog" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0|WCO:0.000,0.000,0.000>\r\n");
+                     + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ) + ">\r\n");   // XY zero inside the travel
             } else if (c == '!') {
                 held = true;
                 events << "!";
@@ -452,6 +453,37 @@ int main(int argc, char **argv)
         wait(1500);
     }
 
+    // A stick held about half way wobbles round the 16000 threshold: each
+    // drop under it was a tap, a full jog step (six steps for one push).
+    // And a D-pad let go while the link was down, then pressed again after
+    // reconnecting, was taken for no change and jogged nothing.
+    {
+        wait(800);
+        grbl.events.clear();
+        for (int v : {15900, 16100, 15950, 16080, 15920, 16120, 15980, 16050, 15900, 16100}) {
+            emit pad->axisChanged(0, v);
+            wait(120);
+        }
+        emit pad->axisChanged(0, 0);
+        wait(1500);
+        check(grbl.count("$J=") <= 4, "gamepad: a half-held stick is one push, not a tap per wobble");
+
+        emit pad->axisChanged(1, -32767);
+        wait(100);
+        s->disconnectPort();
+        wait(100);
+        emit pad->axisChanged(1, 0);
+        check(s->connectPort(QString::fromLatin1(name)), "gamepad: reconnects");
+        spin(3000, [&] { return panel.statusJson().value("homed").toBool(); });
+        wait(1200);
+        grbl.events.clear();
+        emit pad->axisChanged(1, -32767);
+        wait(100);
+        emit pad->axisChanged(1, 0);
+        wait(1500);
+        check(grbl.count("$J=") == 1, "gamepad: a press after a dropped link jogs");
+    }
+
     // Tool changes: the second pause, same number, names the second bit.
     // BitSetter off: close the prompt, zero Z by hand, then Continue.
     {
@@ -717,6 +749,7 @@ int main(int argc, char **argv)
 
     // A pad cannot start the job while the surface map waits for the plate.
     {
+        grbl.wcoZ = -60;   // Z zeroed on the stock, low enough for the map's travel
         wait(800);
         panel.showPage(QStringLiteral("bitzero"));
         for (QToolButton *b : panel.findChildren<QToolButton *>())
@@ -753,6 +786,7 @@ int main(int argc, char **argv)
         wait(800);
         check(!panel.isBusy(), "map: stopped, not busy");
         panel.showPage(QStringLiteral("job"));
+        grbl.wcoZ = 0;
     }
 
     // BitSetter turned on after "Close: I'll zero Z": the Zero Z beside Z

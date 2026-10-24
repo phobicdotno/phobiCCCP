@@ -1085,9 +1085,11 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_homed = false;                  // until a homing cycle on this connection
         m_unhomedWhy = QStringLiteral("not homed since connecting");
         m_resumeCheck = true;             // ...or the controller is where we left it
+        m_holdChecked = false;
         m_homingStarted = false;
         m_lastLimitPins.clear();
         // Travel ($130-$132) for the jog limits, and $21 (hard limits).
+        m_settingsAsked.start();
         QTimer::singleShot(600, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
         saveSettings();
     });
@@ -1131,6 +1133,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         // defaults for the whole session.
         if (l.startsWith(QLatin1String("Grbl "))) {
             // Nothing from before the reset moves the machine after it.
+            ++m_resets;
             m_onIdle = nullptr;
             m_deferredJogs.clear();
             stopHoldJog();
@@ -1724,6 +1727,12 @@ void MachinePanel::bitZeroBegin()
         log(QStringLiteral("!! BitZero: the job is still finishing — wait until the machine stands still"));
         return;
     }
+    // A move still waiting for Idle (V1's way back over the block after a
+    // failed side probe) would go out after this probe started.
+    if (m_onIdle && !m_grbl->isStreaming()) {
+        log(QStringLiteral("!! BitZero: a move is still waiting to go out — wait until the machine stands still"));
+        return;
+    }
     if (!m_grbl->isStreaming() && movingStill(QStringLiteral("BitZero")))
         return;
     if (!m_grbl->canSendCommand()) {
@@ -1778,6 +1787,7 @@ void MachinePanel::bitZeroBegin()
 
 void MachinePanel::bitZeroStage(Phase stage, QStringList prefix)
 {
+    m_bzStageResets = m_resets;
     m_hits.clear();
     m_phase = stage;
     QStringList lines = {QStringLiteral("G90")};
@@ -1809,9 +1819,36 @@ void MachinePanel::bitZeroFail(const QString &why)
 
 void MachinePanel::bitZeroAfter(Phase stage, bool ok)
 {
+    // A stage ended by a controller reset reports its failure after the
+    // reset was seen: the position is gone, so nothing may move back.
+    if (!ok && m_bz.v1 && (stage == Phase::BitZeroX || stage == Phase::BitZeroY)
+        && m_resets == m_bzStageResets) {
+        // A V1 side probe stops beside the block, below its top: Begin
+        // again from there would search Z downward past the block, into
+        // the stock or the spoilboard. Once unlocked, back up over the
+        // block and over to where Begin was pressed.
+        log(QStringLiteral("!! BitZero V1 probe failed: no contact on the block's %1 side. "
+                           "Check the magnet clip and that the block sits on the corner; the "
+                           "pin goes back up over the block, then Begin again")
+                .arg(stage == Phase::BitZeroX ? QStringLiteral("left") : QStringLiteral("front")));
+        m_hits.clear();
+        const double z = m_bzOverZ, x = m_bzStartX, y = m_bzStartY;
+        const quint64 resets = m_resets;
+        whenIdle([this, z, x, y, resets] {
+            if (resets != m_resets || !m_homed)
+                return;
+            m_grbl->startMacro({QStringLiteral("G90"),
+                                QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
+                                QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
+        });
+        if (m_bzPanel)
+            m_bzPanel->setBusy(false);
+        return;
+    }
     if (!ok) {
         bitZeroFail(stage == Phase::BitZeroZ ? QStringLiteral("no contact on the plate")
                     : stage == Phase::BitZeroHome ? QStringLiteral("could not move back over the corner")
+                    : m_bz.v1 ? QStringLiteral("the side probe beside the block stopped")
                                                   : QStringLiteral("no contact on a bore wall"));
         return;
     }
@@ -1914,6 +1951,7 @@ void MachinePanel::bitZeroAfterV1(Phase stage)
         const double over = m_bz.thickness
                             + (m_bzMode == BitZeroPanel::ZOnly ? m_bz.lipDrop : 0.0);
         m_bzStockZ = top - over;
+        m_bzOverZ = top + 5.0;   // where the plate lines leave the pin
         log(QStringLiteral("BitZero V1: block top at machine Z %1, %2 mm over the stock → stock top Z %3")
                 .arg(top, 0, 'f', 3).arg(over, 0, 'f', 2).arg(m_bzStockZ, 0, 'f', 3));
         if (m_bzWantX)
@@ -2030,6 +2068,30 @@ void MachinePanel::setJobRunning(bool on)
         w->setVisible(!on);
 }
 
+// What work Z the stock top at (wx, wy) reads, so Z0 stays the surface at
+// X0 Y0 that the map's offsets are measured from (0 with the map off).
+double MachinePanel::mapZeroAt(double wx, double wy) const
+{
+    return m_useMap->isChecked() && m_map.isValid() ? m_map.offsetAt(wx, wy) : 0.0;
+}
+
+void MachinePanel::noteZZero(double mx, double my, double sent, double wcoZ)
+{
+    m_zZeroKnown = true;
+    m_zZeroWithMap = m_useMap->isChecked() && m_map.isValid();
+    m_zZeroSent = sent;
+    m_zZeroMx = mx;
+    m_zZeroMy = my;
+    m_zZeroWco = wcoZ;
+    QSettings s;
+    s.beginGroup(QStringLiteral("machine"));
+    s.setValue(QStringLiteral("zzero/withMap"), m_zZeroWithMap);
+    s.setValue(QStringLiteral("zzero/sent"), sent);
+    s.setValue(QStringLiteral("zzero/mx"), mx);
+    s.setValue(QStringLiteral("zzero/my"), my);
+    s.setValue(QStringLiteral("zzero/wco"), wcoZ);
+}
+
 // Set the work offset from where the machine now stands and the corner it
 // found: G10 L20 makes the current position read as the given work value.
 void MachinePanel::bitZeroApply()
@@ -2047,7 +2109,15 @@ void MachinePanel::bitZeroApply()
             // length offset first, as the Zero Z button does.
             cmds << QStringLiteral("G49");
             m_grbl->applyToolLengthOffset(0);
-            g10 += QStringLiteral(" Z%1").arg(st.mz - m_bzStockZ, 0, 'f', 3);
+            // The map's offset where it touched, as Zero Z does.
+            const double wx = m_bzWantX ? st.mx - m_bzCx : st.wx;
+            const double wy = m_bzWantY ? st.my - m_bzCy : st.wy;
+            const double mz = mapZeroAt(wx, wy);
+            g10 += QStringLiteral(" Z%1").arg(st.mz - m_bzStockZ + mz, 0, 'f', 3);
+            noteZZero(st.mx, st.my, mz, m_bzStockZ - mz);
+            if (mz != 0)
+                log(QStringLiteral("surface map: Z0 set to the surface at X0 Y0, %1 mm from the plate"
+                                   " (keep the map on for this zero)").arg(-mz, 0, 'f', 3));
         }
         cmds << g10;
         QString what;
@@ -2101,6 +2171,22 @@ void MachinePanel::startSurfaceMap()
         return;
     }
     const SurfaceMapPlan plan = m_bzPanel->mapPlan();
+    // The map travels at work Z plate + travel: with Z zeroed high (tall
+    // stock, a short bit) that is past the Z switch, a hard-limit alarm and
+    // the position lost. Every other rise is kept under the top; this one
+    // cannot be lowered without hitting the plate, so it is refused.
+    if (m_grbl->status().valid) {
+        const MachineStatus st = m_grbl->status();
+        const double machineZ = plan.travelZ() + (st.mz - st.wz);
+        if (machineZ > -switchClearance() + 1e-6) {
+            log(QStringLiteral("!! surface map refused: its travel height (work Z%1) is machine Z%2, "
+                               "above the top of Z (%3). Lower the plate's height or the travel "
+                               "above it, or use a longer bit")
+                    .arg(plan.travelZ(), 0, 'f', 1).arg(machineZ, 0, 'f', 1)
+                    .arg(-switchClearance(), 0, 'f', 1));
+            return;
+        }
+    }
     log(QStringLiteral("surface map: %1 × %2 points over X%3–%4 Y%5–%6, travelling at "
                        "work Z%7%8")
             .arg(plan.cols).arg(plan.rows)
@@ -2357,15 +2443,23 @@ void MachinePanel::gamepadAxis(int number, int value)
 {
     if (m_padMapping)
         return;
-    if (number > 1 || !m_grbl->isConnected())
+    if (number > 1)
         return;
     // A D-pad reports its rest position as 0 and a direction as full scale;
     // an analogue stick needs the same treatment with a dead zone, so both are
-    // reduced to -1, 0 or +1 here.
-    const int dir = value > 16000 ? 1 : (value < -16000 ? -1 : 0);
-    if (dir == m_padAxisDir[number])
+    // reduced to -1, 0 or +1 here. A stick held about half way wobbles round
+    // the threshold: it lets go only well below it, or each wobble was a tap
+    // and a full jog step.
+    const int was = m_padAxisDir[number];
+    const int dir = value > 16000 ? 1 : (value < -16000 ? -1
+                  : (was != 0 && value * was > 8000 ? was : 0));
+    if (dir == was)
         return;
+    // Kept while not connected too: a direction held across a dropped link
+    // and let go there, then pressed again, was taken for no change.
     m_padAxisDir[number] = dir;
+    if (!m_grbl->isConnected())
+        return;
     if (dir == 0) {
         endHoldJog();
         return;
@@ -2511,6 +2605,12 @@ void MachinePanel::loadSettings()
     QSettings s;
     s.beginGroup(QStringLiteral("machine"));
     m_bsEnabled->setChecked(s.value(QStringLiteral("bitsetter/enabled"), false).toBool());
+    m_zZeroKnown = s.contains(QStringLiteral("zzero/wco"));
+    m_zZeroWithMap = s.value(QStringLiteral("zzero/withMap")).toBool();
+    m_zZeroSent = s.value(QStringLiteral("zzero/sent")).toDouble();
+    m_zZeroMx = s.value(QStringLiteral("zzero/mx")).toDouble();
+    m_zZeroMy = s.value(QStringLiteral("zzero/my")).toDouble();
+    m_zZeroWco = s.value(QStringLiteral("zzero/wco")).toDouble();
     m_bsX->setValue(s.value(QStringLiteral("bitsetter/x"), -20.0).toDouble());
     m_bsY->setValue(s.value(QStringLiteral("bitsetter/y"), -20.0).toDouble());
     m_bsSafeZ->setValue(s.value(QStringLiteral("bitsetter/safeZ"), -5.0).toDouble());
@@ -2604,7 +2704,34 @@ void MachinePanel::onStatus(const MachineStatus &st)
     // its position as long as it was not reset or power-cycled - and then it
     // boots in Alarm. Not in Alarm, and exactly where the last homed session
     // left it: still homed, no Initialize needed.
-    if (m_resumeCheck && st.valid && !st.state.isEmpty()) {
+    // GRBL answers $$ with error:8 while it runs or holds (moves left from
+    // before the link dropped): asked again once it is Idle, or the travel,
+    // $21 and the $13 inch reports went unread for the whole session.
+    if (st.valid && !m_grbl->haveSettings() && m_settingsAsked.isValid() && m_settingsAsked.elapsed() > 2000
+        && (st.state == QLatin1String("Idle") || st.state.startsWith(QLatin1String("Alarm")))
+        && !m_grbl->isStreaming()) {
+        m_settingsAsked.start();
+        m_grbl->sendCommand(QStringLiteral("$$"));
+    }
+    if (m_resumeCheck && st.valid && !st.state.isEmpty() && !m_holdChecked) {
+        m_holdChecked = true;
+        // Paused by a job this session never sent (the link dropped, the app
+        // restarted, on a board that does not reset when the port opens):
+        // its leftover moves are still in GRBL's buffer with the spindle on,
+        // and a Resume would run them with nothing tracking them. Clear them
+        // the way a Stop of a held job does; GRBL keeps its position.
+        if ((st.state.startsWith(QLatin1String("Hold")) || st.state.startsWith(QLatin1String("Door")))
+            && !m_grbl->isStreaming()) {
+            log(QStringLiteral("!! the controller was paused in a job this session did not send — "
+                               "clearing what is left of it (the spindle stops). Start the job again "
+                               "from here if it is to be finished"));
+            holdResetThen({});
+        }
+    }
+    // The position only after the $$ listing: with $13=1 it reads in inches
+    // until that is known, and never matches where the last session left it.
+    // (In Hold GRBL answers $$ with error:8, so the clear above cannot wait.)
+    if (m_resumeCheck && st.valid && !st.state.isEmpty() && m_grbl->haveSettings()) {
         m_resumeCheck = false;
         QSettings s;
         const QVariantList last = s.value(QStringLiteral("machine/homedAt")).toList();
@@ -3108,8 +3235,25 @@ void MachinePanel::zero(const QString &axes)
         m_grbl->applyToolLengthOffset(0);
     }
     QString g10 = QStringLiteral("G10 L20 P1");
-    for (const QChar ax : axes)
-        g10 += QStringLiteral(" %1").arg(ax) + QStringLiteral("0");   // " X0"
+    for (const QChar ax : axes) {
+        if (ax != QChar('Z')) {
+            g10 += QStringLiteral(" %1").arg(ax) + QStringLiteral("0");   // " X0"
+            continue;
+        }
+        // With the surface map on, Z0 stays the surface at X0 Y0: zeroed
+        // here, the job followed the map from the wrong height (a 2 mm warp
+        // left a 1 mm cut in the air).
+        const MachineStatus st = m_grbl->status();
+        const double z = mapZeroAt(axes.contains(QChar('X')) ? 0.0 : st.wx,
+                                   axes.contains(QChar('Y')) ? 0.0 : st.wy);
+        g10 += z == 0 ? QStringLiteral(" Z0") : QStringLiteral(" Z%1").arg(z, 0, 'f', 3);
+        noteZZero(st.mx, st.my, z, st.mz - z);
+        // The readout shows that height here, not 0: say why (and that it
+        // holds only with the map on).
+        if (z != 0)
+            log(QStringLiteral("surface map: Z0 set to the surface at X0 Y0, %1 mm from here"
+                               " (keep the map on for this zero)").arg(-z, 0, 'f', 3));
+    }
     cmds << g10;
 
     const BitSetterConfig cfg = bitSetter();
@@ -3585,6 +3729,32 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     if (remote && m_useMap->isChecked() && m_map.isValid())
         return refuse(QStringLiteral("The surface map is switched on at the computer."),
                       QStringLiteral("Turn it off there, or start the job at the computer."));
+    // Z zeroed with the map on puts Z0 at the surface under X0 Y0, with it
+    // off at the touched spot: run the other way, or with a map measured
+    // again since, every depth was off by the map's height there (a pad
+    // start, which wants the map off, cut 1.75 mm too deep).
+    // GRBL's reported WCO Z carries the tool length offset (G43.1 after a
+    // bit is measured); the zero left none. Either, as a G43.1 may still be
+    // on its way.
+    const double wcoNow = m_grbl->hasWorkOffset() ? m_grbl->workOffsetZ() : qQNaN();
+    if (m_zZeroKnown && (std::abs(wcoNow - m_zZeroWco) < 0.005
+                         || std::abs(wcoNow - m_grbl->toolLengthOffset() - m_zZeroWco) < 0.005
+                         || std::abs(wcoNow - m_grbl->toolLengthOffsetAtWco() - m_zZeroWco) < 0.005)) {
+        const MachineStatus st = m_grbl->status();
+        const bool mapNow = m_useMap->isChecked() && m_map.isValid();
+        const double want = mapNow ? m_map.offsetAt(m_zZeroMx - (st.mx - st.wx), m_zZeroMy - (st.my - st.wy)) : 0.0;
+        const double off = want - m_zZeroSent;
+        if (std::abs(off) > 0.05) {
+            const bool same = m_zZeroWithMap == mapNow;
+            const QString why = same
+                ? QStringLiteral("Z was zeroed with another surface map than the one measured since")
+                : QStringLiteral("Z was zeroed with the surface map %1, and it is %2 now")
+                      .arg(m_zZeroWithMap ? QStringLiteral("on") : QStringLiteral("off"),
+                           mapNow ? QStringLiteral("on") : QStringLiteral("off"));
+            return refuse(QStringLiteral("%1: every depth would be %2 mm off.").arg(why).arg(std::abs(off), 0, 'f', 2),
+                          same ? QStringLiteral("Zero Z again.") : QStringLiteral("Zero Z again, or switch the map back."));
+        }
+    }
     if (remote && m_airCut->isChecked())
         return refuse(QStringLiteral("Air cut is switched on at the computer."),
                       QStringLiteral("Turn it off there, or start the job at the computer."));
@@ -3604,6 +3774,72 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     // Into the job from the top: all the way up first, then every rapid
     // that goes down travels across before it descends.
     lines = QStringList{QStringLiteral("G21")} + riseToTop() + safeRapidsTransform(lines);
+
+    // The program inside the travel, at the current work zero (with the air
+    // cut lift and the map's lifted rapids): jogs, Park and the map keep to
+    // it, the job did not, and drove past the Z switch or into a hard stop.
+    if (m_homed && m_grbl->status().valid) {
+        const auto &st = m_grbl->status();
+        const double off[3] = {st.mx - st.wx, st.my - st.wy, st.mz - st.wz};
+        double lo[3] = {1e300, 1e300, 1e300}, hi[3] = {-1e300, -1e300, -1e300};
+        auto grow = [&](double x, double y, double z) {
+            const double v[3] = {x, y, z};
+            for (int k = 0; k < 3; ++k) {
+                lo[k] = qMin(lo[k], v[k]);
+                hi[k] = qMax(hi[k], v[k]);
+            }
+        };
+        double px = 0, py = 0, pz = 0;
+        for (const Op &o : ops) {
+            if (o.kind != Op::Rapid && o.kind != Op::Feed && o.kind != Op::Arc)
+                continue;
+            grow(o.x, o.y, o.z);
+            if (o.kind == Op::Arc) {
+                // The arc's own extremes: where it crosses 0, 90, 180, 270 deg.
+                const double cx = px + o.ci, cy = py + o.cj, r = std::hypot(o.ci, o.cj);
+                const double a0 = std::atan2(py - cy, px - cx), a1 = std::atan2(o.y - cy, o.x - cx);
+                double sweep = o.cw ? a0 - a1 : a1 - a0;
+                while (sweep <= 1e-9)
+                    sweep += 2 * M_PI;
+                for (int q = 0; q < 4; ++q) {
+                    const double a = q * M_PI / 2;
+                    double t = o.cw ? a0 - a : a - a0;
+                    while (t < 0)
+                        t += 2 * M_PI;
+                    while (t >= 2 * M_PI)
+                        t -= 2 * M_PI;
+                    if (t <= sweep)
+                        grow(cx + r * std::cos(a), cy + r * std::sin(a), qMax(pz, o.z));
+                }
+            }
+            px = o.x;
+            py = o.y;
+            pz = o.z;
+        }
+        if (lo[0] <= hi[0]) {
+            QSettings sset;
+            const auto machine = appsettings::machine(sset);
+            const double travel[2] = {m_grbl->setting(130, machine.width), m_grbl->setting(131, machine.height)};
+            const double top = -switchClearance(), lift = air ? m_airLift->value() : 0.0;
+            QStringList over;
+            for (int k = 0; k < 2; ++k) {
+                const QChar ax = QChar::fromLatin1("XY"[k]);
+                if (hi[k] + off[k] > top + 1e-6)
+                    over << QStringLiteral("%1 %2 mm past its home switch").arg(ax).arg(hi[k] + off[k] - top, 0, 'f', 1);
+                if (lo[k] + off[k] < -travel[k] - 1e-6)
+                    over << QStringLiteral("%1 %2 mm past the far end of its travel")
+                                .arg(ax).arg(-travel[k] - (lo[k] + off[k]), 0, 'f', 1);
+            }
+            if (hi[2] + lift + off[2] > top + 1e-6)
+                over << QStringLiteral("Z %1 mm above the top of its travel")
+                            .arg(hi[2] + lift + off[2] - top, 0, 'f', 1);
+            if (!over.isEmpty())
+                return refuse(QStringLiteral("The program goes off the machine."),
+                              QStringLiteral("From the current work zero it reaches %1. Set the zero "
+                                             "again, move the design, or lower the air cut lift.")
+                                  .arg(over.join(QStringLiteral(", "))));
+        }
+    }
 
     // Confirmation gate: extents + time estimate, and an unmissable note about
     // whether this run will spin the spindle.

@@ -760,7 +760,9 @@ QVector<QTransform> pathTransforms(const QPainterPath &path, int count, double s
     const bool closed = QLineF(poly.first(), poly.last()).length() < 1e-6;
     // Point and direction (degrees) at arc length s.
     auto at = [&](double s, QPointF *pt, double *deg) {
-        int i = int(std::lower_bound(acc.begin(), acc.end(), s) - acc.begin());
+        // On a vertex, the segment leaving it (as for the original at 0): a
+        // copy on a square's corner turned one edge too little.
+        int i = int(std::upper_bound(acc.begin(), acc.end(), s + 1e-6) - acc.begin());
         i = qBound(1, i, int(poly.size()) - 1);
         while (i < poly.size() - 1 && acc.at(i) - acc.at(i - 1) < 1e-12)
             ++i;

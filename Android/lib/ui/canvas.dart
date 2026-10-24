@@ -138,6 +138,13 @@ class DesignCanvas extends StatefulWidget {
 class _DesignCanvasState extends State<DesignCanvas> {
   Size _size = const Size(1, 1);
   int _pointers = 0;
+  // Two fingers have been down since the screen was last clear: the one
+  // left after a pinch only pans, it does not select, drag or draw.
+  bool _multi = false;
+  void _lift() {
+    _pointers = math.max(0, _pointers - 1);
+    if (_pointers == 0) _multi = false;
+  }
   bool _moving = false, _moved = false;
   // What a drag moves: the parent's selection may not have caught up with the tap yet.
   Set<String> _dragIds = const {};
@@ -149,6 +156,10 @@ class _DesignCanvasState extends State<DesignCanvas> {
   StockView _view() => StockView(widget.design.stock, _size, zoom: widget.zoom.zoom, pan: widget.zoom.pan);
 
   (double, double) _snapped(double x, double y) {
+    // Nothing drawn past ±10000 mm: the computer refuses such a design.
+    const lim = Shape.maxCoord;
+    x = x.clamp(-lim, lim).toDouble();
+    y = y.clamp(-lim, lim).toDouble();
     if (!widget.snap) return (x, y);
     const g = 5.0;
     return ((x / g).roundToDouble() * g, (y / g).roundToDouble() * g);
@@ -180,7 +191,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
     _bandStart = _bandEnd = null;
     _drawStart = null;
     _draft = null;
-    if (s.pointerCount != 1) return;
+    if (s.pointerCount != 1 || _multi) return;
     final v = _view();
     final (x, y) = v.toMm(s.localFocalPoint);
     switch (widget.tool) {
@@ -208,12 +219,23 @@ class _DesignCanvasState extends State<DesignCanvas> {
 
   void _update(ScaleUpdateDetails s) {
     final v = _view();
-    if (s.pointerCount == 1 && _pointers <= 1) {
+    if (s.pointerCount == 1 && _pointers <= 1 && !_multi) {
       final (x, y) = v.toMm(s.localFocalPoint);
       widget.zoom.at((x, y));
       if (_moving) {
         final ids = _dragIds;
-        if (ids.isNotEmpty) widget.onMove(ids, s.focalPointDelta.dx / v.scale, -s.focalPointDelta.dy / v.scale);
+        if (ids.isNotEmpty) {
+          var dx = s.focalPointDelta.dx / v.scale, dy = -s.focalPointDelta.dy / v.scale;
+          // Not past ±10000 mm: the computer refuses such a design.
+          const lim = Shape.maxCoord;
+          for (final sh in widget.design.shapes) {
+            if (!ids.contains(sh.id)) continue;
+            final b = sh.bounds();
+            dx = dx.clamp(math.min(0.0, -lim - b[0]), math.max(0.0, lim - b[2])).toDouble();
+            dy = dy.clamp(math.min(0.0, -lim - b[1]), math.max(0.0, lim - b[3])).toDouble();
+          }
+          widget.onMove(ids, dx, dy);
+        }
         _moved = true;
         return;
       }
@@ -278,9 +300,11 @@ class _DesignCanvasState extends State<DesignCanvas> {
       _size = Size(box.maxWidth, box.maxHeight);
       widget.zoom.fit = StockView(widget.design.stock, _size).fit;
       return Listener(
-        onPointerDown: (_) => _pointers++,
-        onPointerUp: (_) => _pointers = math.max(0, _pointers - 1),
-        onPointerCancel: (_) => _pointers = math.max(0, _pointers - 1),
+        onPointerDown: (_) {
+          if (++_pointers > 1) _multi = true;
+        },
+        onPointerUp: (_) => _lift(),
+        onPointerCancel: (_) => _lift(),
         child: GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTapUp: _tap,
@@ -517,13 +541,17 @@ double _r2(double v) => (v * 100).roundToDouble() / 100;
 
 /// The shape a drawing drag makes, as the desktop's tools do: a rectangle
 /// corner to corner, a circle or hexagon from its centre out to the finger.
+/// No side or radius over 10000 mm (the computer refuses more); a rectangle
+/// keeps the corner the drag started from.
 Shape? shapeFromDraft(Draft d, String id) {
-  final r = _r2(math.sqrt(math.pow(d.x1 - d.x0, 2) + math.pow(d.y1 - d.y0, 2)));
+  const most = Shape.maxCoord;
+  final r = math.min(most, _r2(math.sqrt(math.pow(d.x1 - d.x0, 2) + math.pow(d.y1 - d.y0, 2))));
   switch (d.tool) {
     case DrawTool.rect:
-      final w = (d.x1 - d.x0).abs(), h = (d.y1 - d.y0).abs();
+      final w = math.min(most, (d.x1 - d.x0).abs()), h = math.min(most, (d.y1 - d.y0).abs());
       if (w < 0.01 || h < 0.01) return null;
-      return Shape(id: id, type: Shape.rect, x: _r2(math.min(d.x0, d.x1)), y: _r2(math.min(d.y0, d.y1)), w: _r2(w), h: _r2(h));
+      final x = d.x1 < d.x0 ? d.x0 - w : d.x0, y = d.y1 < d.y0 ? d.y0 - h : d.y0;
+      return Shape(id: id, type: Shape.rect, x: _r2(x), y: _r2(y), w: _r2(w), h: _r2(h));
     case DrawTool.circle:
       return r < 0.01 ? null : Shape(id: id, type: Shape.circle, x: _r2(d.x0), y: _r2(d.y0), r: r);
     case DrawTool.polygon:

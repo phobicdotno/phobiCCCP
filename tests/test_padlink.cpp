@@ -7,6 +7,8 @@
 #include "../src/machineprofiles.h"
 #include "../src/element.h"
 #include "../src/padlink.h"
+#include "../src/toollibrary.h"
+#include "../src/toolpathfactory.h"
 
 #include <QDir>
 #include <QFile>
@@ -217,6 +219,39 @@ static void testLayersAndGroupsLost(const QString &dir)
     lost.clear();
     padlink::designFromDocument(path, d, &lost, &err);
     check(lost.contains(QStringLiteral("layers and groups")), "a group is reported as lost to the pad");
+    // r49: a named layer, a toolpath group row and an edited embedded bit
+    // are lost on a rebuild too, and used to go unreported.
+    {
+        const QString p2 = QDir(dir).filePath("layers2.c2d");
+        check(padlink::buildDocument(d, p2, nullptr, &err), "layers2 fixture builds");
+        Document d2;
+        d2.load(p2, &err);
+        for (const Element &e : d2.elements()) {
+            QJsonObject r = e.raw;
+            QJsonObject l = r.value("layer").toObject();
+            l.insert("name", "Cut");
+            r.insert("layer", l);
+            d2.replaceElement(Element::fromJson(r));
+        }
+        d2.save(p2, &err);
+        lost.clear();
+        padlink::designFromDocument(p2, d, &lost, &err);
+        check(lost.contains(QStringLiteral("layers and groups")), "a layer named Cut on every shape is reported as lost");
+        Document d3;
+        d3.load(path, &err);
+        if (!d3.toolpaths().isEmpty()) {
+            Toolpath t = d3.toolpaths().first();
+            QJsonObject tool = t.json.value("tool").toObject();
+            tool.insert("diameter", tool.value("diameter").toDouble() + 1.0);
+            t.json.insert("tool", tool);
+            d3.replaceToolpath(t);
+            const QString p3 = QDir(dir).filePath("layers3.c2d");
+            d3.save(p3, &err);
+            lost.clear();
+            padlink::designFromDocument(p3, d, &lost, &err);
+            check(!lost.isEmpty(), "an embedded bit edited after the toolpath was made is reported as lost");
+        }
+    }
 }
 
 // A design from a pad, saved here, goes back to the pads unchanged; once
@@ -353,6 +388,110 @@ static void testBackToPad(const QString &dir)
     check(lost.size() == 2, qPrintable(QStringLiteral("own feeds and construction lines are named (%1)").arg(lost.join(", "))));
     check(edited.value("shapes").toArray().size() == 5 && padlink::check(edited).isEmpty(),
           "and the rest still goes to the pad");
+}
+
+// Edits made here that the pad also makes (a new toolpath left at its
+// defaults, a bit change) keep the file the pad's.
+static void testDesktopEditsPadHas(const QString &dir)
+{
+    QString err;
+    const QJsonObject d = design(201, QStringLiteral("softwood"));
+    for (const char *type : {"pocket_toolpath", "contour", "drilling_toolpath", "engrave_toolpath"}) {
+        const QString path = QDir(dir).filePath(QStringLiteral("new-%1.c2d").arg(QLatin1String(type)));
+        padlink::buildDocument(d, path, nullptr, &err);
+        Document doc;
+        doc.load(path, &err);
+        doc.addToolpath(makeToolpath(doc, QLatin1String(type), {doc.elements().first().id}));
+        doc.save(path, &err);
+        QStringList lost;
+        padlink::designFromDocument(path, d, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("a new %1 at its defaults keeps the file the pad's (%2)")
+                                             .arg(QLatin1String(type), lost.join(", "))));
+    }
+    // After a Drill (no passes copied from it), in a material whose chart
+    // stepover is not 50%: the bit's own library numbers, as the pad builds.
+    {
+        QJsonObject ad = design(201, QStringLiteral("acrylic"));
+        QJsonArray tps;
+        for (const QJsonValue &v : ad.value("toolpaths").toArray()) {
+            const QString ty = v.toObject().value("type").toString();
+            if (ty == QLatin1String("pocket") || ty == QLatin1String("drill"))
+                tps.append(v);
+        }
+        ad.insert("toolpaths", tps);
+        for (const char *type : {"pocket_toolpath", "contour", "drilling_toolpath"}) {
+            const QString p = QDir(dir).filePath(QStringLiteral("acr-%1.c2d").arg(QLatin1String(type)));
+            padlink::buildDocument(ad, p, nullptr, &err);
+            Document doc;
+            doc.load(p, &err);
+            doc.addToolpath(makeToolpath(doc, QLatin1String(type), {doc.elements().first().id}));
+            doc.save(p, &err);
+            QStringList lost;
+            padlink::designFromDocument(p, ad, &lost, &err);
+            check(lost.isEmpty(), qPrintable(QStringLiteral("after a drill in acrylic, a new %1 keeps the file the pad's (%2)")
+                                                 .arg(QLatin1String(type), lost.join(", "))));
+        }
+    }
+    const QString path = QDir(dir).filePath(QStringLiteral("bit.c2d"));
+    padlink::buildDocument(d, path, nullptr, &err);
+    Document doc;
+    doc.load(path, &err);
+    ToolLibrary lib;
+    lib.loadDefault();
+    const LibraryTool *t102 = lib.byNumber(102);
+    for (const Toolpath &t0 : doc.toolpaths()) {
+        if (t0.json.value("type").toString() == QLatin1String("engrave_toolpath"))
+            continue;
+        Toolpath t = t0;
+        ToolLibrary::applyToToolpath(t.json, *t102, *t102->feedsFor(QStringLiteral("softwood")));
+        doc.replaceToolpath(t);
+    }
+    doc.save(path, &err);
+    QStringList lost;
+    const QJsonObject back = padlink::designFromDocument(path, d, &lost, &err);
+    check(lost.isEmpty(), qPrintable(QStringLiteral("a bit changed here keeps the file the pad's (%1)").arg(lost.join(", "))));
+    Document pd;
+    padlink::buildDocument(back, QDir(dir).filePath(QStringLiteral("bit-pad.c2d")), nullptr, &err);
+    pd.load(QDir(dir).filePath(QStringLiteral("bit-pad.c2d")), &err);
+    check(std::abs(pd.toolpaths().last().json.value("lead_radius").toDouble()
+                   - doc.toolpaths().last().json.value("lead_radius").toDouble()) < 1e-9,
+          "the lead follows the new bit, as on the pad");
+
+    // With rest on, "Bigger tool" is the earlier cutter: a smaller bit picked
+    // for the rest pass left it at its own size and rest was off.
+    {
+        Toolpath p = doc.toolpaths().first();
+        QJsonObject j = p.json;
+        j.insert("enable_rest", true);
+        j.insert("rest_diameter", 6.35);
+        j.insert("tool", QJsonObject{{"diameter", 6.35}, {"number", 201}});
+        ToolLibrary::applyToToolpath(j, *t102, *t102->feedsFor(QStringLiteral("softwood")));
+        check(std::abs(j.value("rest_diameter").toDouble() - 6.35) < 1e-9, "a bit change keeps a rest pass's bigger tool");
+    }
+
+    // A file from before the pad_sizing mark: a lead typed here that happens
+    // to be half of some other bit (#201) is still an edit, not hidden.
+    {
+        QJsonObject od = d;
+        auto tp = [](const char *n, const char *sh, int tool) {
+            return QJsonObject{{"name", n}, {"type", "profile"}, {"side", "outside"}, {"shapes", QJsonArray{sh}},
+                               {"tool", tool}, {"depth", 3}};
+        };
+        od.insert("toolpaths", QJsonArray{tp("A", "r", 102), tp("B", "c", 102)});
+        const QString op = QDir(dir).filePath(QStringLiteral("old-lead.c2d"));
+        padlink::buildDocument(od, op, nullptr, &err);
+        Document o;
+        o.load(op, &err);
+        Toolpath b = o.toolpaths().at(1);
+        b.json.insert("lead_radius", 3.175);
+        o.replaceToolpath(b);
+        o.save(op, &err);
+        Document::writeParam(op, QStringLiteral("pad_sizing"), QStringLiteral("old"), &err);
+        QStringList ol;
+        padlink::designFromDocument(op, od, &ol, &err);
+        check(!ol.isEmpty(), "an old file: a lead typed here is named, not taken for the pad's");
+    }
+
 }
 
 static void testLinks(const QString &dir)
@@ -982,6 +1121,7 @@ int main(int argc, char **argv)
     testBuild(tmp.path(), d);
     testPadFixture(tmp.path());
     testBackToPad(tmp.path());
+    testDesktopEditsPadHas(tmp.path());
     testRebuildKeepsRetract(tmp.path());
     testLayersAndGroupsLost(tmp.path());
     testLinks(tmp.path());

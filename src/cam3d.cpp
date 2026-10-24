@@ -758,6 +758,11 @@ double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double
     // 0.1 mm grid is still slow, and exportGcode runs on the GUI thread.
     // That is a missing progress/cancel path, not a number to clamp away.
     if (rFlat < r - 1e-9) {
+        // The point under the centre, where a ball's or V's tip touches:
+        // the lines below may all miss it by up to a fraction of a cell,
+        // and a V's cone stands h / tan(half angle) above its tip there
+        // (a 60 deg V cut 0.2 mm into a flat floor).
+        best = qMax(best, m.sample(x, y));
         const int cellsAcross = qMax(1, int(std::ceil(2 * r / cell)));
         const int n = qBound(1, 64 / cellsAcross, 4);
         const int c0 = int(std::floor((x - r - m.originX) / cell - 0.5));
@@ -989,9 +994,15 @@ static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
                         }
                     if (qIsNaN(mid.x()))
                         continue;
-                    const QPointF nrm = QPointF(-(b - a).y(), (b - a).x()) * (0.5 * g / len);
-                    QPointF in = trueZ(mid + nrm) <= L ? mid + nrm
-                               : trueZ(mid - nrm) <= L ? mid - nrm : QPointF(qQNaN(), 0);
+                    // A ridge narrower than the probe (a thin wall between two
+                    // contour crossings) has both probes above the level:
+                    // retry closer in, then further out, before giving up on the chord.
+                    QPointF in(qQNaN(), 0);
+                    for (const double reach : {0.5, 0.25, 0.0625, 2.0}) {
+                        const QPointF nrm = QPointF(-(b - a).y(), (b - a).x()) * (reach * g / len);
+                        if (trueZ(mid + nrm) <= L) { in = mid + nrm; break; }
+                        if (trueZ(mid - nrm) <= L) { in = mid - nrm; break; }
+                    }
                     if (qIsNaN(in.x()))
                         continue;
                     QPointF out = mid;

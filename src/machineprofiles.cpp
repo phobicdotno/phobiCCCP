@@ -14,7 +14,10 @@ const QStringList kGlobal = {QStringLiteral("logOpen")};
 // What a new profile does not take over from the one it is copied from.
 const QStringList kPerMachine = {QStringLiteral("port"), QStringLiteral("ref/valid"),
                                  QStringLiteral("ref/z"), QStringLiteral("homedAt"),
-                                 QStringLiteral("heightmap/map"), QStringLiteral("heightmap/use")};
+                                 QStringLiteral("heightmap/map"), QStringLiteral("heightmap/use"),
+                                 QStringLiteral("zzero/withMap"), QStringLiteral("zzero/sent"),
+                                 QStringLiteral("zzero/mx"), QStringLiteral("zzero/my"),
+                                 QStringLiteral("zzero/wco")};
 
 QString dataGroup(const QString &id)
 {

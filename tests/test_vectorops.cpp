@@ -642,6 +642,17 @@ int main(int argc, char **argv)
         const QPointF off = t.at(0).map(QPointF(0, -2)) - p1;
         check(approx(std::hypot(off.x(), off.y()), 2, 1e-6) && approx(std::fabs(off.x()) + std::fabs(off.y()), 2, 1e-6),
               "copies keep their offset, turned");
+        // Each copy on a corner turns one more edge (it took the edge
+        // arriving there: 0, 90, 180 instead of 90, 180, 270).
+        {
+            const double s0 = std::atan2(t.at(0).m12(), t.at(0).m11()) * 180 / M_PI;
+            bool turns = approx(std::fabs(s0), 90, 1e-6);
+            for (int k = 1; k < 3; ++k) {
+                const double dk = std::atan2(t.at(k).m12(), t.at(k).m11()) * 180 / M_PI;
+                turns = turns && std::fabs(std::remainder(dk - (s0 > 0 ? 1 : -1) * 90.0 * (k + 1), 360.0)) < 1e-6;
+            }
+            check(turns, "copies on the corners turn a quarter more each");
+        }
         t = vec::pathTransforms(sq, 4, 0, false);
         check(approx(t.at(0).m11(), 1) && approx(t.at(0).m12(), 0), "unoriented copies only move");
         check(vec::pathTransforms(QPainterPath(), 3, 0, true).isEmpty(), "no path: nothing");

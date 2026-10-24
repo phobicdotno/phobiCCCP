@@ -108,6 +108,7 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     // whose settings changed. Until the new $$ arrives the fallbacks apply.
     m_settings.clear();
     m_wcoX = m_wcoY = m_wcoZ = 0;
+    m_haveWco = false;
     m_statusTimer->start();
     emit connected(portName);
     return true;
@@ -610,6 +611,11 @@ void GrblStreamer::onReadyRead()
     }
 }
 
+double GrblStreamer::reportScale() const
+{
+    return m_settings.value(13, 0) == 1 ? 25.4 : 1.0;
+}
+
 void GrblStreamer::handleLine(const QByteArray &line)
 {
     // `$$` listing: $130=1250.000. Kept for the jog limits.
@@ -630,27 +636,34 @@ void GrblStreamer::handleLine(const QByteArray &line)
         st.limitPins.clear();
         bool haveM = false, haveW = false;
         double px = 0, py = 0, pz = 0;
+        // $13=1 reports positions in inches; everything here works in mm
+        // (a jog went 86 mm the wrong way, Run refused a job that fit). The
+        // WCO is kept as reported: GRBL sends it rarely, the first one before
+        // the $$ listing says which unit it is in.
+        const double k = reportScale();
         for (const QByteArray &p : parts) {
             if (p.startsWith("WCO:")) {
                 const QList<QByteArray> c = p.mid(4).split(',');
                 if (c.size() >= 3) {
-                    m_wcoX = c.at(0).toDouble();
-                    m_wcoY = c.at(1).toDouble();
-                    m_wcoZ = c.at(2).toDouble();
+                    m_wcoX = c.at(0).toDouble();   // raw: scaled on use
+                    m_wcoY = c.at(1).toDouble();   // raw: scaled on use
+                    m_wcoZ = c.at(2).toDouble();   // raw: scaled on use
+                    m_tloAtWco = m_tlo;            // what this WCO Z carries, if G43.1 was sent
+                    m_haveWco = true;
                 }
             } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
                 const QList<QByteArray> c = p.mid(5).split(',');
                 if (c.size() >= 3) {
-                    px = c.at(0).toDouble();
-                    py = c.at(1).toDouble();
-                    pz = c.at(2).toDouble();
+                    px = c.at(0).toDouble() * k;
+                    py = c.at(1).toDouble() * k;
+                    pz = c.at(2).toDouble() * k;
                     haveM = p.startsWith("MPos:");
                     haveW = !haveM;
                 }
             } else if (p.startsWith("FS:")) {
                 const QList<QByteArray> c = p.mid(3).split(',');
                 if (c.size() >= 2) {
-                    st.feed = c.at(0).toDouble();
+                    st.feed = c.at(0).toDouble() * k;   // inch/min with $13=1
                     st.spindle = c.at(1).toDouble();
                 }
             } else if (p.startsWith("Ov:")) {
@@ -669,10 +682,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         if (haveM) {
             st.mx = px; st.my = py; st.mz = pz;
-            st.wx = px - m_wcoX; st.wy = py - m_wcoY; st.wz = pz - m_wcoZ;
+            st.wx = px - m_wcoX * k; st.wy = py - m_wcoY * k; st.wz = pz - m_wcoZ * k;
         } else if (haveW) {
             st.wx = px; st.wy = py; st.wz = pz;
-            st.mx = px + m_wcoX; st.my = py + m_wcoY; st.mz = pz + m_wcoZ;
+            st.mx = px + m_wcoX * k; st.my = py + m_wcoY * k; st.mz = pz + m_wcoZ * k;
         }
         st.valid = true;
         m_status = st;
@@ -725,8 +738,9 @@ void GrblStreamer::handleLine(const QByteArray &line)
         const QList<QByteArray> c = body.left(colon).split(',');
         if (c.size() >= 3) {
             m_probeOk = (colon >= 0 && body.mid(colon + 1).trimmed() == "1");
-            m_probeZ = c.at(2).toDouble();
-            emit probeResult(c.at(0).toDouble(), c.at(1).toDouble(), m_probeZ, m_probeOk);
+            const double k = reportScale();
+            m_probeZ = c.at(2).toDouble() * k;
+            emit probeResult(c.at(0).toDouble() * k, c.at(1).toDouble() * k, m_probeZ, m_probeOk);
         }
         return;
     }

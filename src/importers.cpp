@@ -113,9 +113,56 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
         };
         return std::make_pair(k(p.x()), k(p.y()));
     };
+    // An open piece drawn twice (a CAD export repeating an edge) is cut
+    // once: the copy is dropped. Kept, the two closed on each other as an
+    // empty loop and left the outline they belong to open.
+    auto sameSegs = [tol](const QVector<Seg> &x, const QVector<Seg> &y) {
+        if (x.size() != y.size())
+            return false;
+        for (int k = 0; k < x.size(); ++k) {
+            const Seg &g = x.at(k), &h = y.at(k);
+            if (g.curve != h.curve || !samePoint(g.a, h.a, tol) || !samePoint(g.b, h.b, tol)
+                || (g.curve && (!samePoint(g.c1, h.c1, tol) || !samePoint(g.c2, h.c2, tol))))
+                return false;
+        }
+        return true;
+    };
+    // A copy is still joined like any piece: a shared edge drawn once for
+    // each of two touching shapes is a "copy" too, and the second shape
+    // needs it. Only a copy left on its own is dropped.
+    QVector<bool> isCopy(subs.size(), false);
+    QVector<int> rootOf(subs.size());   // the piece a copy repeats, else itself
+    for (int j = 0; j < subs.size(); ++j)
+        rootOf[j] = j;
+    {
+        // By the cells of both ends (first, last); a copy within tol has each
+        // end in the same or a neighbouring cell. Both ends, so pieces that
+        // only share one point (a starburst) are never compared.
+        using Cell = std::pair<qint64, qint64>;
+        QHash<std::pair<Cell, Cell>, QVector<int>> byEnds;
+        for (int j = 0; j < subs.size(); ++j) {
+            if (subs[j].closed || subs[j].segs.isEmpty())
+                continue;
+            const Cell a = cellOf(subs[j].segs.first().a), b = cellOf(subs[j].segs.last().b);
+            const QVector<Seg> back = reversed(subs[j].segs);
+            for (qint64 ax = -1; ax <= 1 && !isCopy[j]; ++ax)
+                for (qint64 ay = -1; ay <= 1 && !isCopy[j]; ++ay)
+                    for (qint64 bx = -1; bx <= 1 && !isCopy[j]; ++bx)
+                        for (qint64 by = -1; by <= 1 && !isCopy[j]; ++by) {
+                            const Cell ca{a.first + ax, a.second + ay}, cb{b.first + bx, b.second + by};
+                            for (int i : byEnds.value({ca, cb}))
+                                if (sameSegs(subs[i].segs, subs[j].segs)) { isCopy[j] = true; rootOf[j] = i; break; }
+                            if (!isCopy[j])
+                                for (int i : byEnds.value({cb, ca}))
+                                    if (sameSegs(subs[i].segs, back)) { isCopy[j] = true; rootOf[j] = i; break; }
+                        }
+            if (!isCopy[j])
+                byEnds[{a, b}].append(j);
+        }
+    }
     QHash<std::pair<qint64, qint64>, QVector<int>> grid;
     for (int j = 0; j < subs.size(); ++j) {
-        if (subs[j].closed || subs[j].segs.isEmpty())
+        if (subs[j].closed || subs[j].segs.isEmpty() || used[j])
             continue;
         grid[cellOf(subs[j].segs.first().a)].append(j);
         const auto e = cellOf(subs[j].segs.last().b);
@@ -139,7 +186,35 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
                 }
         }
     };
+    // Closed outlines written so far, by segment count and the cell of the
+    // mean of their starts (the same from any start, in either direction).
+    QHash<std::pair<int, std::pair<qint64, qint64>>, QVector<QVector<Seg>>> closedSeen;
+    auto closedCopy = [&](const QVector<Seg> &segs) {
+        QPointF m;
+        for (const Seg &g : segs)
+            m += g.a;
+        m /= segs.size();
+        const auto c = cellOf(m);
+        const int n = segs.size();
+        const QVector<Seg> back = reversed(segs);
+        for (qint64 dx = -1; dx <= 1; ++dx)
+            for (qint64 dy = -1; dy <= 1; ++dy)
+                for (const QVector<Seg> &o : closedSeen.value({n, {c.first + dx, c.second + dy}}))
+                    for (const QVector<Seg> *x : {&segs, &back})
+                        for (int k = 0; k < n; ++k) {
+                            if (!samePoint(x->at(k).a, o.at(0).a, tol))
+                                continue;
+                            QVector<Seg> rot = x->mid(k) + x->mid(0, k);
+                            if (sameSegs(rot, o))
+                                return true;
+                        }
+        closedSeen[{n, c}].append(segs);
+        return false;
+    };
     QVector<int> cand;
+    QVector<QSet<int>> pathsOf(subs.size());   // written paths holding each piece or its copy
+    QVector<QSet<int>> selfIn(subs.size());    // written paths holding (part of) the piece itself
+    int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
             continue;
@@ -150,62 +225,174 @@ QPainterPath joinSubpaths(const QPainterPath &p, double tol)
             std::deque<Seg> segs(subs[i].segs.begin(), subs[i].segs.end());
             if (segs.size() > 1)
                 segs.back().b = segs.front().a;
+            // The same outline drawn twice (a DXF repeating a polyline, an
+            // SVG path filled and stroked) is kept once: two coincident
+            // outlines cancel as a pocket's region and cut nothing.
+            if (closedCopy(subs[i].segs))
+                continue;
             write(segs, segs.size() > 1);
             continue;
         }
         std::deque<Seg> chain(subs[i].segs.begin(), subs[i].segs.end());
-        // The same joins in the same order as sweeping j = 0..n-1 over and
-        // over until a sweep adds nothing: the next join is the lowest
-        // matching j after the last one, else (if this sweep grew) the lowest
-        // from the start.
-        int from = 0;
-        bool grew = false;
-        for (;;) {
-            nearby(chain.front().a, chain.back().b, cand);
-            int best = -1, wrap = -1;
-            int how = 0, wrapHow = 0;
-            for (int j : cand) {
-                if (used[j] || (best >= 0 && j >= best && wrap >= 0 && j >= wrap))
-                    continue;
-                const QVector<Seg> &o = subs[j].segs;
-                int h = 0;
-                if (samePoint(chain.back().b, o.first().a, tol)) h = 1;
-                else if (samePoint(chain.back().b, o.last().b, tol)) h = 2;
-                else if (samePoint(chain.front().a, o.last().b, tol)) h = 3;
-                else if (samePoint(chain.front().a, o.first().a, tol)) h = 4;
-                if (!h)
-                    continue;
-                if (j >= from && (best < 0 || j < best)) { best = j; how = h; }
-                if (wrap < 0 || j < wrap) { wrap = j; wrapHow = h; }
+        std::deque<int> owner(chain.size(), i);   // the piece each segment came from
+        // A chain never takes a piece and its copy: they fold back on each other.
+        QSet<int> roots;
+        auto emitPath = [&](std::deque<Seg> segs, std::deque<int> own, bool closed) {
+            // An open path's ends that repeat pieces already written (a copy
+            // rejoined to a tail after its loop was split off) are cut once.
+            if (!closed) {
+                auto done = [&](int o) { return !(pathsOf[rootOf[o]] - selfIn[o]).isEmpty(); };
+                while (!own.empty() && done(own.front())) {
+                    const int o = own.front();
+                    while (!own.empty() && own.front() == o) { own.pop_front(); segs.pop_front(); }
+                }
+                while (!own.empty() && done(own.back())) {
+                    const int o = own.back();
+                    while (!own.empty() && own.back() == o) { own.pop_back(); segs.pop_back(); }
+                }
+                if (own.empty())
+                    return;
             }
-            if (best < 0) {
-                if (!grew || wrap < 0)
+            // Dropped when one written path already holds every piece (or
+            // the piece it repeats): an outline or line drawn twice.
+            QSet<int> common;
+            bool first = true;
+            for (int o : own) {
+                const QSet<int> w = pathsOf[rootOf[o]] - selfIn[o];
+                if (first)
+                    common = w;
+                else
+                    common.intersect(w);
+                first = false;
+                if (common.isEmpty())
                     break;
-                best = wrap;
-                how = wrapHow;
             }
-            if (best < from)
-                grew = false;   // a new sweep began
-            const QVector<Seg> &o = subs[best].segs;
-            if (how == 1) {
-                chain.insert(chain.end(), o.begin(), o.end());
-            } else if (how == 2) {
-                const QVector<Seg> r = reversed(o);
-                chain.insert(chain.end(), r.begin(), r.end());
-            } else if (how == 3) {
-                chain.insert(chain.begin(), o.begin(), o.end());
-            } else {
-                const QVector<Seg> r = reversed(o);
-                chain.insert(chain.begin(), r.begin(), r.end());
+            if (!common.isEmpty())
+                return;
+            for (int o : own) {
+                pathsOf[rootOf[o]].insert(written);
+                selfIn[o].insert(written);
             }
-            used[best] = true;
-            grew = true;
-            from = best + 1;
+            ++written;
+            // A loop of pieces that repeats a closed outline (a polyline
+            // next to its exploded copy) is kept once, as two closed ones are.
+            if (closed && closedCopy(QVector<Seg>(segs.begin(), segs.end())))
+                return;
+            write(segs, closed);
+        };
+        for (;;) {
+            roots.clear();
+            for (int o : owner)
+                roots.insert(rootOf[o]);
+            // The same joins in the same order as sweeping j = 0..n-1 over and
+            // over until a sweep adds nothing: the next join is the lowest
+            // matching j after the last one, else (if this sweep grew) the
+            // lowest from the start.
+            int from = 0;
+            bool grew = false;
+            for (;;) {
+                // Closed: a piece touching its corner (a stray line) starts its
+                // own path rather than reopening the outline.
+                if (chain.size() > 1 && samePoint(chain.front().a, chain.back().b, tol))
+                    break;
+                nearby(chain.front().a, chain.back().b, cand);
+                int best = -1, wrap = -1;
+                int how = 0, wrapHow = 0;
+                for (int j : cand) {
+                    if (used[j] || (best >= 0 && j >= best && wrap >= 0 && j >= wrap) || roots.contains(rootOf[j]))
+                        continue;
+                    const QVector<Seg> &o = subs[j].segs;
+                    int h = 0;
+                    if (samePoint(chain.back().b, o.first().a, tol)) h = 1;
+                    else if (samePoint(chain.back().b, o.last().b, tol)) h = 2;
+                    else if (samePoint(chain.front().a, o.last().b, tol)) h = 3;
+                    else if (samePoint(chain.front().a, o.first().a, tol)) h = 4;
+                    if (!h)
+                        continue;
+                    if (j >= from && (best < 0 || j < best)) { best = j; how = h; }
+                    if (wrap < 0 || j < wrap) { wrap = j; wrapHow = h; }
+                }
+                if (best < 0) {
+                    if (!grew || wrap < 0)
+                        break;
+                    best = wrap;
+                    how = wrapHow;
+                }
+                if (best < from)
+                    grew = false;   // a new sweep began
+                const QVector<Seg> &o = subs[best].segs;
+                const QVector<Seg> r = how == 2 || how == 4 ? reversed(o) : o;
+                if (how <= 2) {
+                    chain.insert(chain.end(), r.begin(), r.end());
+                    owner.insert(owner.end(), r.size(), best);
+                } else {
+                    chain.insert(chain.begin(), r.begin(), r.end());
+                    owner.insert(owner.begin(), r.size(), best);
+                }
+                used[best] = true;
+                roots.insert(rootOf[best]);
+                grew = true;
+                from = best + 1;
+            }
+            // Still open with an end back on its own path (a stray or repeated
+            // piece joined before the edge that closes the outline): the loop
+            // is written closed, and the tail joins on without that loop's
+            // pieces (a shared edge's copy may close it). Only a real loop: two
+            // pieces or more reaching past 2 tol. A dense end (points under tol
+            // apart) or a curl drawn as one curve stays part of the open path.
+            // far[m]: some point of segment m lies past 2 tol from `at`.
+            auto farFrom = [&](const QPointF &at) {
+                QVector<bool> far(int(chain.size()));
+                for (int m = 0; m < far.size(); ++m) {
+                    const Seg &g = chain.at(m);
+                    for (const QPointF &q : {g.a, g.b, g.c1, g.c2})
+                        far[m] = far[m] || std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol;
+                }
+                return far;
+            };
+            const int n = int(chain.size());
+            if (n > 1 && samePoint(chain.front().a, chain.back().b, tol)) {
+                chain.back().b = chain.front().a;
+                emitPath(chain, owner, true);
+                break;
+            }
+            // reach[k]: a segment from k to the end reaches past 2 tol.
+            const QVector<bool> farB = farFrom(chain.back().b);
+            QVector<bool> reach(n + 1, false);
+            for (int m = n - 1; m >= 0; --m)
+                reach[m] = reach[m + 1] || farB[m];
+            int k = 1;
+            while (k < n && !(n - k >= 2 && reach[k] && samePoint(chain.at(k).a, chain.back().b, tol)))
+                ++k;
+            if (k < n) {
+                std::deque<Seg> loop(chain.begin() + k, chain.end());
+                const std::deque<int> lo(owner.begin() + k, owner.end());
+                chain.erase(chain.begin() + k, chain.end());
+                owner.erase(owner.begin() + k, owner.end());
+                loop.back().b = loop.front().a;
+                emitPath(loop, lo, true);
+                continue;
+            }
+            // upTo[k]: a segment from the start to k reaches past 2 tol.
+            const QVector<bool> farA = farFrom(chain.front().a);
+            QVector<bool> upTo(n, false);
+            for (int m = 0; m < n; ++m)
+                upTo[m] = (m > 0 && upTo[m - 1]) || farA[m];
+            k = n - 2;
+            while (k >= 0 && !(k + 1 >= 2 && upTo[k] && samePoint(chain.at(k).b, chain.front().a, tol)))
+                --k;
+            if (k >= 0) {
+                std::deque<Seg> loop(chain.begin(), chain.begin() + k + 1);
+                const std::deque<int> lo(owner.begin(), owner.begin() + k + 1);
+                chain.erase(chain.begin(), chain.begin() + k + 1);
+                owner.erase(owner.begin(), owner.begin() + k + 1);
+                loop.back().b = loop.front().a;
+                emitPath(loop, lo, true);
+                continue;
+            }
+            emitPath(chain, owner, false);
+            break;
         }
-        const bool close = chain.size() > 1 && samePoint(chain.front().a, chain.back().b, tol);
-        if (close)
-            chain.back().b = chain.front().a;
-        write(chain, close);
     }
     return out;
 }
@@ -862,6 +1049,7 @@ struct SvgDef {
     bool nested = false;
     QPointF at;
     QSizeF size;
+    QTransform outer;   // the nested <svg>'s own transform, outside its viewport
 };
 
 // Where a <use> draws what it refers to: a symbol's viewBox fitted into the
@@ -879,7 +1067,8 @@ QPainterPath svgPlaceUse(const SvgDef &def, const QXmlStreamAttributes &at, doub
         if (def.viewBox.isValid() && w > 0 && h > 0)
             vb = svgViewBoxTransform(def.viewBox.x(), def.viewBox.y(), def.viewBox.width(),
                                      def.viewBox.height(), w, h, def.aspect);
-        return (vb * QTransform::fromTranslate(def.at.x() + x, def.at.y() + y)).map(def.path);
+        return (vb * QTransform::fromTranslate(def.at.x(), def.at.y()) * def.outer
+                * QTransform::fromTranslate(x, y)).map(def.path);
     }
     if (def.viewBox.isValid()) {
         // The viewport only when both sides are known: a width alone fitted
@@ -908,7 +1097,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
     struct Frame { QString id; QTransform own; QPainterPath path; bool hidden = false;
                    QRectF viewBox; QString aspect; bool noDraw = false;
                    double vw = 0, vh = 0;   // the viewport its children's % lengths use
-                   bool nested = false; QPointF at; QSizeF size; };
+                   bool nested = false; QPointF at; QSizeF size; QTransform outer; };
     // Two passes: the second sees what the first found, so a <use> of
     // something defined further down (a symbol after the group using it)
     // resolves too.
@@ -974,6 +1163,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                     f.nested = true;
                     f.at = QPointF(x, y);
                     f.size = QSizeF(w, h);
+                    f.outer = f.own;
                     f.own = vp * QTransform::fromTranslate(x, y) * f.own;
                 }
                 stack.append(f);
@@ -983,7 +1173,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                     continue;   // display:none draws nothing, through a <use> either
                 const QPainterPath mapped = f.own.map(f.path);
                 if (f.nested && !f.id.isEmpty() && !f.path.isEmpty())
-                    defs.insert(f.id, SvgDef{f.path, f.viewBox, f.aspect, true, f.at, f.size});
+                    defs.insert(f.id, SvgDef{f.path, f.viewBox, f.aspect, true, f.at, f.size, f.outer});
                 else if (!f.id.isEmpty() && !mapped.isEmpty())
                     defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
                 if (!stack.isEmpty() && !mapped.isEmpty() && !f.noDraw)
@@ -1413,12 +1603,17 @@ void splineToPath(DxfCtx &ctx, const Entity &e, const QTransform &xf)
         }
         if (f.size() < 2)
             return;              // fit-point X and Y codes did not pair up
+        // Closed: the neighbours wrap around and the last point runs back to
+        // the first along the curve, not along a straight closing line.
+        const bool wrap = closedFlag && f.size() >= 3;
+        if (wrap && QLineF(f.first(), f.last()).length() < 1e-9)
+            f.removeLast();
         QPainterPath p;
         p.moveTo(f.first());
         const int m = f.size();
-        for (int i = 0; i + 1 < m; ++i) {
-            const QPointF p0 = f.at(qMax(0, i - 1)), p1 = f.at(i), p2 = f.at(i + 1),
-                          p3 = f.at(qMin(m - 1, i + 2));
+        auto at = [&](int i) { return wrap ? f.at((i % m + m) % m) : f.at(qBound(0, i, m - 1)); };
+        for (int i = 0; i + 1 < m + (wrap ? 1 : 0); ++i) {
+            const QPointF p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
             p.cubicTo(p1 + (p2 - p0) / 6, p2 - (p3 - p1) / 6, p2);
         }
         if (closedFlag) p.closeSubpath();
@@ -1793,6 +1988,49 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
     QPainterPath path;
     QPointF pos(0, 0);
     bool penDown = false, relative = false, open = false;
+    // User units (SC) over the scaling points (IP): plotter = P1 + (u - min)
+    // * scale, worked out again whenever either changes. SC without IP has
+    // no frame known here (the default P1/P2 are the plotter's paper), so it
+    // is noted as skipped when it would be used, instead of guessed.
+    bool ipSet = false, scaled = false, scUnframed = false;
+    QPointF p1(0, 0), p2(0, 0), scMin(0, 0), scale(1, 1);
+    QVector<double> scArgs;
+    auto applySc = [&]() {
+        scaled = scUnframed = false;
+        scale = QPointF(1, 1);
+        if (scArgs.size() < 4)
+            return;
+        const QVector<double> &n = scArgs;
+        const int type = n.size() >= 5 ? int(n[4]) : 0;
+        if (type == 2) {
+            scMin = QPointF(n[0], n[2]);
+            scale = QPointF(n[1], n[3]);
+            scaled = true;
+            return;
+        }
+        if (!ipSet || p2.x() == p1.x() || p2.y() == p1.y() || n[1] == n[0] || n[3] == n[2]) {
+            scUnframed = true;
+            return;
+        }
+        scMin = QPointF(n[0], n[2]);
+        scale = QPointF((p2.x() - p1.x()) / (n[1] - n[0]), (p2.y() - p1.y()) / (n[3] - n[2]));
+        if (type == 1) {
+            // one scale for both, the spare room split left/below by the
+            // given shares (centred by default)
+            const double k = std::min(std::abs(scale.x()), std::abs(scale.y()));
+            const QPointF sgn(scale.x() < 0 ? -1 : 1, scale.y() < 0 ? -1 : 1);
+            const double left = n.size() >= 6 ? n[5] / 100 : 0.5;
+            const double bottom = n.size() >= 7 ? n[6] / 100 : 0.5;
+            const QPointF spare((p2.x() - p1.x()) - (n[1] - n[0]) * k * sgn.x(),
+                                (p2.y() - p1.y()) - (n[3] - n[2]) * k * sgn.y());
+            scale = QPointF(k * sgn.x(), k * sgn.y());
+            scMin -= QPointF(spare.x() * left / scale.x(), spare.y() * bottom / scale.y());
+        }
+        scaled = true;
+    };
+    auto toPlot = [&](QPointF u) {
+        return scaled ? QPointF(p1.x() + (u.x() - scMin.x()) * scale.x(), p1.y() + (u.y() - scMin.y()) * scale.y()) : u;
+    };
     QHash<QString, int> skipped;
     const QString text = QString::fromLatin1(data);
     // Read commands in order: a label's text (LB, up to the terminator DT
@@ -1880,17 +2118,23 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
         }
         at = argEnd;
         QVector<double> nums;
-        for (const QString &n : args.split(QRegularExpression(QStringLiteral("[,\\s]+")),
-                                                    Qt::SkipEmptyParts)) {
+        // HP-GL/2 lets a sign stand in for the comma: "PD400-0,400+200".
+        static const QRegularExpression number(QStringLiteral("[+-]?(\\d+\\.?\\d*|\\.\\d+)"));
+        for (auto it = number.globalMatch(args); it.hasNext();) {
             bool ok = false;
-            const double v = n.toDouble(&ok);
+            const double v = it.next().captured(0).toDouble(&ok);
             if (ok)
                 nums << v;
         }
         auto moveThrough = [&](bool draw) {
+            if (scUnframed && nums.size() >= 2) {
+                addSkipped(res, skipped, QStringLiteral("SC"));
+                scUnframed = false;   // once per SC
+            }
             for (int i = 0; i + 1 < nums.size(); i += 2) {
-                const QPointF p = relative ? pos + QPointF(nums[i], nums[i + 1]) * kUnit
-                                           : QPointF(nums[i], nums[i + 1]) * kUnit;
+                const QPointF u(nums[i], nums[i + 1]);
+                const QPointF p = relative ? pos + QPointF(u.x() * scale.x(), u.y() * scale.y()) * kUnit
+                                           : toPlot(u) * kUnit;
                 if (draw) {
                     if (!open) {
                         path.moveTo(pos);
@@ -1917,7 +2161,7 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
             relative = true;
             moveThrough(penDown);
         } else if (cmd == QLatin1String("CI") && !nums.isEmpty()) {
-            appendCircle(path, pos, std::abs(nums[0]) * kUnit);
+            appendCircle(path, pos, std::abs(nums[0] * scale.x()) * kUnit);
             open = false;
         } else if (cmd == QLatin1String("IN")) {
             // Initialise: back to the power-on defaults, absolute and pen up,
@@ -1926,9 +2170,33 @@ ImportResult importHpglData(const QByteArray &data, const ImportOptions &opt,
             relative = false;
             open = false;
             labelEnd = QChar(0x03);
+            ipSet = false;
+            scArgs.clear();
+            applySc();
+        } else if (cmd == QLatin1String("IP")) {
+            // Scaling points P1, P2 (P2 follows P1 when only P1 is given;
+            // with no frame before that, there is none to follow).
+            if (nums.size() >= 4) {
+                p1 = QPointF(nums[0], nums[1]);
+                p2 = QPointF(nums[2], nums[3]);
+                ipSet = true;
+            } else if (nums.size() >= 2 && ipSet) {
+                const QPointF d = p2 - p1;
+                p1 = QPointF(nums[0], nums[1]);
+                p2 = p1 + d;
+            } else {
+                ipSet = false;
+            }
+            applySc();
+        } else if (cmd == QLatin1String("SC")) {
+            // User units: type 0 maps xmin..xmax and ymin..ymax onto P1..P2;
+            // type 1 does it with one scale for both, centred; type 2 gives
+            // the plotter units per user unit outright. A file that scales
+            // drew 2.5 mm parts 100 mm big and said nothing.
+            scArgs = nums.size() >= 4 ? nums : QVector<double>();
+            applySc();
         } else if (cmd == QLatin1String("SP")
-                   || cmd == QLatin1String("LT") || cmd == QLatin1String("VS")
-                   || cmd == QLatin1String("IP") || cmd == QLatin1String("SC")) {
+                   || cmd == QLatin1String("LT") || cmd == QLatin1String("VS")) {
             // set-up commands with nothing to draw
         } else {
             addSkipped(res, skipped, cmd);

@@ -5,9 +5,11 @@
 #include "recovery.h"
 #include "padlink.h"
 #include <QMainWindow>
+#include <QPointer>
 #include <memory>
 
 class QAction;
+class QDialog;
 class QTabWidget;
 class QResizeEvent;
 class QStackedWidget;
@@ -209,6 +211,7 @@ private:
     // An install-update step's process is running: the window refuses to
     // close, because the process goes with it (see installUpdate).
     std::shared_ptr<bool> m_updateStep;
+    QPointer<QDialog> m_updateDlg;   // the install dialog while it is open
     QAction *m_previewAct;       // toolpath overlay toggle
     QAction *m_fullScreenAct = nullptr;
     bool m_dirty = false;

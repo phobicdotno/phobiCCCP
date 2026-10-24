@@ -476,8 +476,17 @@ QVector<QVector<Op>> tileOps(const QVector<Op> &ops, double tileHeight, double s
         QVector<Op> kept = liftBeforeTraverse(dropUncutBlocks(t.ops), safeZ);
         // Retract last, so the closing rapid is not what keeps a dead block
         // alive (and is still emitted for the blocks we did keep).
-        if (!kept.isEmpty() && t.havePos && t.pos.z < safeZ - 1e-9)
-            kept.append(Op::rapid(t.pos.x, t.pos.y - k * tileHeight, safeZ));
+        // From the last move actually kept: t.pos may hold a lift that went
+        // with a dropped block (the next toolpath, same bit, cut nothing
+        // here), and the tile then ended with the bit down in its last cut.
+        for (int i = kept.size() - 1; i >= 0; --i) {
+            const Op &m = kept.at(i);
+            if (m.kind != Op::Rapid && m.kind != Op::Feed && m.kind != Op::Arc)
+                continue;
+            if (m.z < safeZ - 1e-9)
+                kept.append(Op::rapid(m.x, m.y, safeZ));
+            break;
+        }
         out.append(kept);
     }
     return out;
@@ -496,6 +505,7 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
     const GcodeResult g = exportGcode(doc, watch, relief);
     r.done = g.done;
     r.skipped = g.skipped;
+    r.notes = g.notes;
     if (g.cancelled) {
         r.error = QStringLiteral("cancelled");
         return r;
@@ -515,10 +525,23 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         const bool keyhole = t.type == QLatin1String("keyhole_toolpath");
         if (!j.value("enabled").toBool(true) || !(keyhole || t.type == QLatin1String("thread_toolpath")))
             continue;
-        const double toolR = j.value("tool").toObject().value("diameter").toDouble(3.175) / 2;
+        // A toolpath the export skipped is not in the program at all.
+        if (!g.doneIds.contains(t.uuid))
+            continue;
+        const double toolR = numOr(j.value("tool").toObject().value("diameter"), 3.175) / 2;
+        const bool external = j.value("side").toString() == QLatin1String("external");
+        const double pitch = numOr(j.value("pitch"), 1.5);
+        const int passes = qBound(1, int(numOr(j.value("passes"), 1)), 20);
+        double td = numOr(j.value("thread_depth"), 0);
+        if (td <= 0)
+            td = 0.6134 * pitch;
         for (const QJsonValue &v : j.value("elements").toArray()) {
             const Element *e = doc.elementById(v.toObject().value("uuid").toString());
-            if (!e)
+            // Only what the export cuts: construction geometry never, sketch
+            // points for a keyhole only, circles only for a thread. A part
+            // outline in a thread's selection refused the whole tiled job.
+            if (!e || Element::isConstruction(*e) || (Element::isPoint(*e) && !keyhole)
+                || (!keyhole && e->geometryType != QLatin1String("circle")))
                 continue;
             double y0, y1;
             if (keyhole) {
@@ -533,8 +556,14 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
                 // The thread's laps and its way out beside the wall.
                 // An internal one keeps the tool centre within the hole's
                 // radius less the tool's.
+                // A circle the export left out as too small is not cut either
+                // (the same test as exportGcode's thread branch).
+                const double R = numOr(e->raw.value("radius"), 0);
+                const double first = external ? R + toolR - td / passes : R - toolR - td + td / passes;
+                if ((!external && (first < 0.05 || toolR > R - td - 0.05)) || (external && R - td <= 0.05))
+                    continue;
                 const QRectF b = e->painterPath.boundingRect();
-                if (j.value("side").toString() == QLatin1String("external")) {
+                if (external) {
                     y0 = b.top() - 2 * toolR - 1;
                     y1 = b.bottom() + 2 * toolR + 1;
                 } else {
@@ -551,12 +580,27 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
             }
         }
     }
+    // exportGcode() is not the only slow part: splitting, posting and
+    // writing a big job's tiles takes seconds too. A Cancel then still
+    // drops the staged tiles uncommitted, leaving the old set as it was.
+    auto cancelled = [&](int done, int total) {
+        if (!watch || !watch->stop(done, total, QStringLiteral("tiles")))
+            return false;
+        r.error = QStringLiteral("cancelled");
+        r.files.clear();
+        r.gcode.clear();
+        return true;
+    };
+    if (cancelled(0, 1))
+        return r;
     const QVector<QVector<Op>> tiles = tileOps(g.ops, r.tileHeight, safeZ);
     // Every tile is staged and the set is moved into place only once all are
     // written: a failure part-way leaves the previous tiles as they were, not
     // a truncated tile or new tiles mixed with old ones.
     std::vector<std::unique_ptr<QSaveFile>> staged;
     for (int k = 0; k < tiles.size(); ++k) {
+        if (cancelled(k, tiles.size()))
+            return r;
         QVector<Op> ops;
         ops.append(Op::comment(QStringLiteral("tile %1/%2").arg(k + 1).arg(tiles.size())));
         ops.append(tiles.at(k));
@@ -585,6 +629,8 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
         r.files << path;
         r.gcode << gcode;
     }
+    if (cancelled(tiles.size(), tiles.size()))
+        return r;
     for (const auto &f : staged) {
         if (!commitKeepingMode(*f)) {
             r.error = QStringLiteral("%1: %2").arg(f->fileName(), f->errorString());

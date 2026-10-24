@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 
@@ -331,6 +332,43 @@ int main()
         check(approx(along, across, 0.1 * along), "finish: cross pass set equals the first");
     }
 
+    // --- finish inside boundary vectors keeps the whole tool inside -----------
+    // As the rough does (rings inset by the tool radius): with only its centre
+    // clipped, the finish ran a tool radius outside, full depth in stock the
+    // rough never cleared.
+    for (const char *type : {"3d_finish_toolpath", "3d_rough_toolpath"}) {
+        c2d::Document doc;
+        const QJsonObject layer;
+        const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 40, 40, layer);
+        doc.addElement(e);
+        QJsonObject j = toolpath(type, kFlat, {{"stepdown", 3.0}, {"stepover", 2.5}, {"stock_to_leave", 0.0}});
+        j.insert("elements", QJsonArray{QJsonObject{{"uuid", e.id}}});
+        addToolpath(doc, j);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const c2d::JobStats st = c2d::computeStats(g.ops);
+        const double lo = 10 + 3.175 - 0.01, hi = 50 - 3.175 + 0.01;
+        check(g.done.size() == 1 && st.minX >= lo && st.maxX <= hi && st.minY >= lo && st.maxY <= hi,
+              std::strcmp(type, "3d_rough_toolpath") == 0 ? "rough: the whole tool stays inside the boundary"
+                                                          : "finish: the whole tool stays inside the boundary");
+    }
+
+    // A V reaches only as far as its cone is wide at the deepest it goes: 3 mm
+    // deep with a 90 deg V is 3 mm, not the 6.35 mm radius (a wider band left).
+    {
+        c2d::Document doc;
+        const QJsonObject layer;
+        const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 40, 40, layer);
+        doc.addElement(e);
+        const QJsonObject vbit{{"number", 203}, {"diameter", 12.7}, {"type", 2}, {"angle", 90.0}};
+        QJsonObject j = toolpath("3d_finish_toolpath", vbit, {{"stepover", 1.0}, {"max_depth", "3"}});
+        j.insert("elements", QJsonArray{QJsonObject{{"uuid", e.id}}});
+        addToolpath(doc, j);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const c2d::JobStats st = c2d::computeStats(g.ops);
+        check(g.done.size() == 1 && st.minX >= 13 - 0.01 && st.minX <= 13.5 && st.maxX >= 46.5 && st.maxX <= 47 + 0.01,
+              "finish: a V keeps inside the boundary by its width at the deepest cut");
+    }
+
     // --- boundary vectors + offset, percent stepover, flat finish tool -----------
     {
         c2d::Document doc;
@@ -344,8 +382,10 @@ int main()
         const c2d::GcodeResult g = c2d::exportGcode(doc);
         check(g.done.size() == 1, "finish: boundary exports");
         const c2d::JobStats st = c2d::computeStats(g.ops);
-        check(st.minX >= 18 - 0.01 && st.maxX <= 42 + 0.01 && st.minY >= 18 - 0.01 && st.maxY <= 42 + 0.01,
-              "finish: tool centre stays inside the boundary + offset");
+        // Boundary + offset 18..42, less the tool radius: the whole tool inside.
+        const double lo = 18 + 3.175 - 0.01, hi = 42 - 3.175 + 0.01;
+        check(st.minX >= lo && st.maxX <= hi && st.minY >= lo && st.maxY <= hi,
+              "finish: the whole tool stays inside the boundary + offset");
         // Measure the stepover itself: the distinct Y offsets of the passes.
         // (Total cut length is a poor proxy — it also counts the Y links
         // between passes and the Z following of the surface.)
@@ -374,7 +414,7 @@ int main()
         }
         std::printf("finish/boundary: %d passes, gaps %.3f..%.3f mm, cutLen %.1f mm\n",
                     int(ys.size()), minGap, maxGap, st.cutLen);
-        check(ys.size() >= 18 && ys.size() <= 21, "finish: 24 mm / 1.27 mm gives ~19 passes");
+        check(ys.size() >= 14 && ys.size() <= 16, "finish: 17.65 mm / 1.27 mm gives ~15 passes");
         // The last pass is snapped onto the far edge, so it may sit closer.
         check(approx(maxGap, 1.27, 0.02), "finish: 20% of 6.35 = 1.27 mm stepover");
         // The flat tool rides on the exact disc maximum: never into the dome.
@@ -662,10 +702,10 @@ int main()
         check(worst >= -0.02, "waterline: never below the model (0.02 mm)");
         check(sim.gougeCells == 0 && sim.rapidHitCount == 0, "waterline: no gouge, no rapid into stock");
 
-        // A boundary keeps the tool centre inside it.
+        // A boundary keeps the whole tool inside it.
         {
             c2d::Document d;
-            const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 20, 20, QJsonObject());
+            const c2d::Element e = c2d::Element::makeRectangle({30, 30}, 24, 24, QJsonObject());
             d.addElement(e);
             QJsonObject j = toolpath("3d_finish_toolpath", kBall,
                                      {{"stepdown", 2.0}, {"strategy", QStringLiteral("waterline")}});
@@ -673,11 +713,12 @@ int main()
             addToolpath(d, j);
             const c2d::GcodeResult gb = c2d::exportGcode(d);
             const c2d::JobStats st = c2d::computeStats(gb.ops);
-            check(gb.done.size() == 1 && st.minX >= 20 - 0.01 && st.maxX <= 40 + 0.01
-                      && st.minY >= 20 - 0.01 && st.maxY <= 40 + 0.01,
-                  "waterline: tool centre stays inside the boundary");
-            // Loop radii: 9.1 mm at -2 (whole), 12.5 at -4 (corners clipped
-            // off), 14.9 at -6 (beyond the 14.1 mm corner: gone).
+            check(gb.done.size() == 1 && st.minX >= 19.5 - 0.01 && st.maxX <= 40.5 + 0.01
+                      && st.minY >= 19.5 - 0.01 && st.maxY <= 40.5 + 0.01,
+                  "waterline: the whole tool stays inside the boundary");
+            // Tool centres within 18..42 less the 1.5 mm radius (half 10.5,
+            // corner 14.85). Loop radii: 9.1 mm at -2 (whole), 12.5 at -4
+            // (corners clipped off), 14.9 at -6 (beyond the corner: gone).
             const QSet<qint64> lvb = feedLevels(gb.ops);
             check(lvb.size() == 2 && lvb.contains(-20000) && lvb.contains(-40000),
                   "waterline: clipped loops still cut");
@@ -700,6 +741,16 @@ int main()
         c2d::ToolGeom ball; ball.kind = c2d::ToolGeom::Ball; ball.diameter = 3; ball.cornerRadius = 1.5;
         c2d::ToolGeom flat; flat.kind = c2d::ToolGeom::Flat; flat.diameter = 6.35;
         check(approx(c2d::compensatedZ(model, ball, 5, 5), -20.0, 1e-6), "compensatedZ: ball on the floor");
+        // A V's tip on a flat floor: the cone off-centre stands above it (a
+        // 60 deg V went 0.2 mm into the floor when the centre was missed).
+        for (const double angle : {60.0, 90.0}) {
+            c2d::ToolGeom v; v.kind = c2d::ToolGeom::VBit; v.diameter = 12.7; v.angle = angle;
+            double worst = 0;
+            for (double d = 0; d < 1; d += 0.07)
+                worst = std::fmin(worst, c2d::compensatedZ(model, v, 5.3 + d, 5.1 + 0.6 * d) + 20);
+            check(worst > -1e-6, angle < 75 ? "compensatedZ: 60 deg V on the floor"
+                                            : "compensatedZ: 90 deg V on the floor");
+        }
         // A flat tool centred on the apex rides on the highest point under its
         // disc, which is the apex itself. Compare against the model's own value
         // there: the sampled apex sits a few microns below 0 because no cell
@@ -929,6 +980,47 @@ int main()
         const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
         check(g.done.isEmpty() && g.skipped.size() == 1 && g.skipped.first().contains("needs closed vectors"),
               "3D boundary: an open vector is not taken as an area");
+    }
+
+    // A V-bit waterline over a dome: a contour chord crossing a ridge
+    // narrower than the grid had both probes above the level, and was cut
+    // straight through the wall (0.3 mm below the bit's own surface).
+    {
+        c2d::HeightModel m;
+        m.cell = 0.5;
+        m.baseZ = -10;
+        m.resize(80, 80, -10.0f);
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c) {
+                const double x = (c + 0.5) * m.cell - 20, y = (r + 0.5) * m.cell - 20, d = std::hypot(x, y);
+                m.ref(c, r) = float(d < 12 ? -10 + 8 * std::sqrt(1 - d * d / 144) : -10);
+            }
+        c2d::Document doc;
+        QJsonObject j{{"type", "3d_finish_toolpath"}, {"name", "wl"}, {"enabled", true}, {"uuid", "{t}"},
+                      {"elements", QJsonArray()},
+                      {"tool", QJsonObject{{"number", 301}, {"diameter", 6.35}, {"type", 2}, {"angle", 30}}},
+                      {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+                      {"strategy", "waterline"}, {"stepdown", 1.0}, {"stepover", 0.5},
+                      {"stock_to_leave", 0.0}, {"direction", "climb"}};
+        addToolpath(doc, j);
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &m);
+        const c2d::ToolGeom tg = c2d::toolGeometry(doc).value(301);
+        double px = 0, py = 0, pz = 50, worst = 0;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Feed)
+                for (int k = 0; k <= 40; ++k) {
+                    const double t = k / 40.0, x = px + (o.x - px) * t, y = py + (o.y - py) * t,
+                                 z = pz + (o.z - pz) * t;
+                    worst = std::max(worst, c2d::compensatedZ(m, tg, x, y) - z);
+                }
+            if (o.kind == Op::Feed || o.kind == Op::Rapid) {
+                px = o.x;
+                py = o.y;
+                pz = o.z;
+            }
+        }
+        std::fprintf(stderr, "V-bit waterline over a dome: at most %.4f mm below the bit's surface\n", worst);
+        check(g.done.size() == 1 && worst < 0.05, "V-bit waterline stays out of the model between contour crossings");
     }
 
     std::printf("test_cam3d: %d checks OK\n", g_checks);

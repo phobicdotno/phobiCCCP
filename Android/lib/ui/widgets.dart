@@ -243,7 +243,9 @@ class _NumBoxState extends State<NumBox> {
     final t = _c.text.trim().toLowerCase().replaceAll(',', '.').replaceFirst(RegExp(r'\s*(mm|°)$'), '');
     final v = double.tryParse(t);
     if (v != null && v.isFinite) {
-      final k = v.clamp(widget.min, widget.max).toDouble();
+      // A max under the min (a field whose range a far shape squeezed
+      // shut) must not throw.
+      final k = v.clamp(widget.min, widget.max < widget.min ? widget.min : widget.max).toDouble();
       if (k != widget.value) widget.onChanged(k);
     }
     // Done commits, then focus loss commits again: the text put back here
@@ -350,7 +352,7 @@ class _LineBoxState extends State<LineBox> {
         child: TextField(
           controller: _c,
           autofocus: widget.autofocus,
-          inputFormatters: [if (widget.maxLength != null) LengthLimitingTextInputFormatter(widget.maxLength)],
+          inputFormatters: [if (widget.maxLength != null) Utf16LengthLimit(widget.maxLength!)],
           onChanged: widget.onChanged,
         ),
       );
@@ -434,4 +436,16 @@ Future<T?> showPDialog<T>(BuildContext context,
       actions: actions?.call(ctx) ?? [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK'))],
     ),
   );
+}
+
+/// Limits a field to [max] UTF-16 code units, as the computer counts
+/// (QString::size): LengthLimitingTextInputFormatter counts characters, so
+/// 400 emoji passed it at 800 units and the computer refused the design.
+class Utf16LengthLimit extends TextInputFormatter {
+  Utf16LengthLimit(this.max);
+  final int max;
+
+  @override
+  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) =>
+      newValue.text.length <= max ? newValue : (oldValue.text.length <= max ? oldValue : const TextEditingValue());
 }

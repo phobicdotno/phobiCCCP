@@ -1,5 +1,260 @@
 # Changelog
 
+## v1.3.9 (build 99) — 2026-10-24
+
+> Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
+
+- **Machine:**
+  - Run missed the Z-zero refusal when two different tool length offsets were measured within one
+    WCO report; a new machine profile no longer copies the other machine's Z-zero record.
+- **Drawing:** arrays, Move/Copy, booleans and offset on a few hundred selected shapes took seconds to
+  minutes (a selection signal per shape); one signal now.
+- **Pad:** a pad edit now says it loses toolpath groups, a named layer, or a bit edited in the file
+  (the rebuild dropped them silently).
+- **Toolpaths:**
+  - The V-bit waterline chord retry probes fewer reaches (export was up to 4x slower on domes).
+  - 3D waterline finish with a V-bit could cut through a ridge narrower than the grid between two
+    contour crossings (up to 0.3 mm into the model); the chord is refined from further probes.
+  - A Thread whose depth leaves a sliver of a turn: the fold now works on the chord (inch pitches
+    like #10-32 at some depths still ended an arc on its own start after rounding).
+  - A Thread whose depth left a sliver of a turn could end its last arc on its own start once
+    rounded, which GRBL cuts as a whole extra circle; the sliver joins the half turn before it.
+  - Picking a library bit for an Adaptive gave it the chart's pocket stepover and depth (half the
+    bit, about 90 degrees of engagement); it now keeps an Adaptive's light bite with the new bit.
+  - A user's own end mill that carried a library bit's number (another size) was skipped as a new
+    toolpath's default and could take that library bit's feeds; only the library bit itself is.
+  - A tile could end with the bit still down in its last cut, the spindle stopped, when the next
+    toolpath with the same bit cut nothing in that tile; each tile now retracts from its last move.
+  - Adaptive with a Start depth hopped and entered its first level just above Start, as if the
+    stock above were gone, so it rapided through wood; it starts from the stock top unless it is
+    a rest band under earlier toolpaths.
+  - The same Adaptive with Rest machining on still hopped at Start through the stock around the
+    earlier toolpath's cut; a rest band that opens at Start enters from the stock top too.
+  - A contour on the line with tabs over an outline whose ends miss by a hair (a DXF gap) cut
+    through with no tabs and no word; it now notes the open vectors cut without tabs.
+  - A tab narrower than the bit held nothing: the bit's own width ate it from both sides. The
+    lift now runs a bit radius past each end of the tab (less on a short loop with many tabs),
+    so the bridge left is the tab width you set.
+  - On small parts and holes (a loop shorter than about nine bit widths) the lifts were still cut
+    short, leaving a sliver or nothing, so the part or slug came free. The lifts may now take up
+    to 40% of the loop, and a part still too small for a 1.5 mm bridge gets a note.
+  - A tab on a corner of the cut (a hole's corner, a star's point or valley) lifted round the
+    corner and came down close to where it rose, leaving a sliver. Each tab now slides off the
+    corner or lifts further, so the bit comes down a tab's width plus a bit away in a straight
+    line, on the roughing rings too; the note above counts these.
+  - On a small outside part (15 x 20 mm, 6 mm tabs, 1/4" bit) no lift fitted at any slide, and
+    the tab went back onto the corner with a 3 mm bridge; it now goes where the bridge is widest,
+    not on a stretch of the cut the bit passes again (a narrow arm), and not over the loop's start.
+  - A lead-in larger than the bit on a contour with tabs cut through the slug or the far side of a
+    tab (a 60 x 20 hole with an 8 mm lead lost its top tab). With tabs, a lead is now no wider than
+    the bit and keeps 1.5 mm of material from the far side of the cut, smaller if need be.
+    The tabs also keep clear of the lead's sweep where it joins the loop (a lead the bit's width
+    took 2 mm off the tab beside it).
+  - A long, narrow slot with tabs (8 x 1220 mm) took over half a minute to export, minutes on a
+    full sheet, while every shorter lift was tried where even the longest leaves no bridge.
+  - A part's outline and its holes in one Cutout or Contour were cut nearest first, so the
+    outline could cut the part free before its holes were cut (5 of 12 parts on a nested sheet);
+    the loose part shifts or is thrown. Loops inside another of the same toolpath now go first
+    (within one rest band: a pocket's deeper band still waits for the shallower one).
+  - A bit diameter stored as text sized tab lifts (and the tiled keyhole check) from 1/8".
+  - A tiled export was refused with "crosses a tile line" over a thread or keyhole the export
+    had skipped (a circle too small to thread, a start below the end). Only what is cut counts.
+  - A 3D finish limited by boundary vectors kept only the bit's centre inside them, so it cut a
+    bit radius outside, full depth in stock the 3D rough (which keeps the whole bit inside) never
+    cleared. The finish keeps the whole bit inside too; a ball or V by its width at the deepest
+    the finish goes, so it leaves no wider band than it must.
+  - An inlay male made with a glue gap of 0 cut only V grooves and left its field standing, so the
+    plug could not seat; it clears the field like any other gap.
+  - A Chamfer (or Texture) with a Start depth was refused as "start depth is below end depth"
+    (neither has an end depth).
+  - A Chamfer from a Start depth is refused when its cone would be wider than the bit at the
+    stock top (or the floor cleared above): the shank cut a wall with no note. An absurd Start
+    in a hand-edited file no longer hangs the export.
+  - A Texture's Shallowest and Deepest are measured from its Start depth (on a pocket's floor
+    every stroke was in the air).
+  - Cutout "Ramp angle" and "Leave", and "Leave" on drilling, keyhole and V-carve, did nothing;
+    the form no longer shows them there.
+  - Other fields that did nothing are hidden too: Ramp in/Ramp angle on Drill, Keyhole, V-Carve,
+    Face, Bore, Thread and Slot; Per pass and Stepover on Drill and Keyhole, Per pass on Thread;
+    Angle on Pocket, Drill and V-Carve; Start on 3D Rough and Finish. Circular and Adaptive
+    always enter on their ramp, so their "Ramp in" switch (which read off) is gone.
+  - Picking a smaller bit from the tool library for a rest pocket set its "Bigger tool" to the
+    new bit, so rest machining went off and the whole pocket was cleared again with no note.
+  - After an Adaptive, a new Pocket, Contour or Cutout took its one-diameter depth per pass and
+    10% stepover (a cutout slotted 4x the library depth). New toolpaths take passes only from a
+    comparable cut, else from the bit.
+  - A new toolpath after a Drill (or another type passes are not copied from) took half the
+    bit's width as stepover instead of the material's chart (40% in acrylic, HDPE, PVC), and a
+    corner rounding bit became the default "end mill" for new pockets and cutouts.
+  - A 3D finish with a V-bit cut 0.06 to 0.2 mm into the relief, flat floors included: the point
+    under the tip was never checked, only grid lines near it, where the cone stands higher.
+- **Machine:**
+  - Z zeroed with the surface map on and then run with it off (as a pad start asks) cut every
+    depth deeper by the map's height at the touched spot, and the other way round too; Run and a
+    pad start now refuse a map state other than the one Z was zeroed with, until Z is zeroed again.
+  - The same for a surface map measured again after Z was zeroed with the old one on.
+  - That check now holds across a reconnect or restart while the controller keeps the same Z
+    offset; before, reconnecting forgot how Z was zeroed.
+  - The check also holds after a bit is measured: GRBL's reported work offset carries the tool
+    length offset, which made the zero look like someone else's and skipped the check.
+  - Zeroing Z with the surface map on now says in the log that Z0 was set to the surface at X0 Y0
+    and how far that is from here, as the readout no longer shows 0.
+  - With the surface map on, Zero Z (or BitZero Z) away from X0 Y0, as after a manual tool
+    change, set Z0 to the stock there while the map is measured from X0 Y0: over a 2 mm warp a
+    1 mm cut ran in the air. The zero now keeps Z0 at the surface under X0 Y0.
+  - A controller left in a feed hold by an earlier session was no longer cleared on connect
+    (GRBL refuses $$ while held); its leftover moves could run on Resume.
+  - With $13=1, the work offset reported before the settings arrived was read as millimetres
+    for a few seconds (Run refused a job that fits); the feed shown is in mm/min too.
+  - Connected while the controller still ran moves from before (GRBL refuses $$ then), the
+    settings were never read that session: travel, hard limits and $13 inch reports fell back
+    to defaults. $$ is asked again once it is Idle.
+  - A controller set to report inches ($13=1) was read as millimetres: a 10 mm jog went 86 mm the
+    other way, Run refused jobs that fit, BitZero and probing were off by 25.4. Positions and
+    probe results are converted; "still homed" is judged once the settings are in.
+  - Run streamed a job that went past the machine's travel at the current work zero (past an X/Y
+    switch or the far hard stop, or an air cut lifted past the Z switch). It is refused, naming
+    the axis and how far over it goes, as jogs, Park and the surface map already were.
+  - BitZero V1: when a side probe missed (one false contact on the way in), the pin was left
+    beside the block below its top, and Begin again searched Z downward from there, past the
+    block toward the spoilboard. The pin now goes back up over the block and to where Begin was
+    pressed, and the message no longer talks about a bore. A controller reset during the probe
+    cancels that move (the position is gone).
+  - A surface map with Z zeroed high (tall stock, a short bit) travelled above the top of Z,
+    into the switch: a hard-limit alarm and the position lost. It is refused with what to change.
+  - Connecting to a controller left paused in a job (the link dropped, on a board that does not
+    reset when the port opens) kept that job's leftover moves; Resume ran them with nothing
+    tracking them. They are cleared on connect (the spindle stops).
+  - Gamepad: a stick held about half way wobbled round the threshold and each wobble was a tap,
+    a full jog step (six 10 mm steps for one push). It now lets go only well below the threshold.
+    A D-pad let go while the link was down, then pressed again after reconnecting, did nothing.
+- **Updates:**
+  - The "↑ Install" link stayed clickable while an install ran; a second click started a second
+    fetch and build on the same checkout. It now brings the running install to the front.
+  - With sudo asking for a password and pkexec missing, the failure named sudo instead of pkexec.
+- **Export:**
+  - Cancel during a tiled export still wrote the tiles (seconds of work after the G-code is
+    made) and said "Export cancelled", hiding the note about older tiles left in the folder.
+    Cancel now drops the new tiles unwritten; once they are written, the export reports done.
+  - The tiled export dropped the export's notes (part of an area left uncut, open outlines cut
+    without tabs, ...); they are shown with the tiles now, as with one file.
+  - The tiled export refused a thread or keyhole "across a tile line" because of a shape in its
+    selection it never cuts (the part outline, construction geometry).
+- **Drawing and import:**
+  - The same closed outline drawn twice (a DXF polyline repeated, an SVG path filled and stroked)
+    imported as two outlines that cancelled out: a pocket on them cut nothing. It is kept once,
+    also when one copy is loose pieces (a polyline next to its exploded lines).
+  - A copy of a piece inside a loop split off a polyline could rejoin the open rest, so those
+    edges were cut twice.
+  - Unticking Bold or Italic did nothing on text whose font was stored with a style name.
+  - Text rendering is fast again after round 45's glyph cache fix.
+  - A combining mark (an umlaut, Hebrew or Thai points) in stretched text could take the plain
+    text's mark, or the other way round, depending on which was drawn first.
+  - Ticking Italic on a Light (or other weight) face named only by its style kept the weight.
+  - Text in a font without an italic (or bold) face could come out upright with Italic ticked, or
+    slanted without it, depending on what was drawn first: the made-up slant shared a cache entry.
+  - A polyline that closes a loop partway (a lead-in line into a square, a single-stroke "e")
+    lost the part outside the loop on import.
+  - Import dropped an open path's dense end (points under 0.01 mm apart) or an end curl drawn
+    as one curve, without a word; and many loose lines from one point (a starburst) took
+    seconds to minutes to import.
+  - Two touching shapes drawn as loose lines, sharing an edge drawn once for each, left the
+    second open (its copy of the edge was dropped as a repeat). A copy is now joined like any
+    piece; only one left on its own is dropped, and a chain never takes a piece and its copy.
+  - Letters whose outlines overlap (Liberation Sans "Å", the default font on Linux) got a hole
+    where they overlap; a pocket left a sliver of wall between the ring and the A.
+  - An outline written twice (doubled CAD entities) imported as two coincident outlines that
+    cancelled: a pocket on it cut nothing. Pieces that only repeat a path already imported are
+    dropped again. Two shapes sharing an edge also close when the first one's pieces led into
+    the second.
+  - An outline written twice with its copies interleaved, a polyline written out of order and
+    again in order, or a grid written twice still imported duplicates.
+  - Letters with a part stored twice in the font (DejaVu Sans "ệ" dot, Bold "ḕ", "Ⅷ") lost
+    that part; overlapping letters are merged once per glyph, so long accented text is quick.
+  - Trim and Break (and their hover preview) froze for seconds with many lines around a long
+    curve; the closest-point search skips segments that cannot be closer.
+  - HP-GL: numbers separated only by a sign ("PD400-0,400+200") were dropped.
+  - DXF: a closed spline given by fit points only closed with a straight line and a kink.
+  - SVG: a `<use>` of a nested `<svg>` ignored that svg's own transform.
+  - HP-GL: user scaling (SC) was ignored, so a drawing in user units came in at the wrong size
+    with no word. It is mapped onto the IP points (or applied as given for type 2); SC with no
+    IP to scale into is listed as skipped. A later IP re-maps the scaling (an IP after SC turned it
+    off; SC before IP was skipped).
+  - Rotate by an angle other than a quarter turn squeezed a shape with Horizontal/Vertical
+    constraints back onto the axes (a rectangle shrank instead of turning). Those constraints go
+    with a note; a quarter turn swaps them; a shape with a Fixed point stays where it is.
+  - Rotate or Mirror of a shape tied to something left behind (a dimension from the origin, a
+    Horizontal to an unselected line) folded it to meet the constraint (a rectangle became a
+    triangle). The shape turns whole; what is tied to it follows, or the constraint shows red.
+    A dimension the rotation drops that expressions or toolpath fields use stays as a parameter.
+    One constraint that can't hold no longer keeps everything else tied to the shape behind,
+    and the warning counts what is really red. A 200% x 50% scale is no longer taken for a turn.
+  - A constraint left red (by a rotation, say) was met at the next, unrelated edit, such as moving
+    another line, folding its shape with no word. Red constraints that an edit does not touch
+    now stay red and leave their shapes alone. A parameter added or changed that such a dimension
+    does not use leaves it alone too, a dimension defined from a red one keeps holding, and
+    deleting the constraint that blocked a red one, anywhere in its sketch, lets it hold.
+    Moving, turning or mirroring a line merely tied to such a shape (Parallel to its edge, say)
+    no longer folds it, nor does renaming the red dimension or a parameter it uses. A parameter
+    change that moves the rest of its sketch lets a red dimension there hold if it now can, but
+    not one on the same shape (a turned rectangle's width parameter folded it into a bow-tie).
+    A red dimension whose parameter had an error now holds once the error is fixed.
+    Typing a new value into such a shape's own width, or changing the width of a shape tied to it
+    (Parallel, Equal), no longer folds it either.
+    Nor does a red position on a line attached to the shape's corner, and a red length on an
+    edge of an open polyline holds again once a change elsewhere lets it. A red that holds by
+    resizing a rectangle (not folding it) holds again, and a folded shape's red keeps only reds
+    in its own sketch red. The same holds on an arch whose straight edge turns back at its ends,
+    and on a shape with a corner drawn twice.
+  - Pattern on path with orientation turned copies on a corner one edge too little (four brackets
+    round a square came out 0, 90, 180 degrees instead of 90, 180, 270).
+  - Imported outlines of loose lines (DXF, HPGL, SVG lines) stayed open when a stray line touched a
+    corner or an edge was drawn twice, in whichever order the file has them; they close, and a
+    repeat of a piece (to within the join tolerance) is dropped.
+  - Selecting or highlighting shapes on a board with thousands of them took seconds; now instant.
+  - A dimension's label turns with its shape on a rotate or mirror (a length's label ended up on
+    its edge after a quarter turn).
+- **Pad:**
+  - Duplicate puts the copy right after the original, as on the computer (list order is cut
+    order: the copy ran after the profile freed the part).
+  - A new toolpath left at its defaults, or a bit changed from the computer, cut the file off
+    from pad edits (later ones went to a "(pad)" copy). A bit change on the computer now sizes
+    the lead-in, rest and helix to the new bit as the pad does, and a new Engrave takes the
+    bit's own depth per pass.
+  - In files made before pads sized lead-ins by their own bit, a bit changed here on one
+    toolpath still cut the file off from the pad.
+  - Open could open a design deleted on another pad or computer while the dialog was up, and
+    edits on it were saved into the deletion and lost. It now says the design was deleted.
+  - Area: lettering inside the area is selected with it, as on the computer, so a pocket leaves
+    the letters standing. The pad has no letter outlines, so text near the edge or with closed
+    letters (A, O, e…) is left out with a note.
+  - Toolpath Delete, Duplicate, Move or a property edit tapped just after a sync brought another
+    device's change put the old copy back everywhere; that tap is now refused with a note.
+  - A shape drawn as a sync arrived could take an id the sync had just brought, so two shapes
+    shared it (the computer then refused the design).
+  - Area also leaves out text with accented or other non-ASCII letters (Ø, é...).
+  - The Send dialog kept the machine in use when it opened; if the computer switched machines
+    meanwhile, Send switched it back (reconnecting, losing its homing). It follows the computer
+    until a machine is picked by hand.
+  - With that, the computer switching machines while "Start cutting now?" was open sent and
+    started the job on the other machine. It goes to the machine the question named.
+  - A path's Center field could move its points past ±10000 mm; the computer then refused the
+    whole design at every sync. The field now keeps the whole path in range, to the last digit;
+    a rectangle's W and H, dragging on the canvas and drawing stay in range too, and text is
+    limited the way the computer counts it (an emoji counts twice). No side or radius, typed or
+    drawn, goes over 10000 mm. W or H on a rectangle from the computer already past the edge
+    no longer throws; it can be made smaller, its corner kept within range.
+  - Area: a tap inside a large shape with slanted sides (a triangle across a sheet, a turned
+    rectangle) froze the pad for seconds and took gigabytes; a board with hundreds of circles
+    took seconds too. Both now take a fraction of a second.
+  - Area: a tap in one of two overlapping circles (or hexagons) could fill both whole shapes, or
+    a face overlapping its neighbours, where a crossing rounded onto the grid bent an edge;
+    crossings are now snap-rounded, the same faces as on the computer.
+  - Text typed in the Text box went into another design when the computer opened one on the pad
+    meanwhile (File > Send to pad); it is dropped instead.
+  - After a two-finger pinch, the finger left on the screen picked up and dragged the shape under
+    it, or drew a new one. It now only pans until every finger is lifted.
+
 ## v1.3.8 (build 98) — 2026-10-24
 
 > The pad app is signed with one fixed key, so a new release installs over the old one and keeps its designs

@@ -14,9 +14,11 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
+#include <QSet>
 #include <QJsonObject>
 
 #include <cmath>
+#include <functional>
 #include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QFile>
@@ -179,6 +181,45 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
         if (close)
             out.closeSubpath();
     };
+    // Repeated open pieces are joined like any; one left alone is dropped.
+    auto sameSegs = [tol](const QVector<Seg> &x, const QVector<Seg> &y) {
+        if (x.size() != y.size())
+            return false;
+        for (int k = 0; k < x.size(); ++k) {
+            const Seg &g = x.at(k), &h = y.at(k);
+            if (g.curve != h.curve || !samePt(g.a, h.a, tol) || !samePt(g.b, h.b, tol)
+                || (g.curve && (!samePt(g.c1, h.c1, tol) || !samePt(g.c2, h.c2, tol))))
+                return false;
+        }
+        return true;
+    };
+    QVector<bool> isCopy(subs.size(), false);
+    QVector<int> rootOf(subs.size());
+    for (int j = 0; j < subs.size(); ++j)
+        rootOf[j] = j;
+    for (int j = 0; j < subs.size(); ++j)
+        for (int i = 0; i < j && !subs[j].closed && !subs[j].segs.isEmpty(); ++i)
+            if (!isCopy[i] && !subs[i].closed
+                && (sameSegs(subs[i].segs, subs[j].segs) || sameSegs(subs[i].segs, reversed(subs[j].segs)))) {
+                isCopy[j] = true;
+                rootOf[j] = i;
+                break;
+            }
+    QVector<QSet<int>> pathsOf(subs.size());
+    QVector<QSet<int>> selfIn(subs.size());
+    QVector<QVector<Seg>> closedSeen;
+    auto closedCopy = [&](const QVector<Seg> &fwd) {
+        bool copy = false;
+        const QVector<Seg> back = reversed(fwd);
+        for (const QVector<Seg> &o : closedSeen)
+            for (const QVector<Seg> *x : {&fwd, &back})
+                for (int k = 0; k < x->size() && !copy && x->size() == o.size(); ++k)
+                    copy = samePt(x->at(k).a, o.at(0).a, tol) && sameSegs(x->mid(k) + x->mid(0, k), o);
+        if (!copy)
+            closedSeen.append(fwd);
+        return copy;
+    };
+    int written = 0;
     for (int i = 0; i < subs.size(); ++i) {
         if (used[i] || subs[i].segs.isEmpty())
             continue;
@@ -187,35 +228,130 @@ static QPainterPath joinSubpathsSlow(const QPainterPath &p, double tol)
             QVector<Seg> segs = subs[i].segs;
             if (segs.size() > 1)
                 segs.last().b = segs.first().a;
+            // The same outline twice (any start, either way) is kept once.
+            if (closedCopy(subs[i].segs))
+                continue;
             write(segs, segs.size() > 1);
             continue;
         }
         QVector<Seg> chain = subs[i].segs;
-        for (bool grew = true; grew;) {
-            grew = false;
-            for (int j = 0; j < subs.size(); ++j) {
-                if (used[j] || subs[j].closed || subs[j].segs.isEmpty())
-                    continue;
-                const QVector<Seg> &o = subs[j].segs;
-                if (samePt(chain.last().b, o.first().a, tol)) {
-                    chain += o;
-                } else if (samePt(chain.last().b, o.last().b, tol)) {
-                    chain += reversed(o);
-                } else if (samePt(chain.first().a, o.last().b, tol)) {
-                    chain = o + chain;
-                } else if (samePt(chain.first().a, o.first().a, tol)) {
-                    chain = reversed(o) + chain;
-                } else {
-                    continue;
+        QVector<int> owner(chain.size(), i);
+        auto emitPath = [&](QVector<Seg> segs, QVector<int> own, bool closed) {
+            // An open path's ends that repeat pieces already written (a copy
+            // rejoined to a tail after its loop was split off) are cut once.
+            if (!closed) {
+                auto done = [&](int o) { return !(pathsOf[rootOf[o]] - selfIn[o]).isEmpty(); };
+                while (!own.empty() && done(own.first())) {
+                    const int o = own.first();
+                    while (!own.empty() && own.first() == o) { own.removeFirst(); segs.removeFirst(); }
                 }
-                used[j] = true;
-                grew = true;
+                while (!own.empty() && done(own.last())) {
+                    const int o = own.last();
+                    while (!own.empty() && own.last() == o) { own.removeLast(); segs.removeLast(); }
+                }
+                if (own.empty())
+                    return;
             }
+            // Dropped when one written path already holds every piece (or
+            // the piece it repeats): an outline or line drawn twice.
+            QSet<int> common;
+            bool first = true;
+            for (int o : own) {
+                const QSet<int> w = pathsOf[rootOf[o]] - selfIn[o];
+                if (first)
+                    common = w;
+                else
+                    common.intersect(w);
+                first = false;
+                if (common.isEmpty())
+                    break;
+            }
+            if (!common.isEmpty())
+                return;
+            for (int o : own)
+                { pathsOf[rootOf[o]].insert(written); selfIn[o].insert(written); }
+            ++written;
+            if (closed && closedCopy(segs))
+                return;
+            write(segs, closed);
+        };
+        for (;;) {
+            QSet<int> roots;
+            for (int o : owner)
+                roots.insert(rootOf[o]);
+            for (bool grew = true; grew;) {
+                grew = false;
+                for (int j = 0; j < subs.size(); ++j) {
+                    if (chain.size() > 1 && samePt(chain.first().a, chain.last().b, tol)) {
+                        grew = false;
+                        break;
+                    }
+                    if (used[j] || subs[j].closed || subs[j].segs.isEmpty() || roots.contains(rootOf[j]))
+                        continue;
+                    const QVector<Seg> &o = subs[j].segs;
+                    const QVector<int> ow(o.size(), j);
+                    if (samePt(chain.last().b, o.first().a, tol)) {
+                        chain += o;
+                        owner += ow;
+                    } else if (samePt(chain.last().b, o.last().b, tol)) {
+                        chain += reversed(o);
+                        owner += ow;
+                    } else if (samePt(chain.first().a, o.last().b, tol)) {
+                        chain = o + chain;
+                        owner = ow + owner;
+                    } else if (samePt(chain.first().a, o.first().a, tol)) {
+                        chain = reversed(o) + chain;
+                        owner = ow + owner;
+                    } else {
+                        continue;
+                    }
+                    used[j] = true;
+                    roots.insert(rootOf[j]);
+                    grew = true;
+                }
+            }
+            const int n = chain.size();
+            if (n > 1 && samePt(chain.first().a, chain.last().b, tol)) {
+                chain.last().b = chain.first().a;
+                emitPath(chain, owner, true);
+                break;
+            }
+            auto realLoop = [&](int lo, int hi, const QPointF &at) {
+                if (hi - lo < 2)
+                    return false;
+                for (int m = lo; m < hi; ++m)
+                    for (const QPointF &q : {chain.at(m).a, chain.at(m).b, chain.at(m).c1, chain.at(m).c2})
+                        if (std::hypot(q.x() - at.x(), q.y() - at.y()) > 2 * tol)
+                            return true;
+                return false;
+            };
+            int k = 1;
+            while (k < n && !(samePt(chain.at(k).a, chain.last().b, tol) && realLoop(k, n, chain.last().b)))
+                ++k;
+            if (k < n) {
+                QVector<Seg> loop = chain.mid(k);
+                const QVector<int> lo = owner.mid(k);
+                chain.resize(k);
+                owner.resize(k);
+                loop.last().b = loop.first().a;
+                emitPath(loop, lo, true);
+                continue;
+            }
+            k = n - 2;
+            while (k >= 0 && !(samePt(chain.at(k).b, chain.first().a, tol) && realLoop(0, k + 1, chain.first().a)))
+                --k;
+            if (k >= 0) {
+                QVector<Seg> loop = chain.mid(0, k + 1);
+                const QVector<int> lo = owner.mid(0, k + 1);
+                chain = chain.mid(k + 1);
+                owner = owner.mid(k + 1);
+                loop.last().b = loop.first().a;
+                emitPath(loop, lo, true);
+                continue;
+            }
+            emitPath(chain, owner, false);
+            break;
         }
-        const bool close = chain.size() > 1 && samePt(chain.first().a, chain.last().b, tol);
-        if (close)
-            chain.last().b = chain.first().a;
-        write(chain, close);
     }
     return out;
 }
@@ -489,6 +625,11 @@ int main(int argc, char **argv)
             check(std::abs(usedW("<defs><svg id='o' width='50' height='50' viewBox='0 0 10 10'><svg viewBox='0 0 1 1'>"
                                  "<rect width='1' height='1'/></svg></svg></defs><use xlink:href='#o'/>") - 50) < 0.01,
                   "svg: a used svg nested in a nested svg");
+            // The nested svg's own transform applies outside its viewport.
+            check(std::abs(usedW("<rect width='1' height='1'/><defs><svg id='t' transform='translate(60,0)' x='10' "
+                                 "y='10' width='20' height='20' viewBox='0 0 10 10'><rect width='10' height='10'/>"
+                                 "</svg></defs><use xlink:href='#t'/>") - 90) < 0.01,
+                  "svg: a used nested svg keeps its own transform");
             // ...and the <use>'s width and height resize it.
             check(std::abs(usedW("<defs><svg id='q' width='20' height='20' viewBox='0 0 10 10'><rect width='10' "
                                  "height='10'/></svg></defs><use xlink:href='#q' width='40' height='40'/>") - 40) < 0.01,
@@ -717,6 +858,27 @@ int main(int argc, char **argv)
         check(r.ok && std::abs(r.bounds.width() - 70.0) < 0.1 && std::abs(r.bounds.height() - 40.0) < 0.1,
               "HPGL: 40 units per mm");
     }
+    // HP-GL/2 lets a sign separate numbers: "400-0" is 400 then -0.
+    {
+        const c2d::ImportResult r = c2d::importHpglData("IN;PU0,0;PD400-0,400+200;PU;", opts(0, 0), "s.plt");
+        check(r.ok && std::abs(r.bounds.width() - 10.0) < 0.01 && std::abs(r.bounds.height() - 5.0) < 0.01,
+              "HPGL: a sign separates numbers");
+    }
+    // A closed fit-point spline closes along the curve, not a straight line.
+    {
+        const QByteArray dxf = "0\nSECTION\n2\nENTITIES\n0\nSPLINE\n8\n0\n70\n11\n71\n3\n"
+                               "11\n10\n21\n0\n11\n0\n21\n10\n11\n-10\n21\n0\n11\n0\n21\n-10\n"
+                               "0\nENDSEC\n0\nEOF\n";
+        const c2d::ImportResult r = c2d::importDxfData(dxf, opts(0, 0), "closedfit.dxf");
+        bool round = r.ok && r.elements.size() == 1;
+        if (round) {
+            const QPainterPath &p = r.elements.first().painterPath;
+            const QPointF c = p.boundingRect().center();
+            for (const QPointF d : {QPointF(5.5, 5.5), QPointF(5.5, -5.5), QPointF(-5.5, 5.5), QPointF(-5.5, -5.5)})
+                round = round && p.contains(c + d);
+        }
+        check(round, "dxf: a closed fit-point spline is smooth all the way round");
+    }
     // DXF with bare CR line endings (old Mac exports).
     {
         const QByteArray dxf = "0\rSECTION\r2\rENTITIES\r0\rLINE\r8\r0\r10\r0\r20\r0\r11\r25\r21\r0\r"
@@ -746,6 +908,50 @@ int main(int argc, char **argv)
     check(c2d::isImportableFile(QStringLiteral("a.PLT")) && c2d::isImportableFile(QStringLiteral("b.ai"))
               && c2d::isImportableFile(QStringLiteral("c.pdf")) && !c2d::isImportableFile(QStringLiteral("d.c2d")),
           "importable suffixes");
+
+    // A rectangle of loose lines closes even with a stray line on a corner or
+    // an edge drawn twice (before or after the rest): the outline is not
+    // reopened by a piece touching its closed corner, and the copy is dropped.
+    // Also with the stray line first, a partial repeat (three sides as one
+    // polyline, the bottom again on its own), or a copy 0.002 mm off.
+    for (int k = 0; k < 6; ++k) {
+        QPainterPath in;
+        auto line = [&in](QPointF a, QPointF b) { in.moveTo(a); in.lineTo(b); };
+        if (k == 3)
+            line({10, 10}, {5, 5});
+        if (k == 4) {
+            in.moveTo(0, 0);
+            in.lineTo(10, 0);
+            in.lineTo(10, 10);
+            in.lineTo(0, 10);
+            line({0, 0}, {10, 0});
+            line({0, 10}, {0, 0});
+        } else {
+        if (k == 2)
+            line({0, 0}, {10, 0});
+        line({0, 0}, {10, 0});
+        if (k == 5)
+            line({0.002, 0.001}, {10.001, 0.002});
+        line({10, 0}, {10, 10});
+        line({10, 10}, {0, 10});
+        line({0, 10}, {0, 0});
+        if (k == 0)
+            line({0, 0}, {-5, -5});
+        if (k == 1)
+            line({0, 0}, {10, 0});
+        }
+        const QVector<c2d::Element> els = c2d::elementsFromPath(c2d::joinSubpaths(in), QJsonObject());
+        int closedRects = 0;
+        for (const c2d::Element &e : els)
+            closedRects += isClosed(e) && countType(e, 1) == 4;
+        static const char *what[] = {"joinSubpaths: a stray line on a corner leaves the rectangle closed",
+                                     "joinSubpaths: an edge drawn again after leaves the rectangle closed",
+                                     "joinSubpaths: an edge drawn again first leaves the rectangle closed",
+                                     "joinSubpaths: a stray line before the outline leaves it closed",
+                                     "joinSubpaths: an edge repeated from a polyline leaves it closed",
+                                     "joinSubpaths: an edge copied 0.002 mm off leaves the rectangle closed"};
+        check(closedRects == 1 && els.size() == (k == 0 || k == 3 || k == 4 ? 2 : 1), what[k]);
+    }
 
     // joinSubpaths with its endpoint grid: same output as the old O(n^2)
     // sweep on scrambled pieces snapped to a coarse grid (many shared ends,
@@ -794,6 +1000,267 @@ int main(int argc, char **argv)
             moves += joined.elementAt(i).isMoveTo();
         check(moves == 1 && joined.elementCount() == 100001, "joinSubpaths: 100k lines into one chain");
         check(t.elapsed() < 5000, "joinSubpaths: 100k lines in seconds, not a minute");
+
+        // Nothing is lost: a dense head or tail (points under tol apart) and
+        // a curl drawn as one curve stay on the open path.
+        {
+            QPainterPath dense;
+            dense.moveTo(0, 0);
+            dense.lineTo(30, 0);
+            for (int i = 1; i <= 1000; ++i)
+                dense.lineTo(30 + i * 0.008, (i % 2) * 0.004);
+            QPainterPath head;
+            head.moveTo(-8, 0);
+            for (int i = 1; i <= 1000; ++i)
+                head.lineTo(-8 + i * 0.008, (i % 2) * 0.004);
+            head.lineTo(30, 0);
+            QPainterPath curl;
+            curl.moveTo(10, 50);
+            curl.lineTo(40, 50);
+            curl.cubicTo(60, 30, 20, 30, 40, 50);
+            QPainterPath curlFront;
+            curlFront.moveTo(40, 50);
+            curlFront.cubicTo(60, 30, 20, 30, 40, 50);
+            curlFront.lineTo(10, 50);
+            const QPainterPath ins[] = {dense, head, curl, curlFront};
+            static const char *what[] = {"joinSubpaths: a dense tail is kept",
+                                         "joinSubpaths: a dense head is kept",
+                                         "joinSubpaths: a curl at the end is kept",
+                                         "joinSubpaths: a curl at the start is kept"};
+            for (int k = 0; k < 4; ++k) {
+                const QPainterPath o = c2d::joinSubpaths(ins[k], 0.01);
+                check(std::abs(o.length() - ins[k].length()) < 1e-6, what[k]);
+            }
+            QPainterPath tail;
+            tail.moveTo(0, 0);
+            tail.lineTo(50, 0);
+            for (int i = 1; i <= 20000; ++i)
+                tail.lineTo(50 + i * 0.008, (i % 2) * 0.004);
+            QElapsedTimer tt;
+            tt.start();
+            const QPainterPath o = c2d::joinSubpaths(tail, 0.01);
+            check(std::abs(o.length() - tail.length()) < 1e-6 && tt.elapsed() < 500,
+                  "joinSubpaths: a 20000-point dense tail kept, quickly");
+        }
+        // A shared edge drawn once for each of two touching shapes closes both
+        // (the second copy was dropped as a repeat: one rectangle left open).
+        {
+            auto closedCount = [](const QPainterPath &o) {
+                int closed = 0;
+                for (const c2d::Element &e : c2d::elementsFromPath(o, QJsonObject()))
+                    closed += isClosed(e);
+                return closed;
+            };
+            auto rect = [](QPainterPath &p, double x, double y, double w, double h) {
+                const QPointF c[4] = {{x, y}, {x + w, y}, {x + w, y + h}, {x, y + h}};
+                for (int k = 0; k < 4; ++k) {
+                    p.moveTo(c[k]);
+                    p.lineTo(c[(k + 1) % 4]);
+                }
+            };
+            QPainterPath two;
+            rect(two, 0, 0, 10, 10);
+            rect(two, 10, 0, 10, 10);
+            const QPainterPath o2 = c2d::joinSubpaths(two, 0.01);
+            check(closedCount(o2) == 2 && std::abs(o2.length() - 80) < 1e-6,
+                  "joinSubpaths: two rectangles sharing an edge both close");
+            QPainterPath grid;
+            for (int gx = 0; gx < 3; ++gx)
+                for (int gy = 0; gy < 3; ++gy)
+                    rect(grid, gx * 10, gy * 10, 10, 10);
+            check(closedCount(c2d::joinSubpaths(grid, 0.01)) == 9, "joinSubpaths: a 3x3 grid of cells all close");
+            check(samePath(c2d::joinSubpaths(grid, 0.01), joinSubpathsSlow(grid, 0.01)),
+                  "joinSubpaths: grid same as the quadratic version");
+            // Each shape's edges in perimeter order from any corner, shapes in
+            // any order, lines in random directions. (Edges shuffled within a
+            // shape can still leave one open: the join takes the lowest index
+            // at a junction, not the turn that keeps to one shape.)
+            {
+                std::srand(11);
+                int bad2 = 0, badGrid = 0;
+                for (int trial = 0; trial < 200; ++trial) {
+                    QVector<QLineF> ls;
+                    auto sq = [&](double x, double y, bool shuffle) {
+                        QVector<QLineF> e = {{{x, y}, {x + 10, y}}, {{x + 10, y}, {x + 10, y + 10}},
+                                             {{x + 10, y + 10}, {x, y + 10}}, {{x, y + 10}, {x, y}}};
+                        for (QLineF &l : e)
+                            if (std::rand() % 2)
+                                l = QLineF(l.p2(), l.p1());
+                        std::rotate(e.begin(), e.begin() + std::rand() % 4, e.end());
+                        if (shuffle)
+                            std::reverse(e.begin(), e.end());
+                        ls += e;
+                    };
+                    auto run = [&](const QVector<QLineF> &v) {
+                        QPainterPath p;
+                        for (const QLineF &l : v) {
+                            p.moveTo(l.p1());
+                            p.lineTo(l.p2());
+                        }
+                        return c2d::joinSubpaths(p, 0.01);
+                    };
+                    ls.clear();
+                    const bool first = std::rand() % 2;
+                    sq(first ? 0 : 10, 0, std::rand() % 2);
+                    sq(first ? 10 : 0, 0, std::rand() % 2);
+                    const QPainterPath o = run(ls);
+                    bad2 += closedCount(o) != 2 || std::abs(o.length() - 80) > 1e-6;
+                    ls.clear();
+                    QVector<int> cells = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+                    for (int k = 8; k > 0; --k)
+                        std::swap(cells[k], cells[std::rand() % (k + 1)]);
+                    for (int c : cells)
+                        sq(c / 3 * 10, c % 3 * 10, std::rand() % 2);
+                    badGrid += closedCount(run(ls)) != 9;
+                }
+                check(bad2 == 0, qPrintable(QStringLiteral("joinSubpaths: two squares sharing an edge, in either order (%1 of 200 wrong)").arg(bad2)));
+                check(badGrid == 0, qPrintable(QStringLiteral("joinSubpaths: a 3x3 grid, cells in any order (%1 of 200 wrong)").arg(badGrid)));
+            }
+            // A polyline that closes a loop partway keeps the rest: a lead-in
+            // line into a square, or a single-stroke "e" through its start.
+            {
+                QPainterPath a;
+                a.moveTo(-10, 0); a.lineTo(0, 0); a.lineTo(10, 0); a.lineTo(10, 10); a.lineTo(0, 10); a.lineTo(0, 0);
+                check(std::abs(c2d::joinSubpaths(a, 0.01).length() - 50) < 1e-6,
+                      "joinSubpaths: a lead-in line into a square keeps the line");
+                QPainterPath e;
+                const double pts[][2] = {{3, 8}, {15, 8}, {15, 10}, {14, 12}, {13, 13}, {11, 14}, {8, 14}, {6, 13}, {4, 11},
+                                         {3, 8}, {3, 6}, {4, 3}, {6, 1}, {8, 0}, {11, 0}, {13, 1}, {15, 3}};
+                e.moveTo(pts[0][0], pts[0][1]);
+                for (int k = 1; k < 17; ++k)
+                    e.lineTo(pts[k][0], pts[k][1]);
+                check(std::abs(c2d::joinSubpaths(e, 0.01).length() - e.length()) < 1e-6,
+                      "joinSubpaths: a single-stroke e keeps its tail");
+            }
+            // A closed outline written twice (any start, either direction)
+            // imports once: two coincident outlines made a pocket cut nothing.
+            {
+                auto box = [](QPainterPath &p, double w, double h) {
+                    p.moveTo(0, 0); p.lineTo(w, 0); p.lineTo(w, h); p.lineTo(0, h); p.closeSubpath();
+                };
+                QPainterPath dbl;
+                box(dbl, 40, 20);
+                dbl.moveTo(40, 20); dbl.lineTo(40, 0); dbl.lineTo(0, 0); dbl.lineTo(0, 20); dbl.closeSubpath();
+                const QPainterPath o = c2d::joinSubpaths(dbl, 0.01);
+                check(std::abs(o.length() - 120) < 1e-6, "joinSubpaths: a closed outline written twice imports once");
+                QPainterPath two;
+                box(two, 40, 20);
+                box(two, 40, 21);
+                check(std::abs(c2d::joinSubpaths(two, 0.01).length() - 242) < 1e-6,
+                      "joinSubpaths: two different outlines are both kept");
+            }
+            // A copy of a piece in a loop split off a chain does not rejoin
+            // the open tail: two sides of the square were cut twice.
+            {
+                QPainterPath q;
+                q.moveTo(0, 0); q.lineTo(0, 10); q.lineTo(10, 10);
+                q.moveTo(10, 10); q.lineTo(10, 0); q.lineTo(0, 0); q.lineTo(-10, 0);
+                q.moveTo(10, 10); q.lineTo(0, 10); q.lineTo(0, 0);
+                check(std::abs(c2d::joinSubpaths(q, 0.01).length() - 50) < 1e-6,
+                      "joinSubpaths: a copied piece inside a split loop is not cut again with the tail");
+            }
+            // A closed outline and the same outline as loose pieces, either
+            // order: kept once.
+            {
+                QPainterPath a;
+                a.moveTo(0, 0); a.lineTo(40, 0); a.lineTo(40, 20); a.lineTo(0, 20); a.closeSubpath();
+                a.moveTo(0, 0); a.lineTo(40, 0);
+                a.moveTo(40, 0); a.lineTo(40, 20); a.lineTo(0, 20);
+                a.moveTo(0, 20); a.lineTo(0, 0);
+                check(std::abs(c2d::joinSubpaths(a, 0.01).length() - 120) < 1e-6,
+                      "joinSubpaths: a closed outline and its loose pieces import once");
+                QPainterPath b;
+                b.moveTo(40, 20); b.lineTo(0, 20); b.lineTo(0, 0);
+                b.moveTo(0, 0); b.lineTo(40, 0); b.lineTo(40, 20);
+                b.moveTo(0, 0); b.lineTo(40, 0); b.lineTo(40, 20); b.lineTo(0, 20); b.closeSubpath();
+                check(std::abs(c2d::joinSubpaths(b, 0.01).length() - 120) < 1e-6,
+                      "joinSubpaths: loose pieces then the closed outline import once");
+            }
+            // An outline or a line drawn twice is cut once.
+            {
+                QPainterPath dbl;
+                rect(dbl, 0, 0, 40, 20);
+                rect(dbl, 0, 0, 40, 20);
+                const QPainterPath o = c2d::joinSubpaths(dbl, 0.01);
+                check(c2d::elementsFromPath(o, QJsonObject()).size() == 1 && std::abs(o.length() - 120) < 1e-6,
+                      "joinSubpaths: a rectangle written twice imports once");
+                QPainterPath extra;
+                rect(extra, 0, 0, 40, 20);
+                extra.moveTo(0, 0);
+                extra.lineTo(40, 0);
+                extra.moveTo(40, 0);
+                extra.lineTo(40, 20);
+                check(c2d::elementsFromPath(c2d::joinSubpaths(extra, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: a rectangle and two of its edges again import as the rectangle");
+                QPainterPath poly;
+                for (int k = 0; k < 2; ++k) {
+                    poly.moveTo(0, 0);
+                    poly.lineTo(10, 0);
+                    poly.moveTo(10, 0);
+                    poly.lineTo(10, 10);
+                }
+                check(c2d::elementsFromPath(c2d::joinSubpaths(poly, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: an open path written twice imports once");
+                // Written twice with the copies interleaved (the first chain
+                // takes some copies, the originals land in the second).
+                auto lines = [](std::initializer_list<QLineF> ls) {
+                    QPainterPath p;
+                    for (const QLineF &l : ls) {
+                        p.moveTo(l.p1());
+                        p.lineTo(l.p2());
+                    }
+                    return p;
+                };
+                const QPainterPath inter = lines({{{0, 0}, {10, 0}}, {{10, 10}, {0, 10}}, {{10, 0}, {10, 10}},
+                                                  {{0, 10}, {0, 0}}, {{10, 10}, {0, 10}}, {{0, 0}, {10, 0}},
+                                                  {{0, 10}, {0, 0}}, {{10, 0}, {10, 10}}});
+                check(c2d::elementsFromPath(c2d::joinSubpaths(inter, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: a square written twice, interleaved, imports once");
+                const QPainterPath pl = lines({{{0, 0}, {5, 8}}, {{11, 10}, {25, 12}}, {{5, 8}, {11, 10}},
+                                               {{0, 0}, {5, 8}}, {{5, 8}, {11, 10}}, {{11, 10}, {25, 12}}});
+                check(c2d::elementsFromPath(c2d::joinSubpaths(pl, 0.01), QJsonObject()).size() == 1,
+                      "joinSubpaths: a polyline written out of order, then in order, imports once");
+                QPainterPath g2;
+                for (int k = 0; k < 2; ++k) {
+                    rect(g2, 0, 0, 10, 10);
+                    rect(g2, 10, 0, 10, 10);
+                }
+                check(closedCount(c2d::joinSubpaths(g2, 0.01)) == 2
+                      && c2d::elementsFromPath(c2d::joinSubpaths(g2, 0.01), QJsonObject()).size() == 2,
+                      "joinSubpaths: two touching squares written twice import as two");
+            }
+            QPainterPath twice;
+            twice.moveTo(0, 0);
+            twice.lineTo(20, 0);
+            twice.moveTo(20, 0);
+            twice.lineTo(0, 0);
+            check(closedCount(c2d::joinSubpaths(twice, 0.01)) == 0, "joinSubpaths: a line drawn twice stays one open line");
+            // An end in a dense jittery cluster: the split stays linear.
+            QPainterPath jit;
+            jit.moveTo(0, 0);
+            jit.lineTo(50, 0);
+            std::srand(3);
+            for (int i = 0; i < 20000; ++i)
+                jit.lineTo(50 + (std::rand() % 1000) * 2e-6, (std::rand() % 1000) * 2e-6);
+            QElapsedTimer tt;
+            tt.start();
+            c2d::joinSubpaths(jit, 0.01);
+            check(tt.elapsed() < 1000, "joinSubpaths: a dense cluster at an end in well under a second");
+        }
+        // Lines sharing only one end (a starburst) are not compared as copies.
+        {
+            QPainterPath star;
+            for (int i = 0; i < 20000; ++i) {
+                const double a = i * 2 * M_PI / 20000;
+                star.moveTo(0, 0);
+                star.lineTo(100 * std::cos(a), 100 * std::sin(a));
+            }
+            QElapsedTimer tt;
+            tt.start();
+            const QPainterPath o = c2d::joinSubpaths(star, 0.01);
+            check(tt.elapsed() < 3000 && std::abs(o.length() - star.length()) < 1e-3,
+                  "joinSubpaths: a 20000-line starburst in seconds, nothing dropped");
+        }
     }
 
     // SPLINE flattening is bounded: a 1000-point spline zig-zagging over a
@@ -830,6 +1297,31 @@ int main(int argc, char **argv)
         const c2d::ImportResult a = c2d::importHpglData(
             "PR;PU400,400;IN;PD800,0;PU;", opts(0, 0), "in2.plt");
         check(a.ok && std::abs(a.bounds.width() - 10.0) < 0.1, "HPGL IN: back to absolute coordinates");
+    }
+
+    // HPGL SC user units: mapped onto IP's points (type 0), as plotter units
+    // per user unit (type 2), or noted as skipped with no IP to scale into.
+    {
+        const c2d::ImportResult r = c2d::importHpglData(
+            "IN;IP0,0,4000,4000;SC0,100,0,100;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc.plt");
+        check(r.ok && std::abs(r.bounds.width() - 100.0) < 0.1 && std::abs(r.bounds.height() - 100.0) < 0.1,
+              "HPGL SC: user units map onto IP");
+        const c2d::ImportResult f = c2d::importHpglData(
+            "IN;SC0,40,0,40,2;PU0,0;PD10,0,10,10,0,10,0,0;PU;", opts(0, 0), "sc2.plt");
+        check(f.ok && std::abs(f.bounds.width() - 10.0) < 0.1, "HPGL SC type 2: plotter units per user unit");
+        const c2d::ImportResult n = c2d::importHpglData(
+            "IN;SC0,100,0,100;PU0,0;PD100,0,100,100;PU;", opts(0, 0), "sc3.plt");
+        check(n.ok && n.skipped >= 1, "HPGL SC without IP is noted, not ignored");
+        const c2d::ImportResult later = c2d::importHpglData(
+            "IN;IP0,0,4000,4000;SC0,100,0,100;IP0,0,8000,8000;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc4.plt");
+        check(later.ok && std::abs(later.bounds.width() - 200.0) < 0.1, "HPGL: an IP after SC re-maps the user units");
+        const c2d::ImportResult first = c2d::importHpglData(
+            "IN;SC0,100,0,100;IP0,0,4000,4000;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc5.plt");
+        check(first.ok && std::abs(first.bounds.width() - 100.0) < 0.1 && first.skipped == 0,
+              "HPGL: SC before IP scales once IP comes");
+        const c2d::ImportResult one = c2d::importHpglData(
+            "IN;IP4000,4000;SC0,100,0,100;PU0,0;PD100,0,100,100,0,100,0,0;PU;", opts(0, 0), "sc6.plt");
+        check(one.ok && one.skipped >= 1 && one.bounds.width() > 1, "HPGL: IP with only P1 and no frame leaves SC skipped");
     }
 
     // HPGL label text and PE data are not commands: "Project" is not PR.

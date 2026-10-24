@@ -3,6 +3,8 @@
 // 1 · Design / 2 · Toolpaths / 3 · Machine switch in the header; the tool row;
 // the drawing with its side panel and zoom bar; the status line at the bottom.
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -18,7 +20,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
-const appVersion = '1.3.2';
+const appVersion = '1.3.9';
 
 class MainWindow extends StatefulWidget {
   final AppState app;
@@ -170,6 +172,17 @@ class _MainWindowState extends State<MainWindow> {
     return true;
   }
 
+  /// [d] (what a panel was last built from) is no longer the design on
+  /// screen: a sync replaced it before the next frame. An edit made from it
+  /// would put the old copy back everywhere, over the other device's change.
+  bool _changedUnder(Design d) {
+    final cur = _d;
+    if (cur != null && cur.id == d.id && cur.isSameCopy(d)) return false;
+    _say('The design just changed on another pad or computer; that tap was not kept');
+    setState(() {});
+    return true;
+  }
+
   void _commit(Design next, {Design? before}) {
     if (_stale()) return;
     final prev = before ?? _d;
@@ -271,6 +284,39 @@ class _MainWindowState extends State<MainWindow> {
       _commit(next);
       _say('Area — the overlap was added as a closed path, so a toolpath cuts only this area');
     }
+    // Lettering standing in the area: on the computer its glyphs are islands
+    // of the face, so a pocket leaves them standing. The pad has no glyph
+    // outlines, only a guess at the text's box, so it selects text only
+    // where it is sure to match: the box (widened for wide capitals and the
+    // tails of g, p, y) wholly in the face, and no letter with a closed
+    // inside (A, O, e, 8...), whose inside the computer keeps uncut and a
+    // pocket around the selected text would clear. The rest gets a note.
+    const closedLetters = 'ABDOPQRabdegopq04689#%&@';
+    var unsure = 0;
+    for (final s in d.shapes) {
+      if (s.type != Shape.text) continue;
+      final size = s.size ?? 10;
+      final b = [s.x, s.y - 0.3 * size, s.x + size * math.max(1, s.label?.length ?? 1), s.y + size];
+      final corners = <Pt>[(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])];
+      bool inBox(Pt p) => p.$1 > b[0] && p.$1 < b[2] && p.$2 > b[1] && p.$2 < b[3];
+      if (!corners.any((c) => ringContains(face.first, c)) && !face.first.any(inBox)) continue;
+      if (face.skip(1).any((h) => corners.every((c) => ringContains(h, c)))) continue;   // on an island
+      final whole = corners.every((c) => ringContains(face.first, c)) &&
+          !face.first.any(inBox) &&
+          face.skip(1).every((h) => !corners.any((c) => ringContains(h, c)) && !h.any(inBox));
+      // Anything past plain ASCII (Ø, é, ©...) may have a closed inside too.
+      final label = s.label ?? '';
+      final closed = label.split('').any(closedLetters.contains) || !RegExp(r'^[ -~]*$').hasMatch(label);
+      if (whole && !closed) {
+        ids.add(s.id);
+      } else {
+        unsure++;
+      }
+    }
+    if (unsure > 0) {
+      _say('Area — $unsure text item(s) not selected: near the edge, or with closed letters '
+          '(A, O, e…) the pad cannot keep uncut. Select it by hand to keep the letters standing (their insides get cut)');
+    }
     setState(() => _sel = ids);
   }
 
@@ -284,9 +330,10 @@ class _MainWindowState extends State<MainWindow> {
         _addShape(Shape(id: d.nextShapeId(), type: Shape.point, x: x, y: y));
       case DrawTool.text:
         final t = await _askText();
-        // The design may have been replaced while the box was open.
+        // The design may have been replaced while the box was open (another
+        // one opened from the computer): the text was for this one only.
         final now = _d;
-        if (t != null && now != null && mounted) {
+        if (t != null && now != null && now.id == d.id && mounted) {
           _addShape(Shape(id: now.nextShapeId(), type: Shape.text, x: x, y: y, label: t.$1, size: t.$2));
         }
       case DrawTool.path:
@@ -486,6 +533,10 @@ class _MainWindowState extends State<MainWindow> {
     // The design as stored now: a sync may have brought a newer copy while
     // the dialog was up, and editing the older one would be refused.
     final d = picked == null ? null : app.design(picked.id) ?? picked;
+    if (d != null && d.deleted) {
+      _say('“${d.name}” was deleted on another pad or computer');
+      return;
+    }
     if (d != null) {
       setState(() => _open(d));
       _say(d.desktopOnly.isEmpty ? 'Opened “${d.name}”' : 'Opened “${d.name}” · ${_copyWords(d)}');
@@ -841,7 +892,7 @@ class _MainWindowState extends State<MainWindow> {
                   onSelect: (ids) => setState(() => _sel = ids),
                   onMove: (ids, dx, dy) => setState(() {
                     _beforeMove ??= _d;
-                    _d = _d!.copyWith(shapes: [for (final s in _d!.shapes) ids.contains(s.id) ? s.moved(dx, dy) : s]);
+                    _d = _d!.copyWith(shapes: [for (final s in _d!.shapes) ids.contains(s.id) ? s.movedWithin(dx, dy) : s]);
                   }),
                   onMoveDone: () {
                     final before = _beforeMove;
@@ -851,7 +902,9 @@ class _MainWindowState extends State<MainWindow> {
                     _commit(_d!, before: before);
                   },
                   onDraw: (dr) {
-                    final s = shapeFromDraft(dr, d.nextShapeId());
+                    // The design on screen now, not the one this was built from: a sync
+                    // may have brought shapes since, and their ids are taken.
+                    final s = shapeFromDraft(dr, (_d ?? d).nextShapeId());
                     if (s != null) _addShape(s);
                   },
                   onTapAt: _tapAt,
@@ -879,7 +932,10 @@ class _MainWindowState extends State<MainWindow> {
           child: PropertiesPanel(
             design: d,
             selected: _sel,
-            onChange: (s) => _commit(d.copyWith(shapes: [for (final x in d.shapes) x.id == s.id ? s : x])),
+            onChange: (s) {
+              if (_changedUnder(d)) return;
+              _commit(d.copyWith(shapes: [for (final x in d.shapes) x.id == s.id ? s : x]));
+            },
           ),
         ),
         Expanded(child: DocumentTabs(design: d, tools: app.tools, selected: _sel, onPick: (id) => setState(() => _sel = {id}))),
@@ -895,17 +951,23 @@ class _MainWindowState extends State<MainWindow> {
             selectedShapes: _sel,
             onPick: (i) => setState(() => _tp = i),
             onNew: _newToolpath,
-            onChange: _setToolpath,
+            onChange: (i, t) {
+              if (!_changedUnder(d)) _setToolpath(i, t);
+            },
             onDuplicate: (i) {
+              if (_changedUnder(d)) return;
               final t = d.toolpaths[i];
-              _commit(d.copyWith(toolpaths: [...d.toolpaths, t.copyWith(name: '${t.name} copy')]));
-              setState(() => _tp = d.toolpaths.length);
+              // Right after the original, as on the computer: list order is cut order.
+              _commit(d.copyWith(toolpaths: [...d.toolpaths]..insert(i + 1, t.copyWith(name: '${t.name} copy'))));
+              setState(() => _tp = i + 1);
             },
             onDelete: (i) {
+              if (_changedUnder(d)) return;
               _commit(d.copyWith(toolpaths: [...d.toolpaths]..removeAt(i)));
               setState(() => _tp = null);
             },
             onMove: (i, to) {
+              if (_changedUnder(d)) return;
               final l = [...d.toolpaths];
               final t = l.removeAt(i);
               l.insert(to, t);

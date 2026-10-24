@@ -17,6 +17,12 @@
 #include "../src/vectorops.h"
 
 #include <QGuiApplication>
+#include <QFont>
+#include <QRawFont>
+#include <QTextLayout>
+#include <QGlyphRun>
+#include <QFontDatabase>
+#include <tuple>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -286,6 +292,130 @@ int main(int argc, char *argv[])
               && s.nodes.at(1).kind == c2d::PathNode::Corner, "Alt-drag breaks symmetry");
         s.retract(1);
         check(!s.nodes.at(1).hasIn() && !s.nodes.at(1).hasOut(), "retract pulls both handles in");
+    }
+
+    // --- text: a glyph whose outlines overlap is one solid outline -------------------
+    // Liberation Sans "Å": the ring dips into the A; read even-odd the overlap
+    // was a hole cutting the ring off.
+    if (QFontDatabase::families().contains(QStringLiteral("Liberation Sans"))) {
+        const c2d::Element t = c2d::Element::makeText(QString(QChar(0x00C5)), {0, 0}, 20,
+                                                      QStringLiteral("Liberation Sans"), layer);
+        check(t.raw.value("rendered").toArray().size() == 3,
+              "overlapping glyph outlines merge (A, its counter, the ring's hole)");
+    }
+
+    // A part stored twice in the font (DejaVu Sans "ệ": the dot below) or
+    // the whole "e" twice (DejaVu Sans Bold "ḕ") cancelled under even-odd.
+    for (const auto &[family, bold, text] : {std::tuple<const char *, bool, QString>{"DejaVu Sans", false, QString::fromUtf8("Việt")},
+                                             {"DejaVu Sans", true, QString::fromUtf8("ḕ")}}) {
+        if (!QFontDatabase::families().contains(QLatin1String(family)))
+            continue;
+        c2d::Element t = c2d::Element::makeText(text, {0, 0}, 20, QLatin1String(family), layer);
+        if (bold)
+            t = c2d::Element::regenText(t, QJsonObject{{"bold", true}});
+        QPainterPath w, e;
+        for (const QJsonValue &cv : t.raw.value("rendered").toArray()) {
+            QPolygonF poly;
+            for (const QJsonValue &pv : cv.toArray())
+                poly << QPointF(pv.toArray().at(0).toDouble(), pv.toArray().at(1).toDouble()) * 16;
+            w.addPolygon(poly);
+            w.closeSubpath();
+        }
+        e = w;
+        w.setFillRule(Qt::WindingFill);
+        e.setFillRule(Qt::OddEvenFill);
+        check(w.simplified() == e.simplified(),
+              qPrintable(QStringLiteral("glyph parts stored twice are kept (%1)").arg(text)));
+    }
+
+    // A slant Qt makes up for a face the font lacks (DejaVu Sans has no
+    // italic) keeps the family and style name: the upright glyph was reused.
+    if (QFontDatabase::families().contains(QStringLiteral("DejaVu Sans"))) {
+        auto maxX = [](const QJsonObject &o) {
+            double m = -1e9;
+            for (const QJsonValue &cv : o.value("rendered").toArray())
+                for (const QJsonValue &pv : cv.toArray())
+                    m = std::max(m, pv.toArray().at(0).toDouble());
+            return m;
+        };
+        QJsonObject up{{"text", "Hello"}, {"font", "DejaVu Sans-Regular"}, {"font_height", 10.0}};
+        QJsonObject it{{"text", "Hello"}, {"font", "DejaVu Sans-Italic"}, {"font_height", 10.0}};
+        c2d::Element::renderText(up);
+        c2d::Element::renderText(it);
+        // Only where the platform slants it at all (a CI runner's fontconfig
+        // may not): asked of Qt directly, past the cache.
+        QFont uf = c2d::Element::textFont(up), itf = c2d::Element::textFont(it);
+        const QRawFont ru = QRawFont::fromFont(uf), ri = QRawFont::fromFont(itf);
+        const QVector<quint32> gl = ru.glyphIndexesForString(QStringLiteral("l"));
+        // Through a text layout, as the app draws (fontconfig may pick
+        // differently than QRawFont::fromFont).
+        auto laidOutWidth = [](const QFont &f) {
+            QTextLayout lay(QStringLiteral("l"), f);
+            lay.beginLayout();
+            lay.createLine();
+            lay.endLayout();
+            for (const QGlyphRun &run : lay.glyphRuns())
+                if (!run.glyphIndexes().isEmpty())
+                    return run.rawFont().pathForGlyph(run.glyphIndexes().first()).boundingRect().width();
+            return 0.0;
+        };
+        const bool slants = laidOutWidth(uf) + 1 < laidOutWidth(itf);
+        if (slants)
+            check(QJsonDocument(up.value("rendered").toArray()) != QJsonDocument(it.value("rendered").toArray()),
+                  "made-up italic is slanted after the upright text");
+        QJsonObject up2 = up;
+        c2d::Element::renderText(up2);
+        check(QJsonDocument(up2.value("rendered").toArray()) == QJsonDocument(up.value("rendered").toArray()),
+              "upright text stays upright after the italic");
+        // A stretch made up the same way: advances halved, glyphs full width.
+        QFont nf(QStringLiteral("DejaVu Sans"));
+        nf.setStretch(50);
+        QJsonObject st{{"text", "Hello"}, {"qtfont", nf.toString()}, {"font_height", 10.0}};
+        c2d::Element::renderText(st);
+        QFont sf = uf;
+        sf.setStretch(50);
+        const QRawFont rs = QRawFont::fromFont(sf);
+        if (!gl.isEmpty() && rs.pathForGlyph(gl.first()).boundingRect().width() + 1
+                                 < ru.pathForGlyph(gl.first()).boundingRect().width())
+            check(maxX(st) < maxX(up) * 0.75, "made-up stretch narrows the glyphs after the plain text");
+        // A combining mark (no advance) stretched as its letter is, after
+        // the plain one was drawn: it took the plain mark from the cache.
+        if (!gl.isEmpty() && rs.pathForGlyph(gl.first()).boundingRect().width() + 1
+                                 < ru.pathForGlyph(gl.first()).boundingRect().width()) {
+            auto markWidth = [](const QJsonObject &withMark, const QJsonObject &bare) {
+                const QJsonArray a = withMark.value("rendered").toArray();
+                const int skip = bare.value("rendered").toArray().size();
+                double lo = 1e9, hi = -1e9;
+                for (int c = skip; c < a.size(); ++c)
+                    for (const QJsonValue &pv : a.at(c).toArray()) {
+                        lo = std::min(lo, pv.toArray().at(0).toDouble());
+                        hi = std::max(hi, pv.toArray().at(0).toDouble());
+                    }
+                return hi - lo;
+            };
+            const QString qm = QStringLiteral("q") + QChar(0x0308);
+            QJsonObject pm{{"text", qm}, {"font", "DejaVu Sans-Regular"}, {"font_height", 10.0}};
+            QJsonObject pq{{"text", "q"}, {"font", "DejaVu Sans-Regular"}, {"font_height", 10.0}};
+            QFont s2(QStringLiteral("DejaVu Sans"));
+            s2.setStretch(50);
+            QJsonObject sm{{"text", qm}, {"qtfont", s2.toString()}, {"font_height", 10.0}};
+            QJsonObject sq{{"text", "q"}, {"qtfont", s2.toString()}, {"font_height", 10.0}};
+            for (QJsonObject *o : {&pm, &pq, &sm, &sq})
+                c2d::Element::renderText(*o);
+            const double wp = markWidth(pm, pq), ws = markWidth(sm, sq);
+            check(wp > 0 && ws > 0 && ws < wp * 0.8, "a stretched combining mark is stretched after the plain one");
+        }
+        // A style name stored with the font outranks Bold: unticking it did nothing.
+        QFont bf(QStringLiteral("DejaVu Sans"));
+        bf.setStyleName(QStringLiteral("Bold"));
+        c2d::Element bt = c2d::Element::makeText(QStringLiteral("Hello"), {0, 0}, 10, QStringLiteral("DejaVu Sans"), layer);
+        QJsonObject braw = bt.raw;
+        braw.insert("qtfont", bf.toString());
+        c2d::Element::renderText(braw);
+        bt.raw = braw;
+        const c2d::Element unb = c2d::Element::regenText(bt, QJsonObject{{"bold", false}});
+        check(QJsonDocument(unb.raw.value("rendered").toArray()) != QJsonDocument(braw.value("rendered").toArray()),
+              "unticking Bold on a font stored with its style name makes it regular");
     }
 
     // --- text: straight, arc top, arc bottom, offset -------------------------------

@@ -175,6 +175,9 @@ private:
     bool m_bzWantX = false, m_bzWantY = false, m_bzWantZ = false;
     double m_bzCx = 0, m_bzCy = 0, m_bzStockZ = 0;   // machine coords found
     double m_bzStartX = 0, m_bzStartY = 0;           // where Begin was pressed
+    double m_bzOverZ = 0;                            // V1: over the block (top + 5)
+    quint64 m_resets = 0;                            // controller (re)starts seen
+    quint64 m_bzStageResets = 0;                     // m_resets when the stage began
     void bitZeroAfterV1(Phase stage);
     static QStringList bitZeroSideLines(char axis, const BitZeroConfig &c, double startAbs);
     void openBitZero();
@@ -190,6 +193,14 @@ private:
     // QSettings, applied to the program at Run when switched on in the job.
     SurfaceMapProber *m_mapper = nullptr;
     SurfaceMap m_map;
+    double mapZeroAt(double wx, double wy) const;
+    // The last Z zero: with the map on or off, the offset it sent, the
+    // machine XY it was touched at and the work offset Z it left (kept
+    // across restarts; judged only while the controller still has that
+    // offset). Run refuses a map state that would put Z0 elsewhere.
+    void noteZZero(double mx, double my, double sent, double wcoZ);
+    bool m_zZeroKnown = false, m_zZeroWithMap = false;
+    double m_zZeroSent = 0, m_zZeroMx = 0, m_zZeroMy = 0, m_zZeroWco = 0;
     QCheckBox *m_useMap = nullptr;
     QLabel *m_mapLabel = nullptr;
     QLabel *m_ovLabel = nullptr;         // live feed/rapid/spindle override, beside the +/- buttons
@@ -299,6 +310,8 @@ private:
     bool m_homed = false;
     bool m_homingStarted = false;
     bool m_resumeCheck = false;          // first status after connecting
+    bool m_holdChecked = false;          // a hold left from before cleared
+    QElapsedTimer m_settingsAsked;       // last $$ sent; asked again until answered
     QElapsedTimer m_busyClock;           // throttles the busy file
     QVariantList m_savedHomedAt;         // last homed position written to settings
     bool requireHomed(const QString &what);

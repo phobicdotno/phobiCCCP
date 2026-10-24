@@ -908,6 +908,15 @@ int main(int argc, char *argv[])
         check(g.gcode.contains(QStringLiteral("M03S%1").arg(int(f.rpm)))
                   && g.gcode.contains(QStringLiteral("F%1").arg(f.feed, 0, 'f', 1)),
               "exporter picks up the new speeds");
+        // An Adaptive keeps its light bite with the new bit: the chart's
+        // pocket stepover made it a slotting cut.
+        {
+            QJsonObject ad{{"type", "adaptive_toolpath"}, {"stepdown", 6.35}, {"stepover", 0.635},
+                           {"tool", QJsonObject{{"diameter", 6.35}}}};
+            c2d::ToolLibrary::applyToToolpath(ad, *t102, *t102->feedsFor(QStringLiteral("softwood")));
+            check(approx(ad.value("stepdown").toDouble(), 3.175) && approx(ad.value("stepover").toDouble(), 0.3175),
+                  "a library bit on an Adaptive keeps a tenth of the bit as stepover");
+        }
     }
 
     // --- unsupported type is skipped ----------------------------------------
@@ -1138,6 +1147,41 @@ int main(int argc, char *argv[])
         doc.addToolpath(b);
         const c2d::Toolpath e = c2d::makeToolpath(doc, QStringLiteral("engrave_toolpath"), {sq.id});
         doc.addToolpath(e);
+        // After an Adaptive (one-diameter passes, 10% stepover), a new
+        // pocket or cutout does not take its passes: a cutout slotted 4x deep.
+        {
+            c2d::Document d2 = doc;
+            d2.addToolpath(c2d::makeToolpath(d2, QStringLiteral("adaptive_toolpath"), {sq.id}));
+            const c2d::Toolpath p = c2d::makeToolpath(d2, QStringLiteral("pocket_toolpath"), {sq.id});
+            const c2d::Toolpath c = c2d::makeToolpath(d2, QStringLiteral("cutout"), {sq.id});
+            const double dia = p.json.value("tool").toObject().value("diameter").toDouble();
+            check(p.json.value("stepdown").toDouble() < dia * 0.5 && p.json.value("stepover").toDouble() > dia * 0.3
+                  && c.json.value("depth_per_pass").toDouble() < dia * 0.5,
+                  "a new pocket or cutout after an Adaptive keeps ordinary passes");
+        }
+        // A corner rounding bit (written as CC type 0, like an end mill) is
+        // no default for a new pocket: its head gouged the part.
+        {
+            c2d::Document d3 = doc;
+            c2d::Toolpath r = c2d::makeToolpath(d3, QStringLiteral("contour"), {sq.id});
+            r.json.insert("tool", QJsonObject{{"number", 1040}, {"diameter", 2.0}, {"type", 0}});
+            d3.addToolpath(r);
+            const c2d::Toolpath p = c2d::makeToolpath(d3, QStringLiteral("pocket_toolpath"), {sq.id});
+            check(p.json.value("tool").toObject().value("number").toInt() != 1040,
+                  "a new pocket does not take a corner rounding bit as its end mill");
+        }
+        // A user's own end mill that happens to carry a library number (6 mm,
+        // numbered 1040) is still theirs: it was skipped and given the
+        // rounding bit's feeds.
+        {
+            c2d::Document d4 = doc;
+            c2d::Toolpath r = c2d::makeToolpath(d4, QStringLiteral("contour"), {sq.id});
+            r.json.insert("tool", QJsonObject{{"number", 1040}, {"diameter", 6.0}, {"type", 0}});
+            d4.addToolpath(r);
+            const c2d::Toolpath p = c2d::makeToolpath(d4, QStringLiteral("pocket_toolpath"), {sq.id});
+            check(approx(p.json.value("tool").toObject().value("diameter").toDouble(), 6.0),
+                  "a user's own end mill numbered like a library bit is still picked");
+        }
         check(a.json.value("name").toString() == QLatin1String("Contour Toolpath 1")
               && b.json.value("name").toString() == QLatin1String("Pocket Toolpath 1")
               && e.json.value("name").toString() == QLatin1String("Engrave 1"),
@@ -2294,11 +2338,20 @@ int main(int argc, char *argv[])
             total += h;
         std::fprintf(stderr, "square tabs, lead %.0f: %d piece(s), %.2f mm of edge held\n",
                      lead, int(holds.size()), total);
-        // 4 tabs on a 160 mm outline; the reach of 0.01 mm takes 0.25 mm
-        // off either end of each.
-        check(g.done.size() == 1 && total > 4 * (4.0 - 0.8) && total < 4 * 4.0 + 0.5,
+        // 4 tabs on a 160 mm outline. The lift runs a bit radius past each
+        // end, so the edge is held for the width plus the bit; the reach of
+        // 0.01 mm takes 0.25 mm off either end of each.
+        check(g.done.size() == 1 && total > 4 * (4.0 + 6.35 - 0.8) && total < 4 * (4.0 + 6.35) + 0.5,
               lead > 0 ? "tabs hold their width of the part's edge (lead-in)"
                        : "tabs hold their width of the part's edge");
+        // And across the middle of the kerf the bridge is still the tab's
+        // width: the bit dropping at a tab's ends ate it from both sides, so
+        // a tab narrower than the bit held nothing.
+        double bridge = 0;
+        const double R = 6.35 / 2;
+        for (const double h : tabHolds(g.ops, QPolygonF(QRectF(30 - R, 30 - R, 40 + 2 * R, 40 + 2 * R)), R, -6.0))
+            bridge += h;
+        check(bridge > 4 * (4.0 - 1.0), "a tab's bridge across the kerf is its width");
     }
 
     // Finishing rings lifted for the tab width along their own length: in a

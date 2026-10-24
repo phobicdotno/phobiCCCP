@@ -1,8 +1,11 @@
 #include "element.h"
 #include <QFont>
+#include <cmath>
 #include <QFontMetricsF>
 #include <QLineF>
 #include <QJsonArray>
+#include <QFontInfo>
+#include <QMutex>
 #include <QJsonDocument>
 #include <QPointF>
 #include <QPolygonF>
@@ -333,6 +336,93 @@ static QJsonArray contoursOf(const QPainterPath &mm)
     return rendered;
 }
 
+// A glyph whose outlines overlap (Liberation Sans "Å": the ring dips into
+// the A) is drawn solid by the font, but every reader of `rendered` takes an
+// overlap as a hole: merged into one outline. Others keep their curves
+// (flattened finer later); simplified() flattens, so it runs 16x up.
+static QPainterPath solidGlyphOf(const QPainterPath &g);
+
+// Merged once per font, size and glyph: the same accented letter repeated
+// through a long text was merged again at every occurrence. A slant or
+// stretch Qt makes up keeps the font's family and style name, so its style,
+// weight and the glyph's advance are in the key too.
+static QPainterPath solidGlyph(const QRawFont &rf, quint32 index)
+{
+    static QMutex lock;
+    static QHash<QString, QPainterPath> cache;
+    const QVector<QPointF> adv = rf.advancesForGlyphIndexes(QVector<quint32>{index});
+    QString key = QStringLiteral("%1/%2/%3/%4/%5/%6/%7").arg(rf.familyName(), rf.styleName())
+                      .arg(rf.pixelSize()).arg(index).arg(int(rf.style())).arg(rf.weight())
+                      .arg(adv.isEmpty() ? 0.0 : adv.first().x(), 0, 'g', 10);
+    // A combining mark has no advance to tell a stretched face from the
+    // plain one: keyed on its outline too (marks are few and small).
+    QPainterPath g;
+    const bool noAdvance = adv.isEmpty() || adv.first().x() == 0;
+    if (noAdvance) {
+        g = rf.pathForGlyph(index);
+        for (int i = 0; i < g.elementCount(); ++i)
+            key += QStringLiteral("/%1,%2").arg(g.elementAt(i).x, 0, 'g', 10).arg(g.elementAt(i).y, 0, 'g', 10);
+    }
+    {
+        QMutexLocker l(&lock);
+        auto it = cache.constFind(key);
+        if (it != cache.constEnd())
+            return it.value();
+    }
+    const QPainterPath out = solidGlyphOf(noAdvance ? g : rf.pathForGlyph(index));
+    QMutexLocker l(&lock);
+    if (cache.size() > 20000)
+        cache.clear();
+    cache.insert(key, out);
+    return out;
+}
+
+static QPainterPath solidGlyphOf(const QPainterPath &g)
+{
+    if (g.isEmpty())
+        return g;
+    // Cheap test first (text renders on every edit): outlines whose boxes
+    // cross without one holding the other, or nested ones turning the same
+    // way (a counter turns against its outline; a part stored twice, as
+    // DejaVu's dot under "ệ", or a crossing inner part, turns with it).
+    struct Box { double x0, y0, x1, y1, area, sx, sy, lx, ly; };
+    QVector<Box> boxes;
+    for (int i = 0; i < g.elementCount(); ++i) {
+        const QPainterPath::Element e = g.elementAt(i);
+        if (e.isMoveTo() || boxes.isEmpty()) {
+            boxes.append({e.x, e.y, e.x, e.y, 0, e.x, e.y, e.x, e.y});
+            continue;
+        }
+        // The control polygon's signed area (x2), closed below.
+        Box &b = boxes.last();
+        b = {qMin(b.x0, e.x), qMin(b.y0, e.y), qMax(b.x1, e.x), qMax(b.y1, e.y),
+             b.area + b.lx * e.y - e.x * b.ly, b.sx, b.sy, e.x, e.y};
+    }
+    for (Box &b : boxes)
+        b.area += b.lx * b.sy - b.sx * b.ly;
+    auto holds = [](const Box &o, const Box &i) {
+        return o.x0 <= i.x0 && o.y0 <= i.y0 && o.x1 >= i.x1 && o.y1 >= i.y1;
+    };
+    bool crossing = false;
+    for (int a = 0; a < boxes.size() && !crossing; ++a)
+        for (int b = a + 1; b < boxes.size() && !crossing; ++b) {
+            const Box &x = boxes.at(a), &y = boxes.at(b);
+            const bool meet = x.x0 <= y.x1 && y.x0 <= x.x1 && x.y0 <= y.y1 && y.y0 <= x.y1;
+            crossing = meet && ((!holds(x, y) && !holds(y, x)) || (x.area > 0) == (y.area > 0));
+        }
+    if (!crossing)
+        return g;
+    QTransform up;
+    up.scale(16, 16);
+    QPainterPath w = up.map(g), e = w;
+    w.setFillRule(Qt::WindingFill);
+    e.setFillRule(Qt::OddEvenFill);
+    const QPainterPath ws = w.simplified();
+    if (ws == e.simplified())
+        return g;
+    return up.inverted().map(ws);
+}
+
 // Rebuild `rendered` from the element's own keys. Layout is in local Y-up
 // space with the straight baseline on y = 0 starting at x = 0 (what CC
 // writes: the first glyph's left bearing is the smallest x). font_height is
@@ -408,7 +498,7 @@ void Element::renderText(QJsonObject &o)
                         if (seen.contains(key))
                             continue;
                         seen.insert(key);
-                        c.glyphs.append({rf.pathForGlyph(idx.at(i)), pos.at(i).x() - x0,
+                        c.glyphs.append({solidGlyph(rf, idx.at(i)), pos.at(i).x() - x0,
                                          pos.at(i).y() - baseline,
                                          i < advs.size() ? advs.at(i).x() : 0.0});
                     }
@@ -484,9 +574,18 @@ Element Element::regenText(const Element &src, const QJsonObject &changes)
     bool fontChanged = false;
     for (auto it = changes.begin(); it != changes.end(); ++it) {
         const QString k = it.key();
-        if (k == QLatin1String("family")) { f.setFamily(it.value().toString()); fontChanged = true; }
-        else if (k == QLatin1String("bold")) { f.setBold(it.value().toBool()); fontChanged = true; }
-        else if (k == QLatin1String("italic")) { f.setItalic(it.value().toBool()); fontChanged = true; }
+        // A style name stored with the font (",Bold") outranks the bold and
+        // italic flags: unticking Bold left the outline bold.
+        if (k == QLatin1String("family")) { f.setFamily(it.value().toString()); f.setStyleName(QString()); fontChanged = true; }
+        else if (k == QLatin1String("bold")) { f.setBold(it.value().toBool()); f.setStyleName(QString()); fontChanged = true; }
+        else if (k == QLatin1String("italic")) {
+            // The face's weight stays (a Light face named only by its style).
+            const int w = QFontInfo(f).weight();
+            f.setStyleName(QString());
+            f.setWeight(QFont::Weight(w));
+            f.setItalic(it.value().toBool());
+            fontChanged = true;
+        }
         else o.insert(k, it.value());
     }
     if (fontChanged) {
@@ -552,7 +651,29 @@ double SubPath::closest(const QPointF &pt, int *seg, double *t) const
     double best = 1e300;
     *seg = -1; *t = 0;
     const int N = 32;
+    // The nodes lie on the path, so the nearest node bounds the answer from
+    // the start: segments are skipped from the first one on, not only once
+    // the scan has passed the point (a curve running towards it).
+    double ub = 1e300;
+    for (const PathNode &n : nodes)
+        ub = qMin(ub, QLineF(pt, n.p).length());
+    ub *= 1 + 1e-9;
     for (int s = 0; s < segmentCount(); ++s) {
+        // The segment lies inside its control points' box: one farther off
+        // than the best so far cannot beat it (Trim calls this for every
+        // open path's ends against curves of thousands of segments).
+        {
+            const PathNode &a = nodes.at(s), &b = nodes.at((s + 1) % nodes.size());
+            double x0 = a.p.x(), x1 = x0, y0 = a.p.y(), y1 = y0;
+            for (const QPointF &q : {a.out, b.in, b.p}) {
+                x0 = qMin(x0, q.x()); x1 = qMax(x1, q.x());
+                y0 = qMin(y0, q.y()); y1 = qMax(y1, q.y());
+            }
+            const double dx = qMax(0.0, qMax(x0 - pt.x(), pt.x() - x1));
+            const double dy = qMax(0.0, qMax(y0 - pt.y(), pt.y() - y1));
+            if (std::hypot(dx, dy) > qMin(best, ub))
+                continue;
+        }
         double sBest = 1e300, sT = 0;
         for (int k = 0; k <= N; ++k) {
             const double tt = double(k) / N;

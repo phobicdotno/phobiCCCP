@@ -506,6 +506,49 @@ int main(int argc, char *argv[])
         check(ok, "tiling: the first move after a tool change is a rapid through safe Z");
     }
 
+    // Two toolpaths with one bit: a contour on an open line crossing the
+    // tile line at depth, then a drill cutting only in tile 2. Tile 1 still
+    // ends with the bit lifted out of the cut.
+    {
+        c2d::Document doc;
+        doc.setParam("width", "100");
+        doc.setParam("height", "100");
+        const QJsonObject L;
+        const c2d::Element line = c2d::Element::makePath({{10, 10}, {50, 70}}, false, L);
+        const c2d::Element hole = c2d::Element::makeCircle({20, 60}, 3, L);
+        doc.addElement(line);
+        doc.addElement(hole);
+        for (const auto &[type, el] : {std::pair{QStringLiteral("contour"), line.id},
+                                       std::pair{QStringLiteral("drilling_toolpath"), hole.id}}) {
+            c2d::Toolpath t;
+            t.uuid = type;
+            t.type = type;
+            t.json = QJsonObject{{"type", type}, {"name", type}, {"enabled", true}, {"uuid", type},
+                                 {"start_depth", "0.000"}, {"end_depth", "3.000"}, {"stepdown", 3.0},
+                                 {"ofset_dir", 0},
+                                 {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 12000}}},
+                                 {"tool", QJsonObject{{"diameter", 3.175}, {"number", 1}}},
+                                 {"elements", QJsonArray{QJsonObject{{"uuid", el}}}}};
+            doc.addToolpath(t);
+        }
+        QTemporaryDir dir;
+        const c2d::TiledExport r = c2d::exportTiled(doc, dir.filePath(QStringLiteral("job")), 40);
+        bool ok = r.error.isEmpty() && !r.gcode.isEmpty();
+        const QRegularExpression zWord(QStringLiteral("^G[0-3](?![0-9]).*Z(-?[0-9.]+)"));
+        for (const QString &g : r.gcode) {
+            if (g.trimmed().isEmpty())
+                continue;
+            double z = 0;
+            for (const QString &l : g.split(QLatin1Char('\n'))) {
+                const QRegularExpressionMatch m = zWord.match(l);
+                if (m.hasMatch())
+                    z = m.captured(1).toDouble();
+            }
+            ok = ok && z > 0;
+        }
+        check(ok, "tiling: every tile ends with the bit above the stock");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }
