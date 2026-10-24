@@ -11,6 +11,7 @@
 #include "../src/element.h"
 #include "../src/gamepad.h"
 #include "../src/gcodeexport.h"
+#include "../src/jobview.h"
 #include "../src/machinepanel.h"
 #include "../src/toollibrary.h"
 #include "../src/toolstrip.h"
@@ -230,6 +231,45 @@ int main(int argc, char **argv)
     QApplication::setOrganizationName(QStringLiteral("phobicccp-test"));
     QApplication::setApplicationName(QStringLiteral("test_machine"));
     QSettings().clear();
+
+    // ---- the job plan: toolpaths, passes and times read back from the program
+    {
+        const QStringList lines = {
+            QStringLiteral("G21"), QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500"),
+            QStringLiteral("(Pocket A)"), QStringLiteral("G0Z5.000"), QStringLiteral("M03S18000"),
+            QStringLiteral("G4P3.00"), QStringLiteral("X10.000Y10.000"), QStringLiteral("G1Z-1.500F300.0"),
+            QStringLiteral("X20.000F1000.0"), QStringLiteral("Y20.000"), QStringLiteral("X10.000"),
+            QStringLiteral("Y10.000"), QStringLiteral("Z-3.000F300.0"), QStringLiteral("X20.000F1000.0"),
+            QStringLiteral("Y20.000"), QStringLiteral("X10.000"), QStringLiteral("Y10.000"),
+            QStringLiteral("G0Z5.000"), QStringLiteral("M05"), QStringLiteral("M0 ;T2"),
+            QStringLiteral("G90G21"), QStringLiteral("G0Z5.000"), QStringLiteral("(Drill B)"),
+            QStringLiteral("M03S18000"), QStringLiteral("G4P3.00"), QStringLiteral("X30.000Y30.000"),
+            QStringLiteral("G1Z-2.000F200.0"), QStringLiteral("G0Z5.000"), QStringLiteral("X40.000"),
+            QStringLiteral("G1Z-2.000F200.0"), QStringLiteral("G0Z5.000")};
+        const c2d::JobPlan plan = c2d::planJob(lines, {}, nullptr, 5000);
+        check(plan.total == lines.size() - 2, "plan: comments take no queue index");
+        check(plan.cumSec.size() == plan.total + 1, "plan: one cumulative time per queued line");
+        check(plan.sections.size() == 3, "plan: two toolpaths and a tool change");
+        if (plan.sections.size() == 3) {
+            const c2d::JobSection &a = plan.sections.at(0), &tc = plan.sections.at(1), &b = plan.sections.at(2);
+            check(a.name == QLatin1String("Pocket A") && a.kind == c2d::JobSection::Toolpath, "plan: first toolpath named from its comment");
+            check(a.passes.size() == 2 && std::abs(a.passes.at(0).z + 1.5) < 1e-6 && std::abs(a.passes.at(1).z + 3.0) < 1e-6,
+                  "plan: a pocket cut in two levels is two passes, at their floors");
+            // Pass 1: plunge 6.5 mm at F300 (1.3 s) + 40 mm at F1000 (2.4 s); pass 2: 1.5 mm plunge + the lap.
+            check(a.passes.size() == 2 && std::abs(a.passes.at(0).estSec - 3.7) < 0.05 && std::abs(a.passes.at(1).estSec - 2.7) < 0.05,
+                  "plan: pass times from feed and distance");
+            check(a.estSec > 3.7 + 2.7 + 2.9, "plan: the toolpath's own time counts the spin-up dwell too");
+            check(tc.kind == c2d::JobSection::ToolChange && tc.detail.startsWith(QLatin1String("T2")), "plan: the tool change is its own step");
+            check(b.name == QLatin1String("Drill B") && b.passes.size() == 1 && std::abs(b.passes.at(0).z + 2.0) < 1e-6,
+                  "plan: pecks that only go deeper stay one pass");
+            check(a.qStart < a.qEnd && a.qEnd <= tc.qStart && tc.qEnd <= b.qStart && b.qEnd == plan.total,
+                  "plan: sections tile the program in order");
+        }
+        bool monotone = true;
+        for (int i = 1; i < plan.cumSec.size(); ++i)
+            monotone = monotone && plan.cumSec.at(i) >= plan.cumSec.at(i - 1);
+        check(monotone, "plan: time never runs backwards");
+    }
 
     // ---- which bit a tool change wants (no machine needed) ----------------
     c2d::Document doc;

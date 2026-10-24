@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.5 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -95,6 +95,7 @@ set(PHOBICCCP_APP_SOURCES
     src/tooldiagram.cpp
     src/toolstrip.cpp
     src/machinepanel.cpp
+    src/jobview.cpp
     src/shopdialog.cpp
     src/isopreview.cpp
     src/simpanel.cpp
@@ -309,7 +310,7 @@ if(Qt6Test_FOUND)
                    src/canvas.cpp src/canvasparametric.cpp src/mainwindow.cpp src/aboutdialog.cpp
                    src/propertiespanel.cpp src/parameterspanel.cpp src/toolpathpanel.cpp
                    src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
-                   src/tooldiagram.cpp src/toolstrip.cpp src/machinepanel.cpp src/shopdialog.cpp
+                   src/tooldiagram.cpp src/toolstrip.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
                    src/isopreview.cpp src/simpanel.cpp src/vectoractions.cpp src/importui.cpp
                    src/tracedialog.cpp src/backgrounddialog.cpp src/modelpanel.cpp
                    src/exportprogress.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
@@ -384,7 +385,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     add_test(NAME gamepad COMMAND test_gamepad)
     # The Machine panel on a fake controller: tool-change prompt, zeroing,
     # jogging, cancelling and disconnecting around a job.
-    add_executable(test_machine tests/test_machine.cpp src/machinepanel.cpp src/shopdialog.cpp
+    add_executable(test_machine tests/test_machine.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
     target_link_libraries(test_machine PRIVATE phobicccp_core Qt6::Widgets)
@@ -393,12 +394,12 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     # Cancel job / Disconnect while the hold settles: a Stop in the wait, and
     # the job's last lines answered in it.
     # A machine switch reloads the BitZero page's plate settings.
-    add_executable(test_bzprofile tests/test_bzprofile.cpp src/machinepanel.cpp src/shopdialog.cpp
+    add_executable(test_bzprofile tests/test_bzprofile.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
     target_link_libraries(test_bzprofile PRIVATE phobicccp_core Qt6::Widgets)
     add_test(NAME bzprofile COMMAND test_bzprofile)
-    add_executable(test_machinestop tests/test_machinestop.cpp src/machinepanel.cpp src/shopdialog.cpp
+    add_executable(test_machinestop tests/test_machinestop.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
                    src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
                    src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)

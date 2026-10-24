@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.6 (build 96) — 2026-10-24
+
+> While a job runs, the Machine page shows the job's steps and time left instead of the jog pad and zeroing buttons
+
+- **Machine:**
+  - Start a job and the middle of the page becomes the job view: every toolpath and
+    depth pass in order, what each one does, the time each should take, what is
+    cutting now with a bar for the pass, the time left on it and on the whole job,
+    and the finish time. Done steps show how long they really took. The feed override
+    scales the estimates.
+  - The per-axis Zero buttons, Zero X and Y, Zero all, Go to X0 Y0, Measure bit, Probe
+    zero, Initialize and Park hide while the job streams: nothing to press by mistake.
+    They come back at a tool-change pause (jog and zero as before) and when the job ends.
+
 ## v1.3.5 (build 95) — 2026-10-24
 
 > Ramped contours and pockets no longer cut every depth level twice, and the ramp stops where its angle reaches depth instead of running the whole edge

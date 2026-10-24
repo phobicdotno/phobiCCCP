@@ -35,6 +35,8 @@ class Document;
 // work zero, measure tools on the BitSetter, and stream the document's
 // generated g-code with automatic tool-change stops — a Carbide-Motion
 // replacement.
+class JobView;
+
 class MachinePanel : public QWidget
 {
     Q_OBJECT
@@ -150,6 +152,15 @@ private:
     // The right-hand card of the Machine page: the job, or one of the pages
     // that used to be pop-ups (BitZero probing, BitSetter settings).
     QStackedWidget *m_rightStack = nullptr;
+    // The middle column: the jog card, or - while a job streams - the job
+    // view (every toolpath and pass with its time left). The zeroing and
+    // machine-action buttons that are not in use while cutting hide with
+    // it; they come back at a tool-change pause (jog, zero Z) and at the end.
+    QStackedWidget *m_midStack = nullptr;
+    JobView *m_jobView = nullptr;
+    QList<QWidget *> m_idleOnly;
+    bool m_jobShown = false;
+    void setJobRunning(bool on);
     QWidget *m_jobPage = nullptr;
     QWidget *m_bsPage = nullptr;
 
