@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.5 (build 95) — 2026-10-24
+
+> Ramped contours and pockets no longer cut every depth level twice
+
+- **Toolpaths:**
+  - With ramping on, each pass ramped down along the ring, carried on round the whole
+    loop at depth, and then cut the whole loop again: every level ran twice (the 2.3 m
+    window of a 600 mm frame, six times over, 2026-10-24). A pass is now the ramp, the
+    rest of the loop, and the ramp's own span re-cut at depth - once each. The next
+    pass ramps on from where that lap ended instead of jumping back to the ring start.
+
 ## v1.3.4 (build 94) — 2026-10-24
 
 > The feed override percentage is shown live beside the −10 % / 100 % / +10 % buttons
