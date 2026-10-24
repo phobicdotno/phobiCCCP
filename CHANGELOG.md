@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.10 (build 100) — 2026-10-24
+
+> A small hole inside a bigger outline can be clicked again, whatever order the shapes were added in
+
+- **Drawing:**
+  - A closed shape is selectable from anywhere inside it, and the shape added last sat on top. An
+    outline added after a small hole (an imported DXF lists the outline last) covered the hole
+    completely: its 3 mm corner holes could not be selected for drilling at any zoom. Shapes are now
+    stacked by size, the smallest on top, so a click picks the innermost shape under the pointer.
+
 ## v1.3.9 (build 99) — 2026-10-24
 
 > Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
