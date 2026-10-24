@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.12 (build 102) — 2026-10-25
+
+> Every toolpath card opens with a "v" to show its shapes, each with a bin
+
+- **Toolpaths** (computer and pad alike):
+  - Under every toolpath card sits a "v". It opens the card to show a small picture of every shape the
+    toolpath cuts, each in its own tile with a bin in the corner. The bin takes that one shape out of
+    the toolpath (undoable on the computer); the shape itself stays in the drawing. "v" again closes it.
+  - Toolpaths on top of each other: a pocket (or adaptive) set to skip what the toolpaths above cut
+    shows only what is left for it. Selecting it outlines that remainder in amber on the drawing, over
+    a faint outline of its own shapes, and its thumbnails do the same. A pocket above counts when it is
+    switched on and goes at least as deep.
+
 ## v1.3.11 (build 101) — 2026-10-25
 
 > A new Drill toolpath goes to the full depth in one movement

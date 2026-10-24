@@ -1,5 +1,7 @@
 #pragma once
 #include <QIcon>
+#include <QPainterPath>
+#include <QSet>
 #include <QWidget>
 #include <functional>
 
@@ -13,6 +15,7 @@ namespace c2d {
 class Canvas;
 class Document;
 class ToolpathForm;
+struct Toolpath;
 
 // Toolpath browser + parameter editor. The list shows the document's
 // toolpaths in machining order with an enable checkbox per row (double-click
@@ -58,6 +61,17 @@ private:
     void updateHighlight();           // halo follows the list's selection
     QString describeVectors(const QStringList &ids) const;
     void markUsage(const QStringList &selectedElementIds);
+    // Each card's "v" opens a thumbnail per shape it cuts, each with a bin
+    // that takes the shape out of the toolpath. Where toolpaths sit on top of
+    // each other, the thumbnails and the canvas halo show only what is left
+    // for this one to cut after the toolpaths above (see clearedAbove).
+    void toggleShapes(const QString &uuid);
+    void removeShape(const QString &uuid, const QString &elementId);
+    void setThumbnails(QTreeWidgetItem *it, const Toolpath &t);
+    QPainterPath regionOf(const Toolpath &t) const;
+    QPainterPath clearedAbove(const QString &uuid, bool *applies) const;
+    void updateListHeight();
+    QSet<QString> m_expanded;         // toolpaths whose shapes are shown
 
     QStringList m_selectedElements;   // last canvas selection, for markUsage
 

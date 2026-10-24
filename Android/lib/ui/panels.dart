@@ -9,6 +9,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import '../model.dart';
+import 'canvas.dart';
 import 'icons.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -331,6 +332,10 @@ class ToolpathsPanel extends StatelessWidget {
   final int? current;
   final Set<String> selectedShapes;
   final ValueChanged<int?> onPick;
+
+  /// Cards whose "v" is open: a thumbnail per shape, each with a bin.
+  final Set<int> shapesOpen;
+  final ValueChanged<int> onToggleShapes;
   final void Function(String type) onNew;
   final void Function(int i, ToolpathSpec t) onChange;
   final void Function(int i) onDuplicate, onDelete;
@@ -344,6 +349,8 @@ class ToolpathsPanel extends StatelessWidget {
     required this.current,
     required this.selectedShapes,
     required this.onPick,
+    this.shapesOpen = const {},
+    required this.onToggleShapes,
     required this.onNew,
     required this.onChange,
     required this.onDuplicate,
@@ -455,18 +462,19 @@ class ToolpathsPanel extends StatelessWidget {
 
   Widget _card(int k, ToolpathSpec t, bool sel) {
     final tool = tools.tool(t.tool);
+    final open = shapesOpen.contains(k);
     return GestureDetector(
       onTap: () => onPick(sel ? null : k),
       child: Container(
         margin: const EdgeInsets.symmetric(vertical: 3),
-        height: 54,
         decoration: BoxDecoration(
           color: sel ? C.selCard : C.card,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: sel ? C.amber : C.cardBorder, width: sel ? 2 : 1),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10),
-        child: Row(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        SizedBox(height: 50, child: Row(
           children: [
             GestureDetector(
               onTap: () => onChange(k, t.copyWith(enabled: !t.enabled)),
@@ -508,10 +516,65 @@ class ToolpathsPanel extends StatelessWidget {
               Text('Ø${fmt(tool.diameter)}', style: const TextStyle(color: C.label, fontSize: 13.5)),
             ],
           ],
+        )),
+        // "v": open or close a thumbnail of every shape this toolpath cuts.
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => onToggleShapes(k),
+          child: SizedBox(
+            height: 18,
+            child: Icon(open ? Icons.expand_less_rounded : Icons.expand_more_rounded, size: 18, color: C.sub),
+          ),
         ),
+        if (open && t.shapes.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: Text('No shapes yet', style: TextStyle(color: C.sub, fontSize: 12.5)),
+          ),
+        if (open && t.shapes.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Wrap(spacing: 6, runSpacing: 6, children: [
+              for (var n = 0; n < t.shapes.length; n++) _thumb(k, t, n),
+            ]),
+          ),
+        ]),
       ),
     );
   }
+
+  /// One shape of toolpath [k] as a small picture, with a bin that takes it
+  /// out of the toolpath (the shape stays in the drawing).
+  Widget _thumb(int k, ToolpathSpec t, int n) => SizedBox(
+        width: 64,
+        height: 64,
+        child: Stack(children: [
+          Positioned.fill(
+            child: Container(
+              decoration: BoxDecoration(
+                color: C.base,
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: const Color(0xFF3A404B)),
+              ),
+              child: CustomPaint(painter: ShapeThumbPainter(design, k, t.shapes[n])),
+            ),
+          ),
+          Positioned(
+            top: 2,
+            right: 2,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => onChange(k, t.copyWith(shapes: [...t.shapes]..removeAt(n))),
+              child: Container(
+                width: 22,
+                height: 22,
+                decoration: BoxDecoration(color: C.button.withAlpha(220), borderRadius: BorderRadius.circular(4)),
+                child: const Icon(Icons.delete_outline_rounded, size: 16, color: C.nameOn),
+              ),
+            ),
+          ),
+        ]),
+      );
 
   Widget _form(BuildContext context, int i, ToolpathSpec t) {
     final tool = tools.tool(t.tool);
@@ -830,4 +893,65 @@ class _NameBoxState extends State<_NameBox> {
     onSubmitted: (_) => _done(),
     onTapOutside: (_) => _done(),
   );
+}
+
+/// One shape of toolpath [index], fitted to the thumbnail. Where the pockets
+/// above already cleared part of it, only what is left is amber over a faint
+/// outline, as on the canvas when the toolpath is selected.
+class ShapeThumbPainter extends CustomPainter {
+  final Design design;
+  final int index;
+  final String id;
+  ShapeThumbPainter(this.design, this.index, this.id);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = design.shape(id);
+    if (s == null) {
+      final tp = TextPainter(
+          text: const TextSpan(text: '?', style: TextStyle(color: Color(0xFFC0392B), fontSize: 18)),
+          textDirection: TextDirection.ltr)
+        ..layout();
+      tp.paint(canvas, Offset((size.width - tp.width) / 2, (size.height - tp.height) / 2));
+      return;
+    }
+    final b = s.bounds();
+    final v = StockView(
+        Stock(width: math.max(b[2] - b[0], 0.01), height: math.max(b[3] - b[1], 0.01)), size, margin: 9);
+    Offset map(double x, double y) => v.toScreen(x - b[0], y - b[1]);
+    final local = s.moved(-b[0], -b[1]);
+    final area = shapeArea(s, map);
+    final cover = area == null ? null : clearedAbove(design, index, map);
+    if (area != null && cover != null) {
+      drawShapeOutline(
+          canvas,
+          v,
+          local,
+          Paint()
+            ..color = C.disabled
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1);
+      final left = Path.combine(PathOperation.difference, area, cover);
+      canvas.drawPath(left, Paint()..color = C.amber.withAlpha(0x50));
+      canvas.drawPath(
+          left,
+          Paint()
+            ..color = C.amber
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.4);
+      return;
+    }
+    if (area != null) drawShapeOutline(canvas, v, local, Paint()..color = C.amber.withAlpha(0x40));
+    drawShapeOutline(
+        canvas,
+        v,
+        local,
+        Paint()
+          ..color = C.nameOn
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4);
+  }
+
+  @override
+  bool shouldRepaint(ShapeThumbPainter old) => old.design != design || old.index != index || old.id != id;
 }

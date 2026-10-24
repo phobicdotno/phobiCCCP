@@ -36,6 +36,8 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
+#include <QHelpEvent>
 #include <QTreeWidget>
 #include <QUndoStack>
 #include <QUuid>
@@ -52,15 +54,58 @@ enum Role {
     ToolIconRole = Qt::UserRole + 2,
     ToolTextRole = Qt::UserRole + 3,
     UsedRole = Qt::UserRole + 4,
+    ExpandedRole = Qt::UserRole + 5,     // the shape thumbnails are shown
+    AreaIdsRole = Qt::UserRole + 6,      // QStringList: the toolpath's vectors
+    AreaThumbsRole = Qt::UserRole + 7,   // QVariantList of QPixmap, one per id
+    AreaTipsRole = Qt::UserRole + 8,     // QStringList: what each one is
 };
+
+constexpr int kStrip = 18;   // the "v" strip under a card's head
+constexpr int kTile = 64;    // one shape's thumbnail
+constexpr int kTileGap = 6;
+constexpr int kBin = 20;     // the bin in a thumbnail's corner
 
 // One toolpath as a card: on/off box, type icon, name over "type · vectors ·
 // depth", and the tool (outline + Ø) at the end. Click the box to switch the
-// toolpath on or off; drag the card to change the cutting order.
+// toolpath on or off; drag the card to change the cutting order. The "v"
+// strip under it opens the card to show a thumbnail of every shape the
+// toolpath cuts, each with a bin that takes that one shape out of it.
 class CardDelegate : public QStyledItemDelegate
 {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
+
+    std::function<void(const QString &uuid)> toggled;
+    std::function<void(const QString &uuid, const QString &areaId)> removed;
+
+    static int headHeight(const QFont &f) { return QFontMetrics(f).height() * 2 + 22; }
+
+    // The card without its margins, and its parts: the head (all a card
+    // showed before it could open), the "v" strip, and the thumbnails.
+    static QRect cardRect(const QRect &row) { return row.adjusted(2, 3, -2, -3); }
+    static QRect headRect(const QRect &row, const QFont &f)
+    {
+        const QRect c = cardRect(row);
+        return QRect(c.left(), c.top(), c.width(), headHeight(f) - 6);
+    }
+    static QRect stripRect(const QRect &row, const QFont &f)
+    {
+        const QRect h = headRect(row, f);
+        return QRect(h.left(), h.bottom() - 3, h.width(), kStrip + 2);
+    }
+    static int columns(int width) { return qMax(1, (width - 16 + kTileGap) / (kTile + kTileGap)); }
+    static QRect tileRect(const QRect &row, const QFont &f, int i)
+    {
+        const QRect c = cardRect(row);
+        const int cols = columns(c.width());
+        const int top = stripRect(row, f).bottom() + 2;
+        return QRect(c.left() + 8 + (i % cols) * (kTile + kTileGap),
+                     top + (i / cols) * (kTile + kTileGap), kTile, kTile);
+    }
+    static QRect binRect(const QRect &tile)
+    {
+        return QRect(tile.right() - kBin - 1, tile.top() + 2, kBin, kBin);
+    }
 
     static QRect boxRect(const QRect &card)
     {
@@ -68,21 +113,50 @@ public:
         return QRect(card.left() + 10, card.center().y() - s / 2, s, s);
     }
 
-    QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &) const override
+    QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &ix) const override
     {
-        const QFontMetrics fm(opt.font);
-        return QSize(200, fm.height() * 2 + 22);
+        int h = headHeight(opt.font) + kStrip;
+        if (ix.data(ExpandedRole).toBool()) {
+            const int n = ix.data(AreaIdsRole).toStringList().size();
+            const auto *view = qobject_cast<const QAbstractItemView *>(parent());
+            const int cols = columns((view ? view->viewport()->width() : 200) - 4);
+            h += n == 0 ? QFontMetrics(opt.font).height() + 8
+                        : (n + cols - 1) / cols * (kTile + kTileGap) + 2;
+        }
+        return QSize(200, h);
+    }
+
+    static void paintBin(QPainter *p, const QRect &r, bool hot)
+    {
+        p->save();
+        p->setPen(Qt::NoPen);
+        p->setBrush(hot ? QColor(0xc0, 0x39, 0x2b) : QColor(0x2a, 0x2e, 0x36, 220));
+        p->drawRoundedRect(QRectF(r), 4, 4);
+        const QRectF b = QRectF(r).adjusted(5, 4, -5, -4);
+        p->setPen(QPen(QColor(0xe6, 0xe9, 0xef), 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        p->setBrush(Qt::NoBrush);
+        const double lid = b.top() + b.height() * 0.22;
+        p->drawLine(QPointF(b.left() - 1, lid), QPointF(b.right() + 1, lid));
+        p->drawLine(QPointF(b.center().x() - 2, b.top()), QPointF(b.center().x() + 2, b.top()));
+        QPolygonF can;
+        can << QPointF(b.left() + 1, lid) << QPointF(b.left() + 2, b.bottom())
+            << QPointF(b.right() - 2, b.bottom()) << QPointF(b.right() - 1, lid);
+        p->drawPolyline(can);
+        p->drawLine(QPointF(b.center().x(), lid + 3), QPointF(b.center().x(), b.bottom() - 2));
+        p->restore();
     }
 
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &ix) const override
     {
         p->save();
         p->setRenderHint(QPainter::Antialiasing);
-        const QRect card = opt.rect.adjusted(2, 3, -2, -3);
+        const QRect whole = cardRect(opt.rect);
+        const QRect card = headRect(opt.rect, opt.font);
         const bool sel = opt.state & QStyle::State_Selected;
         const bool cur = opt.state & QStyle::State_HasFocus;
         const bool on = ix.data(Qt::CheckStateRole).toInt() == Qt::Checked;
         const bool used = ix.data(UsedRole).toBool();
+        const bool open = ix.data(ExpandedRole).toBool();
         QColor bg = sel ? QColor(0x3a, 0x31, 0x22) : QColor(0x23, 0x26, 0x2e);
         if (!sel && (opt.state & QStyle::State_MouseOver))
             bg = QColor(0x2a, 0x2e, 0x36);
@@ -90,7 +164,45 @@ public:
                                                                : QColor(0x2f, 0x34, 0x3d),
                        sel || used ? 2 : 1));
         p->setBrush(bg);
-        p->drawRoundedRect(QRectF(card).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+        p->drawRoundedRect(QRectF(whole).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8);
+
+        // "v" strip: opens and closes the thumbnails of the toolpath's shapes
+        const QStringList ids = ix.data(AreaIdsRole).toStringList();
+        const QRect strip = stripRect(opt.rect, opt.font);
+        {
+            const QPointF c(strip.center().x() + 0.5, strip.center().y() + 0.5);
+            p->setPen(QPen(QColor(0x8b, 0x93, 0xa1), 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p->setBrush(Qt::NoBrush);
+            const double d = open ? -3.0 : 3.0;
+            QPolygonF vee;
+            vee << QPointF(c.x() - 6, c.y() - d) << QPointF(c.x(), c.y() + d)
+                << QPointF(c.x() + 6, c.y() - d);
+            p->drawPolyline(vee);
+        }
+        if (open) {
+            if (ids.isEmpty()) {
+                p->setPen(QColor(0x8b, 0x93, 0xa1));
+                p->drawText(QRect(whole.left() + 10, strip.bottom(), whole.width() - 20,
+                                  whole.bottom() - strip.bottom()),
+                            Qt::AlignLeft | Qt::AlignVCenter,
+                            QStringLiteral("No shapes yet"));
+            }
+            const QVariantList thumbs = ix.data(AreaThumbsRole).toList();
+            const QPoint mouse = opt.widget ? opt.widget->mapFromGlobal(QCursor::pos()) : QPoint(-1, -1);
+            for (int i = 0; i < ids.size(); ++i) {
+                const QRect t = tileRect(opt.rect, opt.font, i);
+                p->setPen(QPen(QColor(0x3a, 0x40, 0x4b), 1));
+                p->setBrush(QColor(0x16, 0x18, 0x1d));
+                p->drawRoundedRect(QRectF(t).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
+                const QPixmap pm = i < thumbs.size() ? thumbs.at(i).value<QPixmap>() : QPixmap();
+                if (!pm.isNull()) {
+                    const QSizeF s = pm.deviceIndependentSize();
+                    p->drawPixmap(QPointF(t.center().x() + 0.5 - s.width() / 2,
+                                          t.center().y() + 0.5 - s.height() / 2), pm);
+                }
+                paintBin(p, binRect(t), binRect(t).contains(mouse));
+            }
+        }
 
         // on/off box
         const QRect box = boxRect(card);
@@ -154,14 +266,59 @@ public:
     {
         if (e->type() == QEvent::MouseButtonRelease) {
             auto *me = static_cast<QMouseEvent *>(e);
+            const QPoint at = me->position().toPoint();
             if (me->button() == Qt::LeftButton
-                && boxRect(opt.rect.adjusted(2, 3, -2, -3)).adjusted(-6, -6, 6, 6).contains(me->position().toPoint())) {
+                && boxRect(headRect(opt.rect, opt.font)).adjusted(-6, -6, 6, 6).contains(at)) {
                 const bool on = ix.data(Qt::CheckStateRole).toInt() == Qt::Checked;
                 model->setData(ix, on ? Qt::Unchecked : Qt::Checked, Qt::CheckStateRole);
                 return true;
             }
+            const QString uuid = ix.data(UuidRole).toString();
+            if (me->button() == Qt::LeftButton && ix.data(ExpandedRole).toBool()) {
+                const QStringList ids = ix.data(AreaIdsRole).toStringList();
+                for (int i = 0; i < ids.size(); ++i)
+                    if (binRect(tileRect(opt.rect, opt.font, i)).adjusted(-3, -3, 3, 3).contains(at)) {
+                        if (removed)
+                            removed(uuid, ids.at(i));
+                        return true;
+                    }
+            }
+            if (me->button() == Qt::LeftButton && stripRect(opt.rect, opt.font).contains(at)) {
+                if (toggled)
+                    toggled(uuid);
+                return true;
+            }
         }
         return QStyledItemDelegate::editorEvent(e, model, opt, ix);
+    }
+
+    // Each thumbnail says what it is, and the bin what it does.
+    bool helpEvent(QHelpEvent *e, QAbstractItemView *view, const QStyleOptionViewItem &opt,
+                   const QModelIndex &ix) override
+    {
+        const QPoint at = e->pos();
+        QString tip;
+        if (stripRect(opt.rect, opt.font).contains(at)) {
+            tip = ix.data(ExpandedRole).toBool() ? QStringLiteral("Hide the shapes")
+                                                 : QStringLiteral("Show the shapes this toolpath cuts");
+        } else if (ix.data(ExpandedRole).toBool()) {
+            const QStringList tips = ix.data(AreaTipsRole).toStringList();
+            for (int i = 0; i < tips.size(); ++i) {
+                const QRect t = tileRect(opt.rect, opt.font, i);
+                if (binRect(t).adjusted(-3, -3, 3, 3).contains(at)) {
+                    tip = QStringLiteral("Take this shape out of the toolpath (undoable)");
+                    break;
+                }
+                if (t.contains(at)) {
+                    tip = tips.at(i);
+                    break;
+                }
+            }
+        }
+        if (tip.isEmpty())
+            return QStyledItemDelegate::helpEvent(e, view, opt, ix);
+        QToolTip::showText(e->globalPos(), tip, view);
+        return true;
     }
 
     QWidget *createEditor(QWidget *, const QStyleOptionViewItem &, const QModelIndex &) const override
@@ -179,6 +336,7 @@ class CardList : public QTreeWidget
 {
 public:
     std::function<void(const QString &uuid, int to)> moved;
+    std::function<void()> resized;
 
     explicit CardList(QWidget *parent) : QTreeWidget(parent)
     {
@@ -208,6 +366,7 @@ protected:
             forgetPress();   // the release went to a dialog that popped up
         if (!m_press) {
             QTreeWidget::mouseMoveEvent(e);
+            viewport()->update();   // a thumbnail's bin lights up under the mouse
             return;
         }
         const QPoint p = e->globalPosition().toPoint();
@@ -237,6 +396,17 @@ protected:
     {
         forgetPress();
         QTreeWidget::hideEvent(e);
+    }
+
+    // An open card's thumbnails wrap to the width: its height follows it.
+    void resizeEvent(QResizeEvent *e) override
+    {
+        QTreeWidget::resizeEvent(e);
+        if (e->oldSize().width() != e->size().width()) {
+            scheduleDelayedItemsLayout();
+            if (resized)
+                resized();
+        }
     }
 
     void dropEvent(QDropEvent *e) override
@@ -389,10 +559,20 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_list->setHeaderHidden(true);
     m_list->setRootIsDecorated(false);
     m_list->setIndentation(0);
-    m_list->setUniformRowHeights(true);
+    m_list->setUniformRowHeights(false);   // an open card is taller
     m_list->setSelectionMode(QAbstractItemView::SingleSelection);
     m_list->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_list->setItemDelegate(new CardDelegate(m_list));
+    auto *cardDelegate = new CardDelegate(m_list);
+    m_list->setItemDelegate(cardDelegate);
+    // "v" opens or closes a card's thumbnails; a bin takes that shape out of
+    // the toolpath. Queued: the click is still being delivered to the row.
+    cardDelegate->toggled = [this](const QString &uuid) {
+        QMetaObject::invokeMethod(this, [this, uuid] { toggleShapes(uuid); }, Qt::QueuedConnection);
+    };
+    cardDelegate->removed = [this](const QString &uuid, const QString &id) {
+        QMetaObject::invokeMethod(this, [this, uuid, id] { removeShape(uuid, id); },
+                                  Qt::QueuedConnection);
+    };
     m_list->setMouseTracking(true);
     m_list->setFrameShape(QFrame::NoFrame);
     m_list->setStyleSheet(QStringLiteral("QTreeWidget { background: transparent; }"
@@ -407,6 +587,11 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     m_list->setToolTip(QStringLiteral(
         "Cutting order, top to bottom: hold a card for half a second, then drag it to move it. "
         "The box switches a toolpath on or off."));
+    cards->resized = [this] {
+        // Only an open card's height depends on the width.
+        if (!m_expanded.isEmpty())
+            updateListHeight();
+    };
     cards->moved = [this](const QString &uuid, int to) {
         // Queued: the move ends in refresh(), which rebuilds this list while
         // the view is still finishing the drop.
@@ -876,17 +1061,17 @@ void ToolpathPanel::refresh()
                                   .arg(tool.value("name").toString(), describeVectors(vids)));
             it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable
                          | Qt::ItemIsDragEnabled);
+            it->setData(0, AreaIdsRole, vids);
+            if (m_expanded.contains(t.uuid)) {
+                it->setData(0, ExpandedRole, true);
+                setThumbnails(it, t);
+            }
             if (t.uuid == keep)
                 keepItem = it;
         }
     }
     m_loading = false;
-    {
-        const int n = qBound(1, m_list->topLevelItemCount(), 6);
-        const int rowH = m_list->sizeHintForRow(0) > 0 ? m_list->sizeHintForRow(0)
-                                                       : QFontMetrics(m_list->font()).height() * 2 + 22;
-        m_list->setFixedHeight(n * rowH + 6);
-    }
+    updateListHeight();
     if (keepItem)
         m_list->setCurrentItem(keepItem);
     else if (m_list->topLevelItemCount() > 0)
@@ -913,9 +1098,18 @@ void ToolpathPanel::onCurrentChanged()
 void ToolpathPanel::updateHighlight()
 {
     const QList<QTreeWidgetItem *> sel = m_list->selectedItems();
-    m_canvas->setVectorHighlight(
-        sel.isEmpty() ? QStringList()
-                      : vectorIdsOf(sel.first()->data(0, UuidRole).toString()));
+    if (sel.isEmpty()) {
+        m_canvas->setVectorHighlight({});
+        return;
+    }
+    const QString uuid = sel.first()->data(0, UuidRole).toString();
+    bool partial = false;
+    const QPainterPath cover = clearedAbove(uuid, &partial);
+    const Toolpath *t = m_doc ? m_doc->toolpathByUuid(uuid) : nullptr;
+    if (partial && t)
+        m_canvas->setVectorHighlight(vectorIdsOf(uuid), regionOf(*t).subtracted(cover));
+    else
+        m_canvas->setVectorHighlight(vectorIdsOf(uuid));
 }
 
 // ---- which toolpath cuts which shape --------------------------------------
@@ -1050,6 +1244,208 @@ void ToolpathPanel::showToolpath(const QString &uuid)
     }
     m_loading = false;
     updateButtons();
+}
+
+// ---- shapes of a toolpath: thumbnails, bins, what is left to cut -----------
+
+namespace {
+
+// As the canvas decides it: open paths are the only unfilled type; a path row
+// of point_type 4 marks a closed one.
+bool isClosedShape(const Element &e)
+{
+    if (Element::isConstruction(e) || Element::isPoint(e))
+        return false;
+    if (e.geometryType != QLatin1String("path"))
+        return true;
+    for (const QJsonValue &v : e.raw.value("point_type").toArray())
+        if (v.toInt() == 4)
+            return true;
+    return false;
+}
+
+double depthOf(const QJsonObject &j)
+{
+    for (const char *k : {"end_depth", "cut_depth", "max_depth"}) {
+        const QJsonValue d = j.value(QLatin1String(k));
+        if (!d.isUndefined())
+            return std::fabs(d.isString() ? d.toString().toDouble() : d.toDouble());
+    }
+    return 0;
+}
+
+// Toolpaths that clear the whole inside of their shapes, so a later one over
+// the same ground has nothing left to cut there (down to their depth).
+bool clearsArea(const QString &type)
+{
+    return type == QLatin1String("pocket_toolpath") || type == QLatin1String("adaptive_toolpath");
+}
+
+} // namespace
+
+// The ground a toolpath clears: its closed shapes together, even-odd, so an
+// island inside an outline stays standing as in the export.
+QPainterPath ToolpathPanel::regionOf(const Toolpath &t) const
+{
+    QPainterPath r;
+    r.setFillRule(Qt::OddEvenFill);
+    if (!m_doc)
+        return r;
+    for (const QJsonValue &v : t.json.value("elements").toArray())
+        if (const Element *e = m_doc->elementById(v.toObject().value("uuid").toString());
+            e && isClosedShape(*e))
+            r.addPath(e->painterPath);
+    return r;
+}
+
+// What the toolpaths above have already cleared, as deep as `uuid` goes, when
+// `uuid` skips what they cut (rest_auto): a pocket over an earlier pocket of
+// the same depth or deeper cuts only what that one left. *applies is false
+// when nothing is taken off - the toolpath cuts all of its shapes.
+QPainterPath ToolpathPanel::clearedAbove(const QString &uuid, bool *applies) const
+{
+    *applies = false;
+    QPainterPath cover;
+    const Toolpath *t = m_doc ? m_doc->toolpathByUuid(uuid) : nullptr;
+    if (!t || !clearsArea(t->type) || !t->json.value("rest_auto").toBool(false))
+        return cover;
+    const double depth = depthOf(t->json);
+    const int index = m_doc->toolpathIndex(uuid);
+    for (int i = 0; i < index; ++i) {
+        const Toolpath &u = m_doc->toolpaths().at(i);
+        if (!u.json.value("enabled").toBool(true) || !clearsArea(u.type)
+            || depthOf(u.json) < depth - 1e-6)
+            continue;
+        const QPainterPath r = regionOf(u);
+        if (!r.isEmpty())
+            cover = cover.isEmpty() ? r.simplified() : cover.united(r);
+    }
+    *applies = !cover.isEmpty() && cover.intersects(regionOf(*t));
+    return cover;
+}
+
+// One small picture per shape, drawn as the canvas shows it. Where the
+// toolpaths above already cleared part of it, only what is left is amber and
+// the rest a dim outline.
+void ToolpathPanel::setThumbnails(QTreeWidgetItem *it, const Toolpath &t)
+{
+    bool restricted = false;
+    const QPainterPath cover = clearedAbove(t.uuid, &restricted);
+    const double dpr = m_list->devicePixelRatioF();
+    const int side = kTile - 8;
+    QVariantList thumbs;
+    QStringList tips;
+    for (const QString &id : it->data(0, AreaIdsRole).toStringList()) {
+        const Element *e = m_doc ? m_doc->elementById(id) : nullptr;
+        QPixmap pm(QSize(side, side) * dpr);
+        pm.setDevicePixelRatio(dpr);
+        pm.fill(Qt::transparent);
+        if (!e) {
+            QPainter p(&pm);
+            p.setPen(QColor(0xc0, 0x39, 0x2b));
+            p.drawText(QRect(0, 0, side, side), Qt::AlignCenter, QStringLiteral("?"));
+            thumbs << pm;
+            tips << QStringLiteral("A shape that has been deleted");
+            continue;
+        }
+        const QRectF bb = e->painterPath.boundingRect();
+        const double span = qMax(qMax(bb.width(), bb.height()), 1e-3);
+        const double k = (side - 10) / span;
+        QTransform tr;   // mm, Y up -> pixels, Y down, centred
+        tr.translate(side / 2.0, side / 2.0);
+        tr.scale(k, -k);
+        tr.translate(-bb.center().x(), -bb.center().y());
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool closed = isClosedShape(*e);
+        const QColor amber(0xf2, 0xa5, 0x36);
+        QString tip = e->geometryType.isEmpty() ? QStringLiteral("shape") : e->geometryType;
+        tip[0] = tip.at(0).toUpper();
+        tip += QStringLiteral(", %1 x %2 mm").arg(bb.width(), 0, 'f', 1).arg(bb.height(), 0, 'f', 1);
+        if (closed && restricted) {
+            QPainterPath own = e->painterPath;
+            own.setFillRule(Qt::OddEvenFill);
+            const QPainterPath left = own.subtracted(cover);
+            p.setPen(QPen(QColor(0x6a, 0x71, 0x7d), 1, Qt::DashLine));
+            p.setBrush(Qt::NoBrush);
+            p.drawPath(tr.map(own));
+            p.setPen(QPen(amber, 1.4));
+            p.setBrush(QColor(0xf2, 0xa5, 0x36, 0x50));
+            p.drawPath(tr.map(left));
+            tip += left.isEmpty() ? QStringLiteral("\nAlready cut by the toolpaths above")
+                                  : QStringLiteral("\nAmber: what is left after the toolpaths above");
+        } else {
+            p.setPen(QPen(QColor(0xe6, 0xe9, 0xef), 1.4));
+            p.setBrush(closed ? QColor(0xf2, 0xa5, 0x36, 0x40) : QColor(Qt::transparent));
+            p.drawPath(tr.map(e->painterPath));
+        }
+        thumbs << pm;
+        tips << tip;
+    }
+    it->setData(0, AreaThumbsRole, thumbs);
+    it->setData(0, AreaTipsRole, tips);
+}
+
+void ToolpathPanel::toggleShapes(const QString &uuid)
+{
+    if (!m_doc)
+        return;
+    const bool open = !m_expanded.contains(uuid);
+    if (open)
+        m_expanded.insert(uuid);
+    else
+        m_expanded.remove(uuid);
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+        QTreeWidgetItem *it = m_list->topLevelItem(i);
+        const Toolpath *t = m_doc->toolpathByUuid(it->data(0, UuidRole).toString());
+        if (!t || t->uuid != uuid)
+            continue;
+        const bool wasLoading = m_loading;
+        m_loading = true;   // setData emits itemChanged
+        it->setData(0, ExpandedRole, open);
+        if (open)
+            setThumbnails(it, *t);
+        m_loading = wasLoading;
+    }
+    m_list->doItemsLayout();
+    updateListHeight();
+}
+
+// The bin on a thumbnail: that one shape leaves the toolpath (undoable); the
+// shape itself stays in the drawing.
+void ToolpathPanel::removeShape(const QString &uuid, const QString &id)
+{
+    flushForm();
+    const Toolpath *t = m_doc ? m_doc->toolpathByUuid(uuid) : nullptr;
+    if (!t)
+        return;
+    QJsonArray kept;
+    bool gone = false;
+    for (const QJsonValue &v : t->json.value("elements").toArray()) {
+        if (!gone && v.toObject().value("uuid").toString() == id) {
+            gone = true;
+            continue;
+        }
+        kept.append(v);
+    }
+    if (!gone)
+        return;
+    QJsonObject j = t->json;
+    j.insert(QStringLiteral("elements"), kept);
+    m_uuid = uuid;
+    m_canvas->editToolpath(uuid, j);
+}
+
+// Up to six cards (an open one counts with its thumbnails), then it scrolls.
+void ToolpathPanel::updateListHeight()
+{
+    const int n = m_list->topLevelItemCount();
+    int h = 0;
+    for (int i = 0; i < qMin(n, 6); ++i)
+        h += m_list->sizeHintForIndex(m_list->model()->index(i, 0)).height();
+    if (h <= 0)
+        h = QFontMetrics(m_list->font()).height() * 2 + 22 + kStrip;
+    m_list->setFixedHeight(h + 6);
 }
 
 } // namespace c2d

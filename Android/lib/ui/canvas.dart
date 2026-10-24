@@ -107,6 +107,10 @@ class DesignCanvas extends StatefulWidget {
   final bool snap;
   final Set<String> selected;
   final Set<String> highlighted;
+
+  /// The selected toolpath, by index: where toolpaths above it already
+  /// cleared part of its shapes, only what is left is shown in amber.
+  final int? leftOf;
   final List<List<double>> pathDraft;
   final CanvasZoom zoom;
   final void Function(Set<String> ids) onSelect;
@@ -128,6 +132,7 @@ class DesignCanvas extends StatefulWidget {
     this.snap = true,
     this.selected = const {},
     this.highlighted = const {},
+    this.leftOf,
     this.pathDraft = const [],
   });
 
@@ -320,6 +325,7 @@ class _DesignCanvasState extends State<DesignCanvas> {
                   pan: widget.zoom.pan,
                   selected: widget.selected,
                   highlighted: widget.highlighted,
+                  leftOf: widget.leftOf,
                   pathDraft: widget.pathDraft,
                   draft: _draft,
                   band: _bandStart != null && _bandEnd != null ? Rect.fromPoints(_bandStart!, _bandEnd!) : null),
@@ -345,6 +351,7 @@ class DesignPainter extends CustomPainter {
   final double zoom, margin;
   final Offset pan;
   final Set<String> selected, highlighted;
+  final int? leftOf;
   final List<List<double>> pathDraft;
   final Draft? draft;
   final Rect? band;
@@ -355,6 +362,7 @@ class DesignPainter extends CustomPainter {
       this.pan = Offset.zero,
       this.selected = const {},
       this.highlighted = const {},
+      this.leftOf,
       this.pathDraft = const [],
       this.draft,
       this.band,
@@ -398,8 +406,31 @@ class DesignPainter extends CustomPainter {
     canvas.drawLine(o, v.toScreen(math.min(w, 15), 0), Paint()..color = C.axisX);
     canvas.drawLine(o, v.toScreen(0, math.min(h, 15)), Paint()..color = C.axisY);
 
+    // Toolpaths on top of each other: only what the toolpaths above left for
+    // this one, over a faint outline of its own shapes (toolpathpanel.cpp).
+    final cover = leftOf == null ? null : clearedAbove(design, leftOf!, v.toScreen);
+    if (cover != null) {
+      final faint = Paint()
+        ..color = C.halo.withAlpha(0x90)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1;
+      for (final s in design.shapes) {
+        if (highlighted.contains(s.id)) _outline(canvas, v, s, faint);
+      }
+      final left = Path.combine(PathOperation.difference, toolpathArea(design, design.toolpaths[leftOf!], v.toScreen), cover);
+      canvas.drawPath(left, Paint()..color = C.halo.withAlpha(0x40));
+      for (final pass in [0, 1]) {
+        canvas.drawPath(
+            left,
+            Paint()
+              ..color = pass == 0 ? C.halo.withAlpha(0x60) : C.halo
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = pass == 0 ? 9 : 2
+              ..strokeJoin = StrokeJoin.round);
+      }
+    }
     // The selected toolpath's shapes: a wide translucent pass, then a crisp one.
-    for (final pass in [0, 1]) {
+    for (final pass in cover == null ? [0, 1] : const <int>[]) {
       final hp = Paint()
         ..color = pass == 0 ? C.halo.withAlpha(0x60) : C.halo
         ..style = PaintingStyle.stroke
@@ -472,58 +503,7 @@ class DesignPainter extends CustomPainter {
 
   static bool _closed(Shape s) => s.type != Shape.path ? s.type != Shape.point : s.closed == true;
 
-  void _outline(Canvas canvas, StockView v, Shape s, Paint paint) {
-    switch (s.type) {
-      case Shape.rect:
-        canvas.drawRect(Rect.fromPoints(v.toScreen(s.x, s.y + (s.h ?? 0)), v.toScreen(s.x + (s.w ?? 0), s.y)), paint);
-      case Shape.circle:
-        canvas.drawCircle(v.toScreen(s.x, s.y), (s.r ?? 0) * v.scale, paint);
-      case Shape.polygon:
-        final n = (s.sides ?? 6).clamp(3, 100);
-        final r = s.r ?? 0;
-        final path = Path();
-        for (var i = 0; i < n; i++) {
-          // As phobiCCCP makes it: vertex 0 on +X, counter-clockwise.
-          final a = 2 * math.pi * i / n;
-          final p = v.toScreen(s.x + r * math.cos(a), s.y + r * math.sin(a));
-          i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
-        }
-        path.close();
-        canvas.drawPath(path, paint);
-      case Shape.text:
-        // Glyph outlines in Liberation Sans (what Helvetica is on Linux);
-        // `size` is the font's ascent in mm, as the desktop renders it.
-        final style = paint.style == PaintingStyle.stroke
-            ? (Paint()
-              ..color = paint.color
-              ..style = PaintingStyle.stroke
-              ..strokeWidth = math.min(paint.strokeWidth, 2.2)
-              ..strokeJoin = StrokeJoin.round)
-            : paint;
-        final tp = TextPainter(
-          text: TextSpan(
-              text: s.label ?? '',
-              style: TextStyle(fontFamily: 'LiberationSans', fontSize: (s.size ?? 10) / 0.905 * v.scale, foreground: style)),
-          textDirection: TextDirection.ltr,
-        )..layout();
-        final base = tp.computeDistanceToActualBaseline(TextBaseline.alphabetic);
-        tp.paint(canvas, v.toScreen(s.x, s.y) - Offset(0, base));
-      case Shape.path:
-        final pts = s.points ?? const [];
-        if (pts.length < 2) return;
-        final path = Path();
-        for (var i = 0; i < pts.length; i++) {
-          final p = v.toScreen(pts[i][0], pts[i][1]);
-          i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
-        }
-        if (s.closed == true) path.close();
-        canvas.drawPath(path, paint);
-      case Shape.point:
-        final p = v.toScreen(s.x, s.y);
-        canvas.drawLine(p - const Offset(5, 5), p + const Offset(5, 5), paint);
-        canvas.drawLine(p - const Offset(5, -5), p + const Offset(5, -5), paint);
-    }
-  }
+  void _outline(Canvas canvas, StockView v, Shape s, Paint paint) => drawShapeOutline(canvas, v, s, paint);
 
   @override
   bool shouldRepaint(DesignPainter old) =>
@@ -532,9 +512,124 @@ class DesignPainter extends CustomPainter {
       old.pan != pan ||
       old.selected != selected ||
       old.highlighted != highlighted ||
+      old.leftOf != leftOf ||
       old.pathDraft != pathDraft ||
       old.draft != draft ||
       old.band != band;
+}
+
+/// One shape as the canvas draws it (outline or fill, by [paint]).
+void drawShapeOutline(Canvas canvas, StockView v, Shape s, Paint paint) {
+  switch (s.type) {
+    case Shape.rect:
+      canvas.drawRect(Rect.fromPoints(v.toScreen(s.x, s.y + (s.h ?? 0)), v.toScreen(s.x + (s.w ?? 0), s.y)), paint);
+    case Shape.circle:
+      canvas.drawCircle(v.toScreen(s.x, s.y), (s.r ?? 0) * v.scale, paint);
+    case Shape.polygon:
+      final n = (s.sides ?? 6).clamp(3, 100);
+      final r = s.r ?? 0;
+      final path = Path();
+      for (var i = 0; i < n; i++) {
+        // As phobiCCCP makes it: vertex 0 on +X, counter-clockwise.
+        final a = 2 * math.pi * i / n;
+        final p = v.toScreen(s.x + r * math.cos(a), s.y + r * math.sin(a));
+        i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
+      }
+      path.close();
+      canvas.drawPath(path, paint);
+    case Shape.text:
+      // Glyph outlines in Liberation Sans (what Helvetica is on Linux);
+      // `size` is the font's ascent in mm, as the desktop renders it.
+      final style = paint.style == PaintingStyle.stroke
+          ? (Paint()
+            ..color = paint.color
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = math.min(paint.strokeWidth, 2.2)
+            ..strokeJoin = StrokeJoin.round)
+          : paint;
+      final tp = TextPainter(
+        text: TextSpan(
+            text: s.label ?? '',
+            style: TextStyle(fontFamily: 'LiberationSans', fontSize: (s.size ?? 10) / 0.905 * v.scale, foreground: style)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final base = tp.computeDistanceToActualBaseline(TextBaseline.alphabetic);
+      tp.paint(canvas, v.toScreen(s.x, s.y) - Offset(0, base));
+    case Shape.path:
+      final pts = s.points ?? const [];
+      if (pts.length < 2) return;
+      final path = Path();
+      for (var i = 0; i < pts.length; i++) {
+        final p = v.toScreen(pts[i][0], pts[i][1]);
+        i == 0 ? path.moveTo(p.dx, p.dy) : path.lineTo(p.dx, p.dy);
+      }
+      if (s.closed == true) path.close();
+      canvas.drawPath(path, paint);
+    case Shape.point:
+      final p = v.toScreen(s.x, s.y);
+      canvas.drawLine(p - const Offset(5, 5), p + const Offset(5, 5), paint);
+      canvas.drawLine(p - const Offset(5, -5), p + const Offset(5, -5), paint);
+  }
+}
+
+/// The inside of a closed shape, mapped by [map] (mm, Y up, to pixels);
+/// null for text, points and open paths, which have no area to clear.
+Path? shapeArea(Shape s, Offset Function(double x, double y) map) {
+  switch (s.type) {
+    case Shape.rect:
+      final w = s.w ?? 0, h = s.h ?? 0;
+      return Path()..addPolygon([map(s.x, s.y), map(s.x + w, s.y), map(s.x + w, s.y + h), map(s.x, s.y + h)], true);
+    case Shape.circle:
+      final c = map(s.x, s.y);
+      return Path()..addOval(Rect.fromCircle(center: c, radius: (map(s.x + (s.r ?? 0), s.y) - c).distance));
+    case Shape.polygon:
+      final n = (s.sides ?? 6).clamp(3, 100);
+      final r = s.r ?? 0;
+      return Path()
+        ..addPolygon([
+          for (var i = 0; i < n; i++) map(s.x + r * math.cos(2 * math.pi * i / n), s.y + r * math.sin(2 * math.pi * i / n))
+        ], true);
+    case Shape.path:
+      final pts = s.points ?? const [];
+      if (s.closed != true || pts.length < 3) return null;
+      return Path()..addPolygon([for (final p in pts) map(p[0], p[1])], true);
+    default:
+      return null;
+  }
+}
+
+/// A toolpath that clears the whole inside of its shapes.
+bool clearsArea(String type) => type == 'pocket';
+
+/// The ground toolpath [t] clears: its closed shapes together, even-odd, so
+/// an island inside an outline stays standing.
+Path toolpathArea(Design d, ToolpathSpec t, Offset Function(double x, double y) map) {
+  final p = Path()..fillType = PathFillType.evenOdd;
+  for (final id in t.shapes) {
+    final s = d.shape(id);
+    final a = s == null ? null : shapeArea(s, map);
+    if (a != null) p.addPath(a, Offset.zero);
+  }
+  return p;
+}
+
+/// What the enabled pockets above toolpath [i] already cleared, as deep as it
+/// goes, when it overlaps them: the computer's pockets skip that (rest_auto,
+/// set on every pocket the pad sends). Null when [i] cuts all of its shapes.
+Path? clearedAbove(Design d, int i, Offset Function(double x, double y) map) {
+  if (i < 0 || i >= d.toolpaths.length) return null;
+  final t = d.toolpaths[i];
+  if (!clearsArea(t.type)) return null;
+  Path? cover;
+  for (var k = 0; k < i; k++) {
+    final u = d.toolpaths[k];
+    if (!u.enabled || !clearsArea(u.type) || u.depth < t.depth - 1e-6) continue;
+    final a = toolpathArea(d, u, map);
+    cover = cover == null ? a : Path.combine(PathOperation.union, cover, a);
+  }
+  if (cover == null) return null;
+  final overlap = Path.combine(PathOperation.intersect, toolpathArea(d, t, map), cover);
+  return overlap.getBounds().isEmpty ? null : cover;
 }
 
 double _r2(double v) => (v * 100).roundToDouble() / 100;
