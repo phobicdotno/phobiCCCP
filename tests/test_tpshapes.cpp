@@ -92,6 +92,16 @@ int main(int argc, char **argv)
     QTest::qWait(50);
     check(idsOf(d, b.uuid) == (QStringList{big.id, far.id}), "undo puts the shape back");
 
+    // The dotted "+" after the last shape adds the canvas selection.
+    canvas.selectIds({small.id, far.id});
+    QTest::qWait(50);
+    const QRect withPlus = rowOf(1).adjusted(2, 3, -2, -3);
+    QTest::mouseClick(list->viewport(), Qt::LeftButton, {},
+                      QPoint(withPlus.left() + 8 + 2 * 70 + 32, withPlus.top() + headH + 11 + 32));
+    QTest::qWait(50);
+    check(idsOf(d, b.uuid) == (QStringList{big.id, far.id, small.id}),
+          "+ adds the selected shapes it does not already cut");
+
     // "v" again closes it.
     const QRect again = rowOf(1);
     const int stripY = again.top() + 3 + headH + 1;

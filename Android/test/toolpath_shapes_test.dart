@@ -51,7 +51,7 @@ void main() {
               design: d,
               tools: const ToolLibrary(),
               current: null,
-              selectedShapes: const {},
+              selectedShapes: const {'small', 'far'},
               onPick: (_) {},
               shapesOpen: open,
               onToggleShapes: (i) => setState(() => open.contains(i) ? open.remove(i) : open.add(i)),
@@ -75,6 +75,9 @@ void main() {
     expect(d.toolpaths[0].shapes, ['big', 'far']);
     expect(d.shapes.length, 3);   // the shape stays in the drawing
     expect(find.byIcon(Icons.delete_outline_rounded), findsNWidgets(2));
+    await t.tap(find.byIcon(Icons.add_rounded));   // the dotted "+": adds what is selected
+    await t.pump();
+    expect(d.toolpaths[0].shapes, ['big', 'far', 'small']);
     await t.tap(find.byIcon(Icons.expand_less_rounded));
     await t.pump();
     expect(find.byIcon(Icons.delete_outline_rounded), findsNothing);

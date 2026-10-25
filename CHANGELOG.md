@@ -14,6 +14,8 @@
     switched on and goes at least as deep.
   - "Assign selected vectors" moved from the bottom of the toolpath settings to the top, right under
     the list (the pad's Vectors card too): it is the first thing done to a new toolpath.
+  - After the last shape picture of an open card sits a dotted "+" tile of the same size: it adds the
+    shapes selected on the drawing to that toolpath, keeping the ones it already cuts.
 
 ## v1.3.11 (build 101) — 2026-10-25
 

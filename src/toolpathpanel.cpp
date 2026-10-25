@@ -77,6 +77,7 @@ public:
 
     std::function<void(const QString &uuid)> toggled;
     std::function<void(const QString &uuid, const QString &areaId)> removed;
+    std::function<void(const QString &uuid)> added;   // the dotted "+" tile
 
     static int headHeight(const QFont &f) { return QFontMetrics(f).height() * 2 + 22; }
 
@@ -117,11 +118,10 @@ public:
     {
         int h = headHeight(opt.font) + kStrip;
         if (ix.data(ExpandedRole).toBool()) {
-            const int n = ix.data(AreaIdsRole).toStringList().size();
+            const int n = ix.data(AreaIdsRole).toStringList().size() + 1;   // + the "+"
             const auto *view = qobject_cast<const QAbstractItemView *>(parent());
             const int cols = columns((view ? view->viewport()->width() : 200) - 4);
-            h += n == 0 ? QFontMetrics(opt.font).height() + 8
-                        : (n + cols - 1) / cols * (kTile + kTileGap) + 2;
+            h += (n + cols - 1) / cols * (kTile + kTileGap) + 2;
         }
         return QSize(200, h);
     }
@@ -180,13 +180,6 @@ public:
             p->drawPolyline(vee);
         }
         if (open) {
-            if (ids.isEmpty()) {
-                p->setPen(QColor(0x8b, 0x93, 0xa1));
-                p->drawText(QRect(whole.left() + 10, strip.bottom(), whole.width() - 20,
-                                  whole.bottom() - strip.bottom()),
-                            Qt::AlignLeft | Qt::AlignVCenter,
-                            QStringLiteral("No shapes yet"));
-            }
             const QVariantList thumbs = ix.data(AreaThumbsRole).toList();
             const QPoint mouse = opt.widget ? opt.widget->mapFromGlobal(QCursor::pos()) : QPoint(-1, -1);
             for (int i = 0; i < ids.size(); ++i) {
@@ -202,6 +195,17 @@ public:
                 }
                 paintBin(p, binRect(t), binRect(t).contains(mouse));
             }
+            // After the last shape: a dotted "+" that adds the canvas selection.
+            const QRect plus = tileRect(opt.rect, opt.font, ids.size());
+            const bool hot = plus.contains(mouse);
+            QPen dots(hot ? QColor(0xf2, 0xa5, 0x36) : QColor(0x8b, 0x93, 0xa1), 1.4, Qt::DashLine);
+            p->setPen(dots);
+            p->setBrush(Qt::NoBrush);
+            p->drawRoundedRect(QRectF(plus).adjusted(1, 1, -1, -1), 6, 6);
+            p->setPen(QPen(QColor(0xe6, 0xe9, 0xef), 2.4, Qt::SolidLine, Qt::RoundCap));
+            const QPointF c = QRectF(plus).center();
+            p->drawLine(c - QPointF(9, 0), c + QPointF(9, 0));
+            p->drawLine(c - QPointF(0, 9), c + QPointF(0, 9));
         }
 
         // on/off box
@@ -282,6 +286,11 @@ public:
                             removed(uuid, ids.at(i));
                         return true;
                     }
+                if (tileRect(opt.rect, opt.font, ids.size()).contains(at)) {
+                    if (added)
+                        added(uuid);
+                    return true;
+                }
             }
             if (me->button() == Qt::LeftButton && stripRect(opt.rect, opt.font).contains(at)) {
                 if (toggled)
@@ -303,6 +312,8 @@ public:
                                                  : QStringLiteral("Show the shapes this toolpath cuts");
         } else if (ix.data(ExpandedRole).toBool()) {
             const QStringList tips = ix.data(AreaTipsRole).toStringList();
+            if (tileRect(opt.rect, opt.font, tips.size()).contains(at))
+                tip = QStringLiteral("Add the shapes selected on the drawing to this toolpath");
             for (int i = 0; i < tips.size(); ++i) {
                 const QRect t = tileRect(opt.rect, opt.font, i);
                 if (binRect(t).adjusted(-3, -3, 3, 3).contains(at)) {
@@ -568,6 +579,10 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     // the toolpath. Queued: the click is still being delivered to the row.
     cardDelegate->toggled = [this](const QString &uuid) {
         QMetaObject::invokeMethod(this, [this, uuid] { toggleShapes(uuid); }, Qt::QueuedConnection);
+    };
+    cardDelegate->added = [this](const QString &uuid) {
+        QMetaObject::invokeMethod(this, [this, uuid] { addSelectedShapes(uuid); },
+                                  Qt::QueuedConnection);
     };
     cardDelegate->removed = [this](const QString &uuid, const QString &id) {
         QMetaObject::invokeMethod(this, [this, uuid, id] { removeShape(uuid, id); },
@@ -1434,6 +1449,40 @@ void ToolpathPanel::removeShape(const QString &uuid, const QString &id)
         return;
     QJsonObject j = t->json;
     j.insert(QStringLiteral("elements"), kept);
+    m_uuid = uuid;
+    m_canvas->editToolpath(uuid, j);
+}
+
+// The dotted "+": the shapes selected on the canvas join the toolpath, after
+// the ones it already cuts (undoable). Nothing selected says how.
+void ToolpathPanel::addSelectedShapes(const QString &uuid)
+{
+    flushForm();
+    const Toolpath *t = m_doc ? m_doc->toolpathByUuid(uuid) : nullptr;
+    if (!t)
+        return;
+    const QStringList sel = m_canvas->selectedElementIds();
+    if (sel.isEmpty()) {
+        m_hint->setText(QStringLiteral("Select shapes on the drawing, then press + to add them "
+                                       "to \"%1\".").arg(t->json.value("name").toString()));
+        m_hint->show();
+        return;
+    }
+    QJsonArray refs = t->json.value("elements").toArray();
+    QSet<QString> have;
+    for (const QJsonValue &v : std::as_const(refs))
+        have.insert(v.toObject().value("uuid").toString());
+    bool any = false;
+    for (const QString &id : sel)
+        if (!have.contains(id)) {
+            have.insert(id);
+            refs.append(QJsonObject{{QStringLiteral("uuid"), id}});
+            any = true;
+        }
+    if (!any)
+        return;
+    QJsonObject j = t->json;
+    j.insert(QStringLiteral("elements"), refs);
     m_uuid = uuid;
     m_canvas->editToolpath(uuid, j);
 }

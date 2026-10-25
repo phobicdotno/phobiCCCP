@@ -526,22 +526,33 @@ class ToolpathsPanel extends StatelessWidget {
             child: Icon(open ? Icons.expand_less_rounded : Icons.expand_more_rounded, size: 18, color: C.sub),
           ),
         ),
-        if (open && t.shapes.isEmpty)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 8),
-            child: Text('No shapes yet', style: TextStyle(color: C.sub, fontSize: 12.5)),
-          ),
-        if (open && t.shapes.isNotEmpty)
+        if (open)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
             child: Wrap(spacing: 6, runSpacing: 6, children: [
               for (var n = 0; n < t.shapes.length; n++) _thumb(k, t, n),
+              _plus(k, t),
             ]),
           ),
         ]),
       ),
     );
   }
+
+  /// After the last shape: a dotted "+" the size of a shape tile that adds
+  /// the shapes selected on the drawing (the ones not already in it).
+  Widget _plus(int k, ToolpathSpec t) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          final add = [for (final id in selectedShapes) if (design.shape(id) != null && !t.shapes.contains(id)) id];
+          if (add.isNotEmpty) onChange(k, t.copyWith(shapes: [...t.shapes, ...add]));
+        },
+        child: const SizedBox(
+          width: 64,
+          height: 64,
+          child: CustomPaint(painter: _DottedTile(), child: Icon(Icons.add_rounded, size: 26, color: C.nameOn)),
+        ),
+      );
 
   /// One shape of toolpath [k] as a small picture, with a bin that takes it
   /// out of the toolpath (the shape stays in the drawing).
@@ -955,4 +966,26 @@ class ShapeThumbPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(ShapeThumbPainter old) => old.design != design || old.index != index || old.id != id;
+}
+
+/// The dotted outline of the "+" tile.
+class _DottedTile extends CustomPainter {
+  const _DottedTile();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final outline = Path()..addRRect(RRect.fromRectAndRadius((Offset.zero & size).deflate(1), const Radius.circular(6)));
+    final pen = Paint()
+      ..color = C.sub
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4;
+    for (final m in outline.computeMetrics()) {
+      for (var d = 0.0; d < m.length; d += 7) {
+        canvas.drawPath(m.extractPath(d, math.min(d + 4, m.length)), pen);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DottedTile old) => false;
 }

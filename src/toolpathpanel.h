@@ -67,6 +67,7 @@ private:
     // for this one to cut after the toolpaths above (see clearedAbove).
     void toggleShapes(const QString &uuid);
     void removeShape(const QString &uuid, const QString &elementId);
+    void addSelectedShapes(const QString &uuid);
     void setThumbnails(QTreeWidgetItem *it, const Toolpath &t);
     QPainterPath regionOf(const Toolpath &t) const;
     QPainterPath clearedAbove(const QString &uuid, bool *applies) const;
