@@ -1061,12 +1061,7 @@ void ToolpathPanel::refresh()
             it->setData(0, SubtitleRole, sub);
             const QJsonObject tool = t.json.value("tool").toObject();
             if (!tool.isEmpty()) {
-                LibraryTool lt;
-                lt.diameter = tool.value("diameter").toDouble();
-                lt.angle = tool.value("angle").toDouble();
-                const int ty = int(tool.value("type").toDouble());
-                lt.kind = ty == 1 ? QStringLiteral("ball")
-                        : (ty == 2 || lt.angle > 0) ? QStringLiteral("vbit") : QStringLiteral("endmill");
+                const LibraryTool lt = toolpathBit(tool);
                 it->setData(0, ToolIconRole, toolKindIcon(lt));
                 it->setData(0, ToolTextRole, QStringLiteral("\u00d8%1").arg(lt.diameter, 0, 'g', 4));
             }

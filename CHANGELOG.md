@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.18 (build 108) — 2026-10-25
+
+> The running job shows each toolpath's own cut, its bit and how far it has got
+
+- **Machine:**
+  - Every toolpath on the Running job list starts with a preview box of its actual cut (the moves
+    the machine makes, seen from above; a drill shows its holes), then the outline of its bit from
+    the tool library. A tool change row shows the bit it changes to. Finished steps go grey.
+  - A 2 px bar under each toolpath fills amber as it cuts and turns grey when it is done.
+- **Pad:**
+  - The Machine page shows the same list for the job running on the chosen computer: cut preview,
+    bit, name, time and the 2 px bar, updated with the computer's status (needs phobiCCCP 1.3.18 on
+    the computer).
+
 ## v1.3.17 (build 107) — 2026-10-25
 
 > After a tool change the machine now crosses to the first cut at the top before the program moves down, so it can no longer plunge into the BitSetter
