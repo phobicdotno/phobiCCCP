@@ -219,6 +219,21 @@ int main(int argc, char **argv)
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
 
+    // The look-ahead that keeps a Z-only plunge off the BitSetter.
+    {
+        using c2d::GrblStreamer;
+        check(GrblStreamer::crossToFirstCut({"G90", "G0Z5", "G0X10Y-3.5", "G1Z-1F300"}, 0) == "G90 G0 X10 Y-3.5",
+              "cross: first X/Y after a Z-only retract");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "G0X10", "G1Y4"}, 0) == "G90 G0 X10 Y4",
+              "cross: X and Y from separate lines");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "M0 ;T2", "G0X10Y10"}, 0).isEmpty(),
+              "cross: nothing past a tool change");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "G91", "G0X10Y10"}, 0).isEmpty(),
+              "cross: nothing past relative mode");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "G1Z-1F300"}, 0).isEmpty(),
+              "cross: no X/Y named, no move");
+    }
+
     // Two bits with the same number: the program changes tools twice at
     // `M0 ;T1`, and each pause says which of the program's tool changes it is,
     // so the prompt can name the bit actually wanted.

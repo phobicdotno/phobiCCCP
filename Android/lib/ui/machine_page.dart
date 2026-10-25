@@ -2,11 +2,15 @@
 // (machinepanel.cpp): the phobiCCCPs on the network and their machines on the
 // left, the job and the big amber Start on the right.
 
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import '../model.dart';
 import 'send_dialog.dart';
+import 'icons.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -240,7 +244,14 @@ class _MachinePageState extends State<MachinePage> {
             style: const TextStyle(fontSize: 14)),
       ),
       if (warn != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(warn, style: const TextStyle(color: C.amber, fontSize: 13))),
-      const Spacer(),
+      if (info != null && info.status.steps.isNotEmpty) ...[
+        const SizedBox(height: 14),
+        Text(info.status.streaming ? 'RUNNING ON ${c!.name.toUpperCase()}' : 'LAST JOB ON ${c!.name.toUpperCase()}', style: _caps),
+        const SizedBox(height: 6),
+        Expanded(child: JobSteps(info.status.steps)),
+        const SizedBox(height: 10),
+      ] else
+        const Spacer(),
       if (_busy)
         const Padding(
           padding: EdgeInsets.only(bottom: 10),
@@ -268,5 +279,75 @@ class _MachinePageState extends State<MachinePage> {
       PushBtn('Send without starting',
           height: 52, fontSize: 15, onTap: d != null && c != null && !_busy ? () => _send(false) : null),
     ]);
+  }
+}
+
+/// The computer's Running job list, row for row: the cut preview, the bit,
+/// the name and what it is, its time, and a 2 px bar of how far it is.
+class JobSteps extends StatelessWidget {
+  final List<JobStep> steps;
+  const JobSteps(this.steps, {super.key});
+
+  static final Map<String, Uint8List> _png = {};
+
+  static Uint8List? _decode(String b64) {
+    if (b64.isEmpty) return null;
+    if (_png.length > 64) _png.clear();
+    return _png.putIfAbsent(b64, () {
+      try {
+        return base64Decode(b64);
+      } catch (_) {
+        return Uint8List(0);
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => ListView(children: [for (final s in steps) _row(s)]);
+
+  Widget _row(JobStep s) {
+    final col = s.state == 'done' ? C.disabled : s.state == 'run' ? C.amber : const Color(0xFFD6DBE3);
+    final png = _decode(s.preview);
+    final style = TextStyle(color: col, fontSize: 14, fontWeight: s.state == 'run' ? FontWeight.w600 : FontWeight.normal);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        Row(children: [
+          SizedBox(
+            width: 52,
+            height: 52,
+            child: s.isChange || png == null || png.isEmpty
+                ? null
+                : Opacity(
+                    opacity: s.state == 'done' ? 0.45 : 1,
+                    child: Image.memory(png, width: 52, height: 52, gaplessPlayback: true, filterQuality: FilterQuality.medium)),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 26,
+            child: s.bit.isEmpty ? null : Opacity(opacity: s.state == 'done' ? 0.45 : 1, child: Center(child: ToolGlyph(s.bit, height: 40))),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(s.detail.isEmpty ? s.name : '${s.name}  —  ${s.detail}', style: style, maxLines: 2, overflow: TextOverflow.ellipsis),
+          ),
+          const SizedBox(width: 8),
+          Text(s.time, style: style),
+        ]),
+        if (!s.isChange)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: SizedBox(
+              height: 2,
+              child: LayoutBuilder(
+                builder: (context, box) => Stack(children: [
+                  Container(color: C.cardBorder),
+                  Container(width: box.maxWidth * s.done, color: s.done >= 1 ? C.disabled : C.amber),
+                ]),
+              ),
+            ),
+          ),
+      ]),
+    );
   }
 }

@@ -1,5 +1,6 @@
 #pragma once
 #include <QIcon>
+#include <QJsonObject>
 #include <QWidget>
 
 class QPainter;
@@ -14,6 +15,12 @@ struct LibraryTool;
 // cut length, and the angle or radius where the kind has one.
 void paintToolDiagram(QPainter &p, const QRectF &box, const LibraryTool &t, bool dimensions);
 QIcon toolKindIcon(const LibraryTool &t);   // the outline alone, for list rows
+// One glyph per toolpath kind (Toolpaths-mode bar, toolpath cards, the
+// running job): what the cut looks like from above, amber where material goes.
+QIcon toolpathIcon(const QString &type);
+// The bit a toolpath's CC `tool` object names, as far as its outline needs:
+// kind, diameter, angle.
+LibraryTool toolpathBit(const QJsonObject &tool);
 
 class ToolDiagram : public QWidget
 {

@@ -3095,7 +3095,13 @@ void MachinePanel::park(bool afterHoming)
     const double ty = qMin(machine.height, m_grbl->setting(131, machine.height));
     const double tz = m_grbl->setting(132, 75.0);
     const double clear = switchClearance();
-    const double x = -qMin(qMax(kMargin, clear), tx / 2), y = -qMax(clear, ty - kMargin);
+    double x = -qMin(qMax(kMargin, clear), tx / 2);
+    const double y = -qMax(clear, ty - kMargin);
+    // The front right corner is where the BitSetter sits (2026-10-25: parked
+    // 2.5 mm from its button, and the next move down went into it): park
+    // beside it instead.
+    if (m_bsEnabled->isChecked() && std::hypot(x - m_bsX->value(), y - m_bsY->value()) < 40.0)
+        x = qMax(m_bsX->value() - 60.0, -tx + kMargin);
     const double z = riseZ();
     log(QStringLiteral("parking front right (X%1 Y%2, machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
     m_grbl->startMacro({QStringLiteral("G90"),
@@ -3799,7 +3805,16 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         lines = airCutTransform(lines, m_airLift->value());
     // Into the job from the top: all the way up first, then every rapid
     // that goes down travels across before it descends.
-    lines = QStringList{QStringLiteral("G21")} + riseToTop() + safeRapidsTransform(lines);
+    lines = safeRapidsTransform(lines);
+    {
+        QStringList head{QStringLiteral("G21")};
+        head += riseToTop();
+        // A Z-only first rapid would come down wherever the spindle stands.
+        const QString across = GrblStreamer::crossToFirstCut(lines, 0);
+        if (m_homed && !across.isEmpty())
+            head << across;
+        lines = head + lines;
+    }
 
     // The program inside the travel, at the current work zero (with the air
     // cut lift and the map's lifted rapids): jogs, Park and the map keep to
@@ -4057,6 +4072,9 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
     o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());
+    // The running job's steps, for the pad's job list.
+    if (m_jobView && m_jobView->hasPlan())
+        o.insert(QStringLiteral("steps"), m_jobView->stepsJson());
     return o;
 }
 
