@@ -1372,25 +1372,6 @@ void Canvas::setDocument(Document *doc)
     // panels, handed the new document after this, show none.
     m_scene->clearSelection();
     rebuild();
-
-    // Headless screenshot hooks (`--shot`): PHOBICCCP_SHOT_SELECT=<geometryType>
-    // selects the last element of that type, PHOBICCCP_SHOT_TOOL=nodes opens
-    // it in the node editor.
-    const QByteArray selType = qgetenv("PHOBICCCP_SHOT_SELECT");
-    if (m_doc && !selType.isEmpty()) {
-        QString id;
-        for (const Element &e : m_doc->elements())
-            if (e.geometryType == QString::fromLatin1(selType))
-                id = e.id;
-        const bool nodes = qgetenv("PHOBICCCP_SHOT_TOOL") == "nodes";
-        // Deferred: the main window wires its panels after setDocument().
-        QTimer::singleShot(300, this, [this, id, nodes] {
-            if (nodes)
-                setTool(NodeEdit);
-            if (!id.isEmpty())
-                selectElements({id});
-        });
-    }
 }
 
 double Canvas::gridSpacing() const

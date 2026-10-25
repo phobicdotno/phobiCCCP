@@ -349,12 +349,19 @@ machine's live work position is drawn on it while connected.
 ```sh
 phobicccp file.c2d                      # open the GUI on a file
 phobicccp --export file.c2d out.nc      # headless g-code export
-phobicccp --selftest in.c2d out.c2d     # 10-stage create/save/export self-check
-phobicccp --shot file.c2d out.png [preview]  # render the GUI to a PNG
-phobicccp --grbl-check /dev/ttyACM0     # safe GRBL handshake (no motion)
-phobicccp --grbl-probe /dev/ttyACM0 -20 -20 [safeZ]   # BitSetter measurement (machine XY)
-phobicccp --grbl-run /dev/ttyACM0 job.nc [bsX bsY]    # stream with automatic tool changes
-phobicccp --grbl-rehearse /dev/ttyACM0 -20 -20 [safeZ] # reference + one tool change, spindle off
+```
+
+The self-check, screenshot and machine bring-up modes are for testing, so
+they are only in `phobicccp-dev`, which the build makes next to the program
+and never installs or ships:
+
+```sh
+phobicccp-dev --selftest in.c2d out.c2d     # 10-stage create/save/export self-check
+phobicccp-dev --shot file.c2d out.png [preview]  # render the GUI to a PNG
+phobicccp-dev --grbl-check /dev/ttyACM0     # safe GRBL handshake (no motion)
+phobicccp-dev --grbl-probe /dev/ttyACM0 -20 -20 [safeZ]   # BitSetter measurement (machine XY)
+phobicccp-dev --grbl-run /dev/ttyACM0 job.nc [bsX bsY]    # stream with automatic tool changes
+phobicccp-dev --grbl-rehearse /dev/ttyACM0 -20 -20 [safeZ] # reference + one tool change, spindle off
 python3 tools/grblsim.py                 # GRBL 1.1h simulator on a pty for testing
 ```
 
