@@ -1193,6 +1193,45 @@ int main(int argc, char *argv[])
         check(pc.selectedElementIds() == QStringList{outline.id}, "outside the inner shape, the outline is picked");
     }
 
+    // --- Select band: left to right is a window, right to left a crossing ---------------
+    {
+        c2d::Document bdoc;
+        c2d::Canvas bc;
+        bc.resize(900, 700);
+        bc.show();
+        bc.setDocument(&bdoc);
+        bc.resetTransform();
+        bc.scale(3, -3);
+        bc.centerOn(QPointF(100, 100));
+        const c2d::Element big = c2d::Element::makeRectangle({100, 100}, 100, 100, bdoc.defaultLayer()); // 50..150
+        const c2d::Element dot = c2d::Element::makeCircle({70, 70}, 5, bdoc.defaultLayer());              // 65..75
+        bdoc.addElement(big);
+        bdoc.addElement(dot);
+        bc.rebuild();
+        bc.setTool(c2d::Canvas::Select);
+        auto sel = [&] { QStringList ids = bc.selectedElementIds(); ids.sort(); return ids; };
+        QStringList both{big.id, dot.id};
+        both.sort();
+
+        drag(&bc, {60, 45}, {80, 77});          // left to right over the circle and the square's edge
+        check(sel() == QStringList{dot.id}, "window band: only the shape wholly inside");
+        drag(&bc, {80, 45}, {60, 77});          // the same box, right to left
+        check(sel() == both, "crossing band: every shape whose line it touches");
+        drag(&bc, {160, 95}, {140, 105});       // right to left over the square's right edge only
+        check(sel() == QStringList{big.id}, "crossing band: the square by its edge");
+        drag(&bc, {160, 105}, {140, 95});       // up instead of down: still a crossing
+        check(sel() == QStringList{big.id}, "crossing goes by the left/right direction only");
+        drag(&bc, {90, 40}, {110, 60});        // left to right over the bottom edge: not wholly inside
+        check(sel().isEmpty(), "window band: a shape it only crosses is not taken");
+        drag(&bc, {40, 40}, {160, 160});
+        check(sel() == both, "window band round everything takes everything");
+        bc.selectElements({dot.id});
+        drag(&bc, {160, 95}, {140, 105}, Qt::ControlModifier);
+        check(sel() == both, "Ctrl band adds to the selection");
+        check(bdoc.elementById(big.id)->painterPath.boundingRect() == QRectF(50, 50, 100, 100),
+              "a band moves nothing");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

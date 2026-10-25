@@ -40,6 +40,8 @@ class C {
   static const axisY = Color(0xFF4A7A4A);
   static const element = Color(0xFFD8DCE4);
   static const hoverLine = Color(0xFF9FC8F2);
+  // Right-to-left (crossing) select band; the desktop's kBandCrossing.
+  static const bandCrossing = Color(0xFF7FD48A);
   static const preview = Color(0xFF5CC88A);
   static const halo = Color(0xFFFFA52A);
 
