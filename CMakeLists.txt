@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.12 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.13 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -345,6 +345,12 @@ if(Qt6Test_FOUND)
                    src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
     target_link_libraries(test_tpdelete PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME tpdelete COMMAND test_tpdelete)
+    # The "v" under a toolpath card: thumbnails, their bins, what is left to cut.
+    add_executable(test_tpshapes tests/test_tpshapes.cpp src/canvas.cpp src/canvasparametric.cpp
+                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
+    target_link_libraries(test_tpshapes PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_test(NAME tpshapes COMMAND test_tpshapes)
     # STL import's default size for a mesh too big for the board.
     add_executable(test_stlplace tests/test_stlplace.cpp src/modelpanel.cpp)
     target_link_libraries(test_stlplace PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)

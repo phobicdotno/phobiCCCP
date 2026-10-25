@@ -96,7 +96,7 @@ static void testCards()
     panel.setDocument(&doc);
     auto *tree = panel.findChild<QTreeWidget *>();
     check(tree != nullptr, "the panel has its list");
-    tree->setFixedHeight(90);   // shorter than the cards, so it scrolls
+    tree->setFixedHeight(130);   // shorter than the cards, so it scrolls
     panel.resize(360, 600);
     panel.show();
     check(QTest::qWaitForWindowExposed(&panel), "panel shown");
