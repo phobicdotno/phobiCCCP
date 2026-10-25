@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.20 (build 110) — 2026-10-25
+## v1.3.21 (build 111) — 2026-10-25
 
 > Nothing that exists only for testing is in the program any more: the test modes moved to a separate developer build
 
@@ -15,6 +15,18 @@
 - **Build:**
   - New test `shipped_clean` fails if a test mode, screenshot hook or test source ever ends
     up in the shipped program again.
+
+## v1.3.20 (build 110) — 2026-10-25
+
+> The "Z was zeroed with another surface map" check can no longer be skipped right after a bit is measured again
+
+- **Machine:**
+  - Measuring a bit a second time sends a new tool length offset (G43.1). A position report GRBL
+    sent in the moment before it applied that offset still carried the old one, but was read as
+    carrying the new one. A job started from the pad in that moment then skipped the check that
+    refuses a run whose Z zero was taken with the surface map on and the map is off now (every
+    depth off by the map's height). The check now also matches the offset in effect before the
+    latest one. This was also why the machinestop_tlo2 test failed about one run in ten.
 
 ## v1.3.19 (build 109) — 2026-10-25
 
@@ -144,7 +156,7 @@
 
 ## v1.3.9 (build 99) — 2026-10-24
 
-> Recursive bug hunt, round 27 onward: tiles end lifted, Adaptive enters from the stock top
+> Fixes: tiles end lifted, Adaptive enters from the stock top
 
 - **Machine:**
   - Run missed the Z-zero refusal when two different tool length offsets were measured within one
@@ -289,7 +301,7 @@
   - A copy of a piece inside a loop split off a polyline could rejoin the open rest, so those
     edges were cut twice.
   - Unticking Bold or Italic did nothing on text whose font was stored with a style name.
-  - Text rendering is fast again after round 45's glyph cache fix.
+  - Text rendering is fast again after the earlier glyph cache fix.
   - A combining mark (an umlaut, Hebrew or Thai points) in stretched text could take the plain
     text's mark, or the other way round, depending on which was drawn first.
   - Ticking Italic on a Light (or other weight) face named only by its style kept the weight.
@@ -469,7 +481,7 @@
 
 ## v1.3.2 (build 92) — 2026-10-20
 
-> Recursive bug hunt, round 4: inlays seat at their depth, marks stay on their letters, and closing during an export no longer hangs
+> Fixes: inlays seat at their depth, marks stay on their letters, and closing during an export no longer hangs
 
 - **Toolpaths:**
   - The inlay male started the glue gap below the top, so the plug seated only that deep
@@ -717,7 +729,7 @@
 
 ## v1.3.1 (build 91) — 2026-10-20
 
-> Recursive bug hunt, rounds 1 to 3: about 70 bugs fixed in toolpaths, the machine, drawing, panels and the pad link
+> About 70 fixes in toolpaths, the machine, drawing, panels and the pad link
 
 ### Round 3
 
@@ -759,7 +771,7 @@
 
 ### Round 2
 
-> Bug hunt round 2: adaptive no longer cuts one pass thousands of times, tabs hold the part, pad edits survive syncing with two computers, and Preview no longer freezes the window
+> Fixes: adaptive no longer cuts one pass thousands of times, tabs hold the part, pad edits survive syncing with two computers, and Preview no longer freezes the window
 
 - **Toolpaths:**
   - Adaptive could plan the same small pass thousands of times (text with a small bit: the
@@ -805,7 +817,7 @@
 
 ### Round 1
 
-> Bug hunt round 1: tiled programs no longer rapid through the work, finishing passes and adaptive links stay off neighbouring parts, and the tool-change pause can't be skipped
+> Fixes: tiled programs no longer rapid through the work, finishing passes and adaptive links stay off neighbouring parts, and the tool-change pause can't be skipped
 
 - **Toolpaths:**
   - A tiled program could rapid diagonally out of a cut, through the wall between two
@@ -880,7 +892,7 @@
 
 ## v1.2.6 (build 79) — 2026-10-20
 
-> Bug check 4: pockets no longer cut through islands, tool changes name the right bit, and pad sends that clash are kept as a copy
+> Fixes: pockets no longer cut through islands, tool changes name the right bit, and pad sends that clash are kept as a copy
 
 - **Toolpaths:**
   - A pocket's links between rings could feed straight across an island (or, in 3D rough, across
@@ -929,7 +941,7 @@
 
 ## v1.2.5 (build 78) — 2026-10-19
 
-> Bug check 3: rest cuts no longer cut into islands left standing, the Area tool keeps small islands, and parametric sketches stay put
+> Fixes: rest cuts no longer cut into islands left standing, the Area tool keeps small islands, and parametric sketches stay put
 
 - **Rest cuts (Skip what the toolpaths above cut):**
   - The test of whether a toolpath is already inside cleared area looked only at the corners
@@ -1059,7 +1071,7 @@
 
 ## v1.2.1 (build 74) — 2026-10-19
 
-> Bug check: cutting safety, the pad link and the pad app
+> Fixes in cutting safety, the pad link and the pad app
 
 **Cutting**
 
@@ -1211,7 +1223,7 @@
 
 ## v1.1.20 (build 71) — 2026-10-18
 
-> Bug fixes from a full review: tabs survive ramping, 3D climb/conventional the right way round, no lost elements on save, crash recovery
+> Fixes: tabs survive ramping, 3D climb/conventional the right way round, no lost elements on save, crash recovery
 
 **Note:** existing 3D finish toolpaths set to Climb or Conventional now cut the other way,
 because the old direction was wrong (see below).
