@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.15 (build 105) — 2026-10-25
+
+> Click the same spot again to step to the shape underneath
+
+- **Design:**
+  - Click a shape that is already selected, and if other shapes lie stacked under that spot, the
+    selection steps to the next one down (and wraps round to the top). Use it to reach an outline
+    hidden under a later shape of the same size. A drag, Ctrl or Shift click behaves as before.
+
 ## v1.3.14 (build 104) — 2026-10-25
 
 > Box select works like CAD: drag right for a window, left for a crossing

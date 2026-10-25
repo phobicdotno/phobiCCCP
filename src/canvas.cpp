@@ -2480,6 +2480,17 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         event->accept();
         return;
     }
+    // Click-cycling: remember a lone selection and where the press landed, so
+    // a second click on the same spot can step to the shape underneath.
+    m_cycleFrom.clear();
+    if (m_tool == Select && event->button() == Qt::LeftButton
+        && !(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier))) {
+        const auto sel = m_scene->selectedItems();
+        if (sel.size() == 1 && sel.first()->data(0).isValid()) {
+            m_cycleFrom = sel.first()->data(0).toString();
+            m_cyclePress = event->pos();
+        }
+    }
     QGraphicsView::mousePressEvent(event);
 
     // Select tool, press on empty board: start the select band. The press
@@ -2751,6 +2762,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
     }
 
     QGraphicsView::mouseReleaseEvent(event);
+    cycleSelection(event);
 
     // Select tool: commit any moved items back into the document. An item that
     // was dragged has a non-zero pos(); scene coords are CC mm, so the delta
@@ -2785,6 +2797,32 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
             // still have the old one, until some unrelated edit rebuilds.
             rebuild();
     }
+}
+
+// A plain click that lands on the shape already selected, with another shape
+// stacked under the same spot, steps to the next shape down (and wraps).
+void Canvas::cycleSelection(QMouseEvent *event)
+{
+    const QString from = m_cycleFrom;
+    m_cycleFrom.clear();
+    if (from.isEmpty() || m_tool != Select || event->button() != Qt::LeftButton
+        || (event->pos() - m_cyclePress).manhattanLength() > 4)
+        return;
+    QList<QGraphicsItem *> stack;
+    for (QGraphicsItem *it : items(event->pos()))
+        if (it->data(0).isValid() && it->isVisible())
+            stack.append(it);
+    int at = -1;
+    for (int i = 0; i < stack.size(); ++i)
+        if (stack.at(i)->data(0).toString() == from)
+            at = i;
+    const auto sel = m_scene->selectedItems();
+    if (at < 0 || stack.size() < 2 || sel.size() != 1
+        || sel.first()->data(0).toString() != from)
+        return;
+    QGraphicsItem *next = stack.at((at + 1) % stack.size());
+    m_scene->clearSelection();
+    next->setSelected(true);
 }
 
 void Canvas::mouseDoubleClickEvent(QMouseEvent *event)

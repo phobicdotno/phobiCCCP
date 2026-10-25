@@ -1232,6 +1232,39 @@ int main(int argc, char *argv[])
               "a band moves nothing");
     }
 
+    // --- Click-cycling: a second click on the same spot steps to the shape underneath ---
+    {
+        c2d::Document cdoc;
+        c2d::Canvas cc;
+        cc.resize(900, 700);
+        cc.show();
+        cc.setDocument(&cdoc);
+        cc.resetTransform();
+        cc.scale(3, -3);
+        cc.centerOn(QPointF(100, 100));
+        const c2d::Element big = c2d::Element::makeRectangle({100, 100}, 100, 100, cdoc.defaultLayer());
+        const c2d::Element mid = c2d::Element::makeRectangle({100, 100}, 60, 60, cdoc.defaultLayer());
+        const c2d::Element dot = c2d::Element::makeCircle({100, 100}, 5, cdoc.defaultLayer());
+        for (const auto &e : {big, mid, dot})
+            cdoc.addElement(e);
+        cc.rebuild();
+        cc.setTool(c2d::Canvas::Select);
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{dot.id}, "first click takes the smallest");
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{mid.id}, "second click steps to the next shape down");
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{big.id}, "third click reaches the outline");
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{dot.id}, "and it wraps round");
+        click(&cc, {75, 75});                  // inside the outer two only
+        click(&cc, {75, 75});
+        check(cc.selectedElementIds() == QStringList{big.id}, "click-cycling works where only two overlap");
+        click(&cc, {60, 60});                  // alone inside the outline
+        click(&cc, {60, 60});
+        check(cc.selectedElementIds() == QStringList{big.id}, "a lone shape stays selected on a second click");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

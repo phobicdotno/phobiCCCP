@@ -251,6 +251,9 @@ private:
     // (only what lies wholly inside); right to left a crossing (whatever
     // line it touches). Ctrl adds to the selection it started with.
     bool m_band = false;
+    QString m_cycleFrom;
+    QPoint m_cyclePress;
+    void cycleSelection(QMouseEvent *event);
     QPoint m_bandStart, m_bandEnd;
     QSet<QGraphicsItem *> m_bandKeep;
     void applyBand();
