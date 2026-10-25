@@ -2,6 +2,7 @@
 #include "toollibrary.h"
 #include <QElapsedTimer>
 #include <QIcon>
+#include <QPainterPath>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -35,6 +36,8 @@ struct JobSection {
     QString detail;        // "Pocket · Ø3 mm · 4 mm deep", "T3  3 mm flat endmill"
     QString type;          // CC toolpath type ("pocket_toolpath"), empty when unknown
     LibraryTool bit;       // the bit it cuts with / changes to; kind empty when unknown
+    QPainterPath cut;      // its cutting moves seen from above (work mm, Y up)
+    QVector<QPointF> plunges;   // where it goes straight down (drill holes)
     int qStart = 0, qEnd = 0;
     double estSec = 0;
     QVector<JobPass> passes;
