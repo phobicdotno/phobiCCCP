@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3.12 (build 102) — 2026-10-25
+
+> Pad tab fields, Z-zero record per controller, tab height setting, contours start outside
+
+- **Machine:** the Z-zero record (what the surface map was when Z was zeroed) is kept per controller,
+  under its port, not per machine profile: two profiles on one board share it, and a profile used with
+  another board starts without one.
+- **Toolpaths:**
+  - A new contour starts outside (it was inside; the pad already started outside), so desktop and pad
+    agree. Holes in the selection still come out inside, and a cut through the stock still takes the
+    holes before the outline (a test now holds that).
+  - Settings has a Tab height: what a new contour's tabs start with (3 mm until set; each toolpath can
+    still change its own).
+- **Pad app (same as the computer):** a new toolpath starts 2.54 mm deep (an engraving 0.5 mm) and is named
+  "Contour Toolpath 1", "Pocket Toolpath 1", "Drilling Toolpath 1", "Engrave 1", as on the computer; a
+  toolpath with points in it (not a drill) says they are left out, as the export does.
+- **Pad app:** a profile has a Tabs card: the switch, the tab height and the tab width, as on the
+  computer. A pad profile now carries them to the computer, and an edit of a file with tabs set up no
+  longer drops them on the way back (they were not reported as lost, because they were not carried).
+
 ## v1.3.11 (build 101) — 2026-10-25
 
 > A new Drill toolpath goes to the full depth in one movement
