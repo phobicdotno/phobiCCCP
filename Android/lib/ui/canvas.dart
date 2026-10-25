@@ -7,6 +7,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import '../fill.dart' show shapeRing;
 import '../model.dart';
 import 'theme.dart';
 
@@ -92,6 +93,68 @@ bool _nearPath(List<List<double>> p, double x, double y, double slop) {
     if (ex * ex + ey * ey <= slop * slop) return true;
   }
   return false;
+}
+
+/// The shapes a band drag selects, as the desktop: dragged left to right
+/// (window) only shapes wholly inside [r]; right to left (crossing) every
+/// shape whose line [r] touches or crosses. [r] in mm.
+Set<String> bandSelect(Design d, Rect r, {required bool crossing}) => {
+      for (final s in d.shapes)
+        if (crossing ? bandTouches(s, r) : _inside(s.bounds(), r)) s.id
+    };
+
+bool _inside(List<double> b, Rect r) =>
+    b[0] >= r.left && b[2] <= r.right && b[1] >= r.top && b[3] <= r.bottom;
+
+/// Whether [r] touches the shape's line: a closed shape only by its outline,
+/// not by being dropped inside it. Text goes by its box (the pad has no
+/// glyph outlines).
+bool bandTouches(Shape s, Rect r) {
+  final b = s.bounds();
+  if (b[2] < r.left || b[0] > r.right || b[3] < r.top || b[1] > r.bottom) return false;
+  if (_inside(b, r)) return true;
+  final ring = shapeRing(s);
+  List<(double, double)> line;
+  if (ring != null) {
+    line = [...ring, ring.first];
+  } else if (s.type == Shape.path) {
+    line = [for (final p in s.points ?? const <List<double>>[]) if (p.length >= 2) (p[0], p[1])];
+  } else if (s.type == Shape.text) {
+    line = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3]), (b[0], b[1])];
+  } else {
+    line = [(s.x, s.y)];
+  }
+  if (line.length == 1) return r.contains(Offset(line[0].$1, line[0].$2));
+  for (var i = 1; i < line.length; i++) {
+    if (_segTouches(line[i - 1], line[i], r)) return true;
+  }
+  return false;
+}
+
+// Liang-Barsky: does segment a-b reach into r (edges included)?
+bool _segTouches((double, double) a, (double, double) b, Rect r) {
+  var t0 = 0.0, t1 = 1.0;
+  final dx = b.$1 - a.$1, dy = b.$2 - a.$2;
+  for (final (p, q) in [
+    (-dx, a.$1 - r.left),
+    (dx, r.right - a.$1),
+    (-dy, a.$2 - r.top),
+    (dy, r.bottom - a.$2),
+  ]) {
+    if (p == 0) {
+      if (q < 0) return false;
+    } else {
+      final t = q / p;
+      if (p < 0) {
+        if (t > t1) return false;
+        if (t > t0) t0 = t;
+      } else {
+        if (t < t0) return false;
+        if (t < t1) t1 = t;
+      }
+    }
+  }
+  return true;
 }
 
 /// What a drag with a drawing tool would make: shown while dragging.
@@ -284,10 +347,8 @@ class _DesignCanvasState extends State<DesignCanvas> {
       final (x1, y1) = v.toMm(b);
       final r = Rect.fromPoints(Offset(x0, y0), Offset(x1, y1));
       if (r.width * v.scale > 4 || r.height * v.scale > 4) {
-        widget.onSelect({
-          for (final sh in widget.design.shapes)
-            if (r.contains(Offset(sh.bounds()[0], sh.bounds()[1])) && r.contains(Offset(sh.bounds()[2], sh.bounds()[3]))) sh.id
-        });
+        // Left to right: window. Right to left: crossing.
+        widget.onSelect(bandSelect(widget.design, r, crossing: b.dx < a.dx));
       }
     }
     final d = _draft;
@@ -328,7 +389,8 @@ class _DesignCanvasState extends State<DesignCanvas> {
                   leftOf: widget.leftOf,
                   pathDraft: widget.pathDraft,
                   draft: _draft,
-                  band: _bandStart != null && _bandEnd != null ? Rect.fromPoints(_bandStart!, _bandEnd!) : null),
+                  band: _bandStart != null && _bandEnd != null ? Rect.fromPoints(_bandStart!, _bandEnd!) : null,
+                  crossing: _bandStart != null && _bandEnd != null && _bandEnd!.dx < _bandStart!.dx),
             ),
           ),
         ),
@@ -355,6 +417,8 @@ class DesignPainter extends CustomPainter {
   final List<List<double>> pathDraft;
   final Draft? draft;
   final Rect? band;
+  // A right-to-left band: crossing, drawn green and dashed.
+  final bool crossing;
   final bool thumbnail;
 
   DesignPainter(this.design,
@@ -366,6 +430,7 @@ class DesignPainter extends CustomPainter {
       this.pathDraft = const [],
       this.draft,
       this.band,
+      this.crossing = false,
       this.margin = 60,
       this.thumbnail = false});
 
@@ -491,13 +556,24 @@ class DesignPainter extends CustomPainter {
     }
     final b = band;
     if (b != null) {
-      canvas.drawRect(b, Paint()..color = C.hoverLine.withAlpha(30));
-      canvas.drawRect(
-          b,
-          Paint()
-            ..color = C.hoverLine
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1);
+      // Window: blue, solid. Crossing: green, dashed (as the desktop).
+      final c = crossing ? C.bandCrossing : C.hoverLine;
+      canvas.drawRect(b, Paint()..color = c.withAlpha(30));
+      final edge = Paint()
+        ..color = c
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1;
+      if (!crossing) {
+        canvas.drawRect(b, edge);
+      } else {
+        final corners = [b.topLeft, b.topRight, b.bottomRight, b.bottomLeft, b.topLeft];
+        for (var i = 1; i < corners.length; i++) {
+          final a = corners[i - 1], d = corners[i] - a, len = d.distance;
+          for (var t = 0.0; t < len; t += 8) {
+            canvas.drawLine(a + d * (t / len), a + d * (math.min(t + 4, len) / len), edge);
+          }
+        }
+      }
     }
   }
 
@@ -515,7 +591,8 @@ class DesignPainter extends CustomPainter {
       old.leftOf != leftOf ||
       old.pathDraft != pathDraft ||
       old.draft != draft ||
-      old.band != band;
+      old.band != band ||
+      old.crossing != crossing;
 }
 
 /// One shape as the canvas draws it (outline or fill, by [paint]).

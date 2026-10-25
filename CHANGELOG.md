@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.14 (build 104) — 2026-10-25
+
+> Box select works like CAD: drag right for a window, left for a crossing
+
+- **Design:**
+  - Dragging a select box from left to right (a window) selects only the shapes that lie wholly
+    inside it. The box is blue with a solid edge.
+  - Dragging it from right to left (a crossing) selects every shape whose line the box touches or
+    crosses. A box dropped inside a closed shape without reaching its outline does not take it. The
+    box is green with a dashed edge.
+  - Only the drag's left/right direction decides, as in AutoCAD and Fusion; up or down does not
+    matter. Ctrl still adds to the selection.
+  - The pad does the same, with the same colours.
+
 ## v1.3.13 (build 103) — 2026-10-25
 
 > Every toolpath card opens with a "v" to show its shapes, each with a bin
