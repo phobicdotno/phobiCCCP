@@ -84,8 +84,10 @@ else()
     target_sources(phobicccp_core PRIVATE src/serialstub.h)
 endif()
 
-set(PHOBICCCP_APP_SOURCES
-    src/main.cpp
+# The windows and panels, compiled once and shared by the app and every widget
+# test. Tests used to list these sources themselves, so each test executable
+# compiled its own copy (the main window tests the whole program, nine times).
+add_library(phobicccp_ui STATIC
     src/canvas.cpp src/canvasparametric.cpp
     src/mainwindow.cpp
     src/aboutdialog.cpp
@@ -117,6 +119,9 @@ set(PHOBICCCP_APP_SOURCES
     src/sendtopaddialog.cpp
     src/sendtodialog.cpp
 )
+target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
+
+set(PHOBICCCP_APP_SOURCES src/main.cpp)
 if(ANDROID)
     # The same program on a pad: Qt builds it as the app's library, and
     # qt-android/ holds the manifest (network access, landscape, the icon).
@@ -133,7 +138,7 @@ else()
     add_executable(phobicccp ${PHOBICCCP_APP_SOURCES})
 endif()
 
-target_link_libraries(phobicccp PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
+target_link_libraries(phobicccp PRIVATE phobicccp_ui)
 if(PHOBICCCP_WITH_CLIPPER2)
     target_link_libraries(phobicccp_core PUBLIC Clipper2)
     target_compile_definitions(phobicccp_core PUBLIC HAVE_CLIPPER2)
@@ -186,8 +191,8 @@ add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
 # Projects sent from Syntexophobic: the protocol reader and a loopback transfer.
-add_executable(test_receiver tests/test_receiver.cpp src/projectreceiver.cpp)
-target_link_libraries(test_receiver PRIVATE phobicccp_core Qt6::Network)
+add_executable(test_receiver tests/test_receiver.cpp)
+target_link_libraries(test_receiver PRIVATE phobicccp_ui)
 add_test(NAME receiver COMMAND test_receiver)
 # The phone app's side: pad designs into documents, the design store, machines.
 add_executable(test_machinenames tests/test_machinenames.cpp)
@@ -252,166 +257,132 @@ add_test(NAME hardening COMMAND test_hardening
 # synthetic events; needs the optional Qt6 Test module.
 find_package(Qt6 COMPONENTS Test QUIET)
 if(Qt6Test_FOUND)
-    add_executable(test_canvas tests/test_canvas.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/propertiespanel.cpp)
-    target_link_libraries(test_canvas PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_canvas tests/test_canvas.cpp)
+    target_link_libraries(test_canvas PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
     # Area tool on hair-thin islands, and pattern copies round a closed path.
-    add_executable(test_areathin tests/test_areathin.cpp src/canvas.cpp src/canvasparametric.cpp)
-    target_link_libraries(test_areathin PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_areathin tests/test_areathin.cpp)
+    target_link_libraries(test_areathin PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME areathin COMMAND test_areathin)
     add_executable(test_patternclosed tests/test_patternclosed.cpp)
     target_link_libraries(test_patternclosed PRIVATE phobicccp_core)
     add_test(NAME patternclosed COMMAND test_patternclosed)
-    add_executable(test_ringisland tests/test_ringisland.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/propertiespanel.cpp)
-    target_link_libraries(test_ringisland PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_ringisland tests/test_ringisland.cpp)
+    target_link_libraries(test_ringisland PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME ringisland COMMAND test_ringisland)
-    add_executable(test_escdrag tests/test_escdrag.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/propertiespanel.cpp)
-    target_link_libraries(test_escdrag PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_escdrag tests/test_escdrag.cpp)
+    target_link_libraries(test_escdrag PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME escdrag COMMAND test_escdrag)
-    add_executable(test_sendto tests/test_sendto.cpp src/sendtodialog.cpp src/projectreceiver.cpp)
-    target_link_libraries(test_sendto PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
+    add_executable(test_sendto tests/test_sendto.cpp)
+    target_link_libraries(test_sendto PRIVATE phobicccp_ui)
     add_test(NAME sendto COMMAND test_sendto)
-    add_executable(test_sendtopad tests/test_sendtopad.cpp src/sendtopaddialog.cpp src/sendtodialog.cpp
-                   src/projectreceiver.cpp)
-    target_link_libraries(test_sendtopad PRIVATE phobicccp_core Qt6::Widgets Qt6::Network)
+    add_executable(test_sendtopad tests/test_sendtopad.cpp)
+    target_link_libraries(test_sendtopad PRIVATE phobicccp_ui)
     add_test(NAME sendtopad COMMAND test_sendtopad)
-    add_executable(test_canvasparametric tests/test_canvasparametric.cpp src/canvas.cpp
-                   src/canvasparametric.cpp src/parameterspanel.cpp)
-    target_link_libraries(test_canvasparametric PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_canvasparametric tests/test_canvasparametric.cpp)
+    target_link_libraries(test_canvasparametric PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME canvasparametric COMMAND test_canvasparametric)
-    add_executable(test_about tests/test_about.cpp src/aboutdialog.cpp data/tools.qrc)
-    target_link_libraries(test_about PRIVATE phobicccp_core Qt6::Widgets)
+    add_executable(test_about tests/test_about.cpp data/tools.qrc)
+    target_link_libraries(test_about PRIVATE phobicccp_ui)
     add_test(NAME about COMMAND test_about)
     # Tool library popup: the bit-kind icons that sort the list.
-    add_executable(test_toollibrarydialog tests/test_toollibrarydialog.cpp
-                   src/toollibrarydialog.cpp src/tooldiagram.cpp data/tools.qrc)
-    target_link_libraries(test_toollibrarydialog PRIVATE phobicccp_core Qt6::Widgets)
+    add_executable(test_toollibrarydialog tests/test_toollibrarydialog.cpp data/tools.qrc)
+    target_link_libraries(test_toollibrarydialog PRIVATE phobicccp_ui)
     add_test(NAME toollibrarydialog COMMAND test_toollibrarydialog)
-    add_executable(test_toolpathform tests/test_toolpathform.cpp src/toolpathform.cpp
-                   src/tooldiagram.cpp)
-    target_link_libraries(test_toolpathform PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_toolpathform tests/test_toolpathform.cpp)
+    target_link_libraries(test_toolpathform PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME toolpathform COMMAND test_toolpathform)
     # Panel <-> canvas selection handover (needs the real widgets).
-    add_executable(test_panels tests/test_panels.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp
-                   src/settingsdialog.cpp)
-    target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_panels tests/test_panels.cpp)
+    target_link_libraries(test_panels PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
     # Two bits on one tool number (setup sheet, Simulate strip) and inlay bindings.
-    add_executable(test_uifixes tests/test_uifixes.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
-                   src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
-    target_link_libraries(test_uifixes PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_uifixes tests/test_uifixes.cpp)
+    target_link_libraries(test_uifixes PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME uifixes COMMAND test_uifixes)
     # The main window's Preview (export on a worker, stale results dropped)
-    # and its close guard: the whole window, so every app source but main.
-    add_executable(test_mainwindow tests/test_mainwindow.cpp
-                   src/canvas.cpp src/canvasparametric.cpp src/mainwindow.cpp src/aboutdialog.cpp
-                   src/propertiespanel.cpp src/parameterspanel.cpp src/toolpathpanel.cpp src/shapestrip.cpp
-                   src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
-                   src/tooldiagram.cpp src/toolstrip.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
-                   src/isopreview.cpp src/simpanel.cpp src/vectoractions.cpp src/importui.cpp
-                   src/tracedialog.cpp src/backgrounddialog.cpp src/modelpanel.cpp
-                   src/exportprogress.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
-                   src/bitzeropanel.cpp src/settingsdialog.cpp src/toolbarorder.cpp
-                   src/projectreceiver.cpp src/sendtopaddialog.cpp src/sendtodialog.cpp)
-    target_link_libraries(test_mainwindow PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    # and its close guard: the whole window, so all of phobicccp_ui.
+    add_executable(test_mainwindow tests/test_mainwindow.cpp)
+    target_link_libraries(test_mainwindow PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME mainwindow COMMAND test_mainwindow)
     # A pad's edit arriving while a typed number is not yet committed.
-    get_target_property(_mwsrc test_mainwindow SOURCES)
-    list(REMOVE_ITEM _mwsrc tests/test_mainwindow.cpp)
-    add_executable(test_padput tests/test_padput.cpp ${_mwsrc})
-    target_link_libraries(test_padput PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_executable(test_padput tests/test_padput.cpp)
+    target_link_libraries(test_padput PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padput COMMAND test_padput)
-    add_executable(test_padenter tests/test_padenter.cpp ${_mwsrc})
-    target_link_libraries(test_padenter PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_executable(test_padenter tests/test_padenter.cpp)
+    target_link_libraries(test_padenter PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padenter COMMAND test_padenter)
-    add_executable(test_tpflush tests/test_tpflush.cpp ${_mwsrc})
-    target_link_libraries(test_tpflush PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_executable(test_tpflush tests/test_tpflush.cpp)
+    target_link_libraries(test_tpflush PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpflush COMMAND test_tpflush)
-    add_executable(test_padmachinemodal tests/test_padmachinemodal.cpp ${_mwsrc})
-    target_link_libraries(test_padmachinemodal PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_executable(test_padmachinemodal tests/test_padmachinemodal.cpp)
+    target_link_libraries(test_padmachinemodal PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padmachinemodal COMMAND test_padmachinemodal)
-    add_executable(test_typedclick tests/test_typedclick.cpp ${_mwsrc})
-    target_link_libraries(test_typedclick PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_executable(test_typedclick tests/test_typedclick.cpp)
+    target_link_libraries(test_typedclick PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME typedclick COMMAND test_typedclick)
     # Delete with a value still typed in the toolpath form.
-    add_executable(test_tpdelete tests/test_tpdelete.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
-                   src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
-    target_link_libraries(test_tpdelete PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_tpdelete tests/test_tpdelete.cpp)
+    target_link_libraries(test_tpdelete PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpdelete COMMAND test_tpdelete)
     # The "v" under a toolpath card: thumbnails, their bins, what is left to cut.
-    add_executable(test_tpshapes tests/test_tpshapes.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
-                   src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
-    target_link_libraries(test_tpshapes PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_tpshapes tests/test_tpshapes.cpp)
+    target_link_libraries(test_tpshapes PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpshapes COMMAND test_tpshapes)
     # STL import's default size for a mesh too big for the board.
-    add_executable(test_stlplace tests/test_stlplace.cpp src/modelpanel.cpp)
-    target_link_libraries(test_stlplace PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_stlplace tests/test_stlplace.cpp)
+    target_link_libraries(test_stlplace PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME stlplace COMMAND test_stlplace)
     # Crash recovery offered at start-up waits for the command-line file's open.
-    add_executable(test_recoverystart tests/test_recoverystart.cpp ${_mwsrc})
-    target_link_libraries(test_recoverystart PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_executable(test_recoverystart tests/test_recoverystart.cpp)
+    target_link_libraries(test_recoverystart PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME recoverystart COMMAND test_recoverystart)
     # A pad's edit already queued when Save commits a typed number.
-    add_executable(test_padputsave tests/test_padputsave.cpp ${_mwsrc})
-    target_link_libraries(test_padputsave PRIVATE phobicccp_core Qt6::Widgets Qt6::Network Qt6::Test)
+    add_executable(test_padputsave tests/test_padputsave.cpp)
+    target_link_libraries(test_padputsave PRIVATE phobicccp_ui Qt6::Test)
     foreach(mode save close nosave)
         add_test(NAME padputsave_${mode} COMMAND test_padputsave ${mode})
     endforeach()
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.
-    add_executable(test_dragscroll tests/test_dragscroll.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
-                   src/tooldiagram.cpp src/settingsdialog.cpp)
-    target_link_libraries(test_dragscroll PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
+    add_executable(test_dragscroll tests/test_dragscroll.cpp)
+    target_link_libraries(test_dragscroll PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME dragscroll COMMAND test_dragscroll)
     # Mirror / arrays through the real Edit → Vectors actions and undo stack.
-    add_executable(test_vectoractions tests/test_vectoractions.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/vectoractions.cpp)
-    target_link_libraries(test_vectoractions PRIVATE phobicccp_core Qt6::Widgets)
+    add_executable(test_vectoractions tests/test_vectoractions.cpp)
+    target_link_libraries(test_vectoractions PRIVATE phobicccp_ui)
     add_test(NAME vectoractions COMMAND test_vectoractions)
 else()
     message(STATUS "Qt6 Test not found: canvas interaction test skipped")
 endif()
 # The threaded export helper lives in the app target, so the test compiles it
 # in directly. Worth re-running under ThreadSanitizer after any change to it.
-add_executable(test_exportjob tests/test_exportjob.cpp src/exportprogress.cpp)
-target_link_libraries(test_exportjob PRIVATE phobicccp_core Qt6::Widgets)
+add_executable(test_exportjob tests/test_exportjob.cpp)
+target_link_libraries(test_exportjob PRIVATE phobicccp_ui)
 add_test(NAME exportjob COMMAND test_exportjob)
 
 # The gamepad reader, driven through a fifo carrying synthetic joystick events
 # so it can be tested with no controller plugged in.
 if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
-    add_executable(test_gamepad tests/test_gamepad.cpp src/gamepad.cpp
-                   src/gamepadmapdialog.cpp)
-    target_link_libraries(test_gamepad PRIVATE Qt6::Widgets Qt6::Test)
+    add_executable(test_gamepad tests/test_gamepad.cpp)
+    target_link_libraries(test_gamepad PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME gamepad COMMAND test_gamepad)
     # The Machine panel on a fake controller: tool-change prompt, zeroing,
     # jogging, cancelling and disconnecting around a job.
-    add_executable(test_machine tests/test_machine.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
-                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
-                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
-    target_link_libraries(test_machine PRIVATE phobicccp_core Qt6::Widgets)
+    add_executable(test_machine tests/test_machine.cpp)
+    target_link_libraries(test_machine PRIVATE phobicccp_ui)
     add_test(NAME machine COMMAND test_machine)
-    set_tests_properties(machine PROPERTIES SKIP_RETURN_CODE 77)
+    # Over two minutes on its own: start it first so ctest -j runs the rest
+    # beside it instead of after it.
+    set_tests_properties(machine PROPERTIES SKIP_RETURN_CODE 77 COST 1000)
     # Cancel job / Disconnect while the hold settles: a Stop in the wait, and
     # the job's last lines answered in it.
     # A machine switch reloads the BitZero page's plate settings.
-    add_executable(test_bzprofile tests/test_bzprofile.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
-                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
-                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
-    target_link_libraries(test_bzprofile PRIVATE phobicccp_core Qt6::Widgets)
+    add_executable(test_bzprofile tests/test_bzprofile.cpp)
+    target_link_libraries(test_bzprofile PRIVATE phobicccp_ui)
     add_test(NAME bzprofile COMMAND test_bzprofile)
-    add_executable(test_machinestop tests/test_machinestop.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
-                   src/toolstrip.cpp src/tooldiagram.cpp src/gamepad.cpp src/gamepadmapdialog.cpp
-                   src/settingsdialog.cpp src/exportprogress.cpp src/bitzeropanel.cpp)
-    target_link_libraries(test_machinestop PRIVATE phobicccp_core Qt6::Widgets)
+    add_executable(test_machinestop tests/test_machinestop.cpp)
+    target_link_libraries(test_machinestop PRIVATE phobicccp_ui)
     foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
