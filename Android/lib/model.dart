@@ -657,11 +657,45 @@ class MachineInfo {
       MachineInfo(id: _s(j['id']), name: _s(j['name']), active: _b(j['active']), size: _s(j['size']));
 }
 
+/// One step of the job running at the computer, as its Running job list
+/// shows it (jobview.cpp stepsJson): a toolpath with its cut preview and its
+/// share done, or a tool change.
+class JobStep {
+  final String name, detail, kind, bit, time, state;
+  final double done;
+
+  /// The cut preview, a PNG the computer drew; empty for a tool change.
+  final String preview;
+  const JobStep(
+      {this.name = '', this.detail = '', this.kind = 'toolpath', this.bit = '', this.time = '', this.state = 'ahead', this.done = 0, this.preview = ''});
+  factory JobStep.fromJson(Map<String, Object?> j) => JobStep(
+        name: _s(j['name']),
+        detail: _s(j['detail']),
+        kind: _s(j['kind'], 'toolpath'),
+        bit: _s(j['bit']),
+        time: _s(j['time']),
+        state: _s(j['state'], 'ahead'),
+        done: _d(j['done']).clamp(0.0, 1.0).toDouble(),
+        preview: _s(j['preview']),
+      );
+  bool get isChange => kind == 'change';
+}
+
 class MachineStatus {
   final bool connected, homed, busy, streaming;
   final String port, state, job;
+
+  /// The job's steps while the computer has one (phobiCCCP 1.3.15 and later).
+  final List<JobStep> steps;
   const MachineStatus(
-      {this.connected = false, this.homed = false, this.busy = false, this.streaming = false, this.port = '', this.state = '', this.job = ''});
+      {this.connected = false,
+      this.homed = false,
+      this.busy = false,
+      this.streaming = false,
+      this.port = '',
+      this.state = '',
+      this.job = '',
+      this.steps = const []});
   factory MachineStatus.fromJson(Map<String, Object?> j) => MachineStatus(
         connected: _b(j['connected']),
         homed: _b(j['homed']),
@@ -670,6 +704,7 @@ class MachineStatus {
         port: _s(j['port']),
         state: _s(j['state']),
         job: _s(j['job']),
+        steps: _l(j['steps']).map((s) => JobStep.fromJson(_m(s))).toList(),
       );
 
   String words() {

@@ -292,6 +292,38 @@ int main(int argc, char **argv)
         const c2d::LibraryTool second = c2d::toolForChange(doc, changes.at(1));
         check(second.name == QLatin1String("1/8 endmill") && std::abs(second.diameter - 3.175) < 1e-9,
               "bits: the second change wants the 1/8, not the first bit with that number");
+        // The running job's rows: each toolpath's own cut for its preview
+        // box, the bit for its outline, and the pad's copy of the list.
+        const c2d::JobPlan plan = c2d::planJob(g.gcode.split(QLatin1Char('\n')), g.ops, &doc, 5000);
+        QVector<const c2d::JobSection *> cuts;
+        for (const c2d::JobSection &s : plan.sections)
+            if (s.kind == c2d::JobSection::Toolpath)
+                cuts << &s;
+        check(cuts.size() == 2 && cuts.at(0)->type == QLatin1String("pocket_toolpath")
+                  && cuts.at(0)->bit.kind == QLatin1String("endmill"),
+              "job rows: a toolpath knows its type and bit");
+        const QRectF box = cuts.size() == 2 ? cuts.at(0)->cut.boundingRect() : QRectF();
+        check(!box.isEmpty() && box.left() >= 10 - 1e-6 && box.right() <= 50 + 1e-6
+                  && box.top() >= 10 - 1e-6 && box.bottom() <= 30 + 1e-6,
+              "job rows: the cut preview is the pocket's own moves, inside its rectangle");
+        bool changeBit = false;
+        for (const c2d::JobSection &s : plan.sections)
+            changeBit = changeBit || (s.kind == c2d::JobSection::ToolChange && s.bit.diameter > 0);
+        check(changeBit, "job rows: a tool change shows the bit it changes to");
+        c2d::JobView view;
+        view.setPlan(plan, QStringLiteral("job"));
+        view.setProgress(cuts.size() == 2 ? (cuts.at(0)->qStart + cuts.at(0)->qEnd) / 2 : 0, plan.total);
+        const QJsonArray steps = view.stepsJson();
+        bool previewOk = false, runOk = false;
+        for (const QJsonValue &v : steps) {
+            const QJsonObject o = v.toObject();
+            if (o.value("kind").toString() == QLatin1String("toolpath"))
+                previewOk = previewOk || !QByteArray::fromBase64(o.value("preview").toString().toLatin1()).isEmpty();
+            if (o.value("state").toString() == QLatin1String("run"))
+                runOk = o.value("done").toDouble() > 0 && o.value("done").toDouble() < 1;
+        }
+        check(steps.size() == plan.sections.size() && previewOk && runOk,
+              "job rows: the pad gets every step, a preview picture and the running share done");
     }
 
     // ---- the panel on a fake controller -----------------------------------

@@ -6,7 +6,9 @@
 #include "tooldiagram.h"
 #include "toolstrip.h"
 
+#include <QBuffer>
 #include <QColor>
+#include <QJsonObject>
 #include <QDateTime>
 #include <QHeaderView>
 #include <QLabel>
@@ -214,6 +216,23 @@ QIcon sectionIcon(const JobSection &s)
         icon.addPixmap(pm, mode);
     }
     return icon;
+}
+
+// The cut preview alone, `px` logical pixels square at 2x, as a base64 PNG.
+QString previewPng(const JobSection &s, int px)
+{
+    QPixmap pm(QSize(px, px) * 2);
+    pm.setDevicePixelRatio(2);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    paintCutPreview(p, QRectF(0, 0, px, px), s, false);
+    p.end();
+    QByteArray png;
+    QBuffer buf(&png);
+    buf.open(QIODevice::WriteOnly);
+    pm.save(&buf, "PNG");
+    return QString::fromLatin1(png.toBase64());
 }
 
 // Each toolpath's cutting moves, in the order of the program's comments.
@@ -545,6 +564,7 @@ void JobView::clear()
     m_passDone.clear();
     m_sectionItems.clear();
     m_sectionIcons.clear();
+    m_previewPng.clear();
     m_passItems.clear();
     m_tree->clear();
     m_title->setText(QStringLiteral("No job running"));
@@ -568,6 +588,7 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
     m_passDone.resize(n);
     m_sectionItems.resize(n);
     m_sectionIcons.resize(n);
+    m_previewPng.resize(n);
     m_passItems.resize(n);
     for (int i = 0; i < n; ++i) {
         const JobSection &s = plan.sections.at(i);
@@ -576,6 +597,8 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
         it->setText(1, clock(s.estSec));
         it->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
         m_sectionIcons[i] = sectionIcon(s);
+        if (s.kind == JobSection::Toolpath)
+            m_previewPng[i] = previewPng(s, 52);
         it->setIcon(0, m_sectionIcons.at(i));
         m_sectionItems[i] = it;
         const int np = s.passes.size();
@@ -637,6 +660,30 @@ void JobView::setParked(bool parked)
         m_parkedAt = -1;
     }
     refresh();
+}
+
+QJsonArray JobView::stepsJson() const
+{
+    QJsonArray out;
+    const int q = qBound(0, m_acked - m_inserted, m_plan.total);
+    for (int i = 0; i < m_plan.sections.size(); ++i) {
+        const JobSection &s = m_plan.sections.at(i);
+        const QTreeWidgetItem *it = m_sectionItems.value(i);
+        QJsonObject o{{QStringLiteral("name"), s.name},
+                      {QStringLiteral("detail"), s.detail},
+                      {QStringLiteral("kind"), s.kind == JobSection::ToolChange ? QStringLiteral("change")
+                                                                                : QStringLiteral("toolpath")},
+                      {QStringLiteral("bit"), s.bit.kind},
+                      {QStringLiteral("time"), it ? it->text(1) : QString()},
+                      {QStringLiteral("state"), q >= s.qEnd ? QStringLiteral("done")
+                                                : q >= s.qStart ? QStringLiteral("run") : QStringLiteral("ahead")}};
+        if (s.kind == JobSection::Toolpath) {
+            o.insert(QStringLiteral("done"), it ? it->data(0, ProgressRole).toDouble() : 0.0);
+            o.insert(QStringLiteral("preview"), m_previewPng.value(i));
+        }
+        out.append(o);
+    }
+    return out;
 }
 
 double JobView::spanSec(int a, int b) const
