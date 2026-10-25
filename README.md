@@ -364,3 +364,18 @@ specimens and tools live in the
 Safety: this is an independent implementation — offsets, depths and orderings
 are close to CC's but not identical. Preview the `.nc` (e.g. ncviewer.com)
 and use the Machine dock's air-cut mode before trusting a new program.
+
+## License
+
+Copyright (c) 2026 Phobic (phobicdotno).
+
+phobiCCCP is licensed under
+[Creative Commons Attribution-NonCommercial-ShareAlike 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+(CC BY-NC-SA 4.0); the full text is in [LICENSE](LICENSE). In plain words:
+
+- **Free for everyone** to use, copy, change and share, as long as you credit phobiCCCP.
+- **Noncommercial:** no commercial use. For a commercial license, contact the copyright holder (Phobic).
+- **Share-alike:** anything you build from it must be shared under the same license, so it can never be made proprietary.
+
+Bundled third-party parts keep their own licenses: `third_party/clipper2` (Boost Software License 1.0,
+see its `LICENSE`) and the pad app fonts (see `Android/fonts/LICENSE.txt`). Qt is used under the LGPL.
