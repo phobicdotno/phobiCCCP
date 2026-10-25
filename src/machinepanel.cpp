@@ -4057,6 +4057,9 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
     o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());
+    // The running job's steps, for the pad's job list.
+    if (m_jobView && m_jobView->hasPlan())
+        o.insert(QStringLiteral("steps"), m_jobView->stepsJson());
     return o;
 }
 
