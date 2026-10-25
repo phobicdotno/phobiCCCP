@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.16 (build 106) — 2026-10-25
+
+> Design has a Shapes tab: a tile for every shape, click to select, drag to reorder, hold for Duplicate / Delete
+
+- **Design:**
+  - New "Shapes" tab beside Document, Model and Parameters: a square preview of every shape, in the
+    order the drawing holds them, each numbered. Click a tile to select that shape (and a shape
+    selected on the drawing lights its tile). Drag a tile to move the shape in the order (undoable).
+    Right click or press and hold a tile for Duplicate and Delete.
+  - Clicking a shape again to step to the one underneath now works from any depth of the stack.
+
 ## v1.3.15 (build 105) — 2026-10-25
 
 > Click the same spot again to step to the shape underneath

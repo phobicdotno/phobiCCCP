@@ -1,5 +1,6 @@
 #include <numeric>
 #include "canvas.h"
+#include <QUuid>
 #include "vectorops.h"
 #include "sketchgeom.h"
 #include "backgroundimage.h"
@@ -233,6 +234,43 @@ public:
 private:
     Canvas *m_c; Document *m_d;
     QVector<QPair<int, Element>> m_removed;
+};
+
+// The element order after a drag in the shape strip; undo puts the old order back.
+class OrderCmd : public QUndoCommand
+{
+public:
+    OrderCmd(Canvas *c, Document *d, const QStringList &before, const QStringList &after)
+        : m_c(c), m_d(d), m_before(before), m_after(after)
+    { setText(QStringLiteral("reorder shapes")); }
+    void redo() override { apply(m_after); }
+    void undo() override { apply(m_before); }
+private:
+    void apply(const QStringList &order)
+    {
+        QVector<Element> &els = m_d->elementsRef();
+        QVector<Element> out;
+        for (const QString &id : order)
+            for (const Element &e : els)
+                if (e.id == id) { out.append(e); break; }
+        if (out.size() == els.size())
+            els = out;
+        refresh(m_c);
+    }
+    Canvas *m_c; Document *m_d; QStringList m_before, m_after;
+};
+
+// Copies added as one step.
+class AddManyCmd : public QUndoCommand
+{
+public:
+    AddManyCmd(Canvas *c, Document *d, const QVector<Element> &es)
+        : m_c(c), m_d(d), m_es(es)
+    { setText(QStringLiteral("duplicate %1 shape(s)").arg(es.size())); }
+    void redo() override { for (const Element &e : m_es) m_d->addElement(e); refresh(m_c); }
+    void undo() override { for (const Element &e : m_es) m_d->removeElementById(e.id); refresh(m_c); }
+private:
+    Canvas *m_c; Document *m_d; QVector<Element> m_es;
 };
 
 // Elements and the toolpath that machines them, added as one step (the
@@ -2816,9 +2854,9 @@ void Canvas::cycleSelection(QMouseEvent *event)
     for (int i = 0; i < stack.size(); ++i)
         if (stack.at(i)->data(0).toString() == from)
             at = i;
-    const auto sel = m_scene->selectedItems();
-    if (at < 0 || stack.size() < 2 || sel.size() != 1
-        || sel.first()->data(0).toString() != from)
+    // The press itself selected the topmost shape; `from` is what was selected
+    // before it, so the step goes from there.
+    if (at < 0 || stack.size() < 2)
         return;
     QGraphicsItem *next = stack.at((at + 1) % stack.size());
     m_scene->clearSelection();
@@ -3016,6 +3054,57 @@ void Canvas::keyPressEvent(QKeyEvent *event)
         }
     }
     QGraphicsView::keyPressEvent(event);
+}
+
+void Canvas::moveElementTo(const QString &id, int index)
+{
+    if (!m_doc)
+        return;
+    QStringList before;
+    for (const Element &e : m_doc->elements())
+        before << e.id;
+    const int from = before.indexOf(id);
+    if (from < 0)
+        return;
+    QStringList after = before;
+    after.move(from, qBound(0, index, int(after.size()) - 1));
+    if (after != before)
+        m_undo->push(new OrderCmd(this, m_doc, before, after));
+}
+
+void Canvas::duplicateElements(const QStringList &ids)
+{
+    if (!m_doc)
+        return;
+    QVector<Element> copies;
+    QStringList newIds;
+    for (const QString &id : ids) {
+        const Element *e = m_doc->elementById(id);
+        if (!e)
+            continue;
+        Element c = *e;
+        c.id = QUuid::createUuid().toString();
+        c.raw.insert(QStringLiteral("id"), c.id);
+        c.translate(5, -5);
+        newIds << c.id;
+        copies.append(c);
+    }
+    if (copies.isEmpty())
+        return;
+    m_undo->push(new AddManyCmd(this, m_doc, copies));
+    selectElements(newIds);
+}
+
+void Canvas::deleteElements(const QStringList &ids)
+{
+    if (!m_doc)
+        return;
+    QVector<Element> victims;
+    for (const QString &id : ids)
+        if (const Element *e = m_doc->elementById(id))
+            victims.append(*e);
+    if (!victims.isEmpty())
+        pushEdit(new DeleteCmd(this, m_doc, victims), {});
 }
 
 void Canvas::deleteSelected()

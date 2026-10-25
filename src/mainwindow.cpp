@@ -30,6 +30,7 @@
 #include "propertiespanel.h"
 #include "simpanel.h"
 #include "toolpathpanel.h"
+#include "shapestrip.h"
 #include "vectoractions.h"
 #include "importui.h"
 #include "setupsheet.h"
@@ -666,6 +667,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_docTabs = new QTabWidget(this);
     m_docTabs->setDocumentMode(true);
     m_docTabs->setIconSize(QSize(18, 18));
+    m_shapes = new ShapeStrip(m_canvas, this);
+    m_docTabs->addTab(m_shapes, toolIcon(QStringLiteral("document")), QStringLiteral("Shapes"));
     m_docTabs->addTab(m_info, toolIcon(QStringLiteral("document")), QStringLiteral("Document"));
     m_docTabs->addTab(scrolled(m_model), toolIcon(QStringLiteral("model")), QStringLiteral("Model"));
     m_docTabs->addTab(scrolled(m_parameters), toolIcon(QStringLiteral("fx")), QStringLiteral("Parameters"));

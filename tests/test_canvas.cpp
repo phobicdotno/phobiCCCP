@@ -1265,6 +1265,37 @@ int main(int argc, char *argv[])
         check(cc.selectedElementIds() == QStringList{big.id}, "a lone shape stays selected on a second click");
     }
 
+    // --- Shape strip operations: reorder, duplicate, delete, each one undo step --------
+    {
+        c2d::Document sdoc;
+        c2d::Canvas sc;
+        sc.resize(900, 700);
+        sc.show();
+        sc.setDocument(&sdoc);
+        const c2d::Element a = c2d::Element::makeCircle({10, 10}, 3, sdoc.defaultLayer());
+        const c2d::Element b = c2d::Element::makeCircle({30, 10}, 3, sdoc.defaultLayer());
+        const c2d::Element c = c2d::Element::makeCircle({50, 10}, 3, sdoc.defaultLayer());
+        for (const auto &e : {a, b, c})
+            sdoc.addElement(e);
+        sc.rebuild();
+        auto order = [&] { QStringList o; for (const auto &e : sdoc.elements()) o << e.id; return o; };
+        sc.moveElementTo(c.id, 0);
+        check(order() == QStringList({c.id, a.id, b.id}), "a shape moves to the front");
+        sc.undoStack()->undo();
+        check(order() == QStringList({a.id, b.id, c.id}), "and undo restores the order");
+        sc.moveElementTo(a.id, 2);
+        check(order() == QStringList({b.id, c.id, a.id}), "a shape moves to the end");
+        sc.duplicateElements({b.id});
+        check(sdoc.elements().size() == 4 && sc.selectedElementIds().size() == 1
+                  && sc.selectedElementIds().first() != b.id, "duplicate adds a copy and selects it");
+        sc.undoStack()->undo();
+        check(sdoc.elements().size() == 3, "undo takes the copy away");
+        sc.deleteElements({b.id, c.id});
+        check(order() == QStringList({a.id}), "delete takes the listed shapes");
+        sc.undoStack()->undo();
+        check(sdoc.elements().size() == 3, "undo brings them back");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }
