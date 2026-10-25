@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.19 (build 109) — 2026-10-25
+
+> Park keeps away from the BitSetter, and a job's first move down is always preceded by a move across at the top
+
+- **Machine:**
+  - Park (front right) put the spindle 8 mm from the BitSetter button; it now parks 60 mm to the
+    left of it when the BitSetter is on.
+  - A job also starts by going across to its first cut at the top of Z before any Z-only
+    rapid can come down, the same guard the tool-change resume got in 1.3.17.
+
 ## v1.3.18 (build 108) — 2026-10-25
 
 > The running job shows each toolpath's own cut, its bit and how far it has got

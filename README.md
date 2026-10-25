@@ -18,6 +18,13 @@ cmake --build build -j$(nproc)
 ./build/phobicccp yourfile.c2d
 ```
 
+`cmake --build build` also builds every test program. To update just the program,
+build only its target, which is much quicker:
+
+```sh
+cmake --build build -j$(nproc) --target phobicccp
+```
+
 Install (binary + start-menu launcher + icon + `.c2d` file association):
 
 ```sh
