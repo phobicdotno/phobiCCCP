@@ -267,6 +267,29 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
         if (!t.isEmpty() && !t.startsWith(QChar('(')))
             m_queue.insert(at++, t);
     }
+    // The resume can start with a rapid down in work Z (the post's retract).
+    // The spindle may be standing over the BitSetter still (2026-10-25: the
+    // bit was parked 2.5 mm from the button and the retract plunged into it),
+    // so at the top, move across to where the program's first cut is before
+    // it is allowed to come down.
+    if (!first.isEmpty()) {
+        static const QRegularExpression wx(QStringLiteral("(?:^|[^A-Z])X(-?[0-9.]+)"));
+        static const QRegularExpression wy(QStringLiteral("(?:^|[^A-Z])Y(-?[0-9.]+)"));
+        QString gx, gy;
+        for (int i = at; i < m_queue.size() && i < at + 400 && (gx.isEmpty() || gy.isEmpty()); ++i) {
+            QString l = m_queue.at(i);
+            const int c = l.indexOf(QChar(';'));
+            if (c >= 0) l.truncate(c);
+            l = l.toUpper();
+            if (l.contains(QStringLiteral("G91")) || l.contains(QStringLiteral("G53")))
+                break;
+            const auto mx = wx.match(l), my = wy.match(l);
+            if (mx.hasMatch()) gx = mx.captured(1);
+            if (my.hasMatch()) gy = my.captured(1);
+        }
+        if (!gx.isEmpty() && !gy.isEmpty())
+            m_queue.insert(at++, QStringLiteral("G90 G0 X%1 Y%2").arg(gx, gy));
+    }
     m_waitingTool = -1;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));

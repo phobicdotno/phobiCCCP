@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.17 (build 107) — 2026-10-25
+
+> After a tool change the machine now crosses to the first cut at the top before the program moves down, so it can no longer plunge into the BitSetter
+
+- **Machine:**
+  - The same crash as 1.3.3, from another route: when the job started with a tool change, the
+    spot the machine "came from" was the tool-change spot itself, 2.5 mm from the BitSetter
+    button, and the program's first line (a retract in work Z) plunged into it. The resume now
+    looks ahead to the program's first X/Y position and goes there at the top of Z before any
+    line of the program can come down.
+
 ## v1.3.16 (build 106) — 2026-10-25
 
 > Design has a Shapes tab: a tile for every shape, click to select, drag to reorder, hold for Duplicate / Delete

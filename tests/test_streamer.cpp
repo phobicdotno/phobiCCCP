@@ -209,9 +209,11 @@ int main(int argc, char **argv)
         spin(3000, [&] { return finished; });
         check(finished && finishedOk, "tool change: the program finishes after the inserted lines");
         const int rise = grbl.seen.indexOf("G53 G0 Z-2.500");
+        const int across = grbl.seen.indexOf("G90 G0 X10 Y10");
         const int next = grbl.seen.indexOf("G90G21");
-        check(rise >= 2 && next == rise + 1, "tool change: the rise goes out first after the marker");
-        check(grbl.seen.size() == 7 && grbl.seen.last() == "G0X10Y10",
+        check(rise >= 2 && across == rise + 1 && next == across + 1,
+              "tool change: the rise, then across to the first cut at the top, before the program's own lines");
+        check(grbl.seen.size() == 8 && grbl.seen.last() == "G0X10Y10",
               "tool change: then the rest of the program, all of it");
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
