@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.19 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.20 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -158,6 +158,15 @@ endif()
 if(ANDROID)
     return()   # no tests on the pad build; CI runs them on Linux
 endif()
+
+# The developer build of the program: the same app plus the self-check,
+# screenshot (--shot) and machine bring-up (--grbl-*) modes. The tests drive
+# it; it is never installed or shipped. Test-only code goes here or in a
+# test target, never into phobicccp or phobicccp_ui (the shipped_clean test
+# below fails if any of it reaches the shipped program).
+add_executable(phobicccp-dev src/main.cpp)
+target_compile_definitions(phobicccp-dev PRIVATE PHOBICCCP_DEV_TOOLS)
+target_link_libraries(phobicccp-dev PRIVATE phobicccp_ui)
 
 # Tests: `ctest --test-dir build`. Geometry/CAM checks are plain asserts;
 # the GRBL simulator and the machine flow test need python3.
@@ -393,15 +402,21 @@ endif()
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME grblsim COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/grblsim_selftest.py)
-    add_test(NAME machine_flow COMMAND ${CMAKE_SOURCE_DIR}/tools/flowtest.sh $<TARGET_FILE:phobicccp>)
+    add_test(NAME machine_flow COMMAND ${CMAKE_SOURCE_DIR}/tools/flowtest.sh $<TARGET_FILE:phobicccp-dev>)
     # The failure paths: an over-long line, a line GRBL rejects mid-program,
     # and a critical alarm. Each of these used to hang the sender for ever.
-    add_test(NAME machine_faults COMMAND ${CMAKE_SOURCE_DIR}/tools/streamtest.sh $<TARGET_FILE:phobicccp>)
+    add_test(NAME machine_faults COMMAND ${CMAKE_SOURCE_DIR}/tools/streamtest.sh $<TARGET_FILE:phobicccp-dev>)
     # Both drive a real pty against wall-clock deadlines (3 s for the banner,
     # 30 s for a homing cycle). Sharing the box with ctest -j starves them and
     # they fail on timing alone, so they get the machine to themselves.
     set_tests_properties(grblsim machine_flow machine_faults PROPERTIES RUN_SERIAL TRUE)
 endif()
+
+# Nothing test-only in the program people get: no developer modes or
+# screenshot hooks in the shipped binary, and no test sources linked into it.
+add_test(NAME shipped_clean COMMAND ${CMAKE_COMMAND} -DBIN=$<TARGET_FILE:phobicccp>
+         "-DSOURCES=$<JOIN:$<TARGET_PROPERTY:phobicccp,SOURCES>;$<TARGET_PROPERTY:phobicccp_ui,SOURCES>,|>"
+         -P ${CMAKE_SOURCE_DIR}/tests/shipped_clean.cmake)
 
 include(GNUInstallDirs)
 install(TARGETS phobicccp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

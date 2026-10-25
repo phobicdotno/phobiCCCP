@@ -7,10 +7,10 @@
 #                   tool in, so the offset must come back 0.000.
 #   4. --grbl-map:  a 3 x 3 surface map over a tilted stock (second simulator
 #                   with --surface); the offsets must match the tilt.
-# Usage: tools/flowtest.sh [path/to/phobicccp]   (default ./build/phobicccp)
+# Usage: tools/flowtest.sh [path/to/phobicccp-dev]   (default ./build/phobicccp-dev)
 set -u
 cd "$(dirname "$0")/.."
-BIN=${1:-./build/phobicccp}
+BIN=${1:-./build/phobicccp-dev}
 T=$(mktemp -d); FIFO=$T/sim.stdin; mkfifo $FIFO
 python3 tools/grblsim.py --speed 20 --bitsetter -20 -20 --bitsetter-z -60 --quiet < $FIFO > $T/sim.out 2> $T/sim.err &
 SIM=$!; exec 3>$FIFO
