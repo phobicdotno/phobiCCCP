@@ -17,6 +17,14 @@ void main() {
     expect(jsonDecode(jsonEncode(d.toJson())), jsonDecode(text));
   });
 
+  test('tabs are written only when they differ from the computer\'s own', () {
+    const plain = ToolpathSpec(name: 'P', type: 'profile', shapes: ['s1'], tool: 201, depth: 3);
+    expect(plain.toJson().keys.where({'tabs', 'tabHeight', 'tabWidth'}.contains), isEmpty);
+    final t = plain.copyWith(tabs: false, tabHeight: 4.5, tabWidth: 10);
+    final back = ToolpathSpec.fromJson(jsonDecode(jsonEncode(t.toJson())) as Map<String, Object?>);
+    expect((back.tabs, back.tabHeight, back.tabWidth), (false, 4.5, 10.0));
+  });
+
   test('writes only what a shape uses', () {
     final s = const Shape(id: 's1', type: Shape.circle, x: 1, y: 2, r: 3).toJson();
     expect(s.keys.toSet(), {'id', 'type', 'x', 'y', 'r'});

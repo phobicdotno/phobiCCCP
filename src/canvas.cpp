@@ -49,6 +49,8 @@ static const QColor kAxisY(0x4a, 0x7a, 0x4a);
 static const QColor kElement(0xd8, 0xdc, 0xe4);
 static const QColor kSelected(0xf2, 0xa5, 0x36);   // amber
 static const QColor kPreview(0x5c, 0xc8, 0x8a);
+static const QColor kBandWindow(0x9f, 0xc8, 0xf2);   // left-to-right select band
+static const QColor kBandCrossing(0x7f, 0xd4, 0x8a); // right-to-left select band
 static const QColor kConstruction(0x8a, 0xa4, 0xc8);   // dashed reference lines
 static const QColor kFullyConstrained(0x7c, 0xd6, 0xc2);   // nothing can move it any more
 
@@ -143,6 +145,7 @@ public:
         p->drawPath(path());
     }
     bool isClosed() const { return m_closed; }
+    bool isPoint() const { return m_point; }
     // Hit tolerance in scene units (kHitPx at the current zoom). The item's
     // pen is never drawn (paint() uses its own cosmetic pen); its width
     // only sizes the stroke QGraphicsPathItem::shape() and boundingRect()
@@ -411,7 +414,9 @@ Canvas::Canvas(QWidget *parent)
 {
     setScene(m_scene);
     setRenderHint(QPainter::Antialiasing, true);
-    setDragMode(QGraphicsView::RubberBandDrag);
+    // The select band is the canvas's own (window or crossing by drag
+    // direction), not QGraphicsView's rubber band.
+    setDragMode(QGraphicsView::NoDrag);
     setBackgroundBrush(kViewBg);
     setMouseTracking(true);
     // Flip Y so CC's Y-up space maps to Qt's Y-down scene.
@@ -948,15 +953,156 @@ QHash<QString, double> Canvas::resizeTo(QPointF cur) const
     return p;
 }
 
+namespace {
+
+// Does segment a-b reach into r (edges included)? Liang-Barsky.
+bool segTouches(QPointF a, QPointF b, const QRectF &r)
+{
+    double t0 = 0, t1 = 1;
+    const double dx = b.x() - a.x(), dy = b.y() - a.y();
+    const double ps[4] = {-dx, dx, -dy, dy};
+    const double qs[4] = {a.x() - r.left(), r.right() - a.x(),
+                          a.y() - r.top(), r.bottom() - a.y()};
+    for (int i = 0; i < 4; ++i) {
+        if (ps[i] == 0) {
+            if (qs[i] < 0)
+                return false;
+            continue;
+        }
+        const double t = qs[i] / ps[i];
+        if (ps[i] < 0) {
+            if (t > t1) return false;
+            t0 = qMax(t0, t);
+        } else {
+            if (t < t0) return false;
+            t1 = qMin(t1, t);
+        }
+    }
+    return true;
+}
+
+// Whether r touches the item's line: a closed shape only by its outline,
+// not by lying inside it.
+bool bandTouches(const QGraphicsPathItem *it, bool closed, bool point, const QRectF &r)
+{
+    const QPainterPath path = it->mapToScene(it->path());
+    const QRectF b = path.boundingRect();
+    // QRectF::intersects is false for a straight line's flat box.
+    if (b.right() < r.left() || b.left() > r.right()
+        || b.bottom() < r.top() || b.top() > r.bottom())
+        return false;
+    if (point)
+        return r.contains(path.boundingRect().center());
+    for (const QPolygonF &poly : path.toSubpathPolygons()) {
+        if (poly.size() == 1 && r.contains(poly.first()))
+            return true;
+        for (int i = 1; i < poly.size(); ++i)
+            if (segTouches(poly[i - 1], poly[i], r))
+                return true;
+        if (closed && poly.size() > 2 && segTouches(poly.last(), poly.first(), r))
+            return true;
+    }
+    return false;
+}
+
+} // namespace
+
+// Select by band: left to right selects what lies wholly inside, right to
+// left whatever line the band touches (Phobic, 2026-10-25). Direction is
+// the drag's X only, as in AutoCAD and Fusion.
+void Canvas::applyBand()
+{
+    const QRect vr = QRect(m_bandStart, m_bandEnd).normalized();
+    // A click or a wobble of a few pixels is no band: the press already
+    // set the selection.
+    if (vr.width() < 3 && vr.height() < 3)
+        return;
+    const QRectF r = mapToScene(vr).boundingRect();
+    const bool crossing = m_bandEnd.x() < m_bandStart.x();
+    bool changed = false;
+    m_scene->blockSignals(true);
+    for (QGraphicsItem *g : m_scene->items()) {
+        if (!g->data(0).isValid() || !(g->flags() & QGraphicsItem::ItemIsSelectable)
+            || !g->isVisible())
+            continue;
+        auto *it = qgraphicsitem_cast<QGraphicsPathItem *>(g);
+        if (!it)
+            continue;
+        const auto *e = dynamic_cast<const ElemItem *>(it);
+        const bool point = e && e->isPoint();
+        bool hit;
+        if (crossing) {
+            hit = bandTouches(it, e && e->isClosed(), point, r);
+        } else {
+            const QRectF b = it->mapToScene(it->path()).boundingRect();
+            hit = point ? r.contains(b.center())
+                        : b.left() >= r.left() && b.right() <= r.right()
+                          && b.top() >= r.top() && b.bottom() <= r.bottom();
+        }
+        const bool want = hit || m_bandKeep.contains(g);
+        if (g->isSelected() != want) {
+            g->setSelected(want);
+            changed = true;
+        }
+    }
+    m_scene->blockSignals(false);
+    if (changed)
+        onSelectionChanged();
+}
+
 void Canvas::drawForeground(QPainter *p, const QRectF &rect)
 {
     QGraphicsView::drawForeground(p, rect);
+
+    // Select band, in viewport pixels: window blue and solid, crossing
+    // green and dashed (as AutoCAD and Fusion). The pad draws the same.
+    if (m_band && m_bandStart != m_bandEnd) {
+        const bool crossing = m_bandEnd.x() < m_bandStart.x();
+        const QColor c = crossing ? kBandCrossing : kBandWindow;
+        QColor fill = c;
+        fill.setAlpha(30);
+        QPen pen(c);
+        pen.setCosmetic(true);
+        pen.setWidth(1);
+        if (crossing)
+            pen.setStyle(Qt::DashLine);
+        p->save();
+        p->resetTransform();
+        p->setRenderHint(QPainter::Antialiasing, false);
+        p->setPen(pen);
+        p->setBrush(fill);
+        p->drawRect(QRect(m_bandStart, m_bandEnd).normalized());
+        p->restore();
+    }
 
     // Toolpath -> shapes. Drawn first, and before every early return below, so
     // the halo stays visible whatever tool is active. A wide translucent pass
     // makes it readable over dark stock, a thin solid pass keeps the outline
     // crisp; both cosmetic, so the halo does not thicken as you zoom in.
-    if (!m_highlightIds.isEmpty()) {
+    if (!m_highlightIds.isEmpty() && m_highlightPartial) {
+        // Only what is left after the toolpaths above: amber over a dim
+        // dashed outline of the toolpath's own shapes.
+        p->save();
+        p->setBrush(Qt::NoBrush);
+        QPen dim(QColor(0xff, 0xa5, 0x2a, 0x90));
+        dim.setCosmetic(true);
+        dim.setWidth(1);
+        dim.setStyle(Qt::DashLine);
+        p->setPen(dim);
+        for (const QGraphicsPathItem *it : itemsFor(m_highlightIds))
+            p->drawPath(it->mapToScene(it->path()));
+        p->setBrush(QColor(0xff, 0xa5, 0x2a, 0x40));
+        for (int pass = 0; pass < 2; ++pass) {
+            QPen hp(pass == 0 ? QColor(0xff, 0xa5, 0x2a, 0x60) : QColor(0xff, 0xa5, 0x2a));
+            hp.setCosmetic(true);
+            hp.setWidth(pass == 0 ? 9 : 2);
+            hp.setJoinStyle(Qt::RoundJoin);
+            p->setPen(hp);
+            p->drawPath(m_highlightLeft);
+            p->setBrush(Qt::NoBrush);
+        }
+        p->restore();
+    } else if (!m_highlightIds.isEmpty()) {
         p->save();
         p->setBrush(Qt::NoBrush);
         for (int pass = 0; pass < 2; ++pass) {
@@ -1251,8 +1397,7 @@ void Canvas::setTool(Tool t)
     m_tool = t;
     m_drawing = false;
     m_grab = GrabNone;
-    setDragMode(t == Select ? QGraphicsView::RubberBandDrag
-                            : QGraphicsView::NoDrag);
+    m_band = false;
     viewport()->setCursor(t == Pan ? Qt::OpenHandCursor
                           : t == SelectArea ? Qt::PointingHandCursor
                           : t == Select || t == NodeEdit ? Qt::ArrowCursor : Qt::CrossCursor);
@@ -1413,9 +1558,19 @@ void Canvas::resizeEvent(QResizeEvent *event)
 
 void Canvas::setVectorHighlight(const QStringList &ids)
 {
-    if (m_highlightIds == ids)
+    if (m_highlightIds == ids && !m_highlightPartial)
         return;
     m_highlightIds = ids;
+    m_highlightPartial = false;
+    m_highlightLeft = QPainterPath();
+    viewport()->update();
+}
+
+void Canvas::setVectorHighlight(const QStringList &ids, const QPainterPath &left)
+{
+    m_highlightIds = ids;
+    m_highlightPartial = true;
+    m_highlightLeft = left;
     viewport()->update();
 }
 
@@ -2326,6 +2481,18 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         return;
     }
     QGraphicsView::mousePressEvent(event);
+
+    // Select tool, press on empty board: start the select band. The press
+    // above already cleared the selection unless Ctrl was held.
+    if (m_tool == Select && event->button() == Qt::LeftButton
+        && !m_scene->mouseGrabberItem()) {
+        m_band = true;
+        m_bandStart = m_bandEnd = event->pos();
+        m_bandKeep.clear();
+        if (event->modifiers() & Qt::ControlModifier)
+            for (QGraphicsItem *it : m_scene->selectedItems())
+                m_bandKeep.insert(it);
+    }
 }
 
 void Canvas::mouseMoveEvent(QMouseEvent *event)
@@ -2438,6 +2605,14 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
 
+    if (m_band) {
+        m_bandEnd = event->pos();
+        applyBand();
+        viewport()->update();
+        event->accept();
+        return;
+    }
+
     if ((m_drawing || (m_tool == DrawPath && !m_penNodes.isEmpty())) && m_preview) {
         const QPointF cur = snap(cc);
         if (m_drawing)
@@ -2478,6 +2653,15 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
     }
     if (parametricRelease(event))
         return;
+
+    if (m_band && event->button() == Qt::LeftButton) {
+        m_bandEnd = event->pos();
+        applyBand();
+        m_band = false;
+        viewport()->update();
+        event->accept();
+        return;
+    }
 
     if (m_tool == NodeEdit && m_grab != GrabNone) {
         m_grab = GrabNone;

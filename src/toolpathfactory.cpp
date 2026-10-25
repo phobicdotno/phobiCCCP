@@ -4,6 +4,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSettings>
 #include <QUuid>
 
 namespace c2d {
@@ -273,10 +274,12 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
     if (type == QLatin1String("contour")) {
         j.insert(QStringLiteral("climb"), false);
         j.insert(QStringLiteral("ignore_tabs"), false);
-        j.insert(QStringLiteral("ofset_dir"), -1);       // sic: CC's spelling
+        j.insert(QStringLiteral("ofset_dir"), 1);        // sic: CC's spelling; outside, as a profile is cut (holes still come out inside)
         j.insert(QStringLiteral("stepover"), tp.stepover);
         j.insert(QStringLiteral("stock_to_leave"), 0);
-        j.insert(QStringLiteral("tab_height"), 3);
+        // Settings > Tab height (a new contour's bridges; 3 mm until set)
+        j.insert(QStringLiteral("tab_height"),
+                 qBound(0.1, QSettings().value(QStringLiteral("defaults/tabHeight"), 3.0).toDouble(), 50.0));
         j.insert(QStringLiteral("tab_width"), 12);
         // phobiCCCP key (Fusion's lead-in / lead-out): quarter-circle arcs of
         // this radius onto and off the cut, on the air side; 0 turns them

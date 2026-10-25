@@ -2,6 +2,7 @@
 #include "c2ddocument.h"
 #include "post_grbl.h"
 #include <QGraphicsView>
+#include <QSet>
 #include <functional>
 
 class QGraphicsPathItem;
@@ -100,6 +101,11 @@ public:
     // the toolpath list answers "which shapes does this one cut?".
     void setVectorHighlight(const QStringList &ids);
     void clearVectorHighlight() { setVectorHighlight({}); }
+    // ...with only `left` (mm, Y up) in amber: what the toolpath has left to
+    // cut after the toolpaths above it. Its shapes get a dim outline.
+    void setVectorHighlight(const QStringList &ids, const QPainterPath &left);
+    bool vectorHighlightPartial() const { return m_highlightPartial; }
+    const QPainterPath &vectorHighlightLeft() const { return m_highlightLeft; }
     const QStringList &vectorHighlight() const { return m_highlightIds; }
 
     // On-canvas g-code preview: rapids dashed, cuts colored by depth.
@@ -236,9 +242,18 @@ private:
     void resetSketch();
     QGraphicsPathItem *m_preview = nullptr; // live outline while dragging
     QStringList m_highlightIds;             // vectors of the selected toolpath
+    QPainterPath m_highlightLeft;           // ...and what it has left to cut
+    bool m_highlightPartial = false;        // m_highlightLeft is in use
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+    // Select band (viewport coords). Dragged left to right it is a window
+    // (only what lies wholly inside); right to left a crossing (whatever
+    // line it touches). Ctrl adds to the selection it started with.
+    bool m_band = false;
+    QPoint m_bandStart, m_bandEnd;
+    QSet<QGraphicsItem *> m_bandKeep;
+    void applyBand();
 
     // Click tools (slot, arc, edge polygon) reuse m_clicks (the points
     // clicked so far, CC mm); how many points finish a shape depends on

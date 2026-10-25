@@ -329,6 +329,11 @@ MachinePanel::MachinePanel(QWidget *parent)
     connRow->addWidget(refresh);
     connRow->addWidget(m_connectBtn);
     connect(refresh, &QPushButton::clicked, this, [this] { refreshPorts(); });
+    // The Z-zero record follows the controller: another port, another record.
+    connect(m_ports, &QComboBox::currentTextChanged, this, [this] {
+        if (!m_loading)
+            loadZZero();
+    });
     connect(m_connectBtn, &QPushButton::clicked, this, [this] { toggleConnect(); });
 
     // ---- Initialize (shown while the controller is in Alarm) --------------
@@ -1079,6 +1084,8 @@ MachinePanel::MachinePanel(QWidget *parent)
 
     // ---- Streamer feedback -----------------------------------------------
     connect(m_grbl, &GrblStreamer::connected, this, [this](const QString &p) {
+        m_connectedPort = p;
+        loadZZero();                      // this controller's record
         m_connectBtn->setText(QStringLiteral("Disconnect"));
         setStatePill(QStringLiteral("Connected to %1 — waiting for status").arg(p), QStringLiteral("#2a2e36"));
         m_grbl->sendCommand(QString());   // wake newline
@@ -2084,12 +2091,36 @@ void MachinePanel::noteZZero(double mx, double my, double sent, double wcoZ)
     m_zZeroMy = my;
     m_zZeroWco = wcoZ;
     QSettings s;
-    s.beginGroup(QStringLiteral("machine"));
-    s.setValue(QStringLiteral("zzero/withMap"), m_zZeroWithMap);
-    s.setValue(QStringLiteral("zzero/sent"), sent);
-    s.setValue(QStringLiteral("zzero/mx"), mx);
-    s.setValue(QStringLiteral("zzero/my"), my);
-    s.setValue(QStringLiteral("zzero/wco"), wcoZ);
+    s.beginGroup(zzeroGroup());
+    s.setValue(QStringLiteral("withMap"), m_zZeroWithMap);
+    s.setValue(QStringLiteral("sent"), sent);
+    s.setValue(QStringLiteral("mx"), mx);
+    s.setValue(QStringLiteral("my"), my);
+    s.setValue(QStringLiteral("wco"), wcoZ);
+}
+
+// The Z-zero record belongs to the controller (its work offset is what it
+// describes), not to the machine profile: two profiles on one board share
+// it, and a profile used with another board starts without one. Kept under
+// the port the controller is on, outside the profile's own settings.
+QString MachinePanel::zzeroGroup() const
+{
+    QString port = m_grbl && m_grbl->isConnected() && !m_connectedPort.isEmpty() ? m_connectedPort
+                                                                                  : currentPortName();
+    port.replace(QLatin1Char('/'), QLatin1Char('_')).replace(QLatin1Char('\\'), QLatin1Char('_'));
+    return QStringLiteral("controllers/%1/zzero").arg(port.isEmpty() ? QStringLiteral("default") : port);
+}
+
+void MachinePanel::loadZZero()
+{
+    QSettings s;
+    s.beginGroup(zzeroGroup());
+    m_zZeroKnown = s.contains(QStringLiteral("wco"));
+    m_zZeroWithMap = s.value(QStringLiteral("withMap")).toBool();
+    m_zZeroSent = s.value(QStringLiteral("sent")).toDouble();
+    m_zZeroMx = s.value(QStringLiteral("mx")).toDouble();
+    m_zZeroMy = s.value(QStringLiteral("my")).toDouble();
+    m_zZeroWco = s.value(QStringLiteral("wco")).toDouble();
 }
 
 // Set the work offset from where the machine now stands and the corner it
@@ -2605,12 +2636,6 @@ void MachinePanel::loadSettings()
     QSettings s;
     s.beginGroup(QStringLiteral("machine"));
     m_bsEnabled->setChecked(s.value(QStringLiteral("bitsetter/enabled"), false).toBool());
-    m_zZeroKnown = s.contains(QStringLiteral("zzero/wco"));
-    m_zZeroWithMap = s.value(QStringLiteral("zzero/withMap")).toBool();
-    m_zZeroSent = s.value(QStringLiteral("zzero/sent")).toDouble();
-    m_zZeroMx = s.value(QStringLiteral("zzero/mx")).toDouble();
-    m_zZeroMy = s.value(QStringLiteral("zzero/my")).toDouble();
-    m_zZeroWco = s.value(QStringLiteral("zzero/wco")).toDouble();
     m_bsX->setValue(s.value(QStringLiteral("bitsetter/x"), -20.0).toDouble());
     m_bsY->setValue(s.value(QStringLiteral("bitsetter/y"), -20.0).toDouble());
     m_bsSafeZ->setValue(s.value(QStringLiteral("bitsetter/safeZ"), -5.0).toDouble());
@@ -2623,6 +2648,7 @@ void MachinePanel::loadSettings()
     const QString port = s.value(QStringLiteral("port")).toString();
     if (!port.isEmpty())
         m_ports->setEditText(port);
+    loadZZero();
     m_loading = false;
 }
 

@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.3.14 (build 104) — 2026-10-25
+
+> Box select works like CAD: drag right for a window, left for a crossing
+
+- **Design:**
+  - Dragging a select box from left to right (a window) selects only the shapes that lie wholly
+    inside it. The box is blue with a solid edge.
+  - Dragging it from right to left (a crossing) selects every shape whose line the box touches or
+    crosses. A box dropped inside a closed shape without reaching its outline does not take it. The
+    box is green with a dashed edge.
+  - Only the drag's left/right direction decides, as in AutoCAD and Fusion; up or down does not
+    matter. Ctrl still adds to the selection.
+  - The pad does the same, with the same colours.
+
+## v1.3.13 (build 103) — 2026-10-25
+
+> Every toolpath card opens with a "v" to show its shapes, each with a bin
+
+- **Toolpaths** (computer and pad alike):
+  - Under every toolpath card sits a "v". It opens the card to show a small picture of every shape the
+    toolpath cuts, each in its own tile with a bin in the corner. The bin takes that one shape out of
+    the toolpath (undoable on the computer); the shape itself stays in the drawing. "v" again closes it.
+  - Toolpaths on top of each other: a pocket (or adaptive) set to skip what the toolpaths above cut
+    shows only what is left for it. Selecting it outlines that remainder in amber on the drawing, over
+    a faint outline of its own shapes, and its thumbnails do the same. A pocket above counts when it is
+    switched on and goes at least as deep.
+  - "Assign selected vectors" moved from the bottom of the toolpath settings to the top, right under
+    the list (the pad's Vectors card too): it is the first thing done to a new toolpath.
+  - After the last shape picture of an open card sits a dotted "+" tile of the same size: it adds the
+    shapes selected on the drawing to that toolpath, keeping the ones it already cuts.
+
+## v1.3.12 (build 102) — 2026-10-25
+
+> Pad tab fields, Z-zero record per controller, tab height setting, contours start outside
+
+- **Machine:** the Z-zero record (what the surface map was when Z was zeroed) is kept per controller,
+  under its port, not per machine profile: two profiles on one board share it, and a profile used with
+  another board starts without one.
+- **Toolpaths:**
+  - A new contour starts outside (it was inside; the pad already started outside), so desktop and pad
+    agree. Holes in the selection still come out inside, and a cut through the stock still takes the
+    holes before the outline (a test now holds that).
+  - Settings has a Tab height: what a new contour's tabs start with (3 mm until set; each toolpath can
+    still change its own).
+- **Pad app (same as the computer):** a new toolpath starts 2.54 mm deep (an engraving 0.5 mm) and is named
+  "Contour Toolpath 1", "Pocket Toolpath 1", "Drilling Toolpath 1", "Engrave 1", as on the computer; a
+  toolpath with points in it (not a drill) says they are left out, as the export does.
+- **Pad app:** a profile has a Tabs card: the switch, the tab height and the tab width, as on the
+  computer. A pad profile now carries them to the computer, and an edit of a file with tabs set up no
+  longer drops them on the way back (they were not reported as lost, because they were not carried).
+
 ## v1.3.11 (build 101) — 2026-10-25
 
 > A new Drill toolpath goes to the full depth in one movement

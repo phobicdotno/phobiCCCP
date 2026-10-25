@@ -20,7 +20,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
-const appVersion = '1.3.9';
+const appVersion = '1.3.14';
 
 class MainWindow extends StatefulWidget {
   final AppState app;
@@ -40,6 +40,11 @@ class _MainWindowState extends State<MainWindow> {
   bool _snap = true, _fullScreen = false;
   Set<String> _sel = {};
   int? _tp;
+
+  /// Toolpath cards whose shape thumbnails are open, by index (kept with the
+  /// card when it moves, as the desktop keeps them by toolpath).
+  Set<int> _shapesOpen = {};
+  void _remapOpen(int Function(int k) f) => _shapesOpen = {for (final k in _shapesOpen) if (f(k) >= 0) f(k)};
   List<List<double>>? _pathDraft;
   final _zoom = CanvasZoom();
   String _status = '';
@@ -381,17 +386,20 @@ class _MainWindowState extends State<MainWindow> {
     }
     final tool = app.tools.defaultTool(d.material, type) ?? 201;
     final n = d.toolpaths.where((t) => t.type == type).length + 1;
-    final depth = switch (type) {
-      'profile' => d.stock.thickness,
-      'pocket' => 3.0,
-      'drill' => d.stock.thickness,
-      _ => 1.0,
-    };
-    final tp = ToolpathSpec(name: '${tpTypeLabel(type)} $n', type: type, shapes: shapes, tool: tool, depth: depth);
+    // As the computer starts a new toolpath (toolpathfactory.cpp): 2.54 mm
+    // deep, an engraving 0.5 mm, named after the type the way it names them.
+    final depth = type == 'engrave' ? 0.5 : 2.54;
+    final stem = const {
+      'profile': 'Contour Toolpath',
+      'pocket': 'Pocket Toolpath',
+      'drill': 'Drilling Toolpath',
+      'engrave': 'Engrave',
+    }[type] ?? tpTypeLabel(type);
+    final tp = ToolpathSpec(name: '$stem $n', type: type, shapes: shapes, tool: tool, depth: depth);
     _commit(d.copyWith(toolpaths: [...d.toolpaths, tp]));
     setState(() => _tp = _d!.toolpaths.length - 1);
     final open = openPathsLeftOut(d, tp);
-    _say('${tpTypeLabel(type)} $n: ${shapes.length} vector${shapes.length == 1 ? '' : 's'}'
+    _say('${tp.name}: ${shapes.length} vector${shapes.length == 1 ? '' : 's'}'
         '${open > 0 ? ' (${openPathsWords(open)})' : ''}');
   }
 
@@ -888,6 +896,7 @@ class _MainWindowState extends State<MainWindow> {
                   zoom: _zoom,
                   selected: _sel,
                   highlighted: _mode == 1 && _tp != null && _tp! < d.toolpaths.length ? d.toolpaths[_tp!].shapes.toSet() : const {},
+                  leftOf: _mode == 1 && _tp != null && _tp! < d.toolpaths.length ? _tp : null,
                   pathDraft: _pathDraft ?? const [],
                   onSelect: (ids) => setState(() => _sel = ids),
                   onMove: (ids, dx, dy) => setState(() {
@@ -950,6 +959,8 @@ class _MainWindowState extends State<MainWindow> {
             current: _tp,
             selectedShapes: _sel,
             onPick: (i) => setState(() => _tp = i),
+            shapesOpen: _shapesOpen,
+            onToggleShapes: (i) => setState(() => _shapesOpen.contains(i) ? _shapesOpen.remove(i) : _shapesOpen.add(i)),
             onNew: _newToolpath,
             onChange: (i, t) {
               if (!_changedUnder(d)) _setToolpath(i, t);
@@ -959,11 +970,13 @@ class _MainWindowState extends State<MainWindow> {
               final t = d.toolpaths[i];
               // Right after the original, as on the computer: list order is cut order.
               _commit(d.copyWith(toolpaths: [...d.toolpaths]..insert(i + 1, t.copyWith(name: '${t.name} copy'))));
+              _remapOpen((k) => k > i ? k + 1 : k);
               setState(() => _tp = i + 1);
             },
             onDelete: (i) {
               if (_changedUnder(d)) return;
               _commit(d.copyWith(toolpaths: [...d.toolpaths]..removeAt(i)));
+              _remapOpen((k) => k == i ? -1 : (k > i ? k - 1 : k));
               setState(() => _tp = null);
             },
             onMove: (i, to) {
@@ -972,6 +985,11 @@ class _MainWindowState extends State<MainWindow> {
               final t = l.removeAt(i);
               l.insert(to, t);
               _commit(d.copyWith(toolpaths: l));
+              _remapOpen((k) {
+                if (k == i) return to;
+                final r = k > i ? k - 1 : k;
+                return r >= to ? r + 1 : r;
+              });
               setState(() => _tp = to);
             },
             onPickTool: _pickTool,
