@@ -1,5 +1,7 @@
 #pragma once
+#include "toollibrary.h"
 #include <QElapsedTimer>
+#include <QIcon>
 #include <QString>
 #include <QVector>
 #include <QWidget>
@@ -31,6 +33,8 @@ struct JobSection {
     enum Kind { Toolpath, ToolChange } kind = Toolpath;
     QString name;          // toolpath name, or "Tool change"
     QString detail;        // "Pocket · Ø3 mm · 4 mm deep", "T3  3 mm flat endmill"
+    QString type;          // CC toolpath type ("pocket_toolpath"), empty when unknown
+    LibraryTool bit;       // the bit it cuts with / changes to; kind empty when unknown
     int qStart = 0, qEnd = 0;
     double estSec = 0;
     QVector<JobPass> passes;
@@ -111,6 +115,7 @@ private:
     QProgressBar *m_passBar = nullptr;
     QTreeWidget *m_tree = nullptr;
     QVector<QTreeWidgetItem *> m_sectionItems;
+    QVector<QIcon> m_sectionIcons;                     // cut path + bit, one per section
     QVector<QVector<QTreeWidgetItem *>> m_passItems;
     QTimer *m_tick = nullptr;
 };

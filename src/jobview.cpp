@@ -3,12 +3,14 @@
 #include "gcodeexport.h"
 #include "post_grbl.h"
 #include "toollibrary.h"
+#include "tooldiagram.h"
 #include "toolstrip.h"
 
 #include <QColor>
 #include <QDateTime>
 #include <QHeaderView>
 #include <QLabel>
+#include <QPainter>
 #include <QProgressBar>
 #include <QTimer>
 #include <QTreeWidget>
@@ -92,28 +94,56 @@ QString mm(double v)
     return s;
 }
 
-// "Pocket · Ø3 mm · 4 mm deep" for the toolpath called `name`, from the
-// document; empty when it is not there (a renamed or removed toolpath).
-QString toolpathDetail(const Document *doc, const QString &name)
+// "Pocket · Ø3 mm · 4 mm deep", the toolpath type and its bit for the
+// toolpath called `name`, from the document; left empty when it is not
+// there (a renamed or removed toolpath).
+void describeToolpath(JobSection &s, const Document *doc, const QString &name)
 {
     if (!doc)
-        return QString();
+        return;
     for (const Toolpath &t : doc->toolpaths()) {
         if (t.json.value(QStringLiteral("name")).toString() != name)
             continue;
         QStringList parts;
-        const QString type = typeLabel(t.json.value(QStringLiteral("type")).toString(t.type));
+        s.type = t.json.value(QStringLiteral("type")).toString(t.type);
+        const QString type = typeLabel(s.type);
         if (!type.isEmpty())
             parts << type;
-        const double dia = numOr(t.json.value(QStringLiteral("tool")).toObject().value(QStringLiteral("diameter")), 0);
+        const QJsonObject tool = t.json.value(QStringLiteral("tool")).toObject();
+        if (!tool.isEmpty())
+            s.bit = toolpathBit(tool);
+        const double dia = numOr(tool.value(QStringLiteral("diameter")), 0);
         if (dia > 0)
             parts << QStringLiteral("Ø%1 mm").arg(mm(dia));
         const double depth = std::abs(numOr(t.json.value(QStringLiteral("end_depth")), 0));
         if (depth > 0)
             parts << QStringLiteral("%1 mm deep").arg(mm(depth));
-        return parts.join(QStringLiteral(" · "));
+        s.detail = parts.join(QStringLiteral(" · "));
+        return;
     }
-    return QString();
+}
+
+// The row's picture: the cut path glyph, then the bit's outline, both from
+// the toolpath cards. A tool change shows the bit it changes to under the
+// bit column; done steps are greyed like their text.
+QIcon sectionIcon(const JobSection &s)
+{
+    constexpr int kH = 36, kCut = 32, kGap = 6, kBit = 24, kDpr = 3;
+    QIcon icon;
+    for (const QIcon::Mode mode : {QIcon::Normal, QIcon::Disabled}) {
+        QPixmap pm(QSize(kCut + kGap + kBit, kH) * kDpr);
+        pm.setDevicePixelRatio(kDpr);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        if (s.kind == JobSection::Toolpath && !s.type.isEmpty())
+            toolpathIcon(s.type).paint(&p, QRect(0, 0, kCut, kH), Qt::AlignCenter, mode);
+        if (!s.bit.kind.isEmpty())
+            toolKindIcon(s.bit).paint(&p, QRect(kCut + kGap, 0, kBit, kH), Qt::AlignCenter, mode);
+        p.end();
+        icon.addPixmap(pm, mode);
+    }
+    return icon;
 }
 
 } // namespace
@@ -217,7 +247,8 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
                     name = full;
                 ++nameAt;
             }
-            openSection(JobSection::Toolpath, name, toolpathDetail(doc, name));
+            openSection(JobSection::Toolpath, name, QString());
+            describeToolpath(*sec, doc, name);
             continue;
         }
         // From here on the line is queued.
@@ -227,13 +258,15 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
             || up.startsWith(QLatin1String("M00 ;T"))) {
             const int tool = up.mid(up.indexOf(QLatin1Char('T')) + 1).toInt();
             QString detail = QStringLiteral("T%1").arg(tool);
+            LibraryTool lt;
             if (doc && changeAt < changes.size()) {
-                const LibraryTool lt = toolForChange(*doc, changes.at(changeAt));
+                lt = toolForChange(*doc, changes.at(changeAt));
                 if (!lt.name.isEmpty() || lt.diameter > 0)
                     detail += QStringLiteral("  %1%2").arg(lt.diameter > 0 ? QStringLiteral("Ø%1 mm ").arg(mm(lt.diameter)) : QString(), lt.name);
             }
             ++changeAt;
             openSection(JobSection::ToolChange, QStringLiteral("Tool change"), detail);
+            sec->bit = lt;
             JobPass p;
             p.qStart = q;
             p.what = QStringLiteral("park, change the bit, measure, continue");
@@ -348,6 +381,7 @@ JobView::JobView(QWidget *parent) : QWidget(parent)
     m_tree->setFocusPolicy(Qt::NoFocus);
     m_tree->setSelectionMode(QAbstractItemView::NoSelection);
     m_tree->setUniformRowHeights(true);
+    m_tree->setIconSize(QSize(62, 36));
     m_tree->setStyleSheet(QStringLiteral(
         "QTreeWidget { background: #16181d; border: none; font-size: 14px; }"
         "QTreeWidget::item { padding: 4px 2px; }"
@@ -379,6 +413,7 @@ void JobView::clear()
     m_passStart.clear();
     m_passDone.clear();
     m_sectionItems.clear();
+    m_sectionIcons.clear();
     m_passItems.clear();
     m_tree->clear();
     m_title->setText(QStringLiteral("No job running"));
@@ -401,6 +436,7 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
     m_passStart.resize(n);
     m_passDone.resize(n);
     m_sectionItems.resize(n);
+    m_sectionIcons.resize(n);
     m_passItems.resize(n);
     for (int i = 0; i < n; ++i) {
         const JobSection &s = plan.sections.at(i);
@@ -408,6 +444,8 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
         it->setText(0, s.detail.isEmpty() ? s.name : s.name + QStringLiteral("   —  ") + s.detail);
         it->setText(1, clock(s.estSec));
         it->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        m_sectionIcons[i] = sectionIcon(s);
+        it->setIcon(0, m_sectionIcons.at(i));
         m_sectionItems[i] = it;
         const int np = s.passes.size();
         m_passStart[i] = QVector<qint64>(np, -1);
@@ -515,8 +553,10 @@ void JobView::refresh()
         const bool finished = q >= s.qEnd;
         if (started && m_sectionStart[i] < 0)
             m_sectionStart[i] = now;
-        if (finished && m_sectionDone[i] < 0)
+        if (finished && m_sectionDone[i] < 0) {
             m_sectionDone[i] = now;
+            it->setIcon(0, QIcon(m_sectionIcons.at(i).pixmap(QSize(62, 36), QIcon::Disabled)));
+        }
         QFont f = it->font(0);
         f.setBold(started && !finished);
         it->setFont(0, f);

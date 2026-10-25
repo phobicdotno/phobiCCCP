@@ -5,6 +5,7 @@
 #include "shopdialog.h"
 #include "aboutdialog.h"
 #include "toolstrip.h"
+#include "tooldiagram.h"
 #include "brandlogo.h"
 
 #include "exportprogress.h"
@@ -221,126 +222,6 @@ static bool drawModeIcon(QPainter &p, const QString &kind)
         return false;
     }
     return true;
-}
-
-// One glyph per toolpath kind for the Toolpaths-mode bar: what the cut
-// looks like from above, amber where material goes.
-static QIcon toolpathIcon(const QString &type)
-{
-    QPixmap pm(78, 78);
-    pm.setDevicePixelRatio(3.0);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing);
-    const QColor ink(0xd8, 0xdc, 0xe4), amber(0xf2, 0xa5, 0x36);
-    QPen pen(ink, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    QPen cut(amber, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
-    p.setPen(pen);
-    p.setBrush(Qt::NoBrush);
-    const QRectF box(5, 5, 16, 16);
-    if (type == QLatin1String("contour")) {
-        p.drawRoundedRect(box, 3, 3);
-        p.setPen(QPen(amber, 1.4, Qt::DashLine, Qt::RoundCap));
-        p.drawRoundedRect(box.adjusted(-2.5, -2.5, 2.5, 2.5), 4, 4);
-    } else if (type == QLatin1String("pocket_toolpath")) {
-        p.drawRoundedRect(box, 3, 3);
-        p.setPen(QPen(amber, 1.2));
-        for (int i = 0; i < 5; ++i)
-            p.drawLine(QPointF(7, 8 + i * 2.6), QPointF(19, 8 + i * 2.6));
-    } else if (type == QLatin1String("drilling_toolpath")) {
-        p.setBrush(amber);
-        p.setPen(Qt::NoPen);
-        for (QPointF c : {QPointF(8, 8), QPointF(18, 8), QPointF(8, 18), QPointF(18, 18)})
-            p.drawEllipse(c, 2.6, 2.6);
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-        p.drawLine(QPointF(13, 10), QPointF(13, 16));
-        p.drawLine(QPointF(10, 13), QPointF(16, 13));
-    } else if (type == QLatin1String("texture_toolpath")) {
-        p.setPen(cut);
-        for (int i = 0; i < 3; ++i) {
-            QPainterPath w(QPointF(4, 8 + i * 5));
-            w.cubicTo(QPointF(8, 4 + i * 5), QPointF(10, 12 + i * 5), QPointF(13, 8 + i * 5));
-            w.cubicTo(QPointF(16, 4 + i * 5), QPointF(18, 12 + i * 5), QPointF(22, 8 + i * 5));
-            p.drawPath(w);
-        }
-    } else if (type == QLatin1String("advanced_vcarve_toolpath")) {
-        p.setPen(QPen(ink, 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        p.drawPolyline(QPolygonF({QPointF(5, 5), QPointF(13, 21), QPointF(21, 5)}));
-        p.setPen(QPen(amber, 1.2));
-        p.drawLine(QPointF(9, 5), QPointF(13, 15));
-        p.drawLine(QPointF(17, 5), QPointF(13, 15));
-    } else if (type == QLatin1String("keyhole_toolpath")) {
-        QPainterPath k;
-        k.addEllipse(QPointF(13, 9), 5, 5);
-        QPainterPath slot;
-        slot.addRoundedRect(QRectF(10.5, 9, 5, 12), 2.5, 2.5);
-        p.setPen(cut);
-        p.drawPath(k.united(slot));
-    } else if (type == QLatin1String("cutout")) {
-        p.setPen(cut);
-        // outline with four tab gaps
-        p.drawLine(QPointF(5, 5), QPointF(11, 5));   p.drawLine(QPointF(15, 5), QPointF(21, 5));
-        p.drawLine(QPointF(5, 21), QPointF(11, 21)); p.drawLine(QPointF(15, 21), QPointF(21, 21));
-        p.drawLine(QPointF(5, 5), QPointF(5, 11));   p.drawLine(QPointF(5, 15), QPointF(5, 21));
-        p.drawLine(QPointF(21, 5), QPointF(21, 11)); p.drawLine(QPointF(21, 15), QPointF(21, 21));
-        p.setPen(QPen(ink, 1.2));
-        for (QPointF c : {QPointF(13, 5), QPointF(13, 21), QPointF(5, 13), QPointF(21, 13)})
-            p.drawEllipse(c, 1.3, 1.3);
-    } else if (type == QLatin1String("engrave_toolpath")) {
-        p.setPen(QPen(amber, 1.4, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        QPainterPath a(QPointF(4, 20));
-        a.cubicTo(QPointF(6, 4), QPointF(12, 4), QPointF(13, 20));
-        a.cubicTo(QPointF(14, 10), QPointF(18, 8), QPointF(22, 18));
-        p.drawPath(a);
-    } else if (type == QLatin1String("face_toolpath")) {
-        p.drawRoundedRect(box, 2, 2);
-        p.setPen(cut);
-        QPainterPath z(QPointF(7, 8));
-        z.lineTo(QPointF(19, 8)); z.lineTo(QPointF(7, 11.5)); z.lineTo(QPointF(19, 11.5));
-        z.lineTo(QPointF(7, 15)); z.lineTo(QPointF(19, 15)); z.lineTo(QPointF(7, 18.5));
-        z.lineTo(QPointF(19, 18.5));
-        p.drawPath(z);
-    } else if (type == QLatin1String("bore_toolpath")) {
-        p.drawEllipse(QPointF(13, 13), 8, 8);
-        p.setPen(cut);
-        QPainterPath sp(QPointF(13, 13));
-        for (int i = 1; i <= 24; ++i) {
-            const double t = i * 0.55, r = i * 0.27;
-            sp.lineTo(QPointF(13 + r * std::cos(t), 13 + r * std::sin(t)));
-        }
-        p.drawPath(sp);
-    } else if (type == QLatin1String("chamfer_toolpath")) {
-        p.drawPolygon(QPolygonF({QPointF(5, 5), QPointF(21, 5), QPointF(21, 21), QPointF(5, 21)}));
-        p.setPen(cut);
-        p.drawLine(QPointF(5, 13), QPointF(13, 5));
-        p.drawLine(QPointF(5, 17), QPointF(17, 5));
-    } else if (type == QLatin1String("adaptive_toolpath")) {
-        p.setPen(cut);
-        QPainterPath tr(QPointF(4, 13));
-        for (int i = 1; i <= 60; ++i) {
-            const double t = i * 0.42;
-            tr.lineTo(QPointF(4 + i * 0.3 + 3 * std::cos(t), 13 + 5 * std::sin(t)));
-        }
-        p.drawPath(tr);
-    } else if (type == QLatin1String("thread_toolpath")) {
-        p.drawEllipse(QPointF(13, 13), 8, 8);
-        p.setPen(cut);
-        for (int i = 0; i < 4; ++i)
-            p.drawLine(QPointF(7, 8 + i * 3.3), QPointF(19, 6.5 + i * 3.3));
-    } else if (type == QLatin1String("slot_toolpath")) {
-        p.drawRoundedRect(QRectF(4, 9, 18, 8), 4, 4);
-        p.setPen(QPen(amber, 1.4, Qt::DashLine, Qt::RoundCap));
-        p.drawLine(QPointF(8, 13), QPointF(18, 13));
-    } else if (type == QLatin1String("circular_toolpath")) {
-        p.setPen(cut);
-        p.drawEllipse(QPointF(13, 13), 8, 8);
-        p.drawEllipse(QPointF(13, 13), 5, 5);
-        p.drawEllipse(QPointF(13, 13), 2, 2);
-    } else {
-        p.drawRoundedRect(box, 3, 3);
-    }
-    return QIcon(pm);
 }
 
 static QIcon toolIcon(const QString &kind)
