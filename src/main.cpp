@@ -226,6 +226,7 @@ static void applyDarkTheme(QApplication &app)
     )"));
 }
 
+#ifdef PHOBICCCP_DEV_TOOLS
 // --selftest <in.c2d> <out.c2d>: headless create/save/reload check — loads the
 // input, adds one circle + rectangle + hexagon via the factories, saves, then
 // reloads the output and reports the element count. Exits 0 on success.
@@ -513,6 +514,7 @@ static int selftest(const QString &in, const QString &out)
             << "toolpaths =" << check3.toolpaths().size();
     return insOk ? 0 : 16;
 }
+#endif // PHOBICCCP_DEV_TOOLS
 
 // Every CLI mode below is dispatched on an exact argument count, so a typo or a
 // missing operand would otherwise fall all the way through to the GUI and try to
@@ -527,6 +529,13 @@ static void printUsage()
         "Headless:\n"
         "  --export <in.c2d> <out.nc>                    export g-code\n"
         "  --export-tiled <in.c2d> <outbase> [tile_mm]   one complete program per tile\n"
+        "\n"
+        "  --version                                     print the version and exit\n"
+        "  --help, -h                                    this text\n");
+#ifdef PHOBICCCP_DEV_TOOLS
+    std::printf(
+        "\n"
+        "Developer build (phobicccp-dev) only:\n"
         "  --selftest <in.c2d> <out.c2d>                 create/save/export self-check\n"
         "  --shot <in.c2d> <out.png> [preview|machine|simulation|model|parameters]\n"
         "                                                render the GUI to a PNG\n"
@@ -539,10 +548,8 @@ static void printUsage()
         "  --grbl-rehearse <port> <bsX> <bsY> [safeZ]    reference + one tool change, spindle off\n"
         "  --grbl-map <port> <x0> <y0> <x1> <y1> <cols> <rows>  surface map, touching the stock\n"
         "  --grbl-aircut <port> <template.c2d> [lift_mm] rehearse a program in the air\n"
-        "  --grbl-circle <port> [feed]                   sweep the largest circle that fits\n"
-        "\n"
-        "  --version                                     print the version and exit\n"
-        "  --help, -h                                    this text\n");
+        "  --grbl-circle <port> [feed]                   sweep the largest circle that fits\n");
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -618,6 +625,9 @@ int main(int argc, char *argv[])
                   + QStringLiteral("/phobiCCCP"));
 #endif
 
+#ifdef PHOBICCCP_DEV_TOOLS
+    // The developer modes: self-checks, screenshots and the machine bring-up
+    // commands. Only phobicccp-dev has them; the program people get does not.
     if (argc == 4 && QByteArray(argv[1]) == "--selftest")
         return selftest(QString::fromLocal8Bit(argv[2]),
                         QString::fromLocal8Bit(argv[3]));
@@ -1318,6 +1328,23 @@ int main(int argc, char *argv[])
         const QVariant recentBefore = QSettings().value(QStringLiteral("recentFiles"));
         w.openFile(QString::fromLocal8Bit(argv[2]));
         QSettings().setValue(QStringLiteral("recentFiles"), recentBefore);
+        // PHOBICCCP_SHOT_SELECT=<geometryType> selects the last element of that
+        // type, PHOBICCCP_SHOT_TOOL=nodes opens it in the node editor.
+        const QByteArray selType = qgetenv("PHOBICCCP_SHOT_SELECT");
+        c2d::Canvas *canvas = w.findChild<c2d::Canvas *>();
+        if (canvas && canvas->document() && !selType.isEmpty()) {
+            QString id;
+            for (const c2d::Element &e : canvas->document()->elements())
+                if (e.geometryType == QString::fromLatin1(selType))
+                    id = e.id;
+            const bool nodes = qgetenv("PHOBICCCP_SHOT_TOOL") == "nodes";
+            QTimer::singleShot(300, canvas, [canvas, id, nodes] {
+                if (nodes)
+                    canvas->setTool(c2d::Canvas::NodeEdit);
+                if (!id.isEmpty())
+                    canvas->selectElements({id});
+            });
+        }
         w.statusBar()->showMessage(QStringLiteral("Select \u2014 click/drag to select, drag to move, Del to delete"));
         // The page to grab; "a:b:c" walks through several, like a user
         // switching modes, and grabs the last.
@@ -1453,6 +1480,7 @@ int main(int argc, char *argv[])
         app.exec();
         return rc;
     }
+#endif // PHOBICCCP_DEV_TOOLS
 
     // --export-tiled <in.c2d> <outbase> [tile_height_mm]: headless tiled
     // export, one complete program per tile: <outbase>_tile1.nc, _tile2.nc…

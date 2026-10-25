@@ -4,10 +4,10 @@
 #   1. a line longer than the char-counting window
 #   2. a line GRBL rejects with error: mid-program
 #   3. a critical alarm (soft limit), which GRBL never acks and never reboots from
-# Usage: tools/streamtest.sh [path/to/phobicccp]   (default ./build/phobicccp)
+# Usage: tools/streamtest.sh [path/to/phobicccp-dev]   (default ./build/phobicccp-dev)
 set -u
 cd "$(dirname "$0")/.."
-BIN=${1:-./build/phobicccp}
+BIN=${1:-./build/phobicccp-dev}
 fail=0
 T=$(mktemp -d)
 

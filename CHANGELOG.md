@@ -18,6 +18,22 @@
     instead of looking like more toolpaths.
 - **Pad:** the Machine page shows the stopped step in red, not as running.
 
+## v1.3.21 (build 111) — 2026-10-25
+
+> Nothing that exists only for testing is in the program any more: the test modes moved to a separate developer build
+
+- **Program:**
+  - The self-check (`--selftest`), screenshot (`--shot`) and machine bring-up commands
+    (`--grbl-check`, `--grbl-probe`, `--grbl-run`, `--grbl-rehearse`, `--grbl-map`,
+    `--grbl-aircut`, `--grbl-circle`, `--grbl-jog-z1`) are gone from the program, on the
+    computer and on the pad. They live in `phobicccp-dev`, which the build makes for the
+    tests and never installs. `--export` and `--export-tiled` stay.
+  - The design canvas no longer looks at the screenshot settings (`PHOBICCCP_SHOT_SELECT`,
+    `PHOBICCCP_SHOT_TOOL`) every time a design opens; `--shot` does that itself now.
+- **Build:**
+  - New test `shipped_clean` fails if a test mode, screenshot hook or test source ever ends
+    up in the shipped program again.
+
 ## v1.3.20 (build 110) — 2026-10-25
 
 > The "Z was zeroed with another surface map" check can no longer be skipped right after a bit is measured again
