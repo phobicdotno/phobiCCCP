@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.19 (build 109) — 2026-10-25
+
+> The "Z was zeroed with another surface map" check can no longer be skipped right after a bit is measured again
+
+- **Machine:**
+  - Measuring a bit a second time sends a new tool length offset (G43.1). A position report GRBL
+    sent in the moment before it applied that offset still carried the old one, but was read as
+    carrying the new one. A job started from the pad in that moment then skipped the check that
+    refuses a run whose Z zero was taken with the surface map on and the map is off now (every
+    depth off by the map's height). The check now also matches the offset in effect before the
+    latest one. This was also why the machinestop_tlo2 test failed about one run in ten.
+
 ## v1.3.18 (build 108) — 2026-10-25
 
 > The running job shows each toolpath's own cut, its bit and how far it has got
