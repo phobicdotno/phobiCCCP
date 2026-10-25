@@ -381,17 +381,20 @@ class _MainWindowState extends State<MainWindow> {
     }
     final tool = app.tools.defaultTool(d.material, type) ?? 201;
     final n = d.toolpaths.where((t) => t.type == type).length + 1;
-    final depth = switch (type) {
-      'profile' => d.stock.thickness,
-      'pocket' => 3.0,
-      'drill' => d.stock.thickness,
-      _ => 1.0,
-    };
-    final tp = ToolpathSpec(name: '${tpTypeLabel(type)} $n', type: type, shapes: shapes, tool: tool, depth: depth);
+    // As the computer starts a new toolpath (toolpathfactory.cpp): 2.54 mm
+    // deep, an engraving 0.5 mm, named after the type the way it names them.
+    final depth = type == 'engrave' ? 0.5 : 2.54;
+    final stem = const {
+      'profile': 'Contour Toolpath',
+      'pocket': 'Pocket Toolpath',
+      'drill': 'Drilling Toolpath',
+      'engrave': 'Engrave',
+    }[type] ?? tpTypeLabel(type);
+    final tp = ToolpathSpec(name: '$stem $n', type: type, shapes: shapes, tool: tool, depth: depth);
     _commit(d.copyWith(toolpaths: [...d.toolpaths, tp]));
     setState(() => _tp = _d!.toolpaths.length - 1);
     final open = openPathsLeftOut(d, tp);
-    _say('${tpTypeLabel(type)} $n: ${shapes.length} vector${shapes.length == 1 ? '' : 's'}'
+    _say('${tp.name}: ${shapes.length} vector${shapes.length == 1 ? '' : 's'}'
         '${open > 0 ? ' (${openPathsWords(open)})' : ''}');
   }
 
