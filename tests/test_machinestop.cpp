@@ -1689,6 +1689,28 @@ int main(int argc, char **argv)
         panel.refreshJobInfo();
         check(panel.m_jobInfo->text() == QLatin1String("2 toolpaths"),
               qPrintable(QStringLiteral("jobcount: the card says '%1', not 2 toolpaths").arg(panel.m_jobInfo->text())));
+        // End to end: the job streams the two that are on, the switched-off
+        // one is neither cut nor listed, and the list counts 2.
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        answer = [&](const Seen &v) {
+            return v.headline.startsWith("Insert tool") ? QStringLiteral("Same length: continue") : QStringLiteral("OK");
+        };
+        grbl.events.clear();
+        QString why;
+        check(panel.startFromRemote(&why), "jobcount: the job starts");
+        spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+        wait(1000);
+        QStringList cut;
+        for (const QJsonValue &v : panel.statusJson().value("steps").toArray())
+            if (v.toObject().value("kind").toString() == QLatin1String("toolpath"))
+                cut << v.toObject().value("name").toString();
+        check(cut == QStringList({QStringLiteral("big"), QStringLiteral("small")}),
+              qPrintable(QStringLiteral("jobcount: the job lists the toolpaths that are on: %1").arg(cut.join(", "))));
+        check(grbl.count("(off") == 0 && grbl.count("(big") == 0, "jobcount: comments are not streamed, and 'off' is not cut");
+        check(panel.m_jobView->m_summary->text().startsWith(QLatin1String("All 2 toolpaths done")),
+              "jobcount: the job says all 2 toolpaths done");
 
         // The running job counts toolpaths too, not its rows: tool changes
         // are rows, and site order cuts a toolpath in several stretches.
