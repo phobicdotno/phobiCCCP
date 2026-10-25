@@ -1365,6 +1365,18 @@ void Canvas::rebuild()
         auto *item = new ElemItem(e.painterPath, closed, Element::isConstruction(e),
                                   Element::isPoint(e), m_full.contains(e.id));
         item->setHitTolerance(hitTol);
+        // Stacking by size, not by the order the shapes were added: a closed
+        // shape is selectable from anywhere inside it, so a big outline added
+        // after a small hole covered the hole completely and the hole could
+        // not be clicked at all (imported DXF files list the outline last,
+        // 2026-10-24). The smaller the shape's box, the higher it sits; equal
+        // sizes keep their order. Open paths and points have tiny boxes, so
+        // they stay on top of the closed shapes they run across. The preview
+        // overlays sit at z 5 and 6, above all of this (z stays under 4).
+        {
+            const QRectF bb = e.painterPath.boundingRect();
+            item->setZValue(4.0 / (1.0 + std::sqrt(qMax(0.0, bb.width() * bb.height()))));
+        }
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
         item->setData(0, e.id);                       // scene item -> element

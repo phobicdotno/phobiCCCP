@@ -1,16 +1,8 @@
 # Changelog
 
-## v1.3.11 (build 101) — 2026-10-24
+## v1.3.12 (build 102) — 2026-10-25
 
-> Tab fields on the pad
-
-- **Pad app:** a profile has a Tabs card: the switch, the tab height and the tab width, as on the
-  computer. A pad profile now carries them to the computer, and an edit of a file with tabs set up no
-  longer drops them on the way back (they were not reported as lost, because they were not carried).
-
-## v1.3.10 (build 100) — 2026-10-24
-
-> Answers to the open questions: Z-zero record per controller, tab height setting, contours start outside
+> Pad tab fields, Z-zero record per controller, tab height setting, contours start outside
 
 - **Machine:** the Z-zero record (what the surface map was when Z was zeroed) is kept per controller,
   under its port, not per machine profile: two profiles on one board share it, and a profile used with
@@ -21,6 +13,29 @@
     holes before the outline (a test now holds that).
   - Settings has a Tab height: what a new contour's tabs start with (3 mm until set; each toolpath can
     still change its own).
+- **Pad app:** a profile has a Tabs card: the switch, the tab height and the tab width, as on the
+  computer. A pad profile now carries them to the computer, and an edit of a file with tabs set up no
+  longer drops them on the way back (they were not reported as lost, because they were not carried).
+
+## v1.3.11 (build 101) — 2026-10-25
+
+> A new Drill toolpath goes to the full depth in one movement
+
+- **Toolpaths:**
+  - A new Drill toolpath started with a 3.175 mm peck, so a hole through a 18 mm sheet was drilled in
+    six steps with a retract between each. It now starts with Peck 0, one plunge to the bottom. A peck
+    can still be set on the toolpath for a deep hole in a hard material; existing Drill toolpaths keep
+    the peck they were saved with (set Peck to 0 for one go).
+
+## v1.3.10 (build 100) — 2026-10-24
+
+> A small hole inside a bigger outline can be clicked again, whatever order the shapes were added in
+
+- **Drawing:**
+  - A closed shape is selectable from anywhere inside it, and the shape added last sat on top. An
+    outline added after a small hole (an imported DXF lists the outline last) covered the hole
+    completely: its 3 mm corner holes could not be selected for drilling at any zoom. Shapes are now
+    stacked by size, the smallest on top, so a click picks the innermost shape under the pointer.
 
 ## v1.3.9 (build 99) — 2026-10-24
 

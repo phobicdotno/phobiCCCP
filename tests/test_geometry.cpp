@@ -882,6 +882,29 @@ int main(int argc, char *argv[])
         check(g.gcode.count(QLatin1String("G1")) == 3, "drill pecks");
     }
 
+    // --- a new Drill toolpath goes through in ONE movement ------------------
+    {
+        c2d::Document d;
+        const c2d::Element hole = c2d::Element::makeCircle({20, 20}, 1.6, layer);
+        d.addElement(hole);
+        c2d::Toolpath t = c2d::makeToolpath(d, "drilling_toolpath", {hole.id});
+        check(t.json.value("peck_distance").toDouble(-1) == 0, "a new Drill toolpath does not peck");
+        QJsonObject j = t.json;
+        j.insert("end_depth", QStringLiteral("18.200"));       // through an 18 mm sheet
+        t.json = j;
+        d.insertToolpath(0, t);
+        const c2d::GcodeResult g = c2d::exportGcode(d);
+        check(g.done.size() == 1, "the default drill exports");
+        double minZ;
+        cutBounds(g.gcode, &minZ);
+        check(approx(minZ, -18.2, 1e-3), "and reaches the full depth");
+        int plunges = 0;
+        for (const QString &line : g.gcode.split(QChar('\n')))
+            if (line.startsWith(QLatin1String("G1")) && line.contains(QLatin1Char('Z')))
+                ++plunges;
+        check(plunges == 1, "in one plunge, not in pecks");
+    }
+
     // --- tool library: embedded catalogue applies CC's key names -----------
     {
         c2d::ToolLibrary lib;
