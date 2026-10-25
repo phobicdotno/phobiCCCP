@@ -1163,6 +1163,36 @@ int main(int argc, char *argv[])
         check(back.subs.first().nodes.size() == 3 && back.subs.first().closed, "the node delete undoes");
     }
 
+    // A small hole under a big outline that was added AFTER it (a DXF lists the
+    // outline last): a click in the hole picks the hole, a click beside it
+    // picks the outline, with the Select tool and with Select area.
+    {
+        c2d::Document pdoc;
+        c2d::Canvas pc;
+        pc.resize(900, 700);
+        pc.show();
+        pc.setDocument(&pdoc);
+        pc.resetTransform();
+        pc.scale(4.7, -4.7);
+        pc.centerOn(QPointF(20, 20));
+        const c2d::Element hole1 = c2d::Element::makeCircle({6, 6}, 1.55, pdoc.defaultLayer());
+        const c2d::Element hole2 = c2d::Element::makeCircle({60, 6}, 1.55, pdoc.defaultLayer());
+        const c2d::Element outline = c2d::Element::makeRectangle({40, 40}, 80, 80, pdoc.defaultLayer());
+        const c2d::Element mid = c2d::Element::makeRectangle({40, 40}, 60, 60, pdoc.defaultLayer());
+        for (const auto &e : {hole1, hole2, outline, mid})   // outline and mid added after the holes
+            pdoc.addElement(e);
+        pc.rebuild();
+        pc.setTool(c2d::Canvas::Select);
+        click(&pc, {6, 6});
+        check(pc.selectedElementIds() == QStringList{hole1.id}, "a small hole under a later, bigger outline is picked");
+        click(&pc, {60, 6});
+        check(pc.selectedElementIds() == QStringList{hole2.id}, "the second hole too");
+        click(&pc, {20, 20});          // inside both rectangles: the smaller one
+        check(pc.selectedElementIds() == QStringList{mid.id}, "nested rectangles: the inner one is picked");
+        click(&pc, {75, 70});          // only inside the outline
+        check(pc.selectedElementIds() == QStringList{outline.id}, "outside the inner shape, the outline is picked");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }
