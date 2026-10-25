@@ -243,6 +243,33 @@ void GrblStreamer::startStream(const QStringList &lines)
     pump();
 }
 
+// 2026-10-25: after a tool change the machine stood 2.5 mm from the BitSetter
+// and the program's first line, a Z-only rapid in work Z, plunged into it. A
+// Z-only line carries no XY to go across first, so look ahead for the first
+// X and Y the program names and go there (work coordinates, at the top).
+QString GrblStreamer::crossToFirstCut(const QStringList &lines, int from)
+{
+    static const QRegularExpression wx(QStringLiteral("(?:^|[^A-Z])X(-?[0-9.]+)"));
+    static const QRegularExpression wy(QStringLiteral("(?:^|[^A-Z])Y(-?[0-9.]+)"));
+    QString gx, gy;
+    for (int i = from; i < lines.size() && i < from + 400 && (gx.isEmpty() || gy.isEmpty()); ++i) {
+        QString l = lines.at(i);
+        const int c = l.indexOf(QChar(';'));
+        if (c >= 0) l.truncate(c);
+        l = l.trimmed().toUpper();
+        // A tool change next: the machine parks first, and the resume crosses then.
+        if (l.startsWith(QLatin1String("M0")) || l.contains(QStringLiteral("G91"))
+            || l.contains(QStringLiteral("G53")))
+            break;
+        const auto mx = wx.match(l), my = wy.match(l);
+        if (mx.hasMatch()) gx = mx.captured(1);
+        if (my.hasMatch()) gy = my.captured(1);
+    }
+    if (gx.isEmpty() || gy.isEmpty())
+        return {};
+    return QStringLiteral("G90 G0 X%1 Y%2").arg(gx, gy);
+}
+
 void GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
@@ -267,28 +294,13 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
         if (!t.isEmpty() && !t.startsWith(QChar('(')))
             m_queue.insert(at++, t);
     }
-    // The resume can start with a rapid down in work Z (the post's retract).
-    // The spindle may be standing over the BitSetter still (2026-10-25: the
-    // bit was parked 2.5 mm from the button and the retract plunged into it),
-    // so at the top, move across to where the program's first cut is before
-    // it is allowed to come down.
+    // The resume can start with a rapid down in work Z (the post's retract),
+    // and the spindle may be standing over the BitSetter still: cross to the
+    // first cut at the top before the program may come down.
     if (!first.isEmpty()) {
-        static const QRegularExpression wx(QStringLiteral("(?:^|[^A-Z])X(-?[0-9.]+)"));
-        static const QRegularExpression wy(QStringLiteral("(?:^|[^A-Z])Y(-?[0-9.]+)"));
-        QString gx, gy;
-        for (int i = at; i < m_queue.size() && i < at + 400 && (gx.isEmpty() || gy.isEmpty()); ++i) {
-            QString l = m_queue.at(i);
-            const int c = l.indexOf(QChar(';'));
-            if (c >= 0) l.truncate(c);
-            l = l.toUpper();
-            if (l.contains(QStringLiteral("G91")) || l.contains(QStringLiteral("G53")))
-                break;
-            const auto mx = wx.match(l), my = wy.match(l);
-            if (mx.hasMatch()) gx = mx.captured(1);
-            if (my.hasMatch()) gy = my.captured(1);
-        }
-        if (!gx.isEmpty() && !gy.isEmpty())
-            m_queue.insert(at++, QStringLiteral("G90 G0 X%1 Y%2").arg(gx, gy));
+        const QString across = crossToFirstCut(m_queue, at);
+        if (!across.isEmpty())
+            m_queue.insert(at++, across);
     }
     m_waitingTool = -1;
     m_ackClock.restart();
