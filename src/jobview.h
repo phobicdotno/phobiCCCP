@@ -34,6 +34,7 @@ struct JobPass {
 struct JobSection {
     enum Kind { Toolpath, ToolChange } kind = Toolpath;
     QString name;          // toolpath name, or "Tool change"
+    QString part;          // "part 2 of 3" when site order cuts the toolpath in stretches
     QString detail;        // "Pocket · Ø3 mm · 4 mm deep", "T3  3 mm flat endmill"
     QString type;          // CC toolpath type ("pocket_toolpath"), empty when unknown
     LibraryTool bit;       // the bit it cuts with / changes to; kind empty when unknown
@@ -42,6 +43,7 @@ struct JobSection {
     int qStart = 0, qEnd = 0;
     double estSec = 0;
     QVector<JobPass> passes;
+    QString title() const { return part.isEmpty() ? name : name + QStringLiteral("  ·  ") + part; }
 };
 
 // The streamed program read back the way the operator thinks of it:
@@ -87,11 +89,16 @@ public:
     // The sender stands at a tool change: the clock of the running step
     // waits, nothing cuts.
     void setParked(bool parked);
+    // The program ended before its end (Stop, Cancel job, a controller
+    // reset, an error): the step it was in says so, the clock stops, and
+    // nothing reads as still running.
+    void setStopped();
+    bool isStopped() const { return m_stopped; }
 
     bool hasPlan() const { return !m_plan.isEmpty(); }
     // The steps as the pad shows them: one object per toolpath or tool
     // change with its name, detail, time text, state ("done", "run",
-    // "ahead"), share done (0..1), bit kind and, for a toolpath, its cut
+    // "stopped", "ahead"), share done (0..1), bit kind and, for a toolpath, its cut
     // preview as a base64 PNG. Empty without a plan.
     QJsonArray stepsJson() const;
     int running() const { return m_running; }      // section index, -1 before start
@@ -102,12 +109,14 @@ private:
     double spanSec(int a, int b) const;            // estimate for queue lines [a, b)
     static QString clock(double sec);
     static QString eta(double sec);
+    int toolpathsUpTo(int section) const;          // distinct toolpaths in sections [0, section]
 
     JobPlan m_plan;
     QString m_jobName;
     int m_acked = 0, m_inserted = 0;
     int m_override = 100;
     bool m_parked = false;
+    bool m_stopped = false;
     int m_running = -1;
     int m_runningPass = -1;
     // Wall-clock bookkeeping: when each section (and the pass within it)

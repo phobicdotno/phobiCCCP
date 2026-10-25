@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.3.22 (build 112) — 2026-10-25
+
+> A stopped or cancelled job no longer looks like it is still running, and the job counts the toolpaths it cuts
+
+- **Machine:**
+  - Stop, Cancel job, the controller's own reset button and Stop the job at a tool change all
+    stopped the machine and the program, but the Running job list kept the step it was in as
+    running (amber, its clock ticking) and the pad's Machine page showed it running too. That
+    step now says "stopped", the header says "Stopped" with how many toolpaths were done, and the
+    clock stops. A tool-change rehearsal no longer shows the last job's list as running.
+  - The Job card counted every toolpath in the design, switched-off ones too (10 when 5 are on);
+    it now counts the ones a job cuts.
+  - The Running job header counted rows ("step 3 of 10"), and tool changes are rows. It now
+    counts toolpaths ("toolpath 2 of 5"). With site order, where each site is finished before
+    moving on, a toolpath comes back after others: its rows now say "part 1 of 2", "part 2 of 2"
+    instead of looking like more toolpaths.
+- **Pad:** the Machine page shows the stopped step in red, not as running.
+
 ## v1.3.20 (build 110) — 2026-10-25
 
 > The "Z was zeroed with another surface map" check can no longer be skipped right after a bit is measured again

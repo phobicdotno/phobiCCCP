@@ -1242,6 +1242,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         if (m_jobView) {
             m_jobView->setProgress(ok ? m_progress->maximum() : m_progress->value(), m_progress->maximum());
             m_jobView->setParked(false);
+            // Stopped, cancelled, reset or refused: the step it was in says
+            // so, here and on the pad, instead of still running.
+            if (!ok)
+                m_jobView->setStopped();
         }
         setJobRunning(false);
         const bool wasHeld = m_held;
@@ -2289,9 +2293,16 @@ void MachinePanel::refreshJobInfo()
     if (name.startsWith(QLatin1String("untitled-")))
         name = QStringLiteral("Untitled design");
     m_jobName->setText(name.isEmpty() ? QStringLiteral("No design open") : name);
-    const int n = m_doc ? m_doc->toolpaths().size() : 0;
-    m_jobInfo->setText(n == 0 ? QStringLiteral("No toolpaths yet")
-                              : QStringLiteral("%1 toolpath%2").arg(n).arg(n == 1 ? "" : "s"));
+    // The ones a job cuts: switched-off toolpaths are left out of it.
+    int n = 0, all = 0;
+    if (m_doc)
+        for (const Toolpath &t : m_doc->toolpaths()) {
+            ++all;
+            n += t.json.value(QStringLiteral("enabled")).toBool(true);
+        }
+    m_jobInfo->setText(all == 0 ? QStringLiteral("No toolpaths yet")
+                       : n == 0 ? QStringLiteral("All %1 toolpaths are off").arg(all)
+                                : QStringLiteral("%1 toolpath%2").arg(n).arg(n == 1 ? "" : "s"));
 }
 
 void MachinePanel::showEvent(QShowEvent *event)
@@ -3665,6 +3676,10 @@ void MachinePanel::rehearseToolChange()
     setHeld(false);
     m_rehearsal = true;
     m_jobTools.clear();
+    // Not the last job's: its list followed the rehearsal's progress and
+    // came back as a running job at the rehearsal's tool change.
+    if (m_jobView)
+        m_jobView->clear();
     m_grbl->startStream(GrblStreamer::toolChangeRehearsalLines(bitSetter(), 1));
 }
 

@@ -306,7 +306,14 @@ class JobSteps extends StatelessWidget {
   Widget build(BuildContext context) => ListView(children: [for (final s in steps) _row(s)]);
 
   Widget _row(JobStep s) {
-    final col = s.state == 'done' ? C.disabled : s.state == 'run' ? C.amber : const Color(0xFFD6DBE3);
+    // 'stopped': the step the job ended in when it was stopped, cancelled or reset.
+    final col = s.state == 'done'
+        ? C.disabled
+        : s.state == 'run'
+            ? C.amber
+            : s.state == 'stopped'
+                ? const Color(0xFFE06C6C)
+                : const Color(0xFFD6DBE3);
     final png = _decode(s.preview);
     final style = TextStyle(color: col, fontSize: 14, fontWeight: s.state == 'run' ? FontWeight.w600 : FontWeight.normal);
     return Padding(
@@ -342,7 +349,7 @@ class JobSteps extends StatelessWidget {
               child: LayoutBuilder(
                 builder: (context, box) => Stack(children: [
                   Container(color: C.cardBorder),
-                  Container(width: box.maxWidth * s.done, color: s.done >= 1 ? C.disabled : C.amber),
+                  Container(width: box.maxWidth * s.done, color: s.done >= 1 || s.state == 'stopped' ? C.disabled : C.amber),
                 ]),
               ),
             ),
