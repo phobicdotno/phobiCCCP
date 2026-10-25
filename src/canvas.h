@@ -66,6 +66,12 @@ public:
     // all become construction.
     void toggleConstruction(const QStringList &ids);
     void deleteSelected();                 // Edit > Delete, and the Delete key
+    // The shape strip's operations, by id: step an element to a new place in the
+    // element order, copy elements (offset a little, new ids, then selected),
+    // delete elements. Each is one undo step.
+    void moveElementTo(const QString &id, int index);
+    void duplicateElements(const QStringList &ids);
+    void deleteElements(const QStringList &ids);
     void setSnapEnabled(bool on) { m_snap = on; }
     bool snapEnabled() const { return m_snap; }
     QUndoStack *undoStack() const { return m_undo; }
@@ -251,6 +257,9 @@ private:
     // (only what lies wholly inside); right to left a crossing (whatever
     // line it touches). Ctrl adds to the selection it started with.
     bool m_band = false;
+    QString m_cycleFrom;
+    QPoint m_cyclePress;
+    void cycleSelection(QMouseEvent *event);
     QPoint m_bandStart, m_bandEnd;
     QSet<QGraphicsItem *> m_bandKeep;
     void applyBand();

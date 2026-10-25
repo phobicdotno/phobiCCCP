@@ -1232,6 +1232,70 @@ int main(int argc, char *argv[])
               "a band moves nothing");
     }
 
+    // --- Click-cycling: a second click on the same spot steps to the shape underneath ---
+    {
+        c2d::Document cdoc;
+        c2d::Canvas cc;
+        cc.resize(900, 700);
+        cc.show();
+        cc.setDocument(&cdoc);
+        cc.resetTransform();
+        cc.scale(3, -3);
+        cc.centerOn(QPointF(100, 100));
+        const c2d::Element big = c2d::Element::makeRectangle({100, 100}, 100, 100, cdoc.defaultLayer());
+        const c2d::Element mid = c2d::Element::makeRectangle({100, 100}, 60, 60, cdoc.defaultLayer());
+        const c2d::Element dot = c2d::Element::makeCircle({100, 100}, 5, cdoc.defaultLayer());
+        for (const auto &e : {big, mid, dot})
+            cdoc.addElement(e);
+        cc.rebuild();
+        cc.setTool(c2d::Canvas::Select);
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{dot.id}, "first click takes the smallest");
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{mid.id}, "second click steps to the next shape down");
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{big.id}, "third click reaches the outline");
+        click(&cc, {100, 100});
+        check(cc.selectedElementIds() == QStringList{dot.id}, "and it wraps round");
+        click(&cc, {75, 75});                  // inside the outer two only
+        click(&cc, {75, 75});
+        check(cc.selectedElementIds() == QStringList{big.id}, "click-cycling works where only two overlap");
+        click(&cc, {60, 60});                  // alone inside the outline
+        click(&cc, {60, 60});
+        check(cc.selectedElementIds() == QStringList{big.id}, "a lone shape stays selected on a second click");
+    }
+
+    // --- Shape strip operations: reorder, duplicate, delete, each one undo step --------
+    {
+        c2d::Document sdoc;
+        c2d::Canvas sc;
+        sc.resize(900, 700);
+        sc.show();
+        sc.setDocument(&sdoc);
+        const c2d::Element a = c2d::Element::makeCircle({10, 10}, 3, sdoc.defaultLayer());
+        const c2d::Element b = c2d::Element::makeCircle({30, 10}, 3, sdoc.defaultLayer());
+        const c2d::Element c = c2d::Element::makeCircle({50, 10}, 3, sdoc.defaultLayer());
+        for (const auto &e : {a, b, c})
+            sdoc.addElement(e);
+        sc.rebuild();
+        auto order = [&] { QStringList o; for (const auto &e : sdoc.elements()) o << e.id; return o; };
+        sc.moveElementTo(c.id, 0);
+        check(order() == QStringList({c.id, a.id, b.id}), "a shape moves to the front");
+        sc.undoStack()->undo();
+        check(order() == QStringList({a.id, b.id, c.id}), "and undo restores the order");
+        sc.moveElementTo(a.id, 2);
+        check(order() == QStringList({b.id, c.id, a.id}), "a shape moves to the end");
+        sc.duplicateElements({b.id});
+        check(sdoc.elements().size() == 4 && sc.selectedElementIds().size() == 1
+                  && sc.selectedElementIds().first() != b.id, "duplicate adds a copy and selects it");
+        sc.undoStack()->undo();
+        check(sdoc.elements().size() == 3, "undo takes the copy away");
+        sc.deleteElements({b.id, c.id});
+        check(order() == QStringList({a.id}), "delete takes the listed shapes");
+        sc.undoStack()->undo();
+        check(sdoc.elements().size() == 3, "undo brings them back");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

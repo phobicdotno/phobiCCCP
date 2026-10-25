@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.15 (build 105) — 2026-10-25
+## v1.3.17 (build 107) — 2026-10-25
 
 > The running job shows each toolpath's own cut, its bit and how far it has got
 
@@ -11,8 +11,27 @@
   - A 2 px bar under each toolpath fills amber as it cuts and turns grey when it is done.
 - **Pad:**
   - The Machine page shows the same list for the job running on the chosen computer: cut preview,
-    bit, name, time and the 2 px bar, updated with the computer's status (needs phobiCCCP 1.3.15 on
+    bit, name, time and the 2 px bar, updated with the computer's status (needs phobiCCCP 1.3.17 on
     the computer).
+## v1.3.16 (build 106) — 2026-10-25
+
+> Design has a Shapes tab: a tile for every shape, click to select, drag to reorder, hold for Duplicate / Delete
+
+- **Design:**
+  - New "Shapes" tab beside Document, Model and Parameters: a square preview of every shape, in the
+    order the drawing holds them, each numbered. Click a tile to select that shape (and a shape
+    selected on the drawing lights its tile). Drag a tile to move the shape in the order (undoable).
+    Right click or press and hold a tile for Duplicate and Delete.
+  - Clicking a shape again to step to the one underneath now works from any depth of the stack.
+
+## v1.3.15 (build 105) — 2026-10-25
+
+> Click the same spot again to step to the shape underneath
+
+- **Design:**
+  - Click a shape that is already selected, and if other shapes lie stacked under that spot, the
+    selection steps to the next one down (and wraps round to the top). Use it to reach an outline
+    hidden under a later shape of the same size. A drag, Ctrl or Shift click behaves as before.
 
 ## v1.3.14 (build 104) — 2026-10-25
 

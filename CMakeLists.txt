@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.15 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.17 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,7 +91,7 @@ set(PHOBICCCP_APP_SOURCES
     src/aboutdialog.cpp
     src/propertiespanel.cpp
     src/parameterspanel.cpp
-    src/toolpathpanel.cpp
+    src/toolpathpanel.cpp src/shapestrip.cpp
     src/dragscroll.cpp
     src/toolpathform.cpp
     src/toollibrarydialog.cpp
@@ -296,14 +296,14 @@ if(Qt6Test_FOUND)
     add_test(NAME toolpathform COMMAND test_toolpathform)
     # Panel <-> canvas selection handover (needs the real widgets).
     add_executable(test_panels tests/test_panels.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp
+                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp src/tooldiagram.cpp
                    src/settingsdialog.cpp)
     target_link_libraries(test_panels PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
     # Two bits on one tool number (setup sheet, Simulate strip) and inlay bindings.
     add_executable(test_uifixes tests/test_uifixes.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
                    src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
     target_link_libraries(test_uifixes PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME uifixes COMMAND test_uifixes)
@@ -311,7 +311,7 @@ if(Qt6Test_FOUND)
     # and its close guard: the whole window, so every app source but main.
     add_executable(test_mainwindow tests/test_mainwindow.cpp
                    src/canvas.cpp src/canvasparametric.cpp src/mainwindow.cpp src/aboutdialog.cpp
-                   src/propertiespanel.cpp src/parameterspanel.cpp src/toolpathpanel.cpp
+                   src/propertiespanel.cpp src/parameterspanel.cpp src/toolpathpanel.cpp src/shapestrip.cpp
                    src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
                    src/tooldiagram.cpp src/toolstrip.cpp src/machinepanel.cpp src/jobview.cpp src/shopdialog.cpp
                    src/isopreview.cpp src/simpanel.cpp src/vectoractions.cpp src/importui.cpp
@@ -341,13 +341,13 @@ if(Qt6Test_FOUND)
     add_test(NAME typedclick COMMAND test_typedclick)
     # Delete with a value still typed in the toolpath form.
     add_executable(test_tpdelete tests/test_tpdelete.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
                    src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
     target_link_libraries(test_tpdelete PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME tpdelete COMMAND test_tpdelete)
     # The "v" under a toolpath card: thumbnails, their bins, what is left to cut.
     add_executable(test_tpshapes tests/test_tpshapes.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
                    src/tooldiagram.cpp src/settingsdialog.cpp src/toolstrip.cpp src/isopreview.cpp)
     target_link_libraries(test_tpshapes PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME tpshapes COMMAND test_tpshapes)
@@ -367,7 +367,7 @@ if(Qt6Test_FOUND)
     endforeach()
     # Drag-scrolling on the Toolpaths side, and cards that scroll instead of moving.
     add_executable(test_dragscroll tests/test_dragscroll.cpp src/canvas.cpp src/canvasparametric.cpp
-                   src/toolpathpanel.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
+                   src/toolpathpanel.cpp src/shapestrip.cpp src/dragscroll.cpp src/toolpathform.cpp src/toollibrarydialog.cpp
                    src/tooldiagram.cpp src/settingsdialog.cpp)
     target_link_libraries(test_dragscroll PRIVATE phobicccp_core Qt6::Widgets Qt6::Test)
     add_test(NAME dragscroll COMMAND test_dragscroll)

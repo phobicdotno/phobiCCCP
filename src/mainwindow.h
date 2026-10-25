@@ -34,6 +34,7 @@ class PropertiesPanel;
 class SimPanel;
 class ToolStrip;
 class ToolpathPanel;
+class ShapeStrip;
 
 class MainWindow : public QMainWindow
 {
@@ -163,6 +164,7 @@ private:
     QSplitter *m_designPage;     // Properties over Document / Model tabs
     QWidget *m_tpPage;
     QTabWidget *m_docTabs;
+    ShapeStrip *m_shapes = nullptr;
     bool m_vectorsWrapped = false;
     QToolBar *m_palette = nullptr;   // drawing tools (Design)
     QToolBar *m_tpBar = nullptr;     // toolpath kinds (Toolpaths)
