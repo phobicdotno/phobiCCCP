@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.19 (build 109) — 2026-10-25
+## v1.3.20 (build 110) — 2026-10-25
 
 > The "Z was zeroed with another surface map" check can no longer be skipped right after a bit is measured again
 
@@ -11,6 +11,16 @@
     refuses a run whose Z zero was taken with the surface map on and the map is off now (every
     depth off by the map's height). The check now also matches the offset in effect before the
     latest one. This was also why the machinestop_tlo2 test failed about one run in ten.
+
+## v1.3.19 (build 109) — 2026-10-25
+
+> Park keeps away from the BitSetter, and a job's first move down is always preceded by a move across at the top
+
+- **Machine:**
+  - Park (front right) put the spindle 8 mm from the BitSetter button; it now parks 60 mm to the
+    left of it when the BitSetter is on.
+  - A job also starts by going across to its first cut at the top of Z before any Z-only
+    rapid can come down, the same guard the tool-change resume got in 1.3.17.
 
 ## v1.3.18 (build 108) — 2026-10-25
 

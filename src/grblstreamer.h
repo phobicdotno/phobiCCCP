@@ -136,6 +136,8 @@ public slots:
     void measureTool(const BitSetterConfig &cfg, bool returnHome,
                      double returnX = 0, double returnY = 0);
     // The same script as a line list, to prefix with e.g. zeroing commands.
+    // "G90 G0 X Y" to the first X/Y the lines name from `from` on, or empty.
+    static QString crossToFirstCut(const QStringList &lines, int from);
     static QStringList measureToolLines(const BitSetterConfig &cfg, bool returnHome,
                                         double returnX = 0, double returnY = 0);
     // A program that is nothing but one tool change: spindle off, up to safe
