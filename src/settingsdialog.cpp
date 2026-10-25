@@ -79,7 +79,7 @@ QList<int> appsettings::panelTextChoices() { return {100, 110, 125, 150, 175, 20
 SettingsDialog::SettingsDialog(QWidget *parent)
     : QDialog(parent), m_scale(new QComboBox(this)), m_panelText(new QComboBox(this)),
       m_machine(new QComboBox(this)),
-      m_customW(new QDoubleSpinBox(this)), m_customH(new QDoubleSpinBox(this))
+      m_customW(new QDoubleSpinBox(this)), m_customH(new QDoubleSpinBox(this)), m_tabHeight(new QDoubleSpinBox(this))
 {
     setWindowTitle(QStringLiteral("Settings"));
     QSettings s;
@@ -115,6 +115,10 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     }
     m_customW->setValue(s.value(QStringLiteral("machine/customWidth"), 1000).toDouble());
     m_customH->setValue(s.value(QStringLiteral("machine/customHeight"), 1000).toDouble());
+    m_tabHeight->setRange(0.1, 50);
+    m_tabHeight->setDecimals(2);
+    m_tabHeight->setSuffix(QStringLiteral(" mm"));
+    m_tabHeight->setValue(s.value(QStringLiteral("defaults/tabHeight"), 3.0).toDouble());
     auto syncCustom = [this] {
         const bool custom = m_machine->currentData().toString() == QLatin1String("custom");
         m_customW->setEnabled(custom);
@@ -129,10 +133,12 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->addRow(QStringLiteral("Machine:"), m_machine);
     form->addRow(QStringLiteral("Custom width (X):"), m_customW);
     form->addRow(QStringLiteral("Custom height (Y):"), m_customH);
+    form->addRow(QStringLiteral("Tab height:"), m_tabHeight);
 
     auto *note = new QLabel(QStringLiteral(
         "The GUI scale applies after a restart; the Toolpaths text size at once. The machine sets the size of the "
-        "blank design phobiCCCP starts with, and the default for File → New."), this);
+        "blank design phobiCCCP starts with, and the default for File → New. The tab height is what a new "
+        "contour starts with (each toolpath can change its own)."), this);
     note->setWordWrap(true);
 
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
@@ -154,6 +160,7 @@ bool SettingsDialog::save()
     s.setValue(QStringLiteral("machine/size"), m_machine->currentData().toString());
     s.setValue(QStringLiteral("machine/customWidth"), m_customW->value());
     s.setValue(QStringLiteral("machine/customHeight"), m_customH->value());
+    s.setValue(QStringLiteral("defaults/tabHeight"), m_tabHeight->value());
     return scale != m_scaleWas;
 }
 

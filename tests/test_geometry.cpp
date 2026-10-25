@@ -320,6 +320,37 @@ int main(int argc, char *argv[])
         check(approx(minZ, -2.0, 1e-3), "contour reaches end depth");
     }
 
+    // --- cut through: the hole comes out before the outline (nothing comes loose)
+    {
+        Rig r;
+        const c2d::Element slab = c2d::Element::makeRectangle({30, 20}, 40, 20, layer);
+        r.addShape(slab);
+        const QString slabId = r.shapeId;
+        r.addShape(c2d::Element::makeCircle({30, 20}, 4, layer));
+        r.addToolpath("contour", {{"ofset_dir", 1}, {"end_depth", "6.000"}, {"stepdown", 2.0},
+                                  {"elements", QJsonArray{QJsonObject{{"uuid", slabId}},
+                                                          QJsonObject{{"uuid", r.shapeId}}}}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double x = 0, y = 0, z = 0;
+        int holeAt = -1, outerAt = -1, n = 0;
+        for (const QString &line : g.gcode.split('\n')) {
+            ++n;
+            const QRegularExpressionMatch mx = QRegularExpression("X(-?[0-9.]+)").match(line);
+            const QRegularExpressionMatch my = QRegularExpression("Y(-?[0-9.]+)").match(line);
+            const QRegularExpressionMatch mz = QRegularExpression("Z(-?[0-9.]+)").match(line);
+            if (mx.hasMatch()) x = mx.captured(1).toDouble();
+            if (my.hasMatch()) y = my.captured(1).toDouble();
+            if (mz.hasMatch()) z = mz.captured(1).toDouble();
+            if (z > -5.99 || !(line.startsWith("G1") || line.startsWith("G2") || line.startsWith("G3")))
+                continue;
+            const double d = std::hypot(x - 30, y - 20);
+            if (d < 9 && holeAt < 0) holeAt = n;
+            if (d > 15 && outerAt < 0) outerAt = n;
+        }
+        if (!(holeAt > 0 && outerAt > 0 && holeAt < outerAt)) std::fprintf(stderr, "hole@%d outer@%d\n%s\n", holeAt, outerAt, g.gcode.toUtf8().constData());
+        check(holeAt > 0 && outerAt > 0 && holeAt < outerAt, "the hole is cut through before the outline");
+    }
+
     // --- contour inside ----------------------------------------------------
     {
         Rig r;
@@ -1211,7 +1242,7 @@ int main(int argc, char *argv[])
               "factory names");
         check(a.json.value("toolpath_group").toString() == QLatin1String("{g-1}")
               && a.json.value("end_depth").isString()
-              && a.json.value("ofset_dir").toInt() == -1
+              && a.json.value("ofset_dir").toInt() == 1
               && a.json.value("tool").toObject().value("number").toInt() == 201
               && b.json.value("stepover").isDouble()
               && e.json.value("mode").toString() == QLatin1String("outline")
