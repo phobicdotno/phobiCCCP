@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:phobicccp/model.dart';
 import 'package:phobicccp/ui/icons.dart';
 import 'package:phobicccp/ui/machine_page.dart';
+import 'package:phobicccp/ui/theme.dart';
 
 // A 1 x 1 transparent PNG.
 const _png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -44,5 +45,20 @@ void main() {
     final fill = t.getSize(find.descendant(of: bars.first, matching: find.byType(Container)).last);
     final track = t.getSize(bars.first);
     expect(fill.width, closeTo(track.width / 2, 1));
+  });
+
+  testWidgets('a stopped job shows the step it ended in as stopped, not running', (t) async {
+    final steps = [
+      const JobStep(name: 'Pocket', bit: 'endmill', state: 'done', done: 1, time: '✓ 1:00'),
+      const JobStep(name: 'Outline', bit: 'vbit', state: 'stopped', done: 0.3, time: 'stopped'),
+      const JobStep(name: 'Drill', bit: 'drill', time: '0:20'),
+    ];
+    await t.pumpWidget(MaterialApp(home: Scaffold(body: SizedBox(width: 600, height: 400, child: JobSteps(steps)))));
+    final text = t.widget<Text>(find.text('Outline'));
+    expect(text.style?.color, const Color(0xFFE06C6C));
+    expect(text.style?.fontWeight, isNot(FontWeight.w600), reason: 'bold is for the running step');
+    final bars = find.byWidgetPredicate((w) => w is SizedBox && w.height == 2);
+    final fill = t.widget<Container>(find.descendant(of: bars.at(1), matching: find.byType(Container)).last);
+    expect(fill.color, C.disabled, reason: 'its bar is not the running amber');
   });
 }

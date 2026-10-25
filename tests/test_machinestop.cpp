@@ -42,6 +42,7 @@
 #define private public
 #define protected public
 #include "../src/bitzeropanel.h"
+#include "../src/jobview.h"
 #include "../src/machinepanel.h"
 #undef private
 #undef protected
@@ -1594,6 +1595,160 @@ int main(int argc, char **argv)
                   "feed and spindle overrides are reset to 100 % before the job's first move");
             spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
         }
+    }
+    if (mode == "jobstop" || mode == "jobcancel" || mode == "jobreset" || mode == "jobtcstop") {
+        // A real job (both pockets, a tool change between them) started the
+        // way a pad starts it, then ended early: Stop, Cancel job, the
+        // controller's own reset button, or Stop while parked at the tool
+        // change. Afterwards nothing may still look like a running job: not
+        // the panel, not the steps the pad shows, not the next start.
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        const bool atChange = mode == "jobtcstop";
+        int prompts = 0;
+        answer = [&](const Seen &v) {
+            // The second change: left parked there, to zero Z by hand.
+            if (v.headline.startsWith("Insert tool"))
+                return ++prompts == 2 && atChange ? QStringLiteral("Close: I'll zero Z")
+                                                  : QStringLiteral("Same length: continue");
+            if (v.headline.startsWith("Cancel the job")) return QStringLiteral("Cancel job");
+            return QStringLiteral("OK");
+        };
+        if (!atChange)
+            grbl.hangDwell = true;          // stays in the spin-up wait: mid-job
+        QString why;
+        check(panel.startFromRemote(&why), "job: starts");
+        if (atChange) {
+            spin(8000, [&] { return prompts == 2 && !QApplication::activeModalWidget(); });
+            check(s->isParkedForTool(), "jobtcstop: parked at the second tool change");
+        } else {
+            spin(6000, [&] { return grbl.count("G4P") > 0; });
+            wait(500);
+        }
+        check(s->isStreaming() && panel.statusJson().value("streaming").toBool(), "job: running");
+        if (mode == "jobstop" || mode == "jobtcstop") {
+            panel.m_stopBtn->click();
+        } else if (mode == "jobcancel") {
+            button(QStringLiteral("✕ Cancel job"))->click();
+        } else {
+            // The reset button on the controller: it reboots into Alarm.
+            grbl.alarm = true;
+            grbl.send("\r\nGrbl 1.1h ['$' for help]\r\n[MSG:'$H'|'$X' to unlock]\r\n");
+        }
+        grbl.hangDwell = false;
+        spin(8000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+        wait(1500);
+        const QJsonObject st = panel.statusJson();
+        check(!s->isStreaming() && !st.value("streaming").toBool(), "job ended early: nothing streams");
+        check(!panel.isBusy() && !st.value("busy").toBool(), "job ended early: not busy");
+        check(!panel.m_jobShown, "job ended early: the jog and zero controls are back");
+        check(!panel.m_held && panel.m_pauseBtn->text().contains(QLatin1String("Hold")), "job ended early: not left on Resume");
+        check(panel.m_runBtn->text().contains(QLatin1String("Run")), "job ended early: Run, not Continue");
+        const QJsonArray steps = st.value("steps").toArray();
+        int running = 0, stopped = 0;
+        for (const QJsonValue &v : steps) {
+            running += v.toObject().value("state").toString() == QLatin1String("run");
+            stopped += v.toObject().value("state").toString() == QLatin1String("stopped");
+        }
+        check(running == 0, "job ended early: no step of it still says running");
+        check(stopped == 1, "job ended early: the step it ended in says stopped");
+        check(!panel.m_jobView->m_tick->isActive(), "job ended early: the job clock stopped");
+        check(panel.m_jobView->m_current->text().startsWith(QLatin1String("Stopped")),
+              "job ended early: the job view says Stopped");
+        if (mode == "jobreset") {
+            // A reset loses the position: Initialize, as the operator would.
+            panel.initializeMachine();
+            spin(5000, [&] { return panel.m_homed && !panel.isBusy(); });
+            wait(1000);
+        }
+        // And the next job starts and runs to its end.
+        grbl.events.clear();
+        const bool again0 = panel.startFromRemote(&why);
+        if (!again0)
+            std::fprintf(stderr, "refused: %s\n", qPrintable(why));
+        check(again0, "the next job starts");
+        spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+        wait(1500);
+        int done = 0;
+        const QJsonArray again = panel.statusJson().value("steps").toArray();
+        for (const QJsonValue &v : again)
+            done += v.toObject().value("state").toString() == QLatin1String("done");
+        check(!again.isEmpty() && done == again.size(), "the next job: every step done");
+        check(panel.m_jobView->m_current->text() == QLatin1String("Finished"), "the next job: Finished");
+    }
+    if (mode == "jobcount") {
+        // The job card counts the toolpaths that are cut: switched-off ones
+        // are not (a design with 10 and 5 switched off said "10 toolpaths").
+        c2d::Toolpath off = doc.toolpaths().at(0);
+        off.uuid = QStringLiteral("{tp-3}");
+        off.json.insert("uuid", off.uuid);
+        off.json.insert("name", QStringLiteral("off"));
+        off.json.insert("enabled", false);
+        doc.addToolpath(off);
+        panel.refreshJobInfo();
+        check(panel.m_jobInfo->text() == QLatin1String("2 toolpaths"),
+              qPrintable(QStringLiteral("jobcount: the card says '%1', not 2 toolpaths").arg(panel.m_jobInfo->text())));
+        // End to end: the job streams the two that are on, the switched-off
+        // one is neither cut nor listed, and the list counts 2.
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        answer = [&](const Seen &v) {
+            return v.headline.startsWith("Insert tool") ? QStringLiteral("Same length: continue") : QStringLiteral("OK");
+        };
+        grbl.events.clear();
+        QString why;
+        check(panel.startFromRemote(&why), "jobcount: the job starts");
+        spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+        wait(1000);
+        QStringList cut;
+        for (const QJsonValue &v : panel.statusJson().value("steps").toArray())
+            if (v.toObject().value("kind").toString() == QLatin1String("toolpath"))
+                cut << v.toObject().value("name").toString();
+        check(cut == QStringList({QStringLiteral("big"), QStringLiteral("small")}),
+              qPrintable(QStringLiteral("jobcount: the job lists the toolpaths that are on: %1").arg(cut.join(", "))));
+        check(grbl.count("(off") == 0 && grbl.count("(big") == 0, "jobcount: comments are not streamed, and 'off' is not cut");
+        check(panel.m_jobView->m_summary->text().startsWith(QLatin1String("All 2 toolpaths done")),
+              "jobcount: the job says all 2 toolpaths done");
+
+        // The running job counts toolpaths too, not its rows: tool changes
+        // are rows, and site order cuts a toolpath in several stretches.
+        c2d::Document sites;
+        const c2d::Element a = c2d::Element::makeRectangle({30, 20}, 20, 20, QJsonObject());
+        const c2d::Element b = c2d::Element::makeRectangle({130, 20}, 20, 20, QJsonObject());
+        sites.addElement(a);
+        sites.addElement(b);
+        for (int k = 0; k < 2; ++k) {
+            addPocket(sites, a.id, QStringLiteral("{st-%1}").arg(k), QStringLiteral("pocket %1").arg(k + 1), 3.175,
+                      QStringLiteral("1/8 endmill"));
+            c2d::Toolpath tp = sites.toolpaths().last();
+            QJsonArray els{QJsonObject{{"uuid", a.id}}, QJsonObject{{"uuid", b.id}}};
+            tp.json.insert("elements", els);
+            tp.json.insert("end_depth", QStringLiteral("%1.000").arg(k + 1));
+            sites.replaceToolpath(tp);
+        }
+        sites.setParam("site_order", "1");
+        const c2d::GcodeResult g = c2d::exportGcode(sites);
+        const c2d::JobPlan plan = c2d::planJob(g.gcode.split(QLatin1Char('\n')), g.ops, &sites, 5000);
+        int rows = 0;
+        for (const c2d::JobSection &sec : plan.sections) {
+            std::printf("  row: %s\n", qPrintable(sec.name));
+            rows += sec.kind == c2d::JobSection::Toolpath;
+        }
+        check(rows > 2, "jobcount: site order cuts the two toolpaths in more than two stretches");
+        bool part2 = false;
+        for (const QJsonValue &v : [&] { c2d::JobView w; w.setPlan(plan, QString()); return w.stepsJson(); }())
+            part2 = part2 || v.toObject().value("name").toString() == QStringLiteral("pocket 1  ·  part 2 of 2");
+        check(part2, "jobcount: the toolpath's second stretch says so");
+        c2d::JobView view;
+        view.setPlan(plan, QStringLiteral("sites"));
+        view.setProgress(0, plan.total);
+        check(view.m_summary->text().contains(QLatin1String("toolpath 1 of 2")),
+              qPrintable(QStringLiteral("jobcount: the running job counts 2 toolpaths: %1").arg(view.m_summary->text())));
+        view.setProgress(plan.total, plan.total);
+        check(view.m_summary->text().startsWith(QLatin1String("All 2 toolpaths done")),
+              qPrintable(QStringLiteral("jobcount: all 2 toolpaths done: %1").arg(view.m_summary->text())));
     }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);

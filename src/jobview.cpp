@@ -10,10 +10,12 @@
 #include <QColor>
 #include <QJsonObject>
 #include <QDateTime>
+#include <QHash>
 #include <QHeaderView>
 #include <QLabel>
 #include <QPainter>
 #include <QProgressBar>
+#include <QSet>
 #include <QStyledItemDelegate>
 #include <QTimer>
 #include <QTreeWidget>
@@ -495,6 +497,15 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
     }
     closeSection();
     plan.total = q;
+    // Site order finishes each site before moving on, so a toolpath comes
+    // back after others: one row per stretch, numbered, not a new toolpath.
+    QHash<QString, int> stretches, seen;
+    for (const JobSection &s : std::as_const(plan.sections))
+        if (s.kind == JobSection::Toolpath)
+            ++stretches[s.name];
+    for (JobSection &s : plan.sections)
+        if (s.kind == JobSection::Toolpath && stretches.value(s.name) > 1)
+            s.part = QStringLiteral("part %1 of %2").arg(++seen[s.name]).arg(stretches.value(s.name));
     return plan;
 }
 
@@ -556,6 +567,7 @@ void JobView::clear()
     m_running = -1;
     m_runningPass = -1;
     m_parked = false;
+    m_stopped = false;
     m_parkedAt = -1;
     m_parkedTotal = 0;
     m_sectionStart.clear();
@@ -570,6 +582,7 @@ void JobView::clear()
     m_title->setText(QStringLiteral("No job running"));
     m_summary->clear();
     m_current->clear();
+    m_current->setStyleSheet(QStringLiteral("color: #f2a536; font-size: 15px; font-weight: 600;"));
     m_passBar->setRange(0, 1);
     m_passBar->setValue(0);
     m_tick->stop();
@@ -593,7 +606,7 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
     for (int i = 0; i < n; ++i) {
         const JobSection &s = plan.sections.at(i);
         auto *it = new QTreeWidgetItem(m_tree);
-        it->setText(0, s.detail.isEmpty() ? s.name : s.name + QStringLiteral("   —  ") + s.detail);
+        it->setText(0, s.detail.isEmpty() ? s.title() : s.title() + QStringLiteral("   —  ") + s.detail);
         it->setText(1, clock(s.estSec));
         it->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
         m_sectionIcons[i] = sectionIcon(s);
@@ -662,6 +675,27 @@ void JobView::setParked(bool parked)
     refresh();
 }
 
+void JobView::setStopped()
+{
+    if (m_plan.isEmpty() || m_stopped)
+        return;
+    m_stopped = true;
+    setParked(false);
+    refresh();
+}
+
+// Site order cuts one toolpath in several stretches with others between
+// them, and tool changes are steps too: the count the operator knows is the
+// toolpaths, each once.
+int JobView::toolpathsUpTo(int section) const
+{
+    QSet<QString> names;
+    for (int i = 0; i <= section && i < m_plan.sections.size(); ++i)
+        if (m_plan.sections.at(i).kind == JobSection::Toolpath)
+            names.insert(m_plan.sections.at(i).name);
+    return int(names.size());
+}
+
 QJsonArray JobView::stepsJson() const
 {
     QJsonArray out;
@@ -669,14 +703,15 @@ QJsonArray JobView::stepsJson() const
     for (int i = 0; i < m_plan.sections.size(); ++i) {
         const JobSection &s = m_plan.sections.at(i);
         const QTreeWidgetItem *it = m_sectionItems.value(i);
-        QJsonObject o{{QStringLiteral("name"), s.name},
+        QJsonObject o{{QStringLiteral("name"), s.title()},
                       {QStringLiteral("detail"), s.detail},
                       {QStringLiteral("kind"), s.kind == JobSection::ToolChange ? QStringLiteral("change")
                                                                                 : QStringLiteral("toolpath")},
                       {QStringLiteral("bit"), s.bit.kind},
                       {QStringLiteral("time"), it ? it->text(1) : QString()},
                       {QStringLiteral("state"), q >= s.qEnd ? QStringLiteral("done")
-                                                : q >= s.qStart ? QStringLiteral("run") : QStringLiteral("ahead")}};
+                                                : q < s.qStart ? QStringLiteral("ahead")
+                                                : m_stopped ? QStringLiteral("stopped") : QStringLiteral("run")}};
         if (s.kind == JobSection::Toolpath) {
             o.insert(QStringLiteral("done"), it ? it->data(0, ProgressRole).toDouble() : 0.0);
             o.insert(QStringLiteral("preview"), m_previewPng.value(i));
@@ -722,8 +757,9 @@ void JobView::refresh()
     // taken off; never below what was already reached.
     const int q = qBound(0, m_acked - m_inserted, m_plan.total);
     const qint64 now = m_clock.elapsed();
-    const QColor cDone(0x6a, 0x71, 0x7d), cRun(0xf2, 0xa5, 0x36), cAhead(0xd6, 0xdb, 0xe3);
-    int runSec = -1, runPass = -1;
+    const QColor cDone(0x6a, 0x71, 0x7d), cRun(0xf2, 0xa5, 0x36), cAhead(0xd6, 0xdb, 0xe3),
+                 cStop(0xe0, 0x6c, 0x6c);
+    int runSec = -1, runPass = -1, stopSec = -1;
     for (int i = 0; i < m_plan.sections.size(); ++i) {
         const JobSection &s = m_plan.sections.at(i);
         QTreeWidgetItem *it = m_sectionItems.at(i);
@@ -739,10 +775,14 @@ void JobView::refresh()
         f.setBold(started && !finished);
         it->setFont(0, f);
         it->setFont(1, f);
-        const QColor col = finished ? cDone : started ? cRun : cAhead;
+        const bool stoppedHere = m_stopped && started && !finished;
+        const QColor col = finished ? cDone : stoppedHere ? cStop : started ? cRun : cAhead;
         it->setForeground(0, col);
         it->setForeground(1, col);
-        if (finished) {
+        if (stoppedHere) {
+            it->setText(1, QStringLiteral("stopped"));
+            stopSec = i;
+        } else if (finished) {
             const qint64 took = m_sectionDone[i] - qMax<qint64>(0, m_sectionStart[i]);
             it->setText(1, QStringLiteral("✓ %1").arg(clock(took / 1000.0)));
         } else if (started) {
@@ -768,6 +808,7 @@ void JobView::refresh()
                 m_passDone[i][k] = now;
             if (pStarted && !pFinished && runSec == i)
                 runPass = k;
+            const bool pStopped = m_stopped && pStarted && !pFinished;
             QTreeWidgetItem *c = m_passItems.at(i).at(k);
             if (!c)
                 continue;
@@ -775,10 +816,12 @@ void JobView::refresh()
             pf.setBold(pStarted && !pFinished);
             c->setFont(0, pf);
             c->setFont(1, pf);
-            const QColor pc = pFinished ? cDone : pStarted ? cRun : cAhead;
+            const QColor pc = pFinished ? cDone : pStopped ? cStop : pStarted ? cRun : cAhead;
             c->setForeground(0, pc);
             c->setForeground(1, pc);
-            if (pFinished)
+            if (pStopped)
+                c->setText(1, QStringLiteral("stopped"));
+            else if (pFinished)
                 c->setText(1, QStringLiteral("✓ %1").arg(clock((m_passDone[i][k] - qMax<qint64>(0, m_passStart[i][k])) / 1000.0)));
             else if (pStarted)
                 c->setText(1, QStringLiteral("%1 left").arg(clock(spanSec(q, p.qEnd))));
@@ -799,19 +842,39 @@ void JobView::refresh()
     // Header: what runs now, and the whole job's time left and finish time.
     const double left = leftFrom(q);
     const QString ov = m_override != 100 ? QStringLiteral("  ·  feed %1 %").arg(m_override) : QString();
-    if (q >= m_plan.total) {
-        m_summary->setText(QStringLiteral("All %1 steps done  ·  took %2")
-                               .arg(m_plan.sections.size()).arg(clock((now - m_parkedTotal) / 1000.0)));
+    const int toolpaths = toolpathsUpTo(int(m_plan.sections.size()) - 1);
+    if (m_stopped) {
+        // Toolpaths whose every stretch is done.
+        int done = 0;
+        QSet<QString> open;
+        for (const JobSection &s : std::as_const(m_plan.sections))
+            if (s.kind == JobSection::Toolpath && q < s.qEnd)
+                open.insert(s.name);
+        for (const JobSection &s : std::as_const(m_plan.sections))
+            if (s.kind == JobSection::Toolpath && !open.contains(s.name)) {
+                open.insert(s.name);
+                ++done;
+            }
+        m_summary->setText(QStringLiteral("%1 of %2 toolpath%3 done  ·  ran %4")
+                               .arg(done).arg(toolpaths).arg(toolpaths == 1 ? "" : "s")
+                               .arg(clock((now - m_parkedTotal) / 1000.0)));
+        m_current->setText(stopSec >= 0 ? QStringLiteral("Stopped  ·  %1").arg(m_plan.sections.at(stopSec).title())
+                                        : QStringLiteral("Stopped"));
+        m_current->setStyleSheet(QStringLiteral("color: #e06c6c; font-size: 15px; font-weight: 600;"));
+        m_tick->stop();
+    } else if (q >= m_plan.total) {
+        m_summary->setText(QStringLiteral("All %1 toolpath%2 done  ·  took %3")
+                               .arg(toolpaths).arg(toolpaths == 1 ? "" : "s").arg(clock((now - m_parkedTotal) / 1000.0)));
         m_current->setText(QStringLiteral("Finished"));
         m_passBar->setRange(0, 1);
         m_passBar->setValue(1);
         m_tick->stop();
     } else {
-        m_summary->setText(QStringLiteral("%1 left  ·  done about %2  ·  step %3 of %4%5")
-                               .arg(clock(left), eta(left)).arg(qMax(0, runSec) + 1).arg(m_plan.sections.size()).arg(ov));
+        m_summary->setText(QStringLiteral("%1 left  ·  done about %2  ·  toolpath %3 of %4%5")
+                               .arg(clock(left), eta(left)).arg(qMax(1, toolpathsUpTo(runSec))).arg(toolpaths).arg(ov));
         if (runSec >= 0) {
             const JobSection &s = m_plan.sections.at(runSec);
-            QString what = s.name;
+            QString what = s.title();
             if (runPass >= 0 && runPass < s.passes.size() && !s.passes.at(runPass).what.isEmpty())
                 what += QStringLiteral("  ·  ") + s.passes.at(runPass).what;
             if (m_parked)
