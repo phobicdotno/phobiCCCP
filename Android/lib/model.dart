@@ -685,7 +685,7 @@ class MachineStatus {
   final bool connected, homed, busy, streaming;
   final String port, state, job;
 
-  /// The job's steps while the computer has one (phobiCCCP 1.3.17 and later).
+  /// The job's steps while the computer has one (phobiCCCP 1.3.18 and later).
   final List<JobStep> steps;
   const MachineStatus(
       {this.connected = false,
