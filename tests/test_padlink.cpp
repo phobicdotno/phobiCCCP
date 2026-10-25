@@ -219,6 +219,43 @@ static void testLayersAndGroupsLost(const QString &dir)
     lost.clear();
     padlink::designFromDocument(path, d, &lost, &err);
     check(lost.contains(QStringLiteral("layers and groups")), "a group is reported as lost to the pad");
+    // Tabs on a pad profile: off, or their own height and width.
+    {
+        QJsonObject td = d;
+        QJsonArray tps = td.value("toolpaths").toArray();
+        for (int i = 0; i < tps.size(); ++i) {
+            QJsonObject tp = tps.at(i).toObject();
+            if (tp.value("type").toString() == QLatin1String("profile")) {
+                tp.insert("tabs", false);
+                tp.insert("tabHeight", 4.0);
+                tp.insert("tabWidth", 9.0);
+                tps[i] = tp;
+            }
+        }
+        td.insert("toolpaths", tps);
+        const QString tpath = QDir(dir).filePath("tabs.c2d");
+        check(padlink::buildDocument(td, tpath, nullptr, &err), "tabs fixture builds");
+        Document tdoc;
+        tdoc.load(tpath, &err);
+        bool seen = false;
+        for (const Toolpath &t : tdoc.toolpaths())
+            if (t.type == QLatin1String("contour")) {
+                seen = true;
+                check(t.json.value("ignore_tabs").toBool() && t.json.value("tab_height").toDouble() == 4.0
+                          && t.json.value("tab_width").toDouble() == 9.0,
+                      "pad tabs reach the contour");
+            }
+        check(seen, "the tabs fixture has a contour");
+        lost.clear();
+        const QJsonObject tback = padlink::designFromDocument(tpath, td, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("tabs are not lost (%1)").arg(lost.join(", "))));
+        for (const QJsonValue &v : tback.value("toolpaths").toArray())
+            if (v.toObject().value("type").toString() == QLatin1String("profile"))
+                check(v.toObject().value("tabs").toBool(true) == false && v.toObject().value("tabHeight").toDouble() == 4.0
+                          && v.toObject().value("tabWidth").toDouble() == 9.0,
+                      "and come back to the pad");
+    }
+
     // r49: a named layer, a toolpath group row and an edited embedded bit
     // are lost on a rebuild too, and used to go unreported.
     {

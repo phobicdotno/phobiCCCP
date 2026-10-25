@@ -321,6 +321,15 @@ int openPathsLeftOut(Design d, ToolpathSpec t) {
   }).length;
 }
 
+/// How many of [t]'s vectors are points: only a drill cuts a point, and
+/// phobiCCCP leaves them out of every other toolpath ("no vectors").
+int pointsLeftOut(Design d, ToolpathSpec t) {
+  if (t.type == 'drill') return 0;
+  return t.shapes.where((id) => d.shape(id)?.type == Shape.point).length;
+}
+
+String pointsWords(int n) => '$n point${n == 1 ? '' : 's'} left out: only a drill cuts points';
+
 String openPathsWords(int n) =>
     '$n open path${n == 1 ? '' : 's'} left out: only a contour on the line cuts open paths';
 
@@ -619,6 +628,11 @@ class ToolpathsPanel extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
                   child: Text(openPathsWords(openPathsLeftOut(design, t)), style: const TextStyle(color: C.amber)),
                 ),
+              if (pointsLeftOut(design, t) > 0)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                  child: Text(pointsWords(pointsLeftOut(design, t)), style: const TextStyle(color: C.amber)),
+                ),
               PushBtn(
                 'Assign selected vectors',
                 height: 34,
@@ -670,6 +684,17 @@ class ToolpathsPanel extends StatelessWidget {
                 ),
               ),
             ),
+          ),
+        if (t.type == 'profile')
+          PCard(
+            title: 'Tabs',
+            child: Column(children: [
+              _row('Tabs', Switch(value: t.tabs, onChanged: (v) => onChange(i, t.copyWith(tabs: v)))),
+              if (t.tabs) ...[
+                _row('Height', StepperField(t.tabHeight ?? 3, (v) => onChange(i, t.copyWith(tabHeight: v)), min: 0.1, max: 50, decimals: 2)),
+                _row('Width', StepperField(t.tabWidth ?? 12, (v) => onChange(i, t.copyWith(tabWidth: v)), min: 1, max: 30, decimals: 1)),
+              ],
+            ]),
           ),
       ],
     );
