@@ -161,6 +161,9 @@ void main() {
     expect(tps.length, 5);
     expect(tps.last.type, 'pocket');
     expect(tps.last.shapes, ['s2']);
+    // Started the way the computer starts one: 2.54 mm deep, named like it.
+    expect(tps.last.depth, 2.54);
+    expect(tps.last.name, startsWith('Pocket Toolpath '));
     await close(t);
   });
 

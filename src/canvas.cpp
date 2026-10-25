@@ -1079,7 +1079,30 @@ void Canvas::drawForeground(QPainter *p, const QRectF &rect)
     // the halo stays visible whatever tool is active. A wide translucent pass
     // makes it readable over dark stock, a thin solid pass keeps the outline
     // crisp; both cosmetic, so the halo does not thicken as you zoom in.
-    if (!m_highlightIds.isEmpty()) {
+    if (!m_highlightIds.isEmpty() && m_highlightPartial) {
+        // Only what is left after the toolpaths above: amber over a dim
+        // dashed outline of the toolpath's own shapes.
+        p->save();
+        p->setBrush(Qt::NoBrush);
+        QPen dim(QColor(0xff, 0xa5, 0x2a, 0x90));
+        dim.setCosmetic(true);
+        dim.setWidth(1);
+        dim.setStyle(Qt::DashLine);
+        p->setPen(dim);
+        for (const QGraphicsPathItem *it : itemsFor(m_highlightIds))
+            p->drawPath(it->mapToScene(it->path()));
+        p->setBrush(QColor(0xff, 0xa5, 0x2a, 0x40));
+        for (int pass = 0; pass < 2; ++pass) {
+            QPen hp(pass == 0 ? QColor(0xff, 0xa5, 0x2a, 0x60) : QColor(0xff, 0xa5, 0x2a));
+            hp.setCosmetic(true);
+            hp.setWidth(pass == 0 ? 9 : 2);
+            hp.setJoinStyle(Qt::RoundJoin);
+            p->setPen(hp);
+            p->drawPath(m_highlightLeft);
+            p->setBrush(Qt::NoBrush);
+        }
+        p->restore();
+    } else if (!m_highlightIds.isEmpty()) {
         p->save();
         p->setBrush(Qt::NoBrush);
         for (int pass = 0; pass < 2; ++pass) {
@@ -1535,9 +1558,19 @@ void Canvas::resizeEvent(QResizeEvent *event)
 
 void Canvas::setVectorHighlight(const QStringList &ids)
 {
-    if (m_highlightIds == ids)
+    if (m_highlightIds == ids && !m_highlightPartial)
         return;
     m_highlightIds = ids;
+    m_highlightPartial = false;
+    m_highlightLeft = QPainterPath();
+    viewport()->update();
+}
+
+void Canvas::setVectorHighlight(const QStringList &ids, const QPainterPath &left)
+{
+    m_highlightIds = ids;
+    m_highlightPartial = true;
+    m_highlightLeft = left;
     viewport()->update();
 }
 

@@ -374,9 +374,16 @@ class ToolpathSpec {
 
   /// Off: kept in the design but not cut (the desktop's tick box).
   final bool enabled;
+
+  /// profile only: bridges left on the last passes (the desktop's Tabs switch).
+  final bool tabs;
+
+  /// profile only: tab height and width in mm; null: what the computer starts a contour with
+  /// (its Settings > Tab height, 12 mm wide).
+  final double? tabHeight, tabWidth;
   final Map<String, Object?> extra;
 
-  static const _known = {'name', 'type', 'shapes', 'tool', 'depth', 'side', 'enabled'};
+  static const _known = {'name', 'type', 'shapes', 'tool', 'depth', 'side', 'enabled', 'tabs', 'tabHeight', 'tabWidth'};
 
   const ToolpathSpec(
       {required this.name,
@@ -386,6 +393,9 @@ class ToolpathSpec {
       required this.depth,
       this.side = 'outside',
       this.enabled = true,
+      this.tabs = true,
+      this.tabHeight,
+      this.tabWidth,
       this.extra = const {}});
 
   factory ToolpathSpec.fromJson(Map<String, Object?> j) => ToolpathSpec(
@@ -396,13 +406,37 @@ class ToolpathSpec {
         depth: _d(j['depth']),
         side: _s(j['side'], 'outside'),
         enabled: _b(j['enabled'], true),
+        tabs: _b(j['tabs'], true),
+        tabHeight: j['tabHeight'] is num ? _d(j['tabHeight']) : null,
+        tabWidth: j['tabWidth'] is num ? _d(j['tabWidth']) : null,
         extra: _extra(j, _known),
       );
-  Map<String, Object?> toJson() =>
-      {...extra, 'name': name, 'type': type, 'shapes': shapes, 'tool': tool, 'depth': depth, 'side': side, 'enabled': enabled};
+  Map<String, Object?> toJson() => {
+        ...extra,
+        'name': name,
+        'type': type,
+        'shapes': shapes,
+        'tool': tool,
+        'depth': depth,
+        'side': side,
+        'enabled': enabled,
+        // Only what differs from the computer's own: files without them read as before.
+        if (!tabs) 'tabs': false,
+        if (tabHeight != null) 'tabHeight': tabHeight,
+        if (tabWidth != null) 'tabWidth': tabWidth,
+      };
 
   ToolpathSpec copyWith(
-          {String? name, String? type, List<String>? shapes, int? tool, double? depth, String? side, bool? enabled}) =>
+          {String? name,
+          String? type,
+          List<String>? shapes,
+          int? tool,
+          double? depth,
+          String? side,
+          bool? enabled,
+          bool? tabs,
+          double? tabHeight,
+          double? tabWidth}) =>
       ToolpathSpec(
         name: name ?? this.name,
         type: type ?? this.type,
@@ -411,6 +445,9 @@ class ToolpathSpec {
         depth: depth ?? this.depth,
         side: side ?? this.side,
         enabled: enabled ?? this.enabled,
+        tabs: tabs ?? this.tabs,
+        tabHeight: tabHeight ?? this.tabHeight,
+        tabWidth: tabWidth ?? this.tabWidth,
         extra: extra,
       );
 

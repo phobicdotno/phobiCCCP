@@ -317,6 +317,13 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
             const QString side = t.value(QStringLiteral("side")).toString();
             j.insert(QStringLiteral("ofset_dir"), side == QLatin1String("inside") ? -1
                                                  : side == QLatin1String("on")   ? 0 : 1);
+            // Tabs: off, or their own height and width; else the computer's defaults.
+            if (!t.value(QStringLiteral("tabs")).toBool(true))
+                j.insert(QStringLiteral("ignore_tabs"), true);
+            if (t.value(QStringLiteral("tabHeight")).isDouble())
+                j.insert(QStringLiteral("tab_height"), qBound(0.1, t.value(QStringLiteral("tabHeight")).toDouble(), 50.0));
+            if (t.value(QStringLiteral("tabWidth")).isDouble())
+                j.insert(QStringLiteral("tab_width"), qBound(1.0, t.value(QStringLiteral("tabWidth")).toDouble(), 30.0));
         }
         if (!name.isEmpty())
             j.insert(QStringLiteral("name"), name);
@@ -648,6 +655,24 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         // was set here and would be lost.
         Toolpath fresh = makeToolpath(doc, type, elementIds);
         QJsonObject j = fresh.json;
+        if (type == QLatin1String("contour")) {
+            // Tabs the pad carries: off, or a height / width other than the
+            // computer's own default. Not lost.
+            QJsonObject tp = toolpaths.last().toObject();
+            if (t.json.value(QStringLiteral("ignore_tabs")).toBool(false))
+                tp.insert(QStringLiteral("tabs"), false);
+            const std::pair<const char *, const char *> keys[] = {{"tab_height", "tabHeight"}, {"tab_width", "tabWidth"}};
+            for (const auto &k : keys) {
+                const QString ck = QString::fromLatin1(k.first);
+                const double have = t.json.value(ck).toDouble(-1);
+                if (have > 0 && std::abs(have - fresh.json.value(ck).toDouble()) > 1e-9)
+                    tp.insert(QString::fromLatin1(k.second), have);
+                if (t.json.contains(ck))
+                    j.insert(ck, t.json.value(ck));
+            }
+            j.insert(QStringLiteral("ignore_tabs"), t.json.value(QStringLiteral("ignore_tabs")));
+            toolpaths.replace(toolpaths.size() - 1, tp);
+        }
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
         sizeToTool(j, *tool);
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
