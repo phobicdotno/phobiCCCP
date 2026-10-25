@@ -600,6 +600,7 @@ void GrblStreamer::measureTool(const BitSetterConfig &cfg, bool returnHome,
 
 void GrblStreamer::applyToolLengthOffset(double mm)
 {
+    m_tloBefore = m_tlo;
     m_tlo = mm;
     m_tloPending = true;
     m_tloRetries = 0;

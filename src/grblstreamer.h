@@ -98,6 +98,9 @@ public:
     // The work offset's Z (G54, mm) as last reported on this connection.
     bool hasWorkOffset() const { return m_haveWco; }
     double toolLengthOffsetAtWco() const { return m_tloAtWco; }
+    // The offset before the latest applyToolLengthOffset: a WCO report that
+    // left GRBL before it applied the new G43.1 still carries this one.
+    double toolLengthOffsetBefore() const { return m_tloBefore; }
     double workOffsetZ() const { return m_wcoZ * reportScale(); }
     // A setting from the controller's `$$` listing ($130 = X max travel…),
     // or `fallback` when it has not been seen on this connection (the list
@@ -228,6 +231,7 @@ private:
     double m_probeZ = 0;
     bool m_probeOk = false;
     double m_tlo = 0;
+    double m_tloBefore = 0;
 
     static const int RX_BUFFER = 120;           // GRBL has 128; keep headroom
 };
