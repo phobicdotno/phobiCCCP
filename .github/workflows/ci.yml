@@ -61,13 +61,30 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build qt6-base-dev qt6-base-dev-tools \
             libqt6sql6-sqlite qt6-serialport-dev zlib1g-dev libgl1-mesa-dev \
-            libboost-dev python3
+            libboost-dev python3 ccache
+
+      # Compiler cache: a run only recompiles the files its commit changed.
+      # ccache keeps it in ~/.cache/ccache. Each run saves its own entry; a new
+      # branch starts from main's.
+      - name: Compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ github.ref_name }}-
+            ccache-${{ runner.os }}-main-
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        run: |
+          ccache --set-config=max_size=500M
+          ccache --zero-stats
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          cmake --build build --parallel
+          ccache --show-stats
 
       # The grblsim / machine-flow suites are RUN_SERIAL in CMakeLists.txt, so
       # running the rest in parallel does not starve their wall-clock deadlines.
