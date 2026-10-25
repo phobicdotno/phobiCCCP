@@ -357,6 +357,34 @@ int main(int argc, char *argv[])
         w.m_untitledFrom = wasFrom;
     }
 
+    // Rotate 90° (options bar and Edit menu): the design turns, the stock
+    // does not, and one Ctrl+Z puts it back.
+    {
+        QAction *rot = w.findChild<QAction *>(QStringLiteral("rotateJob"));
+        check(rot != nullptr, "rotate: the action is on the window");
+        const QVector<c2d::Element> before = d.elements();
+        const QVector<c2d::Toolpath> tpsBefore = d.toolpaths();
+        const double sw = d.boardWidth(), sh = d.boardHeight();
+        const int undoAt = w.m_canvas->undoStack()->index();
+        rot->trigger();
+        const c2d::Element *rr = d.elementById(r.id);
+        check(rr && rr->raw.value("width").toDouble() == 30 && rr->raw.value("height").toDouble() == 40,
+              "rotate: the rectangle lies the other way");
+        check(d.boardWidth() == sw && d.boardHeight() == sh, "rotate: the stock stays as it is");
+        check(d.toolpaths().size() == tpsBefore.size() && d.toolpaths().at(0).json.value("elements") == tpsBefore.at(0).json.value("elements"),
+              "rotate: the toolpaths still machine the same vectors");
+        check(w.m_canvas->undoStack()->index() == undoAt + 1, "rotate: one undo step");
+        check(w.m_dirty, "rotate: the design is marked edited");
+        w.m_canvas->undoStack()->undo();
+        bool same = d.elements().size() == before.size();
+        for (int i = 0; same && i < before.size(); ++i)
+            same = d.elements().at(i).raw == before.at(i).raw;
+        check(same, "rotate: Ctrl+Z puts every vector back");
+        w.m_canvas->undoStack()->redo();
+        check(d.elementById(r.id)->raw.value("width").toDouble() == 30, "rotate: and Ctrl+Y turns it again");
+        w.m_canvas->undoStack()->undo();
+    }
+
     w.m_dirty = false;
     std::printf("test_mainwindow: %d checks OK\n", g_checks);
     return 0;

@@ -1503,6 +1503,28 @@ static Job::Helix helixIn(const QList<QPolygonF> &rings, double want, double ang
 // The same closed ring started at the middle of its longest edge: a lead
 // arc tangent to a straight run has room on the air side, where one at a
 // convex corner would swing back across the cut it is about to make.
+// Where a tabbed contour's ring starts: beside the middle of the first edge
+// of the vector it goes round (`marks`, one per vector), so the start, and
+// the tabs spaced along the ring from it, stay on the same part of the shape
+// however the shape lies. The boolean that makes the ring starts it wherever
+// it likes, and that changed with the shape's orientation: Rotate 90° moved
+// the tabs. The middle of an edge, not a node: round an outside corner every
+// point of the ring's arc is as near the corner as the next.
+static QPolygonF startBesideVector(const QPolygonF &ring, const QVector<QPointF> &marks)
+{
+    double best = std::numeric_limits<double>::max();
+    const QPointF *pick = nullptr;
+    for (const QPointF &m : marks) {
+        double d = 0;
+        arcPosOf(ring, m, &d);
+        if (d < best - 1e-9) {
+            best = d;
+            pick = &m;
+        }
+    }
+    return pick ? startNearest(ring, *pick) : ring;
+}
+
 static QPolygonF startMidLongestEdge(const QPolygonF &ring)
 {
     if (ring.size() < 4 || ring.first() != ring.last())
@@ -4117,6 +4139,16 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         closeLoop(e);
                         edge << e;
                     }
+            QVector<QPointF> marks;   // see startBesideVector
+            if (cp.tabWidth > 0.01)
+                for (const Element *e : elems) {
+                    const PathModel m = Element::pathModel(*e);
+                    for (const SubPath &sp : m.subs)
+                        if (sp.segmentCount() > 0) {
+                            marks << sp.pointAt(0, 0.5);
+                            break;
+                        }
+                }
             int finSkipped = 0;
             for (const QPolygonF &p : rings) {
                 Job job;
@@ -4144,6 +4176,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 }
                 if (spring)
                     finish << (finish.isEmpty() ? rough : finish.last());
+                if (!marks.isEmpty())
+                    rough = startBesideVector(rough, marks);
                 job.rings.append(rough);
                 if (leadR > 0) {
                     const QPolygonF moved = startMidLongestEdge(rough);

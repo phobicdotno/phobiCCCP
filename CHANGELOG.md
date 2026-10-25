@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.3.23 (build 113) — 2026-10-25
+
+> Rotate 90°: turn the whole design a quarter turn clockwise to fit a leftover piece lying the other way
+
+- **Design:** a **Rotate 90°** button on the options bar (and in the Edit menu) turns the whole
+  design 90° clockwise on the same stock. Every vector turns, and everything that hangs on them
+  turns with it: toolpaths keep machining the same vectors with the same settings (depths, tabs,
+  leads, climb or conventional), and hatch, texture, keyhole and raster directions turn too.
+  Constraints and dimensions turn with their geometry, so nothing moves on the next solve; a
+  dimension measured from the origin (which stays where it is) takes its new value, and one
+  that other expressions use shows red and is named in the status line. The 3D model's images,
+  meshes and textures and the tracing background turn as well. The stock and its zero stay as
+  they are, and the design keeps its bottom-left corner where it was; the status line says if
+  it now reaches past the stock. One Ctrl+Z undoes it, and four turns give back exactly what
+  was there.
+- **Toolpaths:** a contour with tabs now starts beside the middle of the first edge of its vector,
+  so its tabs stay on the same part of the shape however the shape lies (they moved when the
+  shape was turned).
+- **Pad:** the same button, on the pad build of the program.
+
 ## v1.3.22 (build 112) — 2026-10-25
 
 > A stopped or cancelled job no longer looks like it is still running, and the job counts the toolpaths it cuts

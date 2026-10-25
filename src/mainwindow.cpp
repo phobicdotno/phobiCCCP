@@ -77,6 +77,8 @@
 #include "sendtodialog.h"
 #include "settingsdialog.h"
 #include "toolbarorder.h"
+#include "jobrotate.h"
+#include <QUndoCommand>
 #include "toolpathfactory.h"
 #include <QTimer>
 #include "heightmodel.h"
@@ -404,6 +406,14 @@ static QIcon toolIcon(const QString &kind)
         p.drawRect(QRectF(4, 4, 12, 12));
         p.drawLine(QLineF(8, 10, 12, 10));
         p.drawLine(QLineF(10, 8, 10, 12));
+    } else if (kind == "rotate90") {     // a board under a clockwise quarter-turn arrow
+        p.drawRect(QRectF(3, 10, 9, 7));
+        p.drawArc(QRectF(6, 3, 12, 12), 180 * 16, -150 * 16);
+        // Arrowhead where the arc ends (330 deg, lower right), heading down.
+        const QPointF tip(12 + 6 * std::cos(qDegreesToRadians(30.0)), 9 + 6 * std::sin(qDegreesToRadians(30.0)));
+        p.setBrush(QColor(0xd8, 0xdc, 0xe4));
+        p.drawPolygon(QPolygonF() << tip + QPointF(0, 2.6) << tip + QPointF(-2.6, -0.6) << tip + QPointF(2.2, -1.4));
+        p.setBrush(Qt::NoBrush);
     } else if (kind == "snap") {
         for (int x = 4; x <= 16; x += 6)
             for (int y = 4; y <= 16; y += 6)
@@ -1060,6 +1070,16 @@ MainWindow::MainWindow(QWidget *parent)
     fitAct->setShortcut(Qt::Key_F);
     fitAct->setToolTip(QStringLiteral("Zoom to the selection, or the whole board when nothing is selected  (F)"));
     connect(fitAct, &QAction::triggered, this, [this] { m_canvas->zoomFit(); });
+    // Rotate the whole design a quarter turn clockwise on the same stock (a
+    // leftover piece lying the other way). Edit menu too.
+    QAction *rotAct = tb->addAction(toolIcon(QStringLiteral("rotate90")), QStringLiteral("Rotate 90°"));
+    rotAct->setObjectName(QStringLiteral("rotateJob"));
+    rotAct->setToolTip(QStringLiteral(
+        "Rotate the whole design 90° clockwise: every vector with its toolpaths, tabs and "
+        "constraints, the 3D model and the background. The stock stays as it is; the design "
+        "keeps its bottom-left corner. Ctrl+Z undoes it."));
+    connect(rotAct, &QAction::triggered, this, &MainWindow::rotateJob);
+    editMenu->addAction(rotAct);
     // Keyboard zoom; the - / + buttons are on the canvas, bottom right.
     auto *zoomInAct = new QAction(QStringLiteral("Zoom in"), this);
     zoomInAct->setShortcuts({QKeySequence(Qt::Key_Plus), QKeySequence(Qt::Key_Equal), QKeySequence::ZoomIn});
@@ -3674,6 +3694,96 @@ void MainWindow::refreshInfo()
         lines << QStringLiteral("%1  [%2]").arg(t.json.value("name").toString(), t.type);
 
     m_info->setPlainText(lines.join(QChar('\n')));
+}
+
+namespace {
+
+// Rotate 90° as one undo step: the document's vectors, toolpaths and
+// constraints, the 3D model and the background's placement, before and after.
+class RotateJobCmd : public QUndoCommand
+{
+public:
+    struct State {
+        QVector<Element> els;
+        QVector<Toolpath> tps;
+        Parametric par;
+        Model3D model;
+        double bgX = 0, bgY = 0, bgRot = 0;
+    };
+    RotateJobCmd(Canvas *c, Document *d, ModelPanel *m, BackgroundImage *bg,
+                 const State &before, const State &after, bool hasModel)
+        : m_c(c), m_d(d), m_m(m), m_bg(bg), m_before(before), m_after(after), m_hasModel(hasModel)
+    {
+        setText(QStringLiteral("rotate the design 90°"));
+    }
+    void redo() override { apply(m_after); }
+    void undo() override { apply(m_before); }
+
+private:
+    void apply(const State &s)
+    {
+        m_d->setElements(s.els);
+        m_d->setToolpaths(s.tps);
+        m_d->setParametric(s.par);
+        if (m_hasModel)
+            m_m->setModel(s.model);
+        if (!m_bg->isNull()) {
+            m_bg->x = s.bgX;
+            m_bg->y = s.bgY;
+            m_bg->rotationDeg = s.bgRot;
+            m_bg->userChanged = true;
+        }
+        m_c->rebuild();
+        m_c->viewport()->update();
+        emit m_c->documentChanged();
+    }
+    Canvas *m_c;
+    Document *m_d;
+    ModelPanel *m_m;
+    BackgroundImage *m_bg;
+    State m_before, m_after;
+    bool m_hasModel;
+};
+
+} // namespace
+
+void MainWindow::rotateJob()
+{
+    commitEdits();
+    if (!hasDocument())
+        return;
+    const Model3D &model = m_model->model();
+    const QRectF bounds = jobrotate::designBounds(m_doc, &model);
+    if (bounds.isNull()) {
+        statusBar()->showMessage(QStringLiteral("Nothing to rotate: the design has no vectors"), 8000);
+        return;
+    }
+    const QTransform q = jobrotate::quarterTurn(bounds);
+
+    RotateJobCmd::State before{m_doc.elements(), m_doc.toolpaths(), m_doc.parametric(), model,
+                               m_bg.x, m_bg.y, m_bg.rotationDeg};
+    Document turned = m_doc;
+    const jobrotate::Report rep = jobrotate::turnDocument(turned, q);
+    Model3D turnedModel = model;
+    jobrotate::turnModel(turnedModel, q);
+    BackgroundImage bg = m_bg;
+    jobrotate::turnBackground(bg, q);
+    RotateJobCmd::State after{turned.elements(), turned.toolpaths(), turned.parametric(), turnedModel,
+                              bg.x, bg.y, bg.rotationDeg};
+    const bool hasModel = !model.components.isEmpty();
+    m_canvas->undoStack()->push(
+        new RotateJobCmd(m_canvas, &m_doc, m_model, &m_bg, before, after, hasModel));
+
+    QStringList msg{QStringLiteral("Rotated the design 90° clockwise (%1 vector(s))").arg(rep.vectors)};
+    const QRectF now = jobrotate::designBounds(m_doc, &m_model->model());
+    const double w = m_doc.boardWidth(), h = m_doc.boardHeight();
+    if (now.left() < -1e-6 || now.top() < -1e-6 || now.right() > w + 1e-6 || now.bottom() > h + 1e-6)
+        msg << QStringLiteral("it now reaches past the %1 × %2 mm stock").arg(w, 0, 'g', 6).arg(h, 0, 'g', 6);
+    if (rep.remeasured)
+        msg << QStringLiteral("%1 dimension(s) from the origin took their new value").arg(rep.remeasured);
+    if (!rep.notHeld.isEmpty())
+        msg << QStringLiteral("%1 constraint(s) tied to the origin no longer hold (red)").arg(rep.notHeld.size());
+    statusBar()->showMessage(msg.join(QStringLiteral("; ")), 12000);
 }
 
 } // namespace c2d

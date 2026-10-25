@@ -60,6 +60,11 @@ public:
     // Design and Toolpaths share the canvas with their own side panels,
     // Simulate and Machine are full pages. Ctrl+1…4, or the switch at the
     // top right. `autoRun` lets Toolpaths/Simulate kick off their preview.
+    // Rotate 90°: the whole design (vectors, toolpaths, constraints, 3D
+    // model, background) a quarter turn clockwise on the same stock, one
+    // undo step. See jobrotate.h.
+    void rotateJob();
+
     enum class Mode { Design, Toolpaths, Simulate, Machine };
     void setMode(Mode m, bool autoRun = true);
     Mode mode() const { return m_mode; }
