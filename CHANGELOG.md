@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.3.33 (build 123) — 2026-10-26
+
+> Selecting by dragging a box now picks only what you can see, and deleted
+> shapes leave their toolpaths
+
+- **Design / Toolpaths:** a select box dragged on past the edge of the drawing (over the panels
+  or menus) kept growing into the part of the drawing that is off screen, so it selected shapes
+  nobody could see, and "+" on a toolpath card then added those. The box now stops at the edge
+  of the drawing.
+- **Toolpaths:** deleting a shape takes it out of every toolpath that cuts it (undo puts it
+  back). It used to stay behind as a red "?" tile and in the vector count. A design saved with
+  such leftovers opens without them.
+- **Toolpaths:** clicking a shape's tile on an open toolpath card selects that shape and moves
+  the view so it is in the middle, at the same zoom.
+- **Pad:** the same on the pad.
+
 ## v1.3.32 (build 122) — 2026-10-26
 
 > Toolbars: a clear » on each toolbar that runs out of room, with the buttons that do not fit

@@ -20,7 +20,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
-const appVersion = '1.3.32';
+const appVersion = '1.3.33';
 
 class MainWindow extends StatefulWidget {
   final AppState app;

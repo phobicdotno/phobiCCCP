@@ -31,6 +31,8 @@ class Document
 {
 public:
     bool load(const QString &path, QString *error = nullptr);
+    // Drop toolpath vectors whose shape no longer exists (done on load).
+    void dropDanglingRefs();
 
     // Save by cloning the currently-loaded file and rewriting its element rows
     // from the in-memory elements (the proven, round-trip-verified recipe:

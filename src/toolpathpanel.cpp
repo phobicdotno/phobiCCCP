@@ -78,6 +78,7 @@ public:
     std::function<void(const QString &uuid)> toggled;
     std::function<void(const QString &uuid, const QString &areaId)> removed;
     std::function<void(const QString &uuid)> added;   // the dotted "+" tile
+    std::function<void(const QString &areaId)> picked;  // a shape's tile
 
     static int headHeight(const QFont &f) { return QFontMetrics(f).height() * 2 + 22; }
 
@@ -291,6 +292,12 @@ public:
                         added(uuid);
                     return true;
                 }
+                for (int i = 0; i < ids.size(); ++i)
+                    if (tileRect(opt.rect, opt.font, i).contains(at)) {
+                        if (picked)
+                            picked(ids.at(i));
+                        return true;
+                    }
             }
             if (me->button() == Qt::LeftButton && stripRect(opt.rect, opt.font).contains(at)) {
                 if (toggled)
@@ -321,7 +328,7 @@ public:
                     break;
                 }
                 if (t.contains(at)) {
-                    tip = tips.at(i);
+                    tip = tips.at(i) + QStringLiteral("\nClick to select it and bring it to the middle");
                     break;
                 }
             }
@@ -582,6 +589,12 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     };
     cardDelegate->added = [this](const QString &uuid) {
         QMetaObject::invokeMethod(this, [this, uuid] { addSelectedShapes(uuid); },
+                                  Qt::QueuedConnection);
+    };
+    // A shape's tile selects that shape and brings it to the middle of the
+    // drawing, at the same zoom.
+    cardDelegate->picked = [this](const QString &id) {
+        QMetaObject::invokeMethod(this, [this, id] { m_canvas->showElement(id); },
                                   Qt::QueuedConnection);
     };
     cardDelegate->removed = [this](const QString &uuid, const QString &id) {

@@ -4,6 +4,7 @@
 #include <QFile>
 #include <cstdio>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSqlDatabase>
@@ -151,7 +152,27 @@ bool Document::load(const QString &path, QString *error)
         m_unreadableElements.clear();
         return false;
     }
+    dropDanglingRefs();
     return true;
+}
+
+// Toolpath vectors whose shape is gone: deleting a shape used to leave it in
+// the toolpaths that cut it, shown as a "?" tile. A shape this build could
+// not read is still there and stays referenced.
+void Document::dropDanglingRefs()
+{
+    QSet<QString> have = m_unreadableElements;
+    for (const Element &e : m_elements)
+        have.insert(e.id);
+    for (Toolpath &t : m_toolpaths) {
+        const QJsonArray refs = t.json.value("elements").toArray();
+        QJsonArray kept;
+        for (const QJsonValue &v : refs)
+            if (have.contains(v.toObject().value("uuid").toString()))
+                kept.append(v);
+        if (kept.size() != refs.size())
+            t.json.insert(QStringLiteral("elements"), kept);
+    }
 }
 
 bool Document::save(const QString &destPath, QString *error)
