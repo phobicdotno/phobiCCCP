@@ -105,6 +105,9 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QToolBar>
+#include <QProxyStyle>
+#include <QWidgetAction>
+#include <QStyleFactory>
 #include <QUndoStack>
 #include <QtMath>
 
@@ -225,6 +228,72 @@ static bool drawModeIcon(QPainter &p, const QString &kind)
         return false;
     }
     return true;
+}
+
+// Qt's toolbar overflow button (the » a bar shows when its buttons do not
+// fit), made big enough to see and press on a touch screen.
+class OverflowStyle : public QProxyStyle
+{
+public:
+    using QProxyStyle::QProxyStyle;
+    int pixelMetric(PixelMetric m, const QStyleOption *opt, const QWidget *w) const override
+    {
+        if (m == PM_ToolBarExtensionExtent)
+            return 34;
+        return QProxyStyle::pixelMetric(m, opt, w);
+    }
+};
+
+static void showOverflowButton(QToolBar *bar)
+{
+    auto *ext = bar->findChild<QToolButton *>(QStringLiteral("qt_toolbar_ext_button"));
+    if (!ext)
+        return;
+    // The bar's layout asks the bar's style how wide the » is.
+    auto *style = new OverflowStyle(QStyleFactory::create(QApplication::style()->name()));
+    style->setParent(bar);
+    bar->setStyle(style);
+    QPixmap pm(60, 60);
+    pm.setDevicePixelRatio(3.0);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(QColor(0xf2, 0xa5, 0x36), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    for (double x : {5.0, 11.0})
+        p.drawPolyline(QPolygonF() << QPointF(x, 5) << QPointF(x + 5, 10) << QPointF(x, 15));
+    p.end();
+    ext->setIcon(QIcon(pm));
+    ext->setIconSize(QSize(20, 20));
+    ext->setToolTip(QStringLiteral("More: the buttons that do not fit on this bar"));
+    ext->setStyleSheet(QStringLiteral(
+        "QToolButton { padding: 2px; border: 1px solid #f2a536; border-radius: 6px; background: #2a2e36; }"
+        "QToolButton:hover, QToolButton:checked { background: #3a4150; }"));
+    // Pressed: a menu of exactly the buttons that are out of sight, with their
+    // icons and names (and their own variants, for the drawing tools). Qt's
+    // own answer, growing the bar over the canvas, did nothing in a main
+    // window's tool bar area.
+    QObject::disconnect(ext, &QAbstractButton::clicked, nullptr, nullptr);
+    ext->setCheckable(false);
+    QObject::connect(ext, &QAbstractButton::clicked, bar, [bar, ext] {
+        QMenu menu(bar);
+        for (QAction *a : bar->actions()) {
+            if (!a->isVisible() || qobject_cast<QWidgetAction *>(a))
+                continue;
+            if (a->isSeparator()) {
+                if (!menu.isEmpty() && !menu.actions().last()->isSeparator())
+                    menu.addSeparator();
+                continue;
+            }
+            const QWidget *w = bar->widgetForAction(a);
+            if (w && w->isVisible())
+                continue;
+            menu.addAction(a);
+        }
+        if (!menu.isEmpty() && menu.actions().last()->isSeparator())
+            menu.removeAction(menu.actions().last());
+        if (!menu.isEmpty())
+            menu.exec(ext->mapToGlobal(QPoint(ext->width(), ext->height())) - QPoint(menu.sizeHint().width(), 0));
+    });
 }
 
 static QIcon toolIcon(const QString &kind)
@@ -1113,6 +1182,12 @@ MainWindow::MainWindow(QWidget *parent)
     tb->addAction(redoAct);
     auto *vecActions = new VectorActions(m_canvas, editMenu, this);   // Edit → Vectors + icon bar
     vecActions->beforeAction = [this] { commitEdits(); };
+    // Every bar is a section of its own (drawing tools or toolpath kinds,
+    // options, vectors); one with no room for all its buttons folds the rest
+    // behind a » at its end that shows them. Qt's own » is a 12 px sliver,
+    // dark on dark: nobody saw it, and the buttons looked gone.
+    for (QToolBar *b : findChildren<QToolBar *>(QString(), Qt::FindDirectChildrenOnly))
+        showOverflowButton(b);
 
     // Status bar: transient hints. Zoom and the live mm position are on the
     // canvas itself (bottom right, with the zoom buttons).
