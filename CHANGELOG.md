@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.28 (build 118) — 2026-10-26
+## v1.3.32 (build 122) — 2026-10-26
 
 > Toolbars: a clear » on each toolbar that runs out of room, with the buttons that do not fit
 
@@ -11,6 +11,31 @@
   the buttons that do not fit, so nothing on a toolbar is ever out of reach. With room for
   everything (1280 px in Design mode) nothing changes.
 - **Pad:** the same, on the pad build of the program, where the screen is narrower.
+
+## v1.3.31 (build 121) — 2026-10-26
+
+> A new Drill toolpath drills straight through the stock and 0.5 mm on
+
+- **Toolpaths:** a new Drill toolpath now starts at the stock thickness + 0.5 mm deep (19.5 mm
+  in 19 mm stock), one plunge per hole with no pecks or chip breaking, so each hole comes out
+  clean at the bottom. It was 2.54 mm. Drill toolpaths already in a design keep their depth, and
+  a drill made before the stock thickness is changed keeps the depth it was made with (as a
+  Cutout does).
+- **Pad:** a new Drill on the pad starts at the same depth.
+
+## v1.3.30 (build 120) — 2026-10-26
+
+> Running job: a toolpath on many shapes shows a row per shape, so every square shows its progress
+
+- **Machine:**
+  - The Running job list split a toolpath that cuts several shapes (five squares, each cut to full
+    depth before the next) into the first square's passes only: "Pass 1 of 3", "Pass 2 of 3",
+    "Pass 3 of 3", and the other four squares all ran inside that last row. Such a toolpath now
+    has one row per shape ("Shape 2 of 5  ·  3 passes to Z -3 mm"), each with its own time and
+    tick, and the line above the bar says which shape and which of its passes runs, with the bar
+    for that pass. A toolpath on one shape keeps its row per pass. The pad's desktop program
+    shows the same list.
+
 
 ## v1.3.26 (build 116) — 2026-10-26
 

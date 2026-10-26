@@ -333,6 +333,11 @@ String pointsWords(int n) => '$n point${n == 1 ? '' : 's'} left out: only a dril
 String openPathsWords(int n) =>
     '$n open path${n == 1 ? '' : 's'} left out: only a contour on the line cuts open paths';
 
+/// The depth a new toolpath of [type] starts with, as the computer's
+/// makeToolpath() does: a drill goes straight through the stock and 0.5 mm on.
+double newToolpathDepth(String type, double thickness) =>
+    type == 'drill' ? thickness + 0.5 : type == 'engrave' ? 0.5 : 2.54;
+
 String tpTypeLabel(String t) => const {'profile': 'Contour', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ?? t;
 
 class ToolpathsPanel extends StatelessWidget {
