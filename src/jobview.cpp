@@ -291,6 +291,58 @@ QVector<CutShape> cutShapes(const QVector<Op> &ops)
     return out;
 }
 
+// The passes as read off the program are stretches of cutting between
+// travels. Put them back together the way the toolpath cut them: when the
+// floor comes back up the toolpath has moved on to its next shape (it cuts
+// each shape to full depth before the next), and stretches at one floor in a
+// row are one pass. One shape: a row per pass, as before. Several: a row per
+// shape, its passes kept as its levels, so the first square is not split
+// into every pass while the other four share the last one's row.
+void groupPasses(JobSection &sec)
+{
+    QVector<QVector<JobLevel>> shapes;
+    for (const JobPass &p : std::as_const(sec.passes)) {
+        if (shapes.isEmpty() || (!shapes.last().isEmpty() && p.z > shapes.last().last().z + 1e-6))
+            shapes.append(QVector<JobLevel>());
+        QVector<JobLevel> &lv = shapes.last();
+        if (!lv.isEmpty() && std::abs(lv.last().z - p.z) < 1e-6)
+            lv.last().qEnd = p.qEnd;
+        else
+            lv.append(JobLevel{p.z, p.qStart, p.qEnd});
+    }
+    auto passOf = [](const QVector<JobLevel> &lv) {
+        JobPass p;
+        p.qStart = lv.first().qStart;
+        p.qEnd = lv.last().qEnd;
+        p.z = lv.first().z;
+        for (const JobLevel &l : lv)
+            p.z = qMin(p.z, l.z);
+        return p;
+    };
+    QVector<JobPass> out;
+    if (shapes.size() == 1) {
+        const QVector<JobLevel> &lv = shapes.first();
+        const int n = int(lv.size());
+        for (int i = 0; i < n; ++i) {
+            out.append(passOf({lv.at(i)}));
+            out.last().what = n > 1 ? QStringLiteral("Pass %1 of %2  ·  to Z %3 mm").arg(i + 1).arg(n).arg(mm(lv.at(i).z))
+                                    : QStringLiteral("to Z %1 mm").arg(mm(lv.at(i).z));
+        }
+    } else {
+        const int n = int(shapes.size());
+        for (int i = 0; i < n; ++i) {
+            const QVector<JobLevel> &lv = shapes.at(i);
+            JobPass p = passOf(lv);
+            p.what = lv.size() > 1 ? QStringLiteral("Shape %1 of %2  ·  %3 passes to Z %4 mm").arg(i + 1).arg(n).arg(lv.size()).arg(mm(p.z))
+                                   : QStringLiteral("Shape %1 of %2  ·  to Z %3 mm").arg(i + 1).arg(n).arg(mm(p.z));
+            if (lv.size() > 1)
+                p.levels = lv;
+            out.append(p);
+        }
+    }
+    sec.passes = out;
+}
+
 } // namespace
 
 JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document *doc, double rapidRate)
@@ -319,6 +371,8 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
     int sinceClose = 0;                       // lines since the last section ended go to the next
     double floorZ = 0;
     bool flatSeen = false;                    // a cut along XY at the floor this pass
+    bool cutSeen = false;                     // any cutting move this pass
+    bool travelled = false;                   // a rapid sideways since the last cutting move
     int passCount = 0;
 
     auto closePass = [&] {
@@ -335,14 +389,11 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
             sec->qEnd = q;
             sinceClose = q;
             sec->estSec = plan.cumSec.at(q) - plan.cumSec.at(sec->qStart);
-            // Say what each pass is now the count is known.
-            const int n = sec->passes.size();
-            for (int i = 0; i < n; ++i) {
-                JobPass &p = sec->passes[i];
-                if (sec->kind == JobSection::ToolChange)
-                    continue;
-                p.what = n > 1 ? QStringLiteral("Pass %1 of %2  ·  to Z %3 mm").arg(i + 1).arg(n).arg(mm(p.z))
-                               : QStringLiteral("to Z %1 mm").arg(mm(p.z));
+            // Say what each pass (or shape) is now the count is known.
+            if (sec->kind == JobSection::Toolpath && !sec->passes.isEmpty()) {
+                groupPasses(*sec);
+                for (JobPass &p : sec->passes)
+                    p.estSec = plan.cumSec.at(p.qEnd) - plan.cumSec.at(p.qStart);
             }
             sec = nullptr;
         }
@@ -368,6 +419,8 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
         pass = &sec->passes.last();
         floorZ = z;
         flatSeen = false;
+        cutSeen = false;
+        travelled = false;
         ++passCount;
     };
 
@@ -472,9 +525,13 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
                 // the pass has cut along the floor, starts the next one. A
                 // ramp or a helix going down is the start of a pass; pecks
                 // that only go deeper (drilling) stay one pass.
+                const bool xyMove = haveXY && (std::abs(nx - x) > 1e-9 || std::abs(ny - y) > 1e-9);
+                if (motion == 0 && xyMove)
+                    travelled = true;
                 if (motion != 0) {
-                    const bool xyMove = haveXY && (std::abs(nx - x) > 1e-9 || std::abs(ny - y) > 1e-9);
-                    if (!pass) {
+                    // A cut after a travel starts a stretch of its own;
+                    // groupPasses() puts the stretches back together.
+                    if (!pass || (travelled && cutSeen)) {
                         openPass();
                         floorZ = nz;
                     } else if (nz < floorZ - 1e-6 && flatSeen) {
@@ -485,6 +542,8 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
                     }
                     if (xyMove && std::abs(nz - z) < 1e-9 && std::abs(nz - floorZ) < 1e-6)
                         flatSeen = true;
+                    cutSeen = true;
+                    travelled = false;
                 }
                 x = nx;
                 y = ny;
@@ -875,13 +934,29 @@ void JobView::refresh()
         if (runSec >= 0) {
             const JobSection &s = m_plan.sections.at(runSec);
             QString what = s.title();
-            if (runPass >= 0 && runPass < s.passes.size() && !s.passes.at(runPass).what.isEmpty())
-                what += QStringLiteral("  ·  ") + s.passes.at(runPass).what;
+            int a = runPass >= 0 ? s.passes.at(runPass).qStart : s.qStart;
+            int b = runPass >= 0 ? s.passes.at(runPass).qEnd : s.qEnd;
+            if (runPass >= 0 && runPass < s.passes.size() && !s.passes.at(runPass).what.isEmpty()) {
+                const JobPass &p = s.passes.at(runPass);
+                // A shape's row: say which of its passes runs, and fill the
+                // bar for that pass.
+                int lvl = -1;
+                for (int k = 0; k < p.levels.size(); ++k)
+                    if (q >= p.levels.at(k).qStart && q < p.levels.at(k).qEnd)
+                        lvl = k;
+                if (lvl >= 0) {
+                    const JobLevel &l = p.levels.at(lvl);
+                    what += QStringLiteral("  ·  ") + p.what.section(QStringLiteral("  ·  "), 0, 0)
+                          + QStringLiteral("  ·  pass %1 of %2  ·  to Z %3 mm").arg(lvl + 1).arg(p.levels.size()).arg(mm(l.z));
+                    a = l.qStart;
+                    b = l.qEnd;
+                } else {
+                    what += QStringLiteral("  ·  ") + p.what;
+                }
+            }
             if (m_parked)
                 what += QStringLiteral("  ·  waiting at the tool change");
             m_current->setText(what);
-            const int a = runPass >= 0 ? s.passes.at(runPass).qStart : s.qStart;
-            const int b = runPass >= 0 ? s.passes.at(runPass).qEnd : s.qEnd;
             m_passBar->setRange(0, qMax(1, b - a));
             m_passBar->setValue(qBound(0, q - a, qMax(1, b - a)));
         } else {

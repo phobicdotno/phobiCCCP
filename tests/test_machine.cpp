@@ -326,6 +326,68 @@ int main(int argc, char **argv)
               "job rows: the pad gets every step, a preview picture and the running share done");
     }
 
+    // ---- one toolpath on many shapes: a row per shape ---------------------
+    // Five squares pocketed 3 mm deep at 1 mm a pass, each cut to full depth
+    // before the next: the rows used to be the first square's three passes,
+    // with the other four squares all inside "Pass 3 of 3".
+    for (const QString type : {QStringLiteral("pocket_toolpath"), QStringLiteral("contour")}) {
+        c2d::Document many;
+        QJsonArray els;
+        for (int i = 0; i < 5; ++i) {
+            const c2d::Element sq = c2d::Element::makeRectangle({20.0 + 30 * i, 20}, 20, 20, QJsonObject());
+            many.addElement(sq);
+            els.append(QJsonObject{{"uuid", sq.id}});
+        }
+        QJsonObject j;
+        j.insert("type", type);
+        j.insert("name", QStringLiteral("squares"));
+        j.insert("enabled", true);
+        j.insert("uuid", QStringLiteral("{tp-many}"));
+        j.insert("start_depth", QStringLiteral("0.000"));
+        j.insert("end_depth", QStringLiteral("3.000"));
+        j.insert("stepdown", 1.0);
+        j.insert("stepover", 1.5);
+        j.insert("stock_to_leave", 0.0);
+        j.insert("speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}});
+        j.insert("tool", QJsonObject{{"diameter", 3.175}, {"number", 1}, {"name", QStringLiteral("1/8 endmill")}});
+        j.insert("elements", els);
+        c2d::Toolpath tp;
+        tp.uuid = QStringLiteral("{tp-many}");
+        tp.type = type;
+        tp.json = j;
+        many.addToolpath(tp);
+        const c2d::GcodeResult g = c2d::exportGcode(many);
+        const c2d::JobPlan plan = c2d::planJob(g.gcode.split(QLatin1Char('\n')), g.ops, &many, 5000);
+        const c2d::JobSection *sq = nullptr;
+        for (const c2d::JobSection &s : plan.sections)
+            if (s.kind == c2d::JobSection::Toolpath)
+                sq = &s;
+        const QString tag = QStringLiteral("many shapes (%1): ").arg(type);
+        check(sq && sq->passes.size() == 5, qPrintable(tag + QStringLiteral("one row per square, got %1").arg(sq ? sq->passes.size() : -1)));
+        if (!sq || sq->passes.size() != 5)
+            continue;
+        bool rows = true, tiled = sq->passes.first().qStart >= sq->qStart && sq->passes.last().qEnd == sq->qEnd;
+        for (int i = 0; i < 5; ++i) {
+            const c2d::JobPass &p = sq->passes.at(i);
+            rows = rows && p.what.startsWith(QStringLiteral("Shape %1 of 5").arg(i + 1)) && p.levels.size() == 3
+                   && std::abs(p.z + 3.0) < 1e-6 && p.estSec > 0;
+            if (i > 0)
+                tiled = tiled && p.qStart == sq->passes.at(i - 1).qEnd;
+        }
+        check(rows, qPrintable(tag + QStringLiteral("each square: its three passes, to Z -3, a time of its own")));
+        check(tiled, qPrintable(tag + QStringLiteral("the squares tile the toolpath")));
+        // Halfway through the third square's second pass the header says so,
+        // and the third square's row is the running one.
+        const c2d::JobLevel &l = sq->passes.at(2).levels.at(1);
+        c2d::JobView view;
+        view.setPlan(plan, QStringLiteral("job"));
+        view.setProgress((l.qStart + l.qEnd) / 2, plan.total);
+        bool said = false;
+        for (const QLabel *lab : view.findChildren<QLabel *>())
+            said = said || lab->text().contains(QStringLiteral("Shape 3 of 5  ·  pass 2 of 3"));
+        check(said, qPrintable(tag + QStringLiteral("the header names the square and its pass")));
+    }
+
     // ---- the panel on a fake controller -----------------------------------
     int master = -1, slave = -1;
     char name[256] = {};
