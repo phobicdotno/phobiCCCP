@@ -162,7 +162,7 @@ jobs:
 
       - name: Android SDK parts
         run: |
-          sudo apt-get install -y --no-install-recommends ninja-build
+          sudo apt-get install -y --no-install-recommends ninja-build libboost-dev   # Boost.Polygon: headers only
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
             "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0" > /dev/null

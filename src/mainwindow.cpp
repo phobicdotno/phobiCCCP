@@ -2200,7 +2200,11 @@ void MainWindow::onOpen()
 #endif
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open"), dir,
-        QStringLiteral("Designs and vectors (*.c2d *.cccp *.svg *.dxf *.plt *.hpgl *.hpg *.hgl *.pdf *.ai *.eps *.ps);;"
+        QStringLiteral("Designs and vectors (*.c2d *.cccp *.svg *.dxf *.plt *.hpgl *.hpg *.hgl"
+#ifndef Q_OS_ANDROID
+                       " *.pdf *.ai *.eps *.ps"
+#endif
+                       ");;"
                        "Syntexophobic part (*.cccp);;"
                        "Carbide Create (*.c2d);;") + importFileFilter()
             + QStringLiteral(";;All files (*)"));
