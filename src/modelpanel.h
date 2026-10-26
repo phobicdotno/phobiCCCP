@@ -55,6 +55,10 @@ public:
     bool addStlMesh(const QByteArray &bytes, const QString &fileName, double x, double y,
                     QString *error = nullptr);
 
+    // Replace the components as a whole (Rotate 90° and its undo): the
+    // composite is rebuilt and the document marked changed.
+    void setModel(const Model3D &model);
+
     ModelStore *store() { return &m_store; }
     const Model3D &model() const { return m_store.model; }
 
