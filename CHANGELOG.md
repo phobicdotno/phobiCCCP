@@ -18,6 +18,10 @@
 - **Toolpaths:** a contour with tabs now starts beside the middle of the first edge of its vector,
   so its tabs stay on the same part of the shape however the shape lies (they moved when the
   shape was turned).
+- **Window:** on a narrower screen (the shop's 1280 px) the end of the options bar fell out of
+  sight with nothing to show it was there: in Toolpaths mode Fit, Snap, Preview, Undo and Redo
+  were gone, in Design mode Preview, Undo and Redo. The options bar now takes a row of its own
+  when it has no room beside the tools.
 - **Pad:** the same button, on the pad build of the program.
 
 ## v1.3.22 (build 112) — 2026-10-25

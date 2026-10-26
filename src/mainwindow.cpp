@@ -1015,6 +1015,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Top bar: options and view/edit actions.
     auto *tb = addToolBar(QStringLiteral("Options"));
+    m_optionsBar = tb;
     tb->setMovable(false);
     tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     tb->setIconSize(QSize(20, 20));
@@ -1570,26 +1571,47 @@ void MainWindow::installUpdate(const QString &version)
 }
 
 // Three tool bars on one row need about 1 500 px; the shop screen has
-// 1 280. When they do not fit, the Vectors bar gets a row of its own.
+// 1 280. A bar that does not fit drops the buttons at its end out of sight
+// (Fit, Rotate 90°, Preview, Undo went missing in Toolpaths mode), so a bar
+// with no room left gets a row of its own: first the Vectors bar, then the
+// Options bar.
 void MainWindow::resizeEvent(QResizeEvent *e)
 {
     QMainWindow::resizeEvent(e);
-    QToolBar *vectors = nullptr;
-    int need = 0;
-    for (QToolBar *b : findChildren<QToolBar *>(QString(), Qt::FindDirectChildrenOnly)) {
-        if (!b->isHidden())
-            need += b->sizeHint().width();
-        if (b->windowTitle() == QLatin1String("Vectors"))
-            vectors = b;
-    }
     if (m_mode == Mode::Design || m_mode == Mode::Toolpaths)
         applySplits();
-    if (!vectors)
+    layoutToolBars();
+}
+
+void MainWindow::layoutToolBars()
+{
+    QToolBar *vectors = nullptr;
+    int first = 0;   // the mode's own bar: drawing tools or toolpath kinds
+    for (QToolBar *b : findChildren<QToolBar *>(QString(), Qt::FindDirectChildrenOnly)) {
+        if (b->windowTitle() == QLatin1String("Vectors"))
+            vectors = b;
+        else if ((b == m_palette || b == m_tpBar) && !b->isHidden())
+            first += b->sizeHint().width();
+    }
+    if (!m_optionsBar)
         return;
-    const bool wrap = need > width() - 20;
-    if (wrap != m_vectorsWrapped) {
-        m_vectorsWrapped = wrap;
-        if (wrap)
+    const int room = width() - 20;
+    const int opts = m_optionsBar->isHidden() ? 0 : m_optionsBar->sizeHint().width();
+    const int vecs = vectors && !vectors->isHidden() ? vectors->sizeHint().width() : 0;
+    const bool wrapOptions = first + opts > room;
+    // What shares a row with the Vectors bar: the Options bar, and the
+    // mode's bar too when the Options bar is not on a row of its own.
+    const bool wrapVectors = vecs > 0 && (wrapOptions ? opts : first + opts) + vecs > room;
+    if (wrapOptions != m_optionsWrapped) {
+        m_optionsWrapped = wrapOptions;
+        if (wrapOptions)
+            insertToolBarBreak(m_optionsBar);
+        else
+            removeToolBarBreak(m_optionsBar);
+    }
+    if (vectors && wrapVectors != m_vectorsWrapped) {
+        m_vectorsWrapped = wrapVectors;
+        if (wrapVectors)
             insertToolBarBreak(vectors);
         else
             removeToolBarBreak(vectors);
@@ -1644,6 +1666,7 @@ void MainWindow::setMode(Mode m, bool autoRun)
             b->setVisible(design || tp);
     }
     m_rightStack->setCurrentWidget(design ? m_designPage : m_tpPage);
+    layoutToolBars();   // the toolpath kinds need more room than the drawing tools
     m_canvas->setParametricVisible(design);
     if (design || tp)
         applySplits();

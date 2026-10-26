@@ -171,6 +171,11 @@ private:
     QTabWidget *m_docTabs;
     ShapeStrip *m_shapes = nullptr;
     bool m_vectorsWrapped = false;
+    bool m_optionsWrapped = false;
+    QToolBar *m_optionsBar = nullptr;   // Delete, Snap, Fit, Rotate, Preview, Undo (Design and Toolpaths)
+    // Puts the Options and Vectors bars on rows of their own when a row has
+    // no room for them (resize and mode switches).
+    void layoutToolBars();
     QToolBar *m_palette = nullptr;   // drawing tools (Design)
     QToolBar *m_tpBar = nullptr;     // toolpath kinds (Toolpaths)
     QList<int> m_canvasSizes, m_designSizes;   // splitter sizes, kept across mode switches

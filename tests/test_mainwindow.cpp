@@ -32,6 +32,7 @@
 #include <QStatusBar>
 #include <QTimer>
 #include <QTreeWidget>
+#include <QToolBar>
 #include <QUndoStack>
 
 #include <cstdio>
@@ -355,6 +356,29 @@ int main(int argc, char *argv[])
         check(w.gcodeSuggestion() == QLatin1String("/tmp/parts/part.nc"), "export: named after the imported file");
         w.m_untitled = wasUntitled;
         w.m_untitledFrom = wasFrom;
+    }
+
+    // On the shop screen (1280 px) every Options button stays in sight in
+    // both modes: the bar takes a row of its own rather than dropping Fit,
+    // Rotate 90°, Preview and Undo off its end.
+    {
+        const QSize was = w.size();
+        const c2d::MainWindow::Mode mode = w.mode();
+        w.resize(1280, 800);
+        for (c2d::MainWindow::Mode m : {c2d::MainWindow::Mode::Toolpaths, c2d::MainWindow::Mode::Design}) {
+            w.setMode(m, false);
+            QApplication::processEvents();
+            QTest::qWait(50);
+            bool all = true;
+            for (QAction *a : w.m_optionsBar->actions())
+                if (a->isVisible() && !a->isSeparator()) {
+                    QWidget *b = w.m_optionsBar->widgetForAction(a);
+                    all = all && b && b->isVisible();
+                }
+            check(all, "1280 px: every Options button is shown");
+        }
+        w.resize(was);
+        w.setMode(mode, false);
     }
 
     // Rotate 90° (options bar and Edit menu): the design turns, the stock
