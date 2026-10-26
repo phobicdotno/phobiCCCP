@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.25 (build 115) — 2026-10-26
+## v1.3.27 (build 117) — 2026-10-26
 
 > Qt Android build, step 1 of making it the pad: V-carve, keyboard, import list
 
@@ -9,6 +9,21 @@
     from the build machine; before, a pad build fell back to rings and cut a different path).
   - The soft keyboard no longer covers the field being typed in (the window resizes).
   - The Open and Import lists leave out PDF, Illustrator and EPS: they need programs a pad does not have.
+
+## v1.3.24 (build 114) — 2026-10-26
+
+> After a tool change the machine crosses to the first cut at the top again before it comes down
+
+- **Machine:**
+  - The guard from 1.3.17 and 1.3.19 that moves across to the first cut at the top of Z, before
+    the program may come down, did nothing after a tool change. It looked ahead for the first
+    X and Y but stopped at the spindle start (M03), which the program has between its retract
+    and its first move across. So after the BitSetter measured the bit, the machine went back to
+    where the program had paused (at the start of a job that is the Park spot, 60 mm left of the
+    BitSetter) and came straight down there to the program's safe height with the spindle
+    starting, before moving across. It now looks past the spindle start and goes across at the
+    top first, after every tool change, the first one included.
+  - A toolpath name in the program's comments can no longer be read as a position to go to.
 
 ## v1.3.22 (build 112) — 2026-10-25
 
