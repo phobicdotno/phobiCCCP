@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.22 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.25 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -146,7 +146,13 @@ endif()
 
 # True medial-axis v-carve needs the (header-only) Boost.Polygon Voronoi
 # builder; without it the exporter falls back to depth-graded inset rings.
-find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
+# Header-only, so a cross build (the pad) may take the build machine's copy:
+# the find root of an NDK build would otherwise look only inside the NDK.
+if(ANDROID)
+    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp NO_CMAKE_FIND_ROOT_PATH)
+else()
+    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
+endif()
 if(BOOST_VORONOI_INC)
     target_include_directories(phobicccp_core PRIVATE ${BOOST_VORONOI_INC})
     target_compile_definitions(phobicccp_core PUBLIC HAVE_BOOST_VORONOI)

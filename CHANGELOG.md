@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.25 (build 115) — 2026-10-26
+
+> Qt Android build, step 1 of making it the pad: V-carve, keyboard, import list
+
+- **Pad (Android build):**
+  - V-carve is the true medial-axis one, as on a computer (the build takes the Boost.Polygon headers
+    from the build machine; before, a pad build fell back to rings and cut a different path).
+  - The soft keyboard no longer covers the field being typed in (the window resizes).
+  - The Open and Import lists leave out PDF, Illustrator and EPS: they need programs a pad does not have.
+
 ## v1.3.22 (build 112) — 2026-10-25
 
 > A stopped or cancelled job no longer looks like it is still running, and the job counts the toolpaths it cuts
