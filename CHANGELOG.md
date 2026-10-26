@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.32 (build 122) — 2026-10-26
+
+> Toolbars: a clear » on each toolbar that runs out of room, with the buttons that do not fit
+
+- **Window:** when a toolbar has no room for all its buttons (the drawing tools, the toolpath
+  kinds, the options bar, the vector tools), its last buttons used to fold behind a 12 px sliver
+  at its end that could not be seen on the dark theme and did nothing when clicked. Each toolbar
+  now ends in an amber **»** button when it runs out of room; clicking it opens a menu of exactly
+  the buttons that do not fit, so nothing on a toolbar is ever out of reach. With room for
+  everything (1280 px in Design mode) nothing changes.
+- **Pad:** the same, on the pad build of the program, where the screen is narrower.
+
 ## v1.3.31 (build 121) — 2026-10-26
 
 > A new Drill toolpath drills straight through the stock and 0.5 mm on

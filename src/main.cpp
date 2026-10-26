@@ -39,6 +39,9 @@
 #include <QIcon>
 #include <QListView>
 #include <QToolButton>
+#include <QToolBar>
+#include <QPainter>
+#include <QImage>
 #include <QTreeView>
 #include <QPointer>
 #include <QAbstractButton>
@@ -1469,10 +1472,29 @@ int main(int argc, char *argv[])
                 QCoreApplication::processEvents();
             }
         }
+        // PHOBICCCP_SHOT_MORE=1 opens the first toolbar \u00bb that is showing,
+        // so the shot has its menu of the buttons that did not fit.
+        if (qgetenv("PHOBICCCP_SHOT_MORE") == "1")
+            QTimer::singleShot(1000, &w, [&w] {
+                for (QToolBar *b : w.findChildren<QToolBar *>(QString(), Qt::FindDirectChildrenOnly)) {
+                    auto *ext = b->findChild<QToolButton *>(QStringLiteral("qt_toolbar_ext_button"));
+                    if (ext && ext->isVisible()) {
+                        ext->click();
+                        return;
+                    }
+                }
+            });
         const QString out = QString::fromLocal8Bit(argv[3]);
         int rc = 1;
         QTimer::singleShot(1500, &w, [&] {
-            rc = w.grab().save(out) ? 0 : 1;
+            QImage shot = w.grab().toImage();
+            if (QWidget *pop = QApplication::activePopupWidget()) {
+                QPainter p(&shot);
+                p.drawPixmap(w.mapFromGlobal(pop->mapToGlobal(QPoint(0, 0))), pop->grab());
+                p.end();
+                pop->close();
+            }
+            rc = shot.save(out) ? 0 : 1;
             qInfo().noquote() << (rc == 0 ? QStringLiteral("SHOT_OK %1").arg(out)
                                           : QStringLiteral("SHOT_FAILED"));
             QCoreApplication::exit(rc);

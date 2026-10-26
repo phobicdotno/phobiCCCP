@@ -33,6 +33,9 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QToolBar>
+#include <QPainter>
+#include <QMenu>
+#include <QToolButton>
 #include <QUndoStack>
 
 #include <cstdio>
@@ -377,6 +380,51 @@ int main(int argc, char *argv[])
                 }
             check(all, "1280 px: every Options button is shown");
         }
+        w.resize(was);
+        w.setMode(mode, false);
+    }
+
+    // Narrower still (a pad): a bar that cannot show all its buttons shows a
+    // » big enough to see and press, and pressing it shows the rest.
+    {
+        const QSize was = w.size();
+        const c2d::MainWindow::Mode mode = w.mode();
+        w.resize(900, 700);
+        w.setMode(c2d::MainWindow::Mode::Toolpaths, false);
+        QApplication::processEvents();
+        QTest::qWait(50);
+        QToolBar *kinds = w.m_tpBar;
+        QToolButton *more = kinds->findChild<QToolButton *>(QStringLiteral("qt_toolbar_ext_button"));
+        int hidden = 0;
+        for (QAction *a : kinds->actions())
+            if (a->isVisible() && !a->isSeparator() && kinds->widgetForAction(a)
+                && !kinds->widgetForAction(a)->isVisible())
+                ++hidden;
+        check(hidden > 0, "900 px: the toolpath kinds do not all fit");
+        check(more && more->isVisible() && more->width() >= 30, "900 px: their » shows, big enough to press");
+        // » opens a menu of exactly the kinds out of sight.
+        QStringList inMenu, outOfSight;
+        for (QAction *a : kinds->actions())
+            if (a->isVisible() && !a->isSeparator() && kinds->widgetForAction(a)
+                && !kinds->widgetForAction(a)->isVisible())
+                outOfSight << a->text();
+        QTimer::singleShot(100, [&] {
+            if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                for (QAction *a : menu->actions())
+                    if (!a->isSeparator())
+                        inMenu << a->text();
+                if (qEnvironmentVariableIsSet("PHOBIC_TEST_GRAB")) {
+                    QPixmap shot = w.grab();
+                    QPainter p(&shot);
+                    p.drawPixmap(w.mapFromGlobal(menu->mapToGlobal(QPoint(0, 0))), menu->grab());
+                    p.end();
+                    shot.save(qEnvironmentVariable("PHOBIC_TEST_GRAB"));
+                }
+                menu->close();
+            }
+        });
+        more->click();
+        check(!inMenu.isEmpty() && inMenu == outOfSight, "900 px: pressing » lists every kind out of sight");
         w.resize(was);
         w.setMode(mode, false);
     }
