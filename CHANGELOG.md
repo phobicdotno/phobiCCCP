@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.30 (build 120) — 2026-10-26
+
+> Running job: a toolpath on many shapes shows a row per shape, so every square shows its progress
+
+- **Machine:**
+  - The Running job list split a toolpath that cuts several shapes (five squares, each cut to full
+    depth before the next) into the first square's passes only: "Pass 1 of 3", "Pass 2 of 3",
+    "Pass 3 of 3", and the other four squares all ran inside that last row. Such a toolpath now
+    has one row per shape ("Shape 2 of 5  ·  3 passes to Z -3 mm"), each with its own time and
+    tick, and the line above the bar says which shape and which of its passes runs, with the bar
+    for that pass. A toolpath on one shape keeps its row per pass. The pad's desktop program
+    shows the same list.
+
+
 ## v1.3.26 (build 116) — 2026-10-26
 
 > Cancel job resets the whole job, also after a Stop, so the next Run starts clean
