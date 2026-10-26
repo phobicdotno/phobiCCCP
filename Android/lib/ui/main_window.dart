@@ -20,7 +20,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
-const appVersion = '1.3.31';
+const appVersion = '1.3.36';
 
 class MainWindow extends StatefulWidget {
   final AppState app;
@@ -959,6 +959,13 @@ class _MainWindowState extends State<MainWindow> {
             tools: app.tools,
             current: _tp,
             selectedShapes: _sel,
+            onShowShape: (id) {
+              final s = d.shape(id);
+              if (s == null) return;
+              final b = s.bounds();
+              setState(() => _sel = {id});
+              _zoom.centreOn(d.stock, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2);
+            },
             onPick: (i) => setState(() => _tp = i),
             shapesOpen: _shapesOpen,
             onToggleShapes: (i) => setState(() => _shapesOpen.contains(i) ? _shapesOpen.remove(i) : _shapesOpen.add(i)),

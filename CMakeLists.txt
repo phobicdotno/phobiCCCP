@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.31 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.36 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -344,6 +344,10 @@ if(Qt6Test_FOUND)
     add_executable(test_tpshapes tests/test_tpshapes.cpp)
     target_link_libraries(test_tpshapes PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpshapes COMMAND test_tpshapes)
+    # The dotted "+" adds exactly the shapes selected on the canvas.
+    add_executable(test_tpplus tests/test_tpplus.cpp)
+    target_link_libraries(test_tpplus PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME tpplus COMMAND test_tpplus)
     # STL import's default size for a mesh too big for the board.
     add_executable(test_stlplace tests/test_stlplace.cpp)
     target_link_libraries(test_stlplace PRIVATE phobicccp_ui Qt6::Test)

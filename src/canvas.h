@@ -100,6 +100,9 @@ public:
     Document *document() const { return m_doc; }
     void selectIds(const QStringList &ids);   // replace the selection (vector ops)
     void selectElements(const QStringList &ids);
+    // Select one shape and move the view so it sits in the middle; the zoom
+    // stays as it is (a tile on a toolpath card).
+    void showElement(const QString &id);
     // Select the closed shape around p (innermost) and its islands.
     void selectAreaAt(const QPointF &p, bool add = false);
 
@@ -263,6 +266,7 @@ private:
     QPoint m_bandStart, m_bandEnd;
     QSet<QGraphicsItem *> m_bandKeep;
     void applyBand();
+    QPoint bandPoint(const QPoint &p) const;   // clamped to the viewport
 
     // Click tools (slot, arc, edge polygon) reuse m_clicks (the points
     // clicked so far, CC mm); how many points finish a shape depends on

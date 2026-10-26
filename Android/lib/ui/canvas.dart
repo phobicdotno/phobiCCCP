@@ -55,6 +55,13 @@ class CanvasZoom extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Moves the view so (x, y) mm on [stock] sits in the middle; the zoom
+  /// stays (a shape's tile on a toolpath card, as on the computer).
+  void centreOn(Stock stock, double x, double y) {
+    final k = fit * zoom;
+    set(zoom, Offset(k * (stock.width / 2 - x), k * (y - stock.height / 2)));
+  }
+
   void zoomBy(double k) {
     final z = (zoom * k).clamp(0.2, 60.0).toDouble();
     set(z, pan * (z / zoom));
@@ -308,7 +315,10 @@ class _DesignCanvasState extends State<DesignCanvas> {
         return;
       }
       if (_bandStart != null) {
-        setState(() => _bandEnd = s.localFocalPoint);
+        // The band ends at the edge of the drawing: dragged on over the
+        // panels it picked up shapes off screen (as on the computer).
+        final p = s.localFocalPoint;
+        setState(() => _bandEnd = Offset(p.dx.clamp(0.0, _size.width), p.dy.clamp(0.0, _size.height)));
         return;
       }
       final d = _drawStart;
