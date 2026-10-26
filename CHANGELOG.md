@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.26 (build 116) — 2026-10-26
+## v1.3.28 (build 118) — 2026-10-26
 
 > Toolbars: a clear » on each toolbar that runs out of room, with the buttons that do not fit
 
@@ -11,6 +11,19 @@
   the buttons that do not fit, so nothing on a toolbar is ever out of reach. With room for
   everything (1280 px in Design mode) nothing changes.
 - **Pad:** the same, on the pad build of the program, where the screen is narrower.
+
+## v1.3.26 (build 116) — 2026-10-26
+
+> Cancel job resets the whole job, also after a Stop, so the next Run starts clean
+
+- **Machine:**
+  - Cancel job after a Stop, a reset or the end of a job said "nothing to cancel" and left the
+    progress bar and the job list as they were (50 %, the stopped step). It now clears the job:
+    progress back to 0, the Running job list gone (here and on the pad), the card showing the
+    toolpaths ticked now, ready for Run. Nothing is sent to the machine for that.
+  - Cancel job on a running job does the same once the machine is stopped and Z is up.
+
+
 ## v1.3.25 (build 115) — 2026-10-26
 
 > Rotate 90°: turn the whole design a quarter turn clockwise to fit a leftover piece lying the other way

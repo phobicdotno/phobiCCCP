@@ -2329,7 +2329,10 @@ void MachinePanel::cancelJob()
             || m_held || m_machineState.startsWith(QLatin1String("Hold"))
             || m_machineState == QLatin1String("Run"));
     if (!active) {
-        log(QStringLiteral("nothing to cancel"));
+        // Nothing moves (a Stop, a reset or the end already ended it), but
+        // the last job is still on screen: Cancel job clears it.
+        clearJob();
+        log(QStringLiteral("job cleared: ready to run %1").arg(m_jobInfo->text()));
         return;
     }
     // Hold whenever a program or macro is running, not only when the last
@@ -2366,6 +2369,7 @@ void MachinePanel::cancelJob()
     }
     m_endOfJobPending = false;   // cancelled: no end-of-job moves behind the hold
     holdResetThen([this] {
+        clearJob();
         log(QStringLiteral("job cancelled: spindle off, Z up to the top"));
         // Not after a Stop in the meantime: nothing moves after Stop.
         QTimer::singleShot(800, this, [this, seq = m_flowSeq] {
@@ -2376,6 +2380,21 @@ void MachinePanel::cancelJob()
                 m_grbl->startMacro(up);
         });
     });
+}
+
+void MachinePanel::clearJob()
+{
+    m_endOfJobPending = false;
+    m_jobTools.clear();
+    m_progress->setRange(0, 1);
+    m_progress->setValue(0);
+    if (m_jobView)
+        m_jobView->clear();
+    setJobRunning(false);
+    m_runBtn->setText(QStringLiteral("▶ Run"));
+    if (m_rightStack)
+        m_rightStack->setCurrentWidget(m_jobPage);
+    refreshJobInfo();
 }
 
 void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
