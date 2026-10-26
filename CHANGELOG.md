@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.37 (build 127) — 2026-10-26
+
+> A finished job now really ends: it says Finished, goes all the way up and parks beside the BitSetter
+
+- **Machine:**
+  - When a job finishes and the machine stands still, it goes to the top of Z (not just safe Z),
+    then to the Park front right spot (60 mm left of the BitSetter when the BitSetter sits there),
+    and stops the spindle last. An end-stop alarm when the spindle stops now finds the machine
+    already parked. Not homed, it only rises and stops the spindle, as before.
+  - The job card's bar says "✓ Finished" (or "Stopped at N%") instead of a bare percentage. Cancel
+    job or the next run put it back.
+- **Pad:** the Machine page heading says FINISHED ON or STOPPED ON the machine instead of LAST JOB ON.
+
 ## v1.3.36 (build 126) — 2026-10-26
 
 > Qt Android build, step 1 of making it the pad: V-carve, keyboard, import list
