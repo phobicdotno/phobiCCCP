@@ -266,6 +266,8 @@ private:
     bool needsInit();            // true (and says so in the log) while in Alarm
     void initializeMachine();    // $H, then park()
     void park(bool afterHoming = false);   // safe Z, then the tool-change XY
+    void parkSpot(double &x, double &y) const;   // where Park goes (machine)
+    QStringList endOfJobMoves();          // a finished job: top, park spot, M5
     bool m_parkAfterHome = false;
     bool m_sawHoming = false;
     quint64 m_flowSeq = 0;       // counts resetFlow(): a Stop since calls off what was planned

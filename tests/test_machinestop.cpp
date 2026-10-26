@@ -1785,6 +1785,53 @@ int main(int argc, char **argv)
         check(panel.startFromRemote(&why), qPrintable(QStringLiteral("endalarm: the next job starts: %1").arg(why)));
         spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
     }
+    if (mode == "endpark") {
+        // Phobic 2026-10-26: a finished job ends: it says Finished, goes all
+        // the way up, over to the park spot beside the BitSetter, and only
+        // then stops the spindle (the end stop has answered M5 with an alarm).
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("Insert tool")) return QStringLiteral("Same length: continue");
+            return QStringLiteral("OK");
+        };
+        QString why;
+        check(panel.startFromRemote(&why), qPrintable(QStringLiteral("endpark: the job starts: %1").arg(why)));
+        check(panel.m_progress->format() == QLatin1String("%p%"), "endpark: a running job shows its percentage");
+        spin(20000, [&] { return !s->isStreaming(); });
+        const int end = grbl.events.size();
+        spin(8000, [&] { return grbl.indexOf("M5", end) >= 0 && !s->isMacroRunning(); });
+        wait(1000);
+        for (int i = end; i < grbl.events.size(); ++i) std::printf("  end: %s\n", grbl.events.at(i).constData());
+        double px = 0, py = 0;
+        panel.parkSpot(px, py);
+        const QByteArray top = "G53 G0 Z" + QByteArray::number(-panel.switchClearance(), 'f', 3);
+        const QByteArray across = "G53 G0 X" + QByteArray::number(px, 'f', 3) + " Y" + QByteArray::number(py, 'f', 3);
+        const int up = grbl.indexOf(top, end), over = grbl.indexOf(across, end), off = grbl.indexOf("M5", end);
+        check(up >= 0, "endpark: up to the top of Z");
+        check(over > up, "endpark: across to the park spot only after reaching the top");
+        check(off > over, "endpark: the spindle stops last, standing at the park spot");
+        // With the BitSetter in that corner the spot moves 60 mm left of it.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_bsX->setValue(px - 3);
+        panel.m_bsY->setValue(py + 2);
+        double bx = 0, by = 0;
+        panel.parkSpot(bx, by);
+        check(std::abs(bx - (px - 3 - 60)) < 1e-6 && std::abs(by - py) < 1e-6,
+              "endpark: beside a BitSetter in the front right corner, 60 mm left of it");
+        panel.m_bsEnabled->setChecked(false);
+        check(panel.m_jobView->isFinished() && panel.m_jobView->m_current->text() == QLatin1String("Finished"),
+              "endpark: the job reads Finished");
+        check(panel.m_progress->format() == QStringLiteral("✓ Finished"), "endpark: the job card says Finished");
+        check(panel.statusJson().value("jobEnd").toString() == QLatin1String("finished"),
+              "endpark: the pad is told the job finished");
+        // Cancel job afterwards clears it back to a plain card.
+        button(QStringLiteral("✕ Cancel job"))->click();
+        wait(500);
+        check(panel.m_progress->format() == QLatin1String("%p%") && !panel.statusJson().contains("jobEnd"),
+              "endpark: Cancel job clears the Finished card");
+    }
     if (mode == "jobcount") {
         // The job card counts the toolpaths that are cut: switched-off ones
         // are not (a design with 10 and 5 switched off said "10 toolpaths").
