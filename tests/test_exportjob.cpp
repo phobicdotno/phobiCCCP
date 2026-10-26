@@ -10,12 +10,14 @@
 #include "../src/element.h"
 #include "../src/exportprogress.h"
 #include "../src/gcodeexport.h"
+#include "../src/grblstreamer.h"
 #include "../src/post_grbl.h"
 
 #include <QApplication>
 #include <QEvent>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QRegularExpression>
 
 #include <cstdio>
 #include <cstdlib>
@@ -106,6 +108,47 @@ int main(int argc, char *argv[])
         check(c > 0 && o.value(c + 1) == QLatin1String("G0X0Y0"), "a rapid that climbs: up, then across");
         check(o.contains(QStringLiteral("G1Z-1.000F300")) && o.contains(QStringLiteral("X30.000F1500")),
               "cutting moves untouched");
+    }
+
+    // 2026-10-26: after the BitSetter measured a bit the machine came down at
+    // the Park spot with the spindle starting, instead of crossing to the
+    // first cut at the top first. The look-ahead that finds where to cross to
+    // stopped at the post's spindle-on line ("M03S..."), which comes after the
+    // retract and before the first X/Y. Run it over a real program, after
+    // every tool change, the way the sender sees it.
+    {
+        c2d::Document two;
+        addToolpath(two, 0, layer);
+        addToolpath(two, 1, layer);
+        c2d::Toolpath tp = two.toolpaths().at(1);
+        QJsonObject tool = tp.json.value("tool").toObject();
+        tool["number"] = 202;
+        tool["diameter"] = 6.35;
+        tp.json["tool"] = tool;
+        two.replaceToolpath(tp);
+        const c2d::GcodeResult r = c2d::exportGcode(two);
+        const QStringList lines = c2d::safeRapidsTransform(r.gcode.split(QChar('\n'), Qt::SkipEmptyParts));
+        int changes = 0;
+        for (int i = 0; i < lines.size(); ++i) {
+            if (!lines.at(i).startsWith(QLatin1String("M0 ;T")))
+                continue;
+            ++changes;
+            // Where the program goes across first, and the first line after
+            // the change that names X and Y.
+            QString want;
+            for (int k = i + 1; k < lines.size() && want.isEmpty(); ++k) {
+                const QRegularExpressionMatch m =
+                    QRegularExpression(QStringLiteral("^(?:G0)?X(-?[0-9.]+)Y(-?[0-9.]+)$")).match(lines.at(k));
+                if (m.hasMatch())
+                    want = QStringLiteral("G90 G0 X%1 Y%2").arg(m.captured(1), m.captured(2));
+            }
+            const QString got = c2d::GrblStreamer::crossToFirstCut(lines, i + 1);
+            check(!want.isEmpty() && got == want,
+                  "real program: after every tool change, cross to the first cut at the top "
+                  "(past the spindle start)");
+        }
+        check(changes == 2, "real program: two tool changes, one at the start");
+        check(lines.contains(QStringLiteral("M03S10000")), "real program: the spindle starts after the change");
     }
 
     std::printf("test_exportjob: %d checks OK\n", g_checks);
