@@ -66,4 +66,69 @@ jobs:
           gh release create "v$V" "PhobiCCCP-$V.apk" --target "$GITHUB_SHA" \
             --repo "$GITHUB_REPOSITORY" --prerelease \
             --title "phobiCCCP $V" \
-            --notes "PhobiCCCP for pads: download the .apk on the tablet and open it to install. It is signed with a test key, so Android may ask you to allow the install."
+            --notes "PhobiCCCP for pads: download an .apk on the tablet and open it to install (allow installing from your browser if Android asks). PhobiCCCP-$V.apk is the pad app; PhobiCCCP-desktop-$V.apk is the desktop program itself on the pad (added a few minutes later). Both are the same app to Android, so installing one replaces the other."
+
+  # The desktop program built for the pad (Qt), added to the same release as
+  # PhobiCCCP-desktop-<version>.apk. Same app id and key as the pad app above,
+  # so installing it replaces that one, and either can go back over the other.
+  desktop-apk:
+    needs: apk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="$(cat VERSION)"; fi
+          echo "V=$v" >> "$GITHUB_ENV"
+
+      # aqtinstall directly: install-qt-action cannot resolve Qt 6.8 for Android.
+      - name: Qt for Android
+        run: |
+          python3 -m venv "$RUNNER_TEMP/aqt"
+          "$RUNNER_TEMP/aqt/bin/pip" install -q aqtinstall
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux desktop 6.8.3 linux_gcc_64 -O "$RUNNER_TEMP/qt"
+          "$RUNNER_TEMP/aqt/bin/aqt" install-qt linux android 6.8.3 android_arm64_v8a -O "$RUNNER_TEMP/qt" -m qtserialport
+          echo "QT_ROOT_DIR=$RUNNER_TEMP/qt/6.8.3/android_arm64_v8a" >> "$GITHUB_ENV"
+          echo "QT_HOST_PATH=$RUNNER_TEMP/qt/6.8.3/gcc_64" >> "$GITHUB_ENV"
+
+      - name: Android SDK parts
+        run: |
+          sudo apt-get install -y --no-install-recommends ninja-build
+          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      - name: Build APK
+        run: |
+          "$QT_ROOT_DIR/bin/qt-cmake" -S . -B build-android -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DQT_HOST_PATH="$QT_HOST_PATH" -DANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
+            -DANDROID_NDK_ROOT="$ANDROID_SDK_ROOT/ndk/26.1.10909125"
+          cmake --build build-android --parallel
+
+      - name: Sign with the release key
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -z "$KS_B64" ] || [ -z "$KS_PASS" ] || [ -z "$KS_ALIAS" ]; then
+            echo "::error::ANDROID_KEYSTORE_B64 / _PASSWORD / ANDROID_KEY_ALIAS secrets are not set"; exit 1
+          fi
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          bt="$ANDROID_SDK_ROOT/build-tools/34.0.0"
+          "$bt/zipalign" -f -p 4 build-android/android-build/build/outputs/apk/release/android-build-release-unsigned.apk aligned.apk
+          "$bt/apksigner" sign --ks "$RUNNER_TEMP/release.jks" --ks-key-alias "$KS_ALIAS" \
+            --ks-pass env:KS_PASS --key-pass env:KS_PASS --out "PhobiCCCP-desktop-$V.apk" aligned.apk
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Add to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "v$V" "PhobiCCCP-desktop-$V.apk" --repo "$GITHUB_REPOSITORY" --clobber
