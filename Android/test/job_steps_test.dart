@@ -28,6 +28,13 @@ void main() {
     expect(MachineStatus.fromJson({'connected': true}).steps, isEmpty, reason: 'an older phobiCCCP sends none');
   });
 
+  test('a finished job says so over the list', () {
+    expect(MachineStatus.fromJson({'streaming': true}).jobHeading('cnc'), 'RUNNING ON CNC');
+    expect(MachineStatus.fromJson({'jobEnd': 'finished'}).jobHeading('cnc'), 'FINISHED ON CNC');
+    expect(MachineStatus.fromJson({'jobEnd': 'stopped'}).jobHeading('cnc'), 'STOPPED ON CNC');
+    expect(MachineStatus.fromJson({}).jobHeading('cnc'), 'LAST JOB ON CNC', reason: 'an older phobiCCCP');
+  });
+
   testWidgets('rows show preview, bit and a bar per toolpath', (t) async {
     final steps = [
       const JobStep(name: 'Tool change', kind: 'change', bit: 'endmill', state: 'done', time: '✓ 0:00'),

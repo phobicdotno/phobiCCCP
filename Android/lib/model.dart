@@ -687,6 +687,10 @@ class MachineStatus {
 
   /// The job's steps while the computer has one (phobiCCCP 1.3.18 and later).
   final List<JobStep> steps;
+
+  /// How the last job ended once nothing streams: 'finished', 'stopped', or
+  /// '' (still going, or an older phobiCCCP).
+  final String jobEnd;
   const MachineStatus(
       {this.connected = false,
       this.homed = false,
@@ -695,7 +699,8 @@ class MachineStatus {
       this.port = '',
       this.state = '',
       this.job = '',
-      this.steps = const []});
+      this.steps = const [],
+      this.jobEnd = ''});
   factory MachineStatus.fromJson(Map<String, Object?> j) => MachineStatus(
         connected: _b(j['connected']),
         homed: _b(j['homed']),
@@ -705,7 +710,17 @@ class MachineStatus {
         state: _s(j['state']),
         job: _s(j['job']),
         steps: _l(j['steps']).map((s) => JobStep.fromJson(_m(s))).toList(),
+        jobEnd: _s(j['jobEnd']),
       );
+
+  /// The heading over the job list on the Machine page.
+  String jobHeading(String machine) {
+    final m = machine.toUpperCase();
+    if (streaming) return 'RUNNING ON $m';
+    if (jobEnd == 'finished') return 'FINISHED ON $m';
+    if (jobEnd == 'stopped') return 'STOPPED ON $m';
+    return 'LAST JOB ON $m';
+  }
 
   String words() {
     if (!connected) return 'Not connected';

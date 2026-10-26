@@ -1267,20 +1267,22 @@ MachinePanel::MachinePanel(QWidget *parent)
         // summary's dialog would stop status and alarms being read.
         if (rehearsal)
             QTimer::singleShot(0, this, [this, ok, measured] { finishRehearsal(ok, measured); });
-        // A finished job: retract to the top of Z, then stop the spindle,
-        // the way Carbide Motion ends a run. A stopped one was reset, which
-        // already killed the spindle.
+        // The job card says how it ended, not a bare percentage that reads
+        // like a job still going.
+        m_progress->setFormat(ok ? QStringLiteral("✓ Finished")
+                                 : QStringLiteral("Stopped at %p%"));
+        // A finished job ends parked: all the way up, across to the park
+        // spot (front right, beside the BitSetter), and only then the
+        // spindle off. A stopped one was reset, which already killed the
+        // spindle, and stays where it is.
         if (endJob) {
-            log(QStringLiteral("job done: up to safe Z, then spindle off"));
             // Once the machine stands still: the last lines are acked when
             // planned, so the position read now is from before the program's
             // own final retract, and a rise from it could go down.
             m_endRisePending = true;
             whenIdle([this] {
                 m_endRisePending = false;
-                m_grbl->startMacro({QStringLiteral("G90"),
-                                    QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
-                                    QStringLiteral("M5")});
+                m_grbl->startMacro(endOfJobMoves());
             });
         }
     });
@@ -2407,6 +2409,7 @@ void MachinePanel::clearJob()
     m_jobTools.clear();
     m_progress->setRange(0, 1);
     m_progress->setValue(0);
+    m_progress->setFormat(QStringLiteral("%p%"));
     if (m_jobView)
         m_jobView->clear();
     setJobRunning(false);
@@ -3113,11 +3116,8 @@ void MachinePanel::initializeMachine()
     m_sawHoming = false;
 }
 
-// Up to safe Z, then at rapid speed to the front-right corner, where the
-// collet is in reach for changing bits. Machine X0 is the RIGHT end and Y0 the
-// BACK on this Shapeoko, so front right is X just off its switch and Y the full
-// cutting height of the machine picked in Settings forward, less a margin so
-// the front end stop is never touched.
+// Up to safe Z, then at rapid speed to the front-right corner (parkSpot),
+// where the collet is in reach for changing bits.
 void MachinePanel::park(bool afterHoming)
 {
     if (jobWindingDown(QStringLiteral("Park")))
@@ -3134,6 +3134,21 @@ void MachinePanel::park(bool afterHoming)
     // may still be pending, and the park simply queues behind it.
     if (!afterHoming && movingStill(QStringLiteral("Park")))
         return;
+    double x = 0, y = 0;
+    parkSpot(x, y);
+    const double z = riseZ();
+    log(QStringLiteral("parking front right (X%1 Y%2, machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
+    m_grbl->startMacro({QStringLiteral("G90"),
+                        QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
+                        QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
+}
+
+// Where Park goes, in machine coordinates. Machine X0 is the RIGHT end and
+// Y0 the BACK on this Shapeoko, so front right is X just off its switch and
+// Y the full cutting height of the machine picked in Settings forward, less a
+// margin so the front end stop is never touched.
+void MachinePanel::parkSpot(double &x, double &y) const
+{
     QSettings st;
     const auto machine = appsettings::machine(st);
     constexpr double kMargin = 5.0;
@@ -3142,20 +3157,42 @@ void MachinePanel::park(bool afterHoming)
     // are off, so a target past the end is a rapid into the hard stop.
     const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
     const double ty = qMin(machine.height, m_grbl->setting(131, machine.height));
-    const double tz = m_grbl->setting(132, 75.0);
     const double clear = switchClearance();
-    double x = -qMin(qMax(kMargin, clear), tx / 2);
-    const double y = -qMax(clear, ty - kMargin);
+    x = -qMin(qMax(kMargin, clear), tx / 2);
+    y = -qMax(clear, ty - kMargin);
     // The front right corner is where the BitSetter sits (2026-10-25: parked
     // 2.5 mm from its button, and the next move down went into it): park
     // beside it instead.
     if (m_bsEnabled->isChecked() && std::hypot(x - m_bsX->value(), y - m_bsY->value()) < 40.0)
         x = qMax(m_bsX->value() - 60.0, -tx + kMargin);
-    const double z = riseZ();
-    log(QStringLiteral("parking front right (X%1 Y%2, machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
-    m_grbl->startMacro({QStringLiteral("G90"),
-                        QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
-                        QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
+}
+
+// The end of a finished job: up to the top of Z, across to the park spot at
+// that height, then the spindle off. M5 goes last: on phobic-cnc the limit
+// inputs have answered a spindle stop with ALARM:1 (2026-10-26), and an alarm
+// then costs nothing, the machine already stands parked. Not homed, machine
+// coordinates say nothing about where the park spot is: only up (never down,
+// riseZ) and the spindle off, as before.
+QStringList MachinePanel::endOfJobMoves()
+{
+    if (!m_homed) {
+        log(QStringLiteral("job done: not homed, so up to safe Z and spindle off, no park"));
+        return {QStringLiteral("G90"), QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
+                QStringLiteral("M5")};
+    }
+    double x = 0, y = 0;
+    parkSpot(x, y);
+    QStringList moves{QStringLiteral("G90"),
+                      QStringLiteral("G53 G0 Z%1").arg(-switchClearance(), 0, 'f', 3)};
+    if (insideTravel(x, y)) {
+        log(QStringLiteral("job done: up to the top, over to the park spot (X%1 Y%2, machine), "
+                           "then spindle off").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
+        moves << QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3);
+    } else {
+        log(QStringLiteral("job done: up to the top, then spindle off (the park spot is off the machine)"));
+    }
+    moves << QStringLiteral("M5");
+    return moves;
 }
 
 double MachinePanel::safeZ() const
@@ -4052,6 +4089,7 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     if (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart)
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
+    m_progress->setFormat(QStringLiteral("%p%"));
     m_jobTools = toolChanges(ops);
     if (m_jobView) {
         const QString jobName = m_doc->filePath().isEmpty()
@@ -4128,8 +4166,14 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());
     // The running job's steps, for the pad's job list.
-    if (m_jobView && m_jobView->hasPlan())
+    if (m_jobView && m_jobView->hasPlan()) {
         o.insert(QStringLiteral("steps"), m_jobView->stepsJson());
+        // How the last job ended, so the pad says Finished, not "last job".
+        if (!m_grbl->isStreaming())
+            o.insert(QStringLiteral("jobEnd"), m_jobView->isFinished() ? QStringLiteral("finished")
+                                               : m_jobView->isStopped() ? QStringLiteral("stopped")
+                                                                        : QString());
+    }
     return o;
 }
 

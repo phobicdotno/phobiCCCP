@@ -246,7 +246,7 @@ class _MachinePageState extends State<MachinePage> {
       if (warn != null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(warn, style: const TextStyle(color: C.amber, fontSize: 13))),
       if (info != null && info.status.steps.isNotEmpty) ...[
         const SizedBox(height: 14),
-        Text(info.status.streaming ? 'RUNNING ON ${c!.name.toUpperCase()}' : 'LAST JOB ON ${c!.name.toUpperCase()}', style: _caps),
+        Text(info.status.jobHeading(c!.name), style: _caps),
         const SizedBox(height: 6),
         Expanded(child: JobSteps(info.status.steps)),
         const SizedBox(height: 10),
