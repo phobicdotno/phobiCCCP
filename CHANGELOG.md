@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.32 (build 122) — 2026-10-26
+## v1.3.34 (build 124) — 2026-10-26
 
 > HDPE plunges faster: 1000 mm/min for 1/8" and 1/4" end mills
 
@@ -11,6 +11,32 @@
   and 200 for the 1/32". HDPE feeds, speeds and depths are unchanged. Toolpaths already in a
   design keep their plunge rate; picking a bit again (or a new toolpath) takes the new one.
 - **Pad:** the pad's desktop program uses the same library.
+
+## v1.3.33 (build 123) — 2026-10-26
+
+> An end-stop alarm after a finished job no longer makes Cancel job reset the controller and say Z went up
+
+- **Machine:**
+  - On the CNC a job finished, and the controller raised ALARM:1 (an end stop) during the rise and
+    spindle stop that follow the program. The job was done, but nothing said so, and the
+    controller was locked. The log now says the alarm came after the job finished and that the
+    controller needs Initialize.
+  - Cancel job with the controller locked by an alarm and no program running now just clears the
+    job (progress, list, card back to the ticked toolpaths) and says to press Initialize. Before,
+    it held and reset the controller, logged "Z up to the top" although nothing moved, and sent a
+    tool offset and a rise that the locked controller refused (error:9).
+
+## v1.3.32 (build 122) — 2026-10-26
+
+> Toolbars: a clear » on each toolbar that runs out of room, with the buttons that do not fit
+
+- **Window:** when a toolbar has no room for all its buttons (the drawing tools, the toolpath
+  kinds, the options bar, the vector tools), its last buttons used to fold behind a 12 px sliver
+  at its end that could not be seen on the dark theme and did nothing when clicked. Each toolbar
+  now ends in an amber **»** button when it runs out of room; clicking it opens a menu of exactly
+  the buttons that do not fit, so nothing on a toolbar is ever out of reach. With room for
+  everything (1280 px in Design mode) nothing changes.
+- **Pad:** the same, on the pad build of the program, where the screen is narrower.
 
 ## v1.3.31 (build 121) — 2026-10-26
 
