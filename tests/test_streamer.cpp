@@ -201,8 +201,10 @@ int main(int argc, char **argv)
             finished = true;
             finishedOk = ok;
         });
+        // The lines the post writes after a tool change, spindle start included.
         s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("M0 ;T2"),
-                       QStringLiteral("G90G21"), QStringLiteral("G0Z5"), QStringLiteral("G0X10Y10")});
+                       QStringLiteral("G90G21"), QStringLiteral("G0Z5"), QStringLiteral("M03S18000"),
+                       QStringLiteral("G0X10Y10")});
         spin(2000, [&] { return parked >= 0; });
         check(parked == 2 && s.isParkedForTool(), "tool change: the program parks at the marker");
         s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
@@ -213,7 +215,7 @@ int main(int argc, char **argv)
         const int next = grbl.seen.indexOf("G90G21");
         check(rise >= 2 && across == rise + 1 && next == across + 1,
               "tool change: the rise, then across to the first cut at the top, before the program's own lines");
-        check(grbl.seen.size() == 8 && grbl.seen.last() == "G0X10Y10",
+        check(grbl.seen.size() == 9 && grbl.seen.last() == "G0X10Y10",
               "tool change: then the rest of the program, all of it");
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
@@ -232,6 +234,20 @@ int main(int argc, char **argv)
               "cross: nothing past relative mode");
         check(GrblStreamer::crossToFirstCut({"G0Z5", "G1Z-1F300"}, 0).isEmpty(),
               "cross: no X/Y named, no move");
+        // What the post writes after a tool change: the spindle starts
+        // between the retract and the first X/Y (2026-10-26: the look-ahead
+        // stopped at M03 and the retract came down beside the BitSetter).
+        check(GrblStreamer::crossToFirstCut({"G90G21", "G0Z5.000", "(Pocket 1)", "M03S18000", "G4P2.00",
+                                             "G0X12.5Y-3", "G0Z1"}, 0) == "G90 G0 X12.5 Y-3",
+              "cross: past the spindle start and its dwell");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "M3 S1000", "M05", "M5", "G0X1Y2"}, 0) == "G90 G0 X1 Y2",
+              "cross: past M3/M5 in any spelling");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "M00", "G0X1Y2"}, 0).isEmpty()
+                  && GrblStreamer::crossToFirstCut({"G0Z5", "M1", "G0X1Y2"}, 0).isEmpty()
+                  && GrblStreamer::crossToFirstCut({"G0Z5", "M01 ;x", "G0X1Y2"}, 0).isEmpty(),
+              "cross: still nothing past a pause (M0, M00, M1, M01)");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "(Hole X9 Y9)", "G0X1Y2"}, 0) == "G90 G0 X1 Y2",
+              "cross: a toolpath name in a comment is not a position");
     }
 
     // Two bits with the same number: the program changes tools twice at

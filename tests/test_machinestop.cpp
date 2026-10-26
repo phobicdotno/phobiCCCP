@@ -746,6 +746,39 @@ int main(int argc, char **argv)
         check(grbl.indexOf("M5", grbl.indexOf("G1X6")) > 0, "tc: spindle off at end");
     }
 
+    if (mode == "tcspin") {
+        // 2026-10-26: after the BitSetter measured the bit, the resume rose,
+        // went back to where the program had paused (the Park spot beside the
+        // BitSetter) and the program's retract came down there with the
+        // spindle starting. The post writes the spindle start between that
+        // retract and the first X/Y, and the look-ahead stopped at it.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_bsSafeZ->setValue(-30.0);
+        wait(600);
+        grbl.events.clear();
+        seen.clear();
+        answer = [&](const Seen &) { return QStringLiteral("Measure and continue"); };
+        panel.m_endOfJobPending = true;
+        s->startStream({QStringLiteral("G90"), QStringLiteral("G21"), QStringLiteral("M0 ;T201"),
+                        QStringLiteral("G90G21"), QStringLiteral("G0Z2.540"), QStringLiteral("(c0)"),
+                        QStringLiteral("M03S10000"), QStringLiteral("G4P0.10"),
+                        QStringLiteral("X80.354Y38.452"), QStringLiteral("G1Z-0.500F300.0"),
+                        QStringLiteral("G1Y80.000")});
+        spin(8000, [&] { return !s->isStreaming(); });
+        wait(1000);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        const int offset = grbl.indexOf("G43.1 Z2");
+        const int across = grbl.indexOf("G90 G0 X80.354 Y38.452", offset);
+        const int retract = grbl.indexOf("G0Z2.540", offset);
+        check(seen.size() == 1 && offset >= 0, "tcspin: one prompt, the bit measured");
+        check(across > offset && retract > across,
+              "tcspin: across to the first cut at the top before the program's retract comes down");
+        check(grbl.indexOf("M03S10000", offset) > retract, "tcspin: the spindle starts over the cut");
+    }
+
     if (mode == "holdend") {
         panel.m_endOfJobPending = true;
         grbl.running = true;
