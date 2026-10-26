@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.32 (build 122) — 2026-10-26
+
+> HDPE plunges faster: 1000 mm/min for 1/8" and 1/4" end mills
+
+- **Tool library:** the HDPE plunge rate was copied from Carbide's slow chart (201 mm/min for the
+  1/8" bits, 254 for the #102, 381 for 1/4") and took ages on each pass. It is now 1000 mm/min for
+  every square end mill of 1/8" and up, 800 for the 1/8" and 1/4" ball nose and the V-bits, 600
+  for the roundover, 500 and 400 for the engravers, 400 / 300 for the 1/16" end mill / ball nose
+  and 200 for the 1/32". HDPE feeds, speeds and depths are unchanged. Toolpaths already in a
+  design keep their plunge rate; picking a bit again (or a new toolpath) takes the new one.
+- **Pad:** the pad's desktop program uses the same library.
+
 ## v1.3.31 (build 121) — 2026-10-26
 
 > A new Drill toolpath drills straight through the stock and 0.5 mm on
