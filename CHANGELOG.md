@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.26 (build 116) — 2026-10-26
+
+> Cancel job resets the whole job, also after a Stop, so the next Run starts clean
+
+- **Machine:**
+  - Cancel job after a Stop, a reset or the end of a job said "nothing to cancel" and left the
+    progress bar and the job list as they were (50 %, the stopped step). It now clears the job:
+    progress back to 0, the Running job list gone (here and on the pad), the card showing the
+    toolpaths ticked now, ready for Run. Nothing is sent to the machine for that.
+  - Cancel job on a running job does the same once the machine is stopped and Z is up.
+
 ## v1.3.22 (build 112) — 2026-10-25
 
 > A stopped or cancelled job no longer looks like it is still running, and the job counts the toolpaths it cuts

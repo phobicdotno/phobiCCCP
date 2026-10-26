@@ -1596,7 +1596,8 @@ int main(int argc, char **argv)
             spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
         }
     }
-    if (mode == "jobstop" || mode == "jobcancel" || mode == "jobreset" || mode == "jobtcstop") {
+    if (mode == "jobstop" || mode == "jobcancel" || mode == "jobreset" || mode == "jobtcstop"
+        || mode == "jobclear") {
         // A real job (both pockets, a tool change between them) started the
         // way a pad starts it, then ended early: Stop, Cancel job, the
         // controller's own reset button, or Stop while parked at the tool
@@ -1627,7 +1628,7 @@ int main(int argc, char **argv)
             wait(500);
         }
         check(s->isStreaming() && panel.statusJson().value("streaming").toBool(), "job: running");
-        if (mode == "jobstop" || mode == "jobtcstop") {
+        if (mode == "jobstop" || mode == "jobtcstop" || mode == "jobclear") {
             panel.m_stopBtn->click();
         } else if (mode == "jobcancel") {
             button(QStringLiteral("✕ Cancel job"))->click();
@@ -1652,10 +1653,35 @@ int main(int argc, char **argv)
             stopped += v.toObject().value("state").toString() == QLatin1String("stopped");
         }
         check(running == 0, "job ended early: no step of it still says running");
-        check(stopped == 1, "job ended early: the step it ended in says stopped");
         check(!panel.m_jobView->m_tick->isActive(), "job ended early: the job clock stopped");
-        check(panel.m_jobView->m_current->text().startsWith(QLatin1String("Stopped")),
-              "job ended early: the job view says Stopped");
+        if (mode == "jobcancel") {
+            // Cancel job resets the whole job: no list, no progress, the
+            // card back on the toolpaths ticked now.
+            check(steps.isEmpty() && !panel.m_jobView->hasPlan(), "jobcancel: the job list is cleared");
+            check(panel.m_progress->value() == 0, "jobcancel: the progress bar is back at 0");
+        } else {
+            check(stopped == 1, "job ended early: the step it ended in says stopped");
+            check(panel.m_jobView->m_current->text().startsWith(QLatin1String("Stopped")),
+                  "job ended early: the job view says Stopped");
+            check(panel.m_progress->value() > 0, "job ended early: the progress bar shows how far it got");
+        }
+        if (mode == "jobclear") {
+            // Cancel job after a Stop: nothing moves any more, but the job is
+            // still on screen. It clears it, not "nothing to cancel".
+            const int sent = grbl.events.size();
+            button(QStringLiteral("✕ Cancel job"))->click();
+            wait(500);
+            QString logText;
+            for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+                logText += t->toPlainText();
+            check(!logText.contains(QLatin1String("nothing to cancel")), "jobclear: no 'nothing to cancel'");
+            check(logText.contains(QLatin1String("job cleared: ready to run 2 toolpaths")), "jobclear: says what is ready to run");
+            check(panel.m_progress->value() == 0 && panel.m_progress->maximum() == 1, "jobclear: the progress bar is back at 0");
+            check(!panel.m_jobView->hasPlan() && !panel.statusJson().contains("steps"),
+                  "jobclear: the job list is gone, here and on the pad");
+            check(panel.m_jobInfo->text() == QLatin1String("2 toolpaths"), "jobclear: the card shows the ticked toolpaths");
+            check(grbl.events.size() == sent, "jobclear: nothing is sent to the machine");
+        }
         if (mode == "jobreset") {
             // A reset loses the position: Initialize, as the operator would.
             panel.initializeMachine();
