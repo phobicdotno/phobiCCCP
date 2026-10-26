@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.27 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.34 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,7 @@ add_library(phobicccp_core STATIC
     src/backgroundimage.cpp
     src/imagetrace.cpp
     src/model3d.cpp
+    src/jobrotate.cpp
     src/recovery.cpp
     src/machineprofiles.cpp
     src/padlink.cpp
@@ -146,21 +147,7 @@ endif()
 
 # True medial-axis v-carve needs the (header-only) Boost.Polygon Voronoi
 # builder; without it the exporter falls back to depth-graded inset rings.
-# Header-only, so a cross build (the pad) may take the build machine's copy:
-# the find root of an NDK build would otherwise look only inside the NDK.
-if(ANDROID)
-    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp NO_CMAKE_FIND_ROOT_PATH)
-else()
-    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
-endif()
-if(BOOST_VORONOI_INC AND ANDROID)
-    # /usr/include is an implicit directory that CMake drops from -I, and
-    # putting it on the NDK's path would shadow the sysroot: link only boost/.
-    set(_boost_link ${CMAKE_BINARY_DIR}/boost-inc)
-    file(MAKE_DIRECTORY ${_boost_link})
-    file(CREATE_LINK ${BOOST_VORONOI_INC}/boost ${_boost_link}/boost SYMBOLIC)
-    set(BOOST_VORONOI_INC ${_boost_link})
-endif()
+find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
 if(BOOST_VORONOI_INC)
     target_include_directories(phobicccp_core PRIVATE ${BOOST_VORONOI_INC})
     target_compile_definitions(phobicccp_core PUBLIC HAVE_BOOST_VORONOI)
@@ -266,6 +253,10 @@ add_test(NAME paths COMMAND test_paths)
 add_executable(test_model3d tests/test_model3d.cpp)
 target_link_libraries(test_model3d PRIVATE phobicccp_core)
 add_test(NAME model3d COMMAND test_model3d)
+# Rotate 90°: four turns are none, one turn cuts the same, turned.
+add_executable(test_jobrotate tests/test_jobrotate.cpp)
+target_link_libraries(test_jobrotate PRIVATE phobicccp_core)
+add_test(NAME jobrotate COMMAND test_jobrotate)
 add_executable(test_cam3d tests/test_cam3d.cpp)
 target_link_libraries(test_cam3d PRIVATE phobicccp_core)
 add_test(NAME cam3d COMMAND test_cam3d)
@@ -406,7 +397,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     add_test(NAME bzprofile COMMAND test_bzprofile)
     add_executable(test_machinestop tests/test_machinestop.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_ui)
-    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2 jobstop jobcancel jobreset jobtcstop jobcount tcspin)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2 jobstop jobcancel jobreset jobtcstop jobcount jobclear)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

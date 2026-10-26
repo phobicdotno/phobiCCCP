@@ -19,14 +19,23 @@ namespace c2d {
 class Document;
 struct Op;
 
+// One depth level of a shape, as queue indices [qStart, qEnd).
+struct JobLevel {
+    double z = 0;
+    int qStart = 0, qEnd = 0;
+};
+
 // One depth pass of a toolpath (or the whole toolpath when it has no
 // distinct passes: drilling, a single-level cut), as a stretch of the
 // streamed program: queue indices [qStart, qEnd) of the lines it sends.
+// A toolpath that cuts several shapes one after the other, each to full
+// depth, has one row per shape instead, its depth passes in `levels`.
 struct JobPass {
-    QString what;          // "to Z -6.0 mm", "peck drill 16 holes"...
+    QString what;          // "to Z -6.0 mm", "Shape 2 of 5  ·  3 passes to Z -3 mm"...
     double z = 0;          // the floor it reaches (work Z)
     int qStart = 0, qEnd = 0;
     double estSec = 0;     // feed-rate estimate, no acceleration model
+    QVector<JobLevel> levels;   // a shape's depth passes; empty for a plain pass
 };
 
 // A toolpath section of the program (the post's "(name)" comment to the
@@ -94,6 +103,8 @@ public:
     // nothing reads as still running.
     void setStopped();
     bool isStopped() const { return m_stopped; }
+    // Every line of the plan answered, and not stopped before that.
+    bool isFinished() const { return !m_plan.isEmpty() && !m_stopped && m_acked - m_inserted >= m_plan.total; }
 
     bool hasPlan() const { return !m_plan.isEmpty(); }
     // The steps as the pad shows them: one object per toolpath or tool

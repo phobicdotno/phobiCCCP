@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.27 (build 117) — 2026-10-26
+## v1.3.34 (build 124) — 2026-10-26
 
 > Qt Android build, step 1 of making it the pad: V-carve, keyboard, import list
 
@@ -10,6 +10,92 @@
   - The soft keyboard no longer covers the field being typed in (the window resizes).
   - The Open and Import lists leave out PDF, Illustrator and EPS: they need programs a pad does not have.
 
+## v1.3.33 (build 123) — 2026-10-26
+
+> An end-stop alarm after a finished job no longer makes Cancel job reset the controller and say Z went up
+
+- **Machine:**
+  - On the CNC a job finished, and the controller raised ALARM:1 (an end stop) during the rise and
+    spindle stop that follow the program. The job was done, but nothing said so, and the
+    controller was locked. The log now says the alarm came after the job finished and that the
+    controller needs Initialize.
+  - Cancel job with the controller locked by an alarm and no program running now just clears the
+    job (progress, list, card back to the ticked toolpaths) and says to press Initialize. Before,
+    it held and reset the controller, logged "Z up to the top" although nothing moved, and sent a
+    tool offset and a rise that the locked controller refused (error:9).
+
+## v1.3.32 (build 122) — 2026-10-26
+
+> Toolbars: a clear » on each toolbar that runs out of room, with the buttons that do not fit
+
+- **Window:** when a toolbar has no room for all its buttons (the drawing tools, the toolpath
+  kinds, the options bar, the vector tools), its last buttons used to fold behind a 12 px sliver
+  at its end that could not be seen on the dark theme and did nothing when clicked. Each toolbar
+  now ends in an amber **»** button when it runs out of room; clicking it opens a menu of exactly
+  the buttons that do not fit, so nothing on a toolbar is ever out of reach. With room for
+  everything (1280 px in Design mode) nothing changes.
+- **Pad:** the same, on the pad build of the program, where the screen is narrower.
+
+## v1.3.31 (build 121) — 2026-10-26
+
+> A new Drill toolpath drills straight through the stock and 0.5 mm on
+
+- **Toolpaths:** a new Drill toolpath now starts at the stock thickness + 0.5 mm deep (19.5 mm
+  in 19 mm stock), one plunge per hole with no pecks or chip breaking, so each hole comes out
+  clean at the bottom. It was 2.54 mm. Drill toolpaths already in a design keep their depth, and
+  a drill made before the stock thickness is changed keeps the depth it was made with (as a
+  Cutout does).
+- **Pad:** a new Drill on the pad starts at the same depth.
+
+## v1.3.30 (build 120) — 2026-10-26
+
+> Running job: a toolpath on many shapes shows a row per shape, so every square shows its progress
+
+- **Machine:**
+  - The Running job list split a toolpath that cuts several shapes (five squares, each cut to full
+    depth before the next) into the first square's passes only: "Pass 1 of 3", "Pass 2 of 3",
+    "Pass 3 of 3", and the other four squares all ran inside that last row. Such a toolpath now
+    has one row per shape ("Shape 2 of 5  ·  3 passes to Z -3 mm"), each with its own time and
+    tick, and the line above the bar says which shape and which of its passes runs, with the bar
+    for that pass. A toolpath on one shape keeps its row per pass. The pad's desktop program
+    shows the same list.
+
+
+## v1.3.26 (build 116) — 2026-10-26
+
+> Cancel job resets the whole job, also after a Stop, so the next Run starts clean
+
+- **Machine:**
+  - Cancel job after a Stop, a reset or the end of a job said "nothing to cancel" and left the
+    progress bar and the job list as they were (50 %, the stopped step). It now clears the job:
+    progress back to 0, the Running job list gone (here and on the pad), the card showing the
+    toolpaths ticked now, ready for Run. Nothing is sent to the machine for that.
+  - Cancel job on a running job does the same once the machine is stopped and Z is up.
+
+
+## v1.3.25 (build 115) — 2026-10-26
+
+> Rotate 90°: turn the whole design a quarter turn clockwise to fit a leftover piece lying the other way
+
+- **Design:** a **Rotate 90°** button on the options bar (and in the Edit menu) turns the whole
+  design 90° clockwise on the same stock. Every vector turns, and everything that hangs on them
+  turns with it: toolpaths keep machining the same vectors with the same settings (depths, tabs,
+  leads, climb or conventional), and hatch, texture, keyhole and raster directions turn too.
+  Constraints and dimensions turn with their geometry, so nothing moves on the next solve; a
+  dimension measured from the origin (which stays where it is) takes its new value, and one
+  that other expressions use shows red and is named in the status line. The 3D model's images,
+  meshes and textures and the tracing background turn as well. The stock and its zero stay as
+  they are, and the design keeps its bottom-left corner where it was; the status line says if
+  it now reaches past the stock. One Ctrl+Z undoes it, and four turns give back exactly what
+  was there.
+- **Toolpaths:** a contour with tabs now starts beside the middle of the first edge of its vector,
+  so its tabs stay on the same part of the shape however the shape lies (they moved when the
+  shape was turned).
+- **Window:** on a narrower screen (the shop's 1280 px) the end of the options bar fell out of
+  sight with nothing to show it was there: in Toolpaths mode Fit, Snap, Preview, Undo and Redo
+  were gone, in Design mode Preview, Undo and Redo. The options bar now takes a row of its own
+  when it has no room beside the tools.
+- **Pad:** the same button, on the pad build of the program.
 ## v1.3.24 (build 114) — 2026-10-26
 
 > After a tool change the machine crosses to the first cut at the top again before it comes down

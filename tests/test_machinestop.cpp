@@ -1629,7 +1629,8 @@ int main(int argc, char **argv)
             spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
         }
     }
-    if (mode == "jobstop" || mode == "jobcancel" || mode == "jobreset" || mode == "jobtcstop") {
+    if (mode == "jobstop" || mode == "jobcancel" || mode == "jobreset" || mode == "jobtcstop"
+        || mode == "jobclear") {
         // A real job (both pockets, a tool change between them) started the
         // way a pad starts it, then ended early: Stop, Cancel job, the
         // controller's own reset button, or Stop while parked at the tool
@@ -1660,7 +1661,7 @@ int main(int argc, char **argv)
             wait(500);
         }
         check(s->isStreaming() && panel.statusJson().value("streaming").toBool(), "job: running");
-        if (mode == "jobstop" || mode == "jobtcstop") {
+        if (mode == "jobstop" || mode == "jobtcstop" || mode == "jobclear") {
             panel.m_stopBtn->click();
         } else if (mode == "jobcancel") {
             button(QStringLiteral("✕ Cancel job"))->click();
@@ -1685,10 +1686,35 @@ int main(int argc, char **argv)
             stopped += v.toObject().value("state").toString() == QLatin1String("stopped");
         }
         check(running == 0, "job ended early: no step of it still says running");
-        check(stopped == 1, "job ended early: the step it ended in says stopped");
         check(!panel.m_jobView->m_tick->isActive(), "job ended early: the job clock stopped");
-        check(panel.m_jobView->m_current->text().startsWith(QLatin1String("Stopped")),
-              "job ended early: the job view says Stopped");
+        if (mode == "jobcancel") {
+            // Cancel job resets the whole job: no list, no progress, the
+            // card back on the toolpaths ticked now.
+            check(steps.isEmpty() && !panel.m_jobView->hasPlan(), "jobcancel: the job list is cleared");
+            check(panel.m_progress->value() == 0, "jobcancel: the progress bar is back at 0");
+        } else {
+            check(stopped == 1, "job ended early: the step it ended in says stopped");
+            check(panel.m_jobView->m_current->text().startsWith(QLatin1String("Stopped")),
+                  "job ended early: the job view says Stopped");
+            check(panel.m_progress->value() > 0, "job ended early: the progress bar shows how far it got");
+        }
+        if (mode == "jobclear") {
+            // Cancel job after a Stop: nothing moves any more, but the job is
+            // still on screen. It clears it, not "nothing to cancel".
+            const int sent = grbl.events.size();
+            button(QStringLiteral("✕ Cancel job"))->click();
+            wait(500);
+            QString logText;
+            for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+                logText += t->toPlainText();
+            check(!logText.contains(QLatin1String("nothing to cancel")), "jobclear: no 'nothing to cancel'");
+            check(logText.contains(QLatin1String("job cleared: ready to run 2 toolpaths")), "jobclear: says what is ready to run");
+            check(panel.m_progress->value() == 0 && panel.m_progress->maximum() == 1, "jobclear: the progress bar is back at 0");
+            check(!panel.m_jobView->hasPlan() && !panel.statusJson().contains("steps"),
+                  "jobclear: the job list is gone, here and on the pad");
+            check(panel.m_jobInfo->text() == QLatin1String("2 toolpaths"), "jobclear: the card shows the ticked toolpaths");
+            check(grbl.events.size() == sent, "jobclear: nothing is sent to the machine");
+        }
         if (mode == "jobreset") {
             // A reset loses the position: Initialize, as the operator would.
             panel.initializeMachine();
@@ -1709,6 +1735,55 @@ int main(int argc, char **argv)
             done += v.toObject().value("state").toString() == QLatin1String("done");
         check(!again.isEmpty() && done == again.size(), "the next job: every step done");
         check(panel.m_jobView->m_current->text() == QLatin1String("Finished"), "the next job: Finished");
+    }
+    if (mode == "endalarm") {
+        // phobic-cnc 2026-10-26: the job finished, the end-of-job rise went
+        // out, and the controller answered its M5 with ALARM:1 (an end stop)
+        // and locked up. Cancel job then held, reset and logged "Z up to the
+        // top" into a locked controller, and sent G43.1 and G91 that it
+        // refused (error:9). A finished job stays finished; Cancel job just
+        // clears it and says Initialize is what the controller needs.
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("Insert tool")) return QStringLiteral("Same length: continue");
+            return QStringLiteral("OK");
+        };
+        QString why;
+        check(panel.startFromRemote(&why), "endalarm: the job starts");
+        spin(20000, [&] { return !s->isStreaming(); });
+        grbl.alarmOn = "M5";                   // the rise's spindle stop
+        spin(8000, [&] { return grbl.locked; });
+        wait(1500);
+        check(grbl.locked, "endalarm: the controller stopped on the end stop at the job's end");
+        check(panel.m_jobView->m_current->text() == QLatin1String("Finished"),
+              qPrintable(QStringLiteral("endalarm: the job still reads Finished: %1").arg(panel.m_jobView->m_current->text())));
+        QString logText;
+        for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+            logText += t->toPlainText();
+        check(logText.contains(QLatin1String("after the job finished")), "endalarm: the log says the alarm came after the job finished");
+        grbl.events.clear();
+        seen.clear();
+        button(QStringLiteral("✕ Cancel job"))->click();
+        wait(2000);
+        for (const QByteArray &e : grbl.events) std::printf("  after cancel: %s\n", e.constData());
+        logText.clear();
+        for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+            logText += t->toPlainText();
+        check(seen.isEmpty(), "endalarm: Cancel job asks nothing");
+        check(grbl.count("!") == 0 && grbl.count("G43.1") == 0 && grbl.count("G91") == 0 && grbl.count("G53") == 0,
+              "endalarm: Cancel job sends nothing into the locked controller");
+        check(!logText.contains(QLatin1String("job cancelled: spindle off, Z up to the top")),
+              "endalarm: no claim that Z went up");
+        check(!panel.m_jobView->hasPlan() && panel.m_progress->value() == 0, "endalarm: the job is cleared");
+        // Initialize then homes and the next job runs.
+        panel.initializeMachine();
+        spin(6000, [&] { return panel.m_homed && !panel.isBusy(); });
+        wait(1000);
+        check(panel.m_homed, "endalarm: Initialize homes again");
+        check(panel.startFromRemote(&why), qPrintable(QStringLiteral("endalarm: the next job starts: %1").arg(why)));
+        spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
     }
     if (mode == "jobcount") {
         // The job card counts the toolpaths that are cut: switched-off ones

@@ -20,7 +20,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
-const appVersion = '1.3.27';
+const appVersion = '1.3.34';
 
 class MainWindow extends StatefulWidget {
   final AppState app;
@@ -387,8 +387,9 @@ class _MainWindowState extends State<MainWindow> {
     final tool = app.tools.defaultTool(d.material, type) ?? 201;
     final n = d.toolpaths.where((t) => t.type == type).length + 1;
     // As the computer starts a new toolpath (toolpathfactory.cpp): 2.54 mm
-    // deep, an engraving 0.5 mm, named after the type the way it names them.
-    final depth = type == 'engrave' ? 0.5 : 2.54;
+    // deep, an engraving 0.5 mm, a drill straight through the stock + 0.5 mm,
+    // named after the type the way it names them.
+    final depth = newToolpathDepth(type, d.stock.thickness);
     final stem = const {
       'profile': 'Contour Toolpath',
       'pocket': 'Pocket Toolpath',

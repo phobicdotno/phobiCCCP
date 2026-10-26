@@ -993,6 +993,14 @@ void ModelPanel::applyProps()
 
 // ---- rebuild ----------------------------------------------------------------
 
+void ModelPanel::setModel(const Model3D &model)
+{
+    m_store.model = model;
+    refreshList();
+    refreshProps();
+    touch();
+}
+
 void ModelPanel::touch()
 {
     // An explicit edit outranks the "did not load" guard in Model3D::saveTo:
