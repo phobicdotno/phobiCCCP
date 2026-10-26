@@ -94,6 +94,8 @@ public:
     // nothing reads as still running.
     void setStopped();
     bool isStopped() const { return m_stopped; }
+    // Every line of the plan answered, and not stopped before that.
+    bool isFinished() const { return !m_plan.isEmpty() && !m_stopped && m_acked - m_inserted >= m_plan.total; }
 
     bool hasPlan() const { return !m_plan.isEmpty(); }
     // The steps as the pad shows them: one object per toolpath or tool

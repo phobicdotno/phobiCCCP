@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.31 (build 121) — 2026-10-26
+
+> An end-stop alarm after a finished job no longer makes Cancel job reset the controller and say Z went up
+
+- **Machine:**
+  - On the CNC a job finished, and the controller raised ALARM:1 (an end stop) during the rise and
+    spindle stop that follow the program. The job was done, but nothing said so, and the
+    controller was locked. The log now says the alarm came after the job finished and that the
+    controller needs Initialize.
+  - Cancel job with the controller locked by an alarm and no program running now just clears the
+    job (progress, list, card back to the ticked toolpaths) and says to press Initialize. Before,
+    it held and reset the controller, logged "Z up to the top" although nothing moved, and sent a
+    tool offset and a rise that the locked controller refused (error:9).
+
 ## v1.3.26 (build 116) — 2026-10-26
 
 > Cancel job resets the whole job, also after a Stop, so the next Run starts clean
