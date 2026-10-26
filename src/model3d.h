@@ -3,6 +3,8 @@
 #include "heightmodel.h"
 
 #include <QByteArray>
+#include <QRectF>
+#include <QSizeF>
 #include <QHash>
 #include <QImage>
 #include <QJsonObject>
@@ -65,6 +67,16 @@ struct ModelComponent {
     double width = 0.0;          // placed width, mm (0 = natural: image px at 96 dpi, STL units)
     double tileWidth = 10.0;     // Texture: one tile's width, mm (height keeps the aspect)
     Units units = Millimetres;   // STL: how to read the file's coordinates
+    // Quarter turns clockwise (0-3) the image / mesh / texture lies turned
+    // by, from "Rotate 90°" on the whole design. (x, y) stays the bottom-left
+    // of what it covers, so an odd count swaps the placed width and height.
+    int turns = 0;
+
+    // Image / STL: the placed size before `turns` (width x height, mm), and
+    // the rectangle it covers on the board after them. Empty when the bytes
+    // do not decode or the kind has no placement of its own.
+    QSizeF placedSize() const;
+    QRectF footprint() const;
 
     static QString kindName(Kind k);
     static QString shapeName(Shape s);

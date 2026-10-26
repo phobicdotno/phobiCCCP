@@ -281,6 +281,9 @@ private:
     bool jogBy(char axis, double delta, double feed, bool defer = true);
     void unlock();
     void cancelJob();
+    // Back to no job: progress, the Running job list and the job's state
+    // cleared, the card showing the toolpaths ticked now, ready for Run.
+    void clearJob();
     QStringList riseToTop() const;
     void continueAfterToolChange();      // with the rise to the top in front
     void forgetJogPlan();

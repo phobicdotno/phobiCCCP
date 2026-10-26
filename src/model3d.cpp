@@ -32,6 +32,30 @@ constexpr double kMinCell = 0.1;
 constexpr double kMaxCells = 4.0e6;
 const float kNone = std::numeric_limits<float>::quiet_NaN();
 inline bool none(float v) { return std::isnan(v); }
+
+// A component turned by `turns` clockwise quarter turns, W x H being its
+// size unturned and both points measured from the bottom-left of what it
+// covers: turnPt takes a point of the unturned image / mesh to where it
+// lies, unturnPt brings one back. With W = H = 0 they turn about the
+// anchor itself (a texture, which tiles without bounds).
+QPointF turnPt(QPointF u, int turns, double W, double H)
+{
+    switch (turns & 3) {
+    case 1: return {u.y(), W - u.x()};
+    case 2: return {W - u.x(), H - u.y()};
+    case 3: return {H - u.y(), u.x()};
+    default: return u;
+    }
+}
+QPointF unturnPt(QPointF d, int turns, double W, double H)
+{
+    switch (turns & 3) {
+    case 1: return {W - d.y(), d.x()};
+    case 2: return {W - d.x(), H - d.y()};
+    case 3: return {d.y(), H - d.x()};
+    default: return d;
+    }
+}
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +117,8 @@ QJsonObject ModelComponent::toJson() const
     o.insert("width", width);
     o.insert("tile_width", tileWidth);
     o.insert("units", int(units));
+    if (turns & 3)
+        o.insert("turns", turns & 3);
     return o;
 }
 
@@ -118,7 +144,47 @@ ModelComponent ModelComponent::fromJson(const QJsonObject &o)
     c.width = o.value("width").toDouble(0.0);
     c.tileWidth = o.value("tile_width").toDouble(10.0);
     c.units = Units(qBound(0, o.value("units").toInt(), int(Inches)));
+    c.turns = o.value("turns").toInt() & 3;
     return c;
+}
+
+QSizeF ModelComponent::placedSize() const
+{
+    if (kind == ImageHeightmap) {
+        QImage img;
+        if (!img.loadFromData(data) || img.width() <= 0 || img.height() <= 0)
+            return {};
+        const double wmm = width > 0 ? width : img.width() * BackgroundImage::kMmPerPixel;
+        return {wmm, wmm * img.height() / img.width()};
+    }
+    if (kind == StlMesh) {
+        QVector<StlTriangle> tris;
+        if (!parseStl(data, &tris))
+            return {};
+        float mn[2] = {1e30f, 1e30f}, mx[2] = {-1e30f, -1e30f};
+        for (const StlTriangle &t : tris)
+            for (int v = 0; v < 3; ++v)
+                for (int k = 0; k < 2; ++k) {
+                    mn[k] = std::min(mn[k], t.v[v][k]);
+                    mx[k] = std::max(mx[k], t.v[v][k]);
+                }
+        const double bw = mx[0] - mn[0], bd = mx[1] - mn[1];
+        if (!(bw > 0) || !(bd > 0))
+            return {};
+        const double s = width > 0 ? width / bw : units == Inches ? 25.4 : 1.0;
+        return {bw * s, bd * s};
+    }
+    return {};
+}
+
+QRectF ModelComponent::footprint() const
+{
+    QSizeF sz = placedSize();
+    if (sz.isEmpty())
+        return {};
+    if (turns & 1)
+        sz.transpose();
+    return {QPointF(x, y), sz};
 }
 
 bool Model3D::hasEnabled() const
@@ -711,16 +777,19 @@ void applyImage(Work &w, const ModelComponent &comp)
         return;
     const double wmm = comp.width > 0 ? comp.width : g.cols * BackgroundImage::kMmPerPixel;
     const double hmm = wmm * g.rows / g.cols;
+    const bool across = comp.turns & 1;
+    const double fw = across ? hmm : wmm, fh = across ? wmm : hmm;   // what it covers
     const int n = w.cols * w.rows;
     QVector<float> field(n, kNone);
     for (int r = 0; r < w.rows; ++r) {
         const double y = w.cy(r);
-        if (y < comp.y || y >= comp.y + hmm) continue;
+        if (y < comp.y || y >= comp.y + fh) continue;
         for (int c = 0; c < w.cols; ++c) {
             const double x = w.cx(c);
-            if (x < comp.x || x >= comp.x + wmm) continue;
-            const double px = (x - comp.x) / wmm * g.cols;
-            const double py = (y - comp.y) / hmm * g.rows;
+            if (x < comp.x || x >= comp.x + fw) continue;
+            const QPointF u = unturnPt({x - comp.x, y - comp.y}, comp.turns, wmm, hmm);
+            const double px = u.x() / wmm * g.cols;
+            const double py = u.y() / hmm * g.rows;
             field[r * w.cols + c] = float(comp.baseHeight + comp.height * sampleGray(g, px, py));
         }
     }
@@ -751,9 +820,9 @@ void applyTexture(Work &w, const ModelComponent &comp, const QVector<Element> &e
         const double y = w.cy(r) - comp.y;
         for (int c = 0; c < w.cols; ++c) {
             if (!mask.at(r * w.cols + c)) continue;
-            const double x = w.cx(c) - comp.x;
-            double u = std::fmod(x, tw); if (u < 0) u += tw;
-            double v = std::fmod(y, th); if (v < 0) v += th;
+            const QPointF d = unturnPt({w.cx(c) - comp.x, y}, comp.turns, 0, 0);
+            double u = std::fmod(d.x(), tw); if (u < 0) u += tw;
+            double v = std::fmod(d.y(), th); if (v < 0) v += th;
             field[r * w.cols + c] =
                 float(comp.baseHeight + comp.height * sampleGray(g, u / tw * g.cols, v / th * g.rows));
         }
@@ -795,8 +864,10 @@ void applyStl(Work &w, const ModelComponent &comp, std::atomic<bool> *cancel)
         if ((++done & 4095) == 0 && cancel && *cancel) return;
         double px[3], py[3], pz[3];
         for (int v = 0; v < 3; ++v) {
-            px[v] = comp.x + (t.v[v][0] - mn[0]) * s;
-            py[v] = comp.y + (t.v[v][1] - mn[1]) * s;
+            const QPointF at = turnPt({(t.v[v][0] - mn[0]) * s, (t.v[v][1] - mn[1]) * s},
+                                      comp.turns, bw * s, bd * s);
+            px[v] = comp.x + at.x();
+            py[v] = comp.y + at.y();
             pz[v] = (t.v[v][2] - mn[2]) * zScale;
         }
         // vertices always land (tiny triangles between cell centres)

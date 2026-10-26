@@ -11,6 +11,41 @@
   Cutout does).
 - **Pad:** a new Drill on the pad starts at the same depth.
 
+## v1.3.26 (build 116) — 2026-10-26
+
+> Cancel job resets the whole job, also after a Stop, so the next Run starts clean
+
+- **Machine:**
+  - Cancel job after a Stop, a reset or the end of a job said "nothing to cancel" and left the
+    progress bar and the job list as they were (50 %, the stopped step). It now clears the job:
+    progress back to 0, the Running job list gone (here and on the pad), the card showing the
+    toolpaths ticked now, ready for Run. Nothing is sent to the machine for that.
+  - Cancel job on a running job does the same once the machine is stopped and Z is up.
+
+
+## v1.3.25 (build 115) — 2026-10-26
+
+> Rotate 90°: turn the whole design a quarter turn clockwise to fit a leftover piece lying the other way
+
+- **Design:** a **Rotate 90°** button on the options bar (and in the Edit menu) turns the whole
+  design 90° clockwise on the same stock. Every vector turns, and everything that hangs on them
+  turns with it: toolpaths keep machining the same vectors with the same settings (depths, tabs,
+  leads, climb or conventional), and hatch, texture, keyhole and raster directions turn too.
+  Constraints and dimensions turn with their geometry, so nothing moves on the next solve; a
+  dimension measured from the origin (which stays where it is) takes its new value, and one
+  that other expressions use shows red and is named in the status line. The 3D model's images,
+  meshes and textures and the tracing background turn as well. The stock and its zero stay as
+  they are, and the design keeps its bottom-left corner where it was; the status line says if
+  it now reaches past the stock. One Ctrl+Z undoes it, and four turns give back exactly what
+  was there.
+- **Toolpaths:** a contour with tabs now starts beside the middle of the first edge of its vector,
+  so its tabs stay on the same part of the shape however the shape lies (they moved when the
+  shape was turned).
+- **Window:** on a narrower screen (the shop's 1280 px) the end of the options bar fell out of
+  sight with nothing to show it was there: in Toolpaths mode Fit, Snap, Preview, Undo and Redo
+  were gone, in Design mode Preview, Undo and Redo. The options bar now takes a row of its own
+  when it has no room beside the tools.
+- **Pad:** the same button, on the pad build of the program.
 ## v1.3.24 (build 114) — 2026-10-26
 
 > After a tool change the machine crosses to the first cut at the top again before it comes down

@@ -32,6 +32,7 @@
 #include <QStatusBar>
 #include <QTimer>
 #include <QTreeWidget>
+#include <QToolBar>
 #include <QUndoStack>
 
 #include <cstdio>
@@ -355,6 +356,57 @@ int main(int argc, char *argv[])
         check(w.gcodeSuggestion() == QLatin1String("/tmp/parts/part.nc"), "export: named after the imported file");
         w.m_untitled = wasUntitled;
         w.m_untitledFrom = wasFrom;
+    }
+
+    // On the shop screen (1280 px) every Options button stays in sight in
+    // both modes: the bar takes a row of its own rather than dropping Fit,
+    // Rotate 90°, Preview and Undo off its end.
+    {
+        const QSize was = w.size();
+        const c2d::MainWindow::Mode mode = w.mode();
+        w.resize(1280, 800);
+        for (c2d::MainWindow::Mode m : {c2d::MainWindow::Mode::Toolpaths, c2d::MainWindow::Mode::Design}) {
+            w.setMode(m, false);
+            QApplication::processEvents();
+            QTest::qWait(50);
+            bool all = true;
+            for (QAction *a : w.m_optionsBar->actions())
+                if (a->isVisible() && !a->isSeparator()) {
+                    QWidget *b = w.m_optionsBar->widgetForAction(a);
+                    all = all && b && b->isVisible();
+                }
+            check(all, "1280 px: every Options button is shown");
+        }
+        w.resize(was);
+        w.setMode(mode, false);
+    }
+
+    // Rotate 90° (options bar and Edit menu): the design turns, the stock
+    // does not, and one Ctrl+Z puts it back.
+    {
+        QAction *rot = w.findChild<QAction *>(QStringLiteral("rotateJob"));
+        check(rot != nullptr, "rotate: the action is on the window");
+        const QVector<c2d::Element> before = d.elements();
+        const QVector<c2d::Toolpath> tpsBefore = d.toolpaths();
+        const double sw = d.boardWidth(), sh = d.boardHeight();
+        const int undoAt = w.m_canvas->undoStack()->index();
+        rot->trigger();
+        const c2d::Element *rr = d.elementById(r.id);
+        check(rr && rr->raw.value("width").toDouble() == 30 && rr->raw.value("height").toDouble() == 40,
+              "rotate: the rectangle lies the other way");
+        check(d.boardWidth() == sw && d.boardHeight() == sh, "rotate: the stock stays as it is");
+        check(d.toolpaths().size() == tpsBefore.size() && d.toolpaths().at(0).json.value("elements") == tpsBefore.at(0).json.value("elements"),
+              "rotate: the toolpaths still machine the same vectors");
+        check(w.m_canvas->undoStack()->index() == undoAt + 1, "rotate: one undo step");
+        check(w.m_dirty, "rotate: the design is marked edited");
+        w.m_canvas->undoStack()->undo();
+        bool same = d.elements().size() == before.size();
+        for (int i = 0; same && i < before.size(); ++i)
+            same = d.elements().at(i).raw == before.at(i).raw;
+        check(same, "rotate: Ctrl+Z puts every vector back");
+        w.m_canvas->undoStack()->redo();
+        check(d.elementById(r.id)->raw.value("width").toDouble() == 30, "rotate: and Ctrl+Y turns it again");
+        w.m_canvas->undoStack()->undo();
     }
 
     w.m_dirty = false;
