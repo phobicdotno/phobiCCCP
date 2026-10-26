@@ -1164,6 +1164,13 @@ MachinePanel::MachinePanel(QWidget *parent)
                 {QStringLiteral("3"), QStringLiteral("the controller was reset while moving (ALARM:3)")}};
             const QString n = l.mid(6, 1);
             m_unhomedWhy = why.value(n, QStringLiteral("homing failed (%1)").arg(l.trimmed()));
+            // The end-of-job rise and spindle stop come after the program:
+            // an alarm there does not undo the job, but it does lock the
+            // controller and lose the position.
+            if (!m_grbl->isStreaming() && m_jobView && m_jobView->isFinished())
+                log(QStringLiteral("!! %1 came after the job finished (on the way up / spindle off): the job "
+                                   "is done, but the controller is locked and lost its position. Press "
+                                   "Initialize to home it again.").arg(l.trimmed()));
             m_homingStarted = false;
             forgetJogPlan();
             m_onIdle = nullptr;   // a step waiting for Idle (BitZero's last) is void now
@@ -2328,6 +2335,18 @@ void MachinePanel::cancelJob()
         && (m_grbl->isStreaming() || m_grbl->isMacroRunning() || m_phase != Phase::Idle
             || m_held || m_machineState.startsWith(QLatin1String("Hold"))
             || m_machineState == QLatin1String("Run"));
+    // Locked by an alarm (an end stop) with no program left to stop: GRBL
+    // has stopped everything itself and listens only after a reset, which
+    // is Initialize's job. A hold, a reset and a rise here only produced
+    // refused lines and a log that said Z went up when nothing moved.
+    const bool locked = m_grbl->isConnected() && !m_grbl->isStreaming()
+        && (m_grbl->needsReset() || m_machineState.startsWith(QLatin1String("Alarm")));
+    if (locked) {
+        clearJob();
+        log(QStringLiteral("job cleared: ready to run %1. The controller is in alarm: press Initialize "
+                           "to home it before the next run.").arg(m_jobInfo->text()));
+        return;
+    }
     if (!active) {
         // Nothing moves (a Stop, a reset or the end already ended it), but
         // the last job is still on screen: Cancel job clears it.
