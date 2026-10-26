@@ -218,10 +218,28 @@ public:
                 if (all.at(i).id == e.id) { m_removed.append({i, all.at(i)}); break; }
         std::sort(m_removed.begin(), m_removed.end(),
                   [](const auto &a, const auto &b) { return a.first < b.first; });
+        // A deleted shape leaves the toolpaths that cut it too; it stayed
+        // behind as a "?" tile and a vector count that was too high.
+        QSet<QString> gone;
+        for (const auto &p : m_removed)
+            gone.insert(p.second.id);
+        for (const Toolpath &t : d->toolpaths()) {
+            const QJsonArray refs = t.json.value("elements").toArray();
+            QJsonArray kept;
+            for (const QJsonValue &v : refs)
+                if (!gone.contains(v.toObject().value("uuid").toString()))
+                    kept.append(v);
+            if (kept.size() == refs.size())
+                continue;
+            Toolpath after = t;
+            after.json.insert(QStringLiteral("elements"), kept);
+            m_tps.append({t, after});
+        }
     }
     void redo() override
     {
         for (const auto &p : m_removed) m_d->removeElementById(p.second.id);
+        for (const auto &p : m_tps) m_d->replaceToolpath(p.second);
         refresh(m_c);
     }
     void undo() override
@@ -229,11 +247,13 @@ public:
         QVector<Element> &els = m_d->elementsRef();
         for (const auto &p : m_removed)                 // low index first
             els.insert(qMin(p.first, int(els.size())), p.second);
+        for (const auto &p : m_tps) m_d->replaceToolpath(p.first);
         refresh(m_c);
     }
 private:
     Canvas *m_c; Document *m_d;
     QVector<QPair<int, Element>> m_removed;
+    QVector<QPair<Toolpath, Toolpath>> m_tps;   // before, after
 };
 
 // The element order after a drag in the shape strip; undo puts the old order back.
@@ -788,6 +808,16 @@ void Canvas::selectElements(const QStringList &ids)
     onSelectionChanged();
 }
 
+void Canvas::showElement(const QString &id)
+{
+    QGraphicsPathItem *it = itemFor(id);
+    if (!it)
+        return;
+    selectElements({id});
+    centerOn(it->mapRectToScene(it->path().boundingRect()).center());
+    viewport()->update();
+}
+
 void Canvas::editText(const QString &id, const QJsonObject &changes)
 {
     if (!m_doc || changes.isEmpty())
@@ -1044,6 +1074,15 @@ bool bandTouches(const QGraphicsPathItem *it, bool closed, bool point, const QRe
 }
 
 } // namespace
+
+// The band ends at the edge of the drawing: dragged on over the panels or
+// the menus it kept growing into the part of the drawing that is off screen
+// and picked up shapes nobody could see (Phobic, 2026-10-26).
+QPoint Canvas::bandPoint(const QPoint &p) const
+{
+    const QRect v = viewport()->rect();
+    return QPoint(qBound(v.left(), p.x(), v.right()), qBound(v.top(), p.y(), v.bottom()));
+}
 
 // Select by band: left to right selects what lies wholly inside, right to
 // left whatever line the band touches (Phobic, 2026-10-25). Direction is
@@ -2636,7 +2675,7 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
     }
 
     if (m_band) {
-        m_bandEnd = event->pos();
+        m_bandEnd = bandPoint(event->pos());
         applyBand();
         viewport()->update();
         event->accept();
@@ -2685,7 +2724,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         return;
 
     if (m_band && event->button() == Qt::LeftButton) {
-        m_bandEnd = event->pos();
+        m_bandEnd = bandPoint(event->pos());
         applyBand();
         m_band = false;
         viewport()->update();

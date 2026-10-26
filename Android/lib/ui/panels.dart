@@ -356,6 +356,9 @@ class ToolpathsPanel extends StatelessWidget {
   final void Function(int i, int to) onMove;
   final void Function(int i) onPickTool;
 
+  /// A shape's tile: select that shape and bring it to the middle.
+  final ValueChanged<String>? onShowShape;
+
   const ToolpathsPanel({
     super.key,
     required this.design,
@@ -371,6 +374,7 @@ class ToolpathsPanel extends StatelessWidget {
     required this.onDelete,
     required this.onMove,
     required this.onPickTool,
+    this.onShowShape,
   });
 
   Widget _txt(String t, VoidCallback? onTap) => InkWell(
@@ -575,13 +579,17 @@ class ToolpathsPanel extends StatelessWidget {
         height: 64,
         child: Stack(children: [
           Positioned.fill(
-            child: Container(
-              decoration: BoxDecoration(
-                color: C.base,
-                borderRadius: BorderRadius.circular(6),
-                border: Border.all(color: const Color(0xFF3A404B)),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onShowShape == null ? null : () => onShowShape!(t.shapes[n]),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: C.base,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFF3A404B)),
+                ),
+                child: CustomPaint(painter: ShapeThumbPainter(design, k, t.shapes[n])),
               ),
-              child: CustomPaint(painter: ShapeThumbPainter(design, k, t.shapes[n])),
             ),
           ),
           Positioned(

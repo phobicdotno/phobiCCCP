@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.3.34 (build 124) — 2026-10-26
+## v1.3.35 (build 125) — 2026-10-26
 
 > HDPE plunges faster: 1000 mm/min for 1/8" and 1/4" end mills
 
@@ -12,7 +12,7 @@
   design keep their plunge rate; picking a bit again (or a new toolpath) takes the new one.
 - **Pad:** the pad's desktop program uses the same library.
 
-## v1.3.33 (build 123) — 2026-10-26
+## v1.3.34 (build 124) — 2026-10-26
 
 > An end-stop alarm after a finished job no longer makes Cancel job reset the controller and say Z went up
 
@@ -25,6 +25,22 @@
     job (progress, list, card back to the ticked toolpaths) and says to press Initialize. Before,
     it held and reset the controller, logged "Z up to the top" although nothing moved, and sent a
     tool offset and a rise that the locked controller refused (error:9).
+
+## v1.3.33 (build 123) — 2026-10-26
+
+> Selecting by dragging a box now picks only what you can see, and deleted
+> shapes leave their toolpaths
+
+- **Design / Toolpaths:** a select box dragged on past the edge of the drawing (over the panels
+  or menus) kept growing into the part of the drawing that is off screen, so it selected shapes
+  nobody could see, and "+" on a toolpath card then added those. The box now stops at the edge
+  of the drawing.
+- **Toolpaths:** deleting a shape takes it out of every toolpath that cuts it (undo puts it
+  back). It used to stay behind as a red "?" tile and in the vector count. A design saved with
+  such leftovers opens without them.
+- **Toolpaths:** clicking a shape's tile on an open toolpath card selects that shape and moves
+  the view so it is in the middle, at the same zoom.
+- **Pad:** the same on the pad.
 
 ## v1.3.32 (build 122) — 2026-10-26
 
