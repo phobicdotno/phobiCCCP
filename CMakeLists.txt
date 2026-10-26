@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.24 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.25 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -64,6 +64,7 @@ add_library(phobicccp_core STATIC
     src/backgroundimage.cpp
     src/imagetrace.cpp
     src/model3d.cpp
+    src/jobrotate.cpp
     src/recovery.cpp
     src/machineprofiles.cpp
     src/padlink.cpp
@@ -252,6 +253,10 @@ add_test(NAME paths COMMAND test_paths)
 add_executable(test_model3d tests/test_model3d.cpp)
 target_link_libraries(test_model3d PRIVATE phobicccp_core)
 add_test(NAME model3d COMMAND test_model3d)
+# Rotate 90°: four turns are none, one turn cuts the same, turned.
+add_executable(test_jobrotate tests/test_jobrotate.cpp)
+target_link_libraries(test_jobrotate PRIVATE phobicccp_core)
+add_test(NAME jobrotate COMMAND test_jobrotate)
 add_executable(test_cam3d tests/test_cam3d.cpp)
 target_link_libraries(test_cam3d PRIVATE phobicccp_core)
 add_test(NAME cam3d COMMAND test_cam3d)
