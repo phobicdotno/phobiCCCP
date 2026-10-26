@@ -251,14 +251,21 @@ QString GrblStreamer::crossToFirstCut(const QStringList &lines, int from)
 {
     static const QRegularExpression wx(QStringLiteral("(?:^|[^A-Z])X(-?[0-9.]+)"));
     static const QRegularExpression wy(QStringLiteral("(?:^|[^A-Z])Y(-?[0-9.]+)"));
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
+    // A pause: M0, M00, M1, M01. Not M03 or M05: 2026-10-26 the spindle-on
+    // line ("M03S18000", after the post's retract and before its first X/Y)
+    // ended the look-ahead, nothing crossed, and the retract came down at the
+    // Park spot beside the BitSetter with the spindle starting.
+    static const QRegularExpression pause(QStringLiteral("^M0*[01](?![0-9])"));
     QString gx, gy;
     for (int i = from; i < lines.size() && i < from + 400 && (gx.isEmpty() || gy.isEmpty()); ++i) {
         QString l = lines.at(i);
         const int c = l.indexOf(QChar(';'));
         if (c >= 0) l.truncate(c);
+        l.remove(paren);                 // "(Pocket X2)" names no position
         l = l.trimmed().toUpper();
         // A tool change next: the machine parks first, and the resume crosses then.
-        if (l.startsWith(QLatin1String("M0")) || l.contains(QStringLiteral("G91"))
+        if (pause.match(l).hasMatch() || l.contains(QStringLiteral("G91"))
             || l.contains(QStringLiteral("G53")))
             break;
         const auto mx = wx.match(l), my = wy.match(l);
