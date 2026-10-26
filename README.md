@@ -65,8 +65,8 @@ Touch: hold a finger still to right-click, pinch with two fingers to zoom and
 pan the canvas. File > Send to phobiCCCP… sends the design to the computer by
 the machine (which needs File > Receive from Syntexophobic and pads on), and
 can start the cut there. There is no serial port on a pad, so the Machine side
-there has nothing to connect to. Without Boost on Android, V-carve uses the ring
-approximation. The other way, File > Send to pad… on a computer lists the pads
+there has nothing to connect to. V-carve is the same medial-axis one as on a computer
+(Boost.Polygon headers, taken from the build machine). The other way, File > Send to pad… on a computer lists the pads
 running this program and opens the design there.
 
 ## Screenshots

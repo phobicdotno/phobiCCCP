@@ -114,7 +114,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1524,
-          "plunge": 381,
+          "plunge": 1000,
           "stepdown": 1.27,
           "stepover_pct": 40
         },
@@ -183,7 +183,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1524,
-          "plunge": 381,
+          "plunge": 1000,
           "stepdown": 1.27,
           "stepover_pct": 40,
           "guess": true
@@ -253,7 +253,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1524,
-          "plunge": 381,
+          "plunge": 800,
           "stepdown": 1.27,
           "stepover_pct": 10,
           "guess": true
@@ -321,7 +321,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1016,
-          "plunge": 254,
+          "plunge": 1000,
           "stepdown": 0.762,
           "stepover_pct": 40,
           "guess": true
@@ -390,7 +390,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1016,
-          "plunge": 254,
+          "plunge": 800,
           "stepdown": 0.762,
           "stepover_pct": 10,
           "guess": true
@@ -459,7 +459,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 635,
-          "plunge": 152,
+          "plunge": 400,
           "stepdown": 0.381,
           "stepover_pct": 40,
           "guess": true
@@ -528,7 +528,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 635,
-          "plunge": 152,
+          "plunge": 300,
           "stepdown": 0.381,
           "stepover_pct": 10,
           "guess": true
@@ -601,7 +601,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 381,
-          "plunge": 102,
+          "plunge": 200,
           "stepdown": 0.2,
           "stepover_pct": 30,
           "guess": true
@@ -670,7 +670,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1270,
-          "plunge": 305,
+          "plunge": 800,
           "stepdown": 2.032,
           "stepover_pct": 10,
           "guess": true
@@ -739,7 +739,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1270,
-          "plunge": 305,
+          "plunge": 800,
           "stepdown": 2.032,
           "stepover_pct": 10,
           "guess": true
@@ -808,7 +808,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 762,
-          "plunge": 203,
+          "plunge": 500,
           "stepdown": 0.381,
           "stepover_pct": 10,
           "guess": true
@@ -881,7 +881,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 762,
-          "plunge": 203,
+          "plunge": 500,
           "stepdown": 0.381,
           "stepover_pct": 10,
           "guess": true
@@ -952,7 +952,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1524,
-          "plunge": 381,
+          "plunge": 1000,
           "stepdown": 1.2,
           "stepover_pct": 40,
           "guess": true
@@ -1024,7 +1024,7 @@
         "hdpe": {
           "rpm": 16000,
           "feed": 1200,
-          "plunge": 250,
+          "plunge": 600,
           "stepdown": 2.0,
           "stepover_pct": 50,
           "guess": true
@@ -1091,7 +1091,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1005,
-          "plunge": 201,
+          "plunge": 1000,
           "stepdown": 0.9,
           "stepover_pct": 40,
           "guess": true
@@ -1169,7 +1169,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1005,
-          "plunge": 201,
+          "plunge": 1000,
           "stepdown": 0.9,
           "stepover_pct": 40,
           "guess": true
@@ -1247,7 +1247,7 @@
         "hdpe": {
           "rpm": 16000,
           "feed": 1675,
-          "plunge": 335,
+          "plunge": 1000,
           "stepdown": 1.8,
           "stepover_pct": 40,
           "guess": true
@@ -1325,7 +1325,7 @@
         "hdpe": {
           "rpm": 16000,
           "feed": 1675,
-          "plunge": 335,
+          "plunge": 1000,
           "stepdown": 1.8,
           "stepover_pct": 40,
           "guess": true
@@ -1403,7 +1403,7 @@
         "hdpe": {
           "rpm": 16000,
           "feed": 1876,
-          "plunge": 368,
+          "plunge": 1000,
           "stepdown": 2.4,
           "stepover_pct": 40,
           "guess": true
@@ -1480,7 +1480,7 @@
         "hdpe": {
           "rpm": 16000,
           "feed": 2010,
-          "plunge": 402,
+          "plunge": 1000,
           "stepdown": 3.0,
           "stepover_pct": 40,
           "guess": true
@@ -1569,7 +1569,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 1500,
-          "plunge": 300,
+          "plunge": 1000,
           "stepdown": 1.5,
           "stepover_pct": 40,
           "guess": true
@@ -1647,7 +1647,7 @@
         "hdpe": {
           "rpm": 18000,
           "feed": 600,
-          "plunge": 150,
+          "plunge": 400,
           "stepdown": 0.4,
           "stepover_pct": 30,
           "guess": true

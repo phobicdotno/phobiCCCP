@@ -1970,6 +1970,11 @@ bool isImportableFile(const QString &path)
 
 QString importFileFilter()
 {
+#ifdef Q_OS_ANDROID
+    // PDF, Illustrator and EPS go through programs a pad does not have.
+    return QStringLiteral("Vector files (*.svg *.dxf *.plt *.hpgl *.hpg *.hgl);;"
+                          "SVG (*.svg);;DXF (*.dxf);;HPGL plotter files (*.plt *.hpgl *.hpg *.hgl)");
+#endif
     return QStringLiteral("Vector files (*.svg *.dxf *.plt *.hpgl *.hpg *.hgl *.pdf *.ai *.eps *.ps);;"
                           "SVG (*.svg);;DXF (*.dxf);;HPGL plotter files (*.plt *.hpgl *.hpg *.hgl);;"
                           "PDF / Illustrator (*.pdf *.ai);;EPS / PostScript (*.eps *.ps)");
