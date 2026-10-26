@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.31 (build 121) — 2026-10-26
+
+> A new Drill toolpath drills straight through the stock and 0.5 mm on
+
+- **Toolpaths:** a new Drill toolpath now starts at the stock thickness + 0.5 mm deep (19.5 mm
+  in 19 mm stock), one plunge per hole with no pecks or chip breaking, so each hole comes out
+  clean at the bottom. It was 2.54 mm. Drill toolpaths already in a design keep their depth, and
+  a drill made before the stock thickness is changed keeps the depth it was made with (as a
+  Cutout does).
+- **Pad:** a new Drill on the pad starts at the same depth.
+
 ## v1.3.30 (build 120) — 2026-10-26
 
 > Running job: a toolpath on many shapes shows a row per shape, so every square shows its progress

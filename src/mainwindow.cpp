@@ -973,7 +973,7 @@ MainWindow::MainWindow(QWidget *parent)
         const QHash<QString, QString> why = {
             {QStringLiteral("contour"), QStringLiteral("Follow the outline: outside, inside or on the line")},
             {QStringLiteral("pocket_toolpath"), QStringLiteral("Clear everything inside the shape to a depth")},
-            {QStringLiteral("drilling_toolpath"), QStringLiteral("Peck a hole at each selected circle")},
+            {QStringLiteral("drilling_toolpath"), QStringLiteral("Drill straight through the stock at each selected circle")},
             {QStringLiteral("texture_toolpath"), QStringLiteral("Random shallow strokes for a textured surface")},
             {QStringLiteral("advanced_vcarve_toolpath"), QStringLiteral("V-bit carving of text and shapes, depth follows width")},
             {QStringLiteral("keyhole_toolpath"), QStringLiteral("Keyhole hanger slot: plunge, slide, come back")},
