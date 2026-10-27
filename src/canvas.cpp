@@ -2583,10 +2583,14 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         }
     }
     QGraphicsView::mousePressEvent(event);
+    pressedEmpty(event);
+}
 
-    // Select tool, press on empty board: start the select band. The press
-    // above already cleared the selection unless Ctrl was held, and the
-    // toolpath list lets go of its toolpath too.
+// Select tool, press on empty board: start the select band. The press
+// before this already cleared the selection unless Ctrl was held, and the
+// toolpath list lets go of its toolpath too.
+void Canvas::pressedEmpty(QMouseEvent *event)
+{
     if (m_tool == Select && event->button() == Qt::LeftButton
         && !m_scene->mouseGrabberItem()) {
         m_band = true;
@@ -2964,7 +2968,16 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
             return;
         }
     }
+    if (!viewport()->rect().contains(event->pos())) {
+        endBand();
+        event->ignore();
+        return;
+    }
+    endBand();
     QGraphicsView::mouseDoubleClickEvent(event);
+    // Two quick taps on the board: the second one comes as a double-click,
+    // and must still start a band and let go of the toolpath.
+    pressedEmpty(event);
 }
 
 void Canvas::contextMenuEvent(QContextMenuEvent *event)

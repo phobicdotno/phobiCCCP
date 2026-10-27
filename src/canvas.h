@@ -271,6 +271,7 @@ private:
     void applyBand();
     QPoint bandPoint(const QPoint &p) const;   // clamped to the viewport
     void endBand();                            // drop the band, keep what it selected
+    void pressedEmpty(QMouseEvent *event);     // Select press on empty board: band + emptyPressed
 
     // Click tools (slot, arc, edge polygon) reuse m_clicks (the points
     // clicked so far, CC mm); how many points finish a shape depends on

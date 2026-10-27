@@ -162,6 +162,12 @@ int main(int argc, char **argv)
     QTest::touchEvent(&win, g_touch).release(0, tapAt, &win);
     QTest::qWait(20);
     check(list->selectedItems().isEmpty(), "a real touch tap on empty board unselects the toolpath");
+    // Right after a click there, the tap arrives as a double-click: same thing.
+    selectRow();
+    QTest::touchEvent(&win, g_touch).press(0, tapAt, &win);
+    QTest::touchEvent(&win, g_touch).release(0, tapAt, &win);
+    QTest::qWait(20);
+    check(list->selectedItems().isEmpty(), "a second quick tap on empty board unselects it too");
     selectRow();
     touchMouse(vp, QEvent::MouseButtonPress, above, Qt::LeftButton);
     touchMouse(vp, QEvent::MouseButtonRelease, above, Qt::NoButton);
