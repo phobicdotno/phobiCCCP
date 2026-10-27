@@ -43,6 +43,8 @@
 #include <QPainter>
 #include <QImage>
 #include <QTreeView>
+#include <QHeaderView>
+#include <QSplitter>
 #include <QPointer>
 #include <QAbstractButton>
 #include <QContextMenuEvent>
@@ -78,9 +80,13 @@ public:
     }
 };
 
-// Open / Save dialogs are Qt's own, with 16 px icons that are hard to hit on
-// the shop PC's touchscreen: every icon in them is drawn 2x (32 px files and
-// places, 24 px toolbar), from the desktop's icon theme so they stay sharp.
+// Open / Save dialogs are Qt's own, with 16 px icons and rows that are hard to
+// hit on the shop PC's touchscreen: files and places get 24 px icons on rows
+// padded to finger height, the toolbar 24 px icons from the desktop's theme so
+// they stay sharp. Qt brings back the sidebar and column widths it saved last
+// time (on the shop PC a 108 px sidebar and 465 px for all four columns, which
+// cut names, sizes and dates to "33…iB"), so those are sized to their text on
+// every open instead.
 class FileDialogIcons : public QObject
 {
 public:
@@ -90,8 +96,16 @@ public:
         auto *dlg = qobject_cast<QFileDialog *>(o);
         if (e->type() == QEvent::Show && dlg && !dlg->property("phobicIcons").toBool()) {
             dlg->setProperty("phobicIcons", true);
-            for (auto *v : dlg->findChildren<QAbstractItemView *>())
-                v->setIconSize(QSize(32, 32));
+            for (auto *v : dlg->findChildren<QAbstractItemView *>()) {
+                v->setIconSize(QSize(24, 24));
+                v->setStyleSheet(QStringLiteral("QAbstractItemView::item { padding: 5px 2px; }"));
+            }
+            if (auto *tree = dlg->findChild<QTreeView *>(QStringLiteral("treeView"))) {
+                QHeaderView *h = tree->header();
+                h->setStretchLastSection(false);
+                h->setSectionResizeMode(QHeaderView::ResizeToContents);
+                h->setSectionResizeMode(0, QHeaderView::Stretch);   // name takes what is left
+            }
             const QHash<QString, QString> themed = {
                 {QStringLiteral("backButton"), QStringLiteral("go-previous")},
                 {QStringLiteral("forwardButton"), QStringLiteral("go-next")},
@@ -109,6 +123,10 @@ public:
             for (auto *c : dlg->findChildren<QComboBox *>())
                 c->setIconSize(QSize(24, 24));
             dlg->resize(dlg->size().expandedTo(QSize(1100, 760)));
+            if (auto *split = dlg->findChild<QSplitter *>(QStringLiteral("splitter"))) {
+                const int side = 180;
+                split->setSizes({side, qMax(dlg->width() - side, 400)});
+            }
         }
         return false;
     }
