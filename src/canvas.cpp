@@ -2362,7 +2362,8 @@ void Canvas::mousePressEvent(QMouseEvent *event)
     // the canvas, as a press above its top edge: it started a select band
     // there and replaced the selection the button was about to use
     // (Phobic, 2026-10-27). Nothing outside the drawing changes the selection.
-    if (!viewport()->rect().contains(event->pos())) {
+    // (A mouse press always lands on the drawing; tests press anywhere.)
+    if (fromTouch(event) && !viewport()->rect().contains(event->pos())) {
         endBand();
         event->ignore();
         return;
@@ -2968,7 +2969,7 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
             return;
         }
     }
-    if (!viewport()->rect().contains(event->pos())) {
+    if (fromTouch(event) && !viewport()->rect().contains(event->pos())) {
         endBand();
         event->ignore();
         return;
