@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.37 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.38 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -344,6 +344,11 @@ if(Qt6Test_FOUND)
     add_executable(test_tpshapes tests/test_tpshapes.cpp)
     target_link_libraries(test_tpshapes PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpshapes COMMAND test_tpshapes)
+    # Touch on the canvas: a tap outside the drawing leaves the selection
+    # alone; a tap on empty board lets go of the toolpath.
+    add_executable(test_touchselect tests/test_touchselect.cpp)
+    target_link_libraries(test_touchselect PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME touchselect COMMAND test_touchselect)
     # STL import's default size for a mesh too big for the board.
     add_executable(test_stlplace tests/test_stlplace.cpp)
     target_link_libraries(test_stlplace PRIVATE phobicccp_ui Qt6::Test)

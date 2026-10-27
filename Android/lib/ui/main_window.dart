@@ -20,7 +20,7 @@ import 'theme.dart';
 import 'widgets.dart';
 
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
-const appVersion = '1.3.37';
+const appVersion = '1.3.38';
 
 class MainWindow extends StatefulWidget {
   final AppState app;
@@ -899,7 +899,11 @@ class _MainWindowState extends State<MainWindow> {
                   highlighted: _mode == 1 && _tp != null && _tp! < d.toolpaths.length ? d.toolpaths[_tp!].shapes.toSet() : const {},
                   leftOf: _mode == 1 && _tp != null && _tp! < d.toolpaths.length ? _tp : null,
                   pathDraft: _pathDraft ?? const [],
-                  onSelect: (ids) => setState(() => _sel = ids),
+                  // A tap on empty board lets go of the toolpath too, as on the computer.
+                  onSelect: (ids) => setState(() {
+                    _sel = ids;
+                    if (ids.isEmpty) _tp = null;
+                  }),
                   onMove: (ids, dx, dy) => setState(() {
                     _beforeMove ??= _d;
                     _d = _d!.copyWith(shapes: [for (final s in _d!.shapes) ids.contains(s.id) ? s.movedWithin(dx, dy) : s]);

@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.3.38 (build 128) — 2026-10-27
+
+> Touch screen: a tap on a button no longer changes what is selected, a tap on empty board lets go of the toolpath, and the Open dialog is readable
+
+- **Design:**
+  - On a touch screen a tap on a toolbar button or menu (Contour, say) right after a box select
+    could also reach the drawing, start a new select box from where the finger hit and pick up
+    nearly every shape, so the new toolpath got the wrong shapes. A press from outside the drawing
+    now never touches the selection, a finger dragged off the drawing leaves the box where it was,
+    and a box whose finger-lift went missing ends instead of stretching on the next move.
+  - A tap or click on empty board lets go of the selected toolpath (its shapes stop glowing), as it
+    already did for selected shapes.
+- **Open/Save dialogs:** readable on the touch PC: smaller file icons, and Size, Type and Date sized to
+  their text with Name taking the rest, every time a dialog opens; the sidebar is wider.
+- **Pad:** a tap on empty board lets go of the selected toolpath too.
+
 ## v1.3.37 (build 127) — 2026-10-26
 
 > A finished job now really ends: it says Finished, goes all the way up and parks beside the BitSetter
