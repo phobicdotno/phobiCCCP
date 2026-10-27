@@ -174,6 +174,9 @@ signals:
     void cursorMoved(QPointF ccPos);   // live mm position under the mouse
     void zoomChanged(double percent);
     void selectionChangedIds(const QStringList &ids);
+    // A press or tap on empty board with the Select tool: whatever else
+    // holds the selection (the toolpath list) lets go of it.
+    void emptyPressed();
     void constraintSelected(const QString &uid);   // "" = none
 
 protected:
@@ -267,6 +270,7 @@ private:
     QSet<QGraphicsItem *> m_bandKeep;
     void applyBand();
     QPoint bandPoint(const QPoint &p) const;   // clamped to the viewport
+    void endBand();                            // drop the band, keep what it selected
 
     // Click tools (slot, arc, edge polygon) reuse m_clicks (the points
     // clicked so far, CC mm); how many points finish a shape depends on

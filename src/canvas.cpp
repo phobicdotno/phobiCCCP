@@ -34,6 +34,7 @@
 #include <QWheelEvent>
 #include <QGestureEvent>
 #include <QPinchGesture>
+#include <QPointingDevice>
 #include <QtMath>
 #include <algorithm>
 
@@ -1083,6 +1084,25 @@ QPoint Canvas::bandPoint(const QPoint &p) const
     const QRect v = viewport()->rect();
     return QPoint(qBound(v.left(), p.x(), v.right()), qBound(v.top(), p.y(), v.bottom()));
 }
+
+void Canvas::endBand()
+{
+    if (!m_band)
+        return;
+    m_band = false;
+    m_bandKeep.clear();
+    viewport()->update();
+}
+
+namespace {
+// A finger, not a mouse: Qt hands an unhandled touch on as a mouse event
+// that still names the touch screen.
+bool fromTouch(const QMouseEvent *e)
+{
+    const QInputDevice *d = e->device();
+    return d && d->type() == QInputDevice::DeviceType::TouchScreen;
+}
+} // namespace
 
 // Select by band: left to right selects what lies wholly inside, right to
 // left whatever line the band touches (Phobic, 2026-10-25). Direction is
@@ -2337,6 +2357,19 @@ void Canvas::finishPath(bool closed)
 void Canvas::mousePressEvent(QMouseEvent *event)
 {
     syncHitTolerance();
+    // A press that lands outside the drawing is not on the drawing. On the
+    // CNC PC's touch screen a tap on a toolbar button (Contour) also reached
+    // the canvas, as a press above its top edge: it started a select band
+    // there and replaced the selection the button was about to use
+    // (Phobic, 2026-10-27). Nothing outside the drawing changes the selection.
+    if (!viewport()->rect().contains(event->pos())) {
+        endBand();
+        event->ignore();
+        return;
+    }
+    // A band still open at a new press lost its release (a touch that ended
+    // somewhere else): it ends here, without stretching to the new point.
+    endBand();
     if (event->button() == Qt::MiddleButton || (m_tool == Pan && event->button() == Qt::LeftButton)) {
         m_panning = true;
         m_panLast = event->pos();
@@ -2552,15 +2585,18 @@ void Canvas::mousePressEvent(QMouseEvent *event)
     QGraphicsView::mousePressEvent(event);
 
     // Select tool, press on empty board: start the select band. The press
-    // above already cleared the selection unless Ctrl was held.
+    // above already cleared the selection unless Ctrl was held, and the
+    // toolpath list lets go of its toolpath too.
     if (m_tool == Select && event->button() == Qt::LeftButton
         && !m_scene->mouseGrabberItem()) {
         m_band = true;
-        m_bandStart = m_bandEnd = event->pos();
+        m_bandStart = m_bandEnd = bandPoint(event->pos());
         m_bandKeep.clear();
         if (event->modifiers() & Qt::ControlModifier)
             for (QGraphicsItem *it : m_scene->selectedItems())
                 m_bandKeep.insert(it);
+        else
+            emit emptyPressed();
     }
 }
 
@@ -2675,9 +2711,16 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
     }
 
     if (m_band) {
-        m_bandEnd = bandPoint(event->pos());
-        applyBand();
-        viewport()->update();
+        if (!(event->buttons() & Qt::LeftButton)) {
+            endBand();   // the release never came: a hover must not drag the band
+        } else if (fromTouch(event) && !viewport()->rect().contains(event->pos())) {
+            // A finger off the drawing (or a touch Qt sent here from a button)
+            // leaves the band where it was; only a mouse drag runs to the edge.
+        } else {
+            m_bandEnd = bandPoint(event->pos());
+            applyBand();
+            viewport()->update();
+        }
         event->accept();
         return;
     }
@@ -2724,10 +2767,11 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         return;
 
     if (m_band && event->button() == Qt::LeftButton) {
-        m_bandEnd = bandPoint(event->pos());
-        applyBand();
-        m_band = false;
-        viewport()->update();
+        if (!fromTouch(event) || viewport()->rect().contains(event->pos())) {
+            m_bandEnd = bandPoint(event->pos());
+            applyBand();
+        }
+        endBand();
         event->accept();
         return;
     }
@@ -3143,6 +3187,8 @@ void Canvas::deleteSelected()
 
 bool Canvas::viewportEvent(QEvent *event)
 {
+    if (event->type() == QEvent::TouchCancel)
+        endBand();   // the system took the finger away: no band left hanging
     if (event->type() != QEvent::Gesture)
         return QGraphicsView::viewportEvent(event);
     auto *ge = static_cast<QGestureEvent *>(event);

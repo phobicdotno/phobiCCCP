@@ -656,6 +656,8 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
                     m_list->clearSelection();
                 markUsage(ids);
             });
+    // A tap on empty board lets go of the toolpath as well (Phobic, 2026-10-27).
+    connect(m_canvas, &Canvas::emptyPressed, m_list, &QTreeWidget::clearSelection);
     connect(m_list, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint &p) {
         if (!m_list->itemAt(p) || m_uuid.isEmpty())
             return;
