@@ -4,14 +4,15 @@
 #include <QStringList>
 #include <QTransform>
 
-// "Rotate 90°": the whole design turned a quarter turn clockwise on a stock
-// that stays as it is, so a job fits a leftover piece lying the other way.
+// "Rotate 90°": the whole design turned a quarter turn clockwise. The stock
+// turns with it (width and height swap, in the window), so the design keeps
+// its place on the stock.
 // Everything that is drawn on the stock turns with it: every vector (same
 // ids, same node order, a rectangle stays a rectangle), what hangs on them
 // (toolpaths point at vectors by id; their direction fields turn too), the
 // constraints and dimensions, the 3D model's images, meshes and textures,
 // and the tracing background. The design keeps its bottom-left corner
-// where it was. The stock, its zero and the machine side do not change.
+// where it was; with a stock, the turn is about the stock's corner.
 //
 // Pure functions over plain data, so the window and the tests share them.
 namespace c2d {

@@ -3811,6 +3811,7 @@ public:
         Parametric par;
         Model3D model;
         double bgX = 0, bgY = 0, bgRot = 0;
+        QString stockW, stockH;   // the stock turns with the design
     };
     RotateJobCmd(Canvas *c, Document *d, ModelPanel *m, BackgroundImage *bg,
                  const State &before, const State &after, bool hasModel)
@@ -3827,6 +3828,8 @@ private:
         m_d->setElements(s.els);
         m_d->setToolpaths(s.tps);
         m_d->setParametric(s.par);
+        m_d->setParam(QStringLiteral("width"), s.stockW);
+        m_d->setParam(QStringLiteral("height"), s.stockH);
         if (m_hasModel)
             m_m->setModel(s.model);
         if (!m_bg->isNull()) {
@@ -3855,15 +3858,21 @@ void MainWindow::rotateJob()
     if (!hasDocument())
         return;
     const Model3D &model = m_model->model();
-    const QRectF bounds = jobrotate::designBounds(m_doc, &model);
-    if (bounds.isNull()) {
+    const QRectF designBox = jobrotate::designBounds(m_doc, &model);
+    if (designBox.isNull()) {
         statusBar()->showMessage(QStringLiteral("Nothing to rotate: the design has no vectors"), 8000);
         return;
     }
+    // The stock turns with the design: both turn about the stock's corner and
+    // its width and height swap. Without a stock only the design turns.
+    const QString oldW = m_doc.params().value(QStringLiteral("width")),
+                  oldH = m_doc.params().value(QStringLiteral("height"));
+    const bool hasStock = m_doc.boardWidth() > 0 && m_doc.boardHeight() > 0;
+    const QRectF bounds = hasStock ? QRectF(0, 0, m_doc.boardWidth(), m_doc.boardHeight()) : designBox;
     const QTransform q = jobrotate::quarterTurn(bounds);
 
     RotateJobCmd::State before{m_doc.elements(), m_doc.toolpaths(), m_doc.parametric(), model,
-                               m_bg.x, m_bg.y, m_bg.rotationDeg};
+                               m_bg.x, m_bg.y, m_bg.rotationDeg, oldW, oldH};
     Document turned = m_doc;
     const jobrotate::Report rep = jobrotate::turnDocument(turned, q);
     Model3D turnedModel = model;
@@ -3871,12 +3880,15 @@ void MainWindow::rotateJob()
     BackgroundImage bg = m_bg;
     jobrotate::turnBackground(bg, q);
     RotateJobCmd::State after{turned.elements(), turned.toolpaths(), turned.parametric(), turnedModel,
-                              bg.x, bg.y, bg.rotationDeg};
+                              bg.x, bg.y, bg.rotationDeg,
+                              hasStock ? oldH : oldW, hasStock ? oldW : oldH};
     const bool hasModel = !model.components.isEmpty();
     m_canvas->undoStack()->push(
         new RotateJobCmd(m_canvas, &m_doc, m_model, &m_bg, before, after, hasModel));
 
     QStringList msg{QStringLiteral("Rotated the design 90° clockwise (%1 vector(s))").arg(rep.vectors)};
+    if (hasStock)
+        msg << QStringLiteral("the stock turned too: now %1 × %2 mm").arg(oldH, oldW);
     const QRectF now = jobrotate::designBounds(m_doc, &m_model->model());
     const double w = m_doc.boardWidth(), h = m_doc.boardHeight();
     if (now.left() < -1e-6 || now.top() < -1e-6 || now.right() > w + 1e-6 || now.bottom() > h + 1e-6)

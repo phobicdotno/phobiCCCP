@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.39 (build 129) — 2026-10-28
+
+> Rotate 90° turns the stock too, and the Open dialog shows one plain document icon for every file
+
+- **Design:**
+  - Rotate 90° turns the stock with the design (290 × 420 becomes 420 × 290), so the design keeps its place on it.
+- **Files:**
+  - The Open dialog no longer shows .dxf files as photo thumbnails; every file gets the same small document icon.
+
 ## v1.3.38 (build 128) — 2026-10-27
 
 > Touch screen: a tap on a button no longer changes what is selected, a tap on empty board lets go of the toolpath, and the Open dialog is readable

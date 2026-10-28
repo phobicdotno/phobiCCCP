@@ -36,6 +36,7 @@
 #include <QDir>
 #include <QStandardPaths>
 #include <QFileDialog>
+#include <QFileIconProvider>
 #include <QIcon>
 #include <QListView>
 #include <QToolButton>
@@ -87,6 +88,24 @@ public:
 // time (on the shop PC a 108 px sidebar and 465 px for all four columns, which
 // cut names, sizes and dates to "33…iB"), so those are sized to their text on
 // every open instead.
+// One plain document icon for every file, so a .dxf is not shown as a photo
+// thumbnail and the rows stay one height.
+class PlainFileIcons : public QFileIconProvider
+{
+public:
+    QIcon icon(const QFileInfo &info) const override
+    {
+        if (info.isDir())
+            return QFileIconProvider::icon(info);
+        static const QIcon doc = [] {
+            QIcon i = QIcon::fromTheme(QStringLiteral("text-x-generic"));
+            return i.isNull() ? QFileIconProvider().icon(QFileIconProvider::File) : i;
+        }();
+        return doc;
+    }
+    QIcon icon(IconType type) const override { return QFileIconProvider::icon(type); }
+};
+
 class FileDialogIcons : public QObject
 {
 public:
@@ -96,6 +115,7 @@ public:
         auto *dlg = qobject_cast<QFileDialog *>(o);
         if (e->type() == QEvent::Show && dlg && !dlg->property("phobicIcons").toBool()) {
             dlg->setProperty("phobicIcons", true);
+            dlg->setIconProvider(new PlainFileIcons);
             for (auto *v : dlg->findChildren<QAbstractItemView *>()) {
                 v->setIconSize(QSize(24, 24));
                 v->setStyleSheet(QStringLiteral("QAbstractItemView::item { padding: 5px 2px; }"));
