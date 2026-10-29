@@ -891,8 +891,8 @@ int main(int argc, char *argv[])
         c2d::Toolpath t = c2d::makeToolpath(d, "drilling_toolpath", {hole.id});
         check(t.json.value("peck_distance").toDouble(-1) == 0, "a new Drill toolpath does not peck");
         check(!t.json.value("chip_break").toBool(true), "nor break chips");
-        check(t.json.value("end_depth").toString() == QLatin1String("18.500"),
-              "a new Drill toolpath goes through the 18 mm stock + 0.5 mm");
+        check(t.json.value("end_depth").toString() == QLatin1String("18.250"),
+              "a new Drill toolpath goes through the 18 mm stock + 0.25 mm");
         d.insertToolpath(0, t);
         const c2d::GcodeResult g = c2d::exportGcode(d);
         check(g.done.size() == 1, "the default drill exports");
