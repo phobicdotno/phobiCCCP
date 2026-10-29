@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.42 (build 132) — 2026-10-29
+
+> A new Drill toolpath goes straight through the material and 0.25 mm further (it was 0.5 mm)
+
+- **Toolpaths:**
+  - Drill's standard depth is the stock thickness plus 0.25 mm.
+
 ## v1.3.41 (build 131) — 2026-10-29
 
 > Job progress on the Machine page: one bar for the whole cut at the top, and one line per toolpath below it; the "Shape 4 of 73" rows are gone
