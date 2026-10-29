@@ -3863,13 +3863,21 @@ void MainWindow::rotateJob()
         statusBar()->showMessage(QStringLiteral("Nothing to rotate: the design has no vectors"), 8000);
         return;
     }
-    // The stock turns with the design: both turn about the stock's corner and
-    // its width and height swap. Without a stock only the design turns.
+    // The stock turns with the design. A design that lies on the stock turns
+    // about the stock's corner with it, and width and height swap. A design
+    // that does not lie on the stock (a file turned by an older version, the
+    // stock left as it was) turns about itself, and the stock is turned only
+    // if that is what makes it lie the same way as the design again.
     const QString oldW = m_doc.params().value(QStringLiteral("width")),
                   oldH = m_doc.params().value(QStringLiteral("height"));
     const bool hasStock = m_doc.boardWidth() > 0 && m_doc.boardHeight() > 0;
-    const QRectF bounds = hasStock ? QRectF(0, 0, m_doc.boardWidth(), m_doc.boardHeight()) : designBox;
+    const QRectF stock(0, 0, m_doc.boardWidth(), m_doc.boardHeight());
+    const bool onStock = hasStock && stock.adjusted(-1, -1, 1, 1).contains(designBox);
+    const QRectF bounds = onStock ? stock : designBox;
     const QTransform q = jobrotate::quarterTurn(bounds);
+    const QRectF turnedBox = q.mapRect(designBox);
+    const bool swapStock = hasStock
+        && (onStock || ((turnedBox.width() > turnedBox.height()) != (stock.width() > stock.height())));
 
     RotateJobCmd::State before{m_doc.elements(), m_doc.toolpaths(), m_doc.parametric(), model,
                                m_bg.x, m_bg.y, m_bg.rotationDeg, oldW, oldH};
@@ -3881,13 +3889,13 @@ void MainWindow::rotateJob()
     jobrotate::turnBackground(bg, q);
     RotateJobCmd::State after{turned.elements(), turned.toolpaths(), turned.parametric(), turnedModel,
                               bg.x, bg.y, bg.rotationDeg,
-                              hasStock ? oldH : oldW, hasStock ? oldW : oldH};
+                              swapStock ? oldH : oldW, swapStock ? oldW : oldH};
     const bool hasModel = !model.components.isEmpty();
     m_canvas->undoStack()->push(
         new RotateJobCmd(m_canvas, &m_doc, m_model, &m_bg, before, after, hasModel));
 
     QStringList msg{QStringLiteral("Rotated the design 90° clockwise (%1 vector(s))").arg(rep.vectors)};
-    if (hasStock)
+    if (swapStock)
         msg << QStringLiteral("the stock turned too: now %1 × %2 mm").arg(oldH, oldW);
     const QRectF now = jobrotate::designBounds(m_doc, &m_model->model());
     const double w = m_doc.boardWidth(), h = m_doc.boardHeight();

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.43 (build 133) — 2026-10-29
+
+> Rotate 90° keeps the stock lying the same way as the design, even in a file that an older version had turned without the stock
+
+- **Design:**
+  - A design that lies on the stock turns with it, as before. A design that does not (turned by an older version) turns about itself, and the stock only turns if that puts it the same way round as the design.
+
 ## v1.3.42 (build 132) — 2026-10-29
 
 > A new Drill toolpath goes straight through the material and 0.25 mm further (it was 0.5 mm)
