@@ -7,6 +7,7 @@
 // Plain asserts, no framework; exits 0 on success.
 
 #define private public      // the preview's state is private to the window
+#include "../src/jobrotate.h"
 #include "../src/mainwindow.h"
 #include "../src/canvas.h"
 #include "../src/simpanel.h"
@@ -442,7 +443,12 @@ int main(int argc, char *argv[])
         const c2d::Element *rr = d.elementById(r.id);
         check(rr && rr->raw.value("width").toDouble() == 30 && rr->raw.value("height").toDouble() == 40,
               "rotate: the rectangle lies the other way");
-        check(d.boardWidth() == sh && d.boardHeight() == sw, "rotate: the stock turns with the design");
+        // The design here does not lie on the stock, so the stock only turns
+        // if that makes it lie the same way as the design (it may stay).
+        const QRectF nb = c2d::jobrotate::designBounds(d);
+        check((nb.width() > nb.height()) == (d.boardWidth() > d.boardHeight())
+                  || d.boardWidth() == d.boardHeight(),
+              "rotate: the stock lies the same way as the turned design");
         check(d.toolpaths().size() == tpsBefore.size() && d.toolpaths().at(0).json.value("elements") == tpsBefore.at(0).json.value("elements"),
               "rotate: the toolpaths still machine the same vectors");
         check(w.m_canvas->undoStack()->index() == undoAt + 1, "rotate: one undo step");
