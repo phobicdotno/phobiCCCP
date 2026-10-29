@@ -587,8 +587,15 @@ JobView::JobView(QWidget *parent) : QWidget(parent)
     m_current->setStyleSheet(QStringLiteral("color: #f2a536; font-size: 15px; font-weight: 600;"));
     m_current->setWordWrap(true);
     m_passBar = new QProgressBar(this);
-    m_passBar->setTextVisible(false);
-    m_passBar->setFixedHeight(8);
+    // The whole job's bar: how much of the cut is done, by estimated time.
+    m_passBar->setRange(0, 1000);
+    m_passBar->setFormat(QStringLiteral("%p%"));
+    m_passBar->setAlignment(Qt::AlignCenter);
+    m_passBar->setFixedHeight(18);
+    m_passBar->setStyleSheet(QStringLiteral(
+        "QProgressBar { background: #2a2e36; border: none; border-radius: 9px; color: #16181d;"
+        " font-size: 12px; font-weight: 700; }"
+        "QProgressBar::chunk { background: #f2a536; border-radius: 9px; }"));
     m_tree = new QTreeWidget(this);
     m_tree->setItemDelegate(new StepDelegate(m_tree));
     m_tree->setColumnCount(2);
@@ -642,7 +649,7 @@ void JobView::clear()
     m_summary->clear();
     m_current->clear();
     m_current->setStyleSheet(QStringLiteral("color: #f2a536; font-size: 15px; font-weight: 600;"));
-    m_passBar->setRange(0, 1);
+    m_passBar->setRange(0, 1000);
     m_passBar->setValue(0);
     m_tick->stop();
 }
@@ -690,11 +697,9 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
                 m_passItems[i][k] = nullptr;
                 continue;
             }
-            auto *c = new QTreeWidgetItem(it);
-            c->setText(0, p.what);
-            c->setText(1, clock(p.estSec));
-            c->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-            m_passItems[i][k] = c;
+            // Several passes (a shape each): no row of their own, only the
+            // toolpath's line and its bar.
+            m_passItems[i][k] = nullptr;
         }
         it->setExpanded(true);
     }
@@ -900,6 +905,12 @@ void JobView::refresh()
     }
     // Header: what runs now, and the whole job's time left and finish time.
     const double left = leftFrom(q);
+    {
+        const double all = m_plan.totalSec();
+        const double f = q >= m_plan.total ? 1.0
+                       : all > 0 ? spanSec(0, q) / all : double(q) / qMax(1, m_plan.total);
+        m_passBar->setValue(qBound(0, int(std::lround(f * 1000)), 1000));
+    }
     const QString ov = m_override != 100 ? QStringLiteral("  ·  feed %1 %").arg(m_override) : QString();
     const int toolpaths = toolpathsUpTo(int(m_plan.sections.size()) - 1);
     if (m_stopped) {
@@ -925,8 +936,6 @@ void JobView::refresh()
         m_summary->setText(QStringLiteral("All %1 toolpath%2 done  ·  took %3")
                                .arg(toolpaths).arg(toolpaths == 1 ? "" : "s").arg(clock((now - m_parkedTotal) / 1000.0)));
         m_current->setText(QStringLiteral("Finished"));
-        m_passBar->setRange(0, 1);
-        m_passBar->setValue(1);
         m_tick->stop();
     } else {
         m_summary->setText(QStringLiteral("%1 left  ·  done about %2  ·  toolpath %3 of %4%5")
@@ -934,8 +943,6 @@ void JobView::refresh()
         if (runSec >= 0) {
             const JobSection &s = m_plan.sections.at(runSec);
             QString what = s.title();
-            int a = runPass >= 0 ? s.passes.at(runPass).qStart : s.qStart;
-            int b = runPass >= 0 ? s.passes.at(runPass).qEnd : s.qEnd;
             if (runPass >= 0 && runPass < s.passes.size() && !s.passes.at(runPass).what.isEmpty()) {
                 const JobPass &p = s.passes.at(runPass);
                 // A shape's row: say which of its passes runs, and fill the
@@ -948,8 +955,6 @@ void JobView::refresh()
                     const JobLevel &l = p.levels.at(lvl);
                     what += QStringLiteral("  ·  ") + p.what.section(QStringLiteral("  ·  "), 0, 0)
                           + QStringLiteral("  ·  pass %1 of %2  ·  to Z %3 mm").arg(lvl + 1).arg(p.levels.size()).arg(mm(l.z));
-                    a = l.qStart;
-                    b = l.qEnd;
                 } else {
                     what += QStringLiteral("  ·  ") + p.what;
                 }
@@ -957,12 +962,8 @@ void JobView::refresh()
             if (m_parked)
                 what += QStringLiteral("  ·  waiting at the tool change");
             m_current->setText(what);
-            m_passBar->setRange(0, qMax(1, b - a));
-            m_passBar->setValue(qBound(0, q - a, qMax(1, b - a)));
         } else {
             m_current->setText(QStringLiteral("Starting…"));
-            m_passBar->setRange(0, 1);
-            m_passBar->setValue(0);
         }
     }
 }

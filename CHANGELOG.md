@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.41 (build 131) — 2026-10-29
+
+> Job progress on the Machine page: one bar for the whole cut at the top, and one line per toolpath below it; the "Shape 4 of 73" rows are gone
+
+- **Machine:**
+  - The bar at the top of Job progress now shows the whole job (percent done by estimated time); it used to show only the current pass.
+  - A toolpath that cuts shape after shape is one row with its own 2 px yellow line, no longer a row for every shape.
+
 ## v1.3.40 (build 130) — 2026-10-29
 
 > After BitZero the bit waits 10 cm left of the BitSetter instead of going back over the zero point; the Machine page starts at 5000 mm/min and a 1 mm step
