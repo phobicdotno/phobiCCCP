@@ -1039,7 +1039,32 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_pauseBtn, &QPushButton::clicked, this, [this] {
         // A refused resume (reset after an error, port gone) leaves the
         // machine held, and the button must keep saying so.
-        if (!m_held) {
+        if (m_liftHold) {
+            // Back down: spindle on and up to speed, to where the program
+            // was, its feed and motion mode, then on with the cut.
+            if (!m_grbl->isHeldAtPoint()) {
+                log(QStringLiteral("resume: still lifting - press Resume again in a moment"));
+                return;
+            }
+            const QStringList down = m_grbl->resumeLinesAfterHold();
+            log(QStringLiteral("resume: spindle on, back down, then the program"));
+            if (m_jobView)
+                m_jobView->linesInserted(int(down.size()));
+            m_liftHold = false;
+            m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+            m_grbl->continueAfterHold(down);
+        } else if (!m_held && m_homed && !riseToTop().isEmpty() && m_grbl->canLiftHold()) {
+            // Z to the top, then the spindle off; XY stays where it is.
+            QStringList up = riseToTop();
+            up << QStringLiteral("M5");
+            if (m_grbl->queueHoldPoint(up)) {
+                if (m_jobView)
+                    m_jobView->linesInserted(int(up.size()) + 1);
+                m_liftHold = true;
+                m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
+                log(QStringLiteral("hold: finishing the lines already sent, then Z up and spindle off"));
+            }
+        } else if (!m_held) {
             m_grbl->pauseStream();
             setHeld(true);
         } else if (m_resetPending) {
@@ -2519,6 +2544,7 @@ void MachinePanel::resetFlow()
     m_deferredJogs.clear();
     stopHoldJog();
     m_parkAfterHome = false;             // ...and so would the park after a homing
+    m_liftHold = false;
     setHeld(false);
     m_runBtn->setText(QStringLiteral("▶ Run"));
 }

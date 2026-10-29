@@ -15,6 +15,7 @@ namespace c2d {
 // controller: the stream parks in front of it, the operator swaps the tool
 // (and the BitSetter measures it), then the stream continues.
 static const QString kToolMarker = QStringLiteral("@TOOL:");
+static const QString kHoldMarker = QStringLiteral("@HOLD");
 
 static int toolMarkerNumber(const QString &line)
 {
@@ -129,6 +130,8 @@ void GrblStreamer::disconnectPort()
         const bool wasProgram = m_streaming, wasMacro = m_macroActive;
         m_streaming = false;
         m_waitingTool = -1;
+        m_waitingHold = false;
+        m_holdQueued = false;
         m_macroActive = false;
         m_macroInflight = false;
         m_macroSkipAck = false;
@@ -236,6 +239,8 @@ void GrblStreamer::startStream(const QStringList &lines)
     m_inflightBytes = 0;
     m_hadError = false;
     m_waitingTool = -1;
+    m_waitingHold = false;
+    m_holdQueued = false;
     m_toolChanges = 0;
     m_streaming = !m_queue.isEmpty();
     m_ackClock.start();
@@ -277,6 +282,128 @@ QString GrblStreamer::crossToFirstCut(const QStringList &lines, int from)
     return QStringLiteral("G90 G0 X%1 Y%2").arg(gx, gy);
 }
 
+GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
+{
+    static const QRegularExpression gWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*([0-9]+)(?![0-9.])"));
+    static const QRegularExpression fWord(QStringLiteral("(?:^|[^A-Z])F(-?[0-9.]+)"));
+    static const QRegularExpression sWord(QStringLiteral("(?:^|[^A-Z])S(-?[0-9.]+)"));
+    static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z(-?[0-9.]+)"));
+    static const QRegularExpression mWord(QStringLiteral("(?:^|[^A-Z0-9.])M0*([345])(?![0-9.])"));
+    Modal m;
+    for (int i = 0; i < upTo && i < lines.size(); ++i) {
+        QString l = lines.at(i);
+        l = l.left(l.indexOf(QChar(';')) < 0 ? l.size() : l.indexOf(QChar(';'))).toUpper();
+        if (l.startsWith(kToolMarker) || l == kHoldMarker || l.trimmed().isEmpty())
+            continue;
+        bool machine = false;
+        for (auto it = gWord.globalMatch(l); it.hasNext();) {
+            const int g = it.next().captured(1).toInt();
+            if (g >= 0 && g <= 3)
+                m.motion = g;
+            else if (g == 91)
+                m.valid = false;             // relative moves: Z cannot be followed
+            else if (g == 53)
+                machine = true;
+        }
+        auto fm = fWord.match(l);
+        if (fm.hasMatch()) { m.feed = fm.captured(1).toDouble(); m.haveFeed = true; }
+        auto sm = sWord.match(l);
+        if (sm.hasMatch()) { m.speed = sm.captured(1).toDouble(); m.haveSpeed = true; }
+        for (auto it = mWord.globalMatch(l); it.hasNext();)
+            m.spindle = it.next().captured(1).at(0);
+        auto zm = zWord.match(l);
+        if (zm.hasMatch() && !machine) {
+            m.z = zm.captured(1).toDouble();
+            m.haveZ = true;
+        }
+    }
+    return m;
+}
+
+bool GrblStreamer::canLiftHold() const
+{
+    if (!m_streaming || m_waitingTool >= 0 || m_waitingHold || m_holdQueued
+        || m_adhocPending != 0 || m_macroActive || m_errorResetTimer->isActive() || m_needsReset)
+        return false;
+    // Something real must be left behind the marker, or the program would end at it.
+    bool cutting = false;
+    for (int i = m_nextIndex; i < m_queue.size() && !cutting; ++i)
+        cutting = !m_queue.at(i).startsWith(kToolMarker) && m_queue.at(i) != kHoldMarker;
+    if (!cutting)
+        return false;
+    const Modal m = scanModal(m_queue, m_nextIndex);
+    return m.valid && m.motion >= 0 && m.haveZ && m.haveFeed;
+}
+
+bool GrblStreamer::queueHoldPoint(const QStringList &lines)
+{
+    if (!canLiftHold())
+        return false;
+    m_holdAt = m_nextIndex;
+    int at = m_nextIndex;
+    for (const QString &l : lines) {
+        const QString t = l.trimmed();
+        if (!t.isEmpty() && !t.startsWith(QChar('(')))
+            m_queue.insert(at++, t);
+    }
+    m_queue.insert(at, kHoldMarker);
+    m_holdQueued = true;
+    emit consoleLine(QStringLiteral("== hold: finishing what is sent, Z up, spindle off =="));
+    emit progressChanged(m_ackedCount, m_queue.size());
+    pump();
+    return true;
+}
+
+QStringList GrblStreamer::resumeLinesAfterHold() const
+{
+    const Modal m = scanModal(m_queue, m_holdAt);
+    QStringList r;
+    r << QStringLiteral("G90");
+    if ((m.spindle == QChar('3') || m.spindle == QChar('4')) && m.haveSpeed) {
+        r << QStringLiteral("M0%1S%2").arg(m.spindle).arg(m.speed, 0, 'f', 0)
+          << QStringLiteral("G4P3.00");                // the post's own spin-up wait
+    }
+    if (m.haveZ) {
+        // Down to where the program was: a rapid to just above the stock, then
+        // slowly into the cut. The work Z is the program's own (G43.1 and the
+        // zero stand), XY did not change.
+        if (m.z >= 2.5) {
+            r << QStringLiteral("G0Z%1").arg(m.z, 0, 'f', 3);
+        } else {
+            r << QStringLiteral("G0Z2.500")
+              << QStringLiteral("G1Z%1F%2").arg(m.z, 0, 'f', 3)
+                     .arg(qMin(m.haveFeed ? m.feed : 600.0, 600.0), 0, 'f', 0);
+        }
+    }
+    // The program's modal state: its feed and motion mode, as it left them.
+    if (m.haveFeed)
+        r << QStringLiteral("G1F%1").arg(m.feed, 0, 'f', 1);
+    if (m.motion == 0)
+        r << QStringLiteral("G0");
+    else if (m.motion >= 2)
+        r << QStringLiteral("G1");     // arcs always name their own G word
+    return r;
+}
+
+void GrblStreamer::continueAfterHold(const QStringList &lines)
+{
+    if (!m_streaming || !m_waitingHold)
+        return;
+    int at = m_nextIndex;
+    for (const QString &l : lines) {
+        const QString t = l.trimmed();
+        if (!t.isEmpty())
+            m_queue.insert(at++, t);
+    }
+    m_waitingHold = false;
+    m_holdQueued = false;
+    m_ackClock.restart();
+    emit consoleLine(QStringLiteral("== hold over, continuing =="));
+    if (at != m_nextIndex)
+        emit progressChanged(m_ackedCount, m_queue.size());
+    pump();
+}
+
 void GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
@@ -310,6 +437,8 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
             m_queue.insert(at++, across);
     }
     m_waitingTool = -1;
+    m_waitingHold = false;
+    m_holdQueued = false;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
     if (at != m_nextIndex)
@@ -325,6 +454,8 @@ void GrblStreamer::abortAfterReset()
     const bool wasProgram = m_streaming, wasMacro = m_macroActive;
     m_streaming = false;
     m_waitingTool = -1;
+    m_waitingHold = false;
+    m_holdQueued = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -379,6 +510,8 @@ void GrblStreamer::abortStream(const QString &why, bool holdMachine)
     }
     m_streaming = false;
     m_waitingTool = -1;
+    m_waitingHold = false;
+    m_holdQueued = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -424,6 +557,8 @@ void GrblStreamer::stopStream()
     const bool wasProgram = m_streaming;
     m_streaming = false;
     m_waitingTool = -1;
+    m_waitingHold = false;
+    m_holdQueued = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -464,9 +599,21 @@ void GrblStreamer::pump()
                                    "to continue)"), false);
         return;
     }
-    while (m_streaming && m_waitingTool < 0 && m_adhocPending == 0
+    while (m_streaming && m_waitingTool < 0 && !m_waitingHold && m_adhocPending == 0
            && m_nextIndex < m_queue.size()) {
         const QString &line = m_queue.at(m_nextIndex);
+        if (line == kHoldMarker) {
+            // Everything before it answered, then stand here.
+            if (!m_inflightSizes.isEmpty())
+                break;
+            m_waitingHold = true;
+            ++m_nextIndex;
+            ++m_ackedCount;                      // the marker counts as done
+            emit progressChanged(m_ackedCount, m_queue.size());
+            emit consoleLine(QStringLiteral("== held at the top, spindle off =="));
+            emit holdPointReached();
+            break;
+        }
         if (line.startsWith(kToolMarker)) {
             // Park only once everything before the marker has been acked, so
             // the operator (and the probe macro) find the machine idle.
@@ -502,7 +649,7 @@ void GrblStreamer::pump()
         m_inflightBytes += data.size();
         ++m_nextIndex;
     }
-    if (m_streaming && m_waitingTool < 0 && m_ackedCount >= m_queue.size()) {
+    if (m_streaming && m_waitingTool < 0 && !m_waitingHold && m_ackedCount >= m_queue.size()) {
         m_streaming = false;
         emit streamFinished(!m_hadError);
         flushTlo();

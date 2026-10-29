@@ -250,6 +250,55 @@ int main(int argc, char **argv)
               "cross: a toolpath name in a comment is not a position");
     }
 
+    // Hold with a lift: what the program has sent is read back (motion mode,
+    // feed, spindle, work Z), and the lift, the wait and the way down go in
+    // the stream in order.
+    {
+        using c2d::GrblStreamer;
+        const GrblStreamer::Modal m = GrblStreamer::scanModal(
+            {"G90G21", "G0Z2.540", "M03S16000", "G4P3.00", "X73.875Y61.125", "G1Z0.000F600.0",
+             "Y68.875Z-1.367", "G53 G0 Z-5", "X66.125Z-2.733"}, 9);
+        check(m.valid && m.motion == 0, "modal: the last motion mode (G53 G0 counts)");
+        check(m.haveFeed && m.feed == 600.0 && m.spindle == QChar('3') && m.speed == 16000,
+              "modal: feed, spindle and speed");
+        check(m.haveZ && m.z == -2.733, "modal: work Z, a G53 line leaves it alone");
+        check(!GrblStreamer::scanModal({"G0Z5", "G91", "G1Z-1F300"}, 3).valid, "modal: G91 cannot be followed");
+        check(GrblStreamer::scanModal({"G0Z5", "M05"}, 2).spindle == QChar('5'), "modal: M05 is spindle off");
+        check(GrblStreamer::scanModal({"G90G21", "G1Z0F600"}, 2).motion == 1,
+              "modal: G21 is not a motion mode");
+
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QStringList prog = {QStringLiteral("G90G21"), QStringLiteral("G0Z2.540"), QStringLiteral("M03S16000"),
+                            QStringLiteral("G1Z0.000F600.0")};
+        for (int i = 0; i < 300; ++i)
+            prog << QStringLiteral("X%1Y%2Z-1.500").arg(i).arg(i % 7);
+        grbl.seen.clear();
+        bool reached = false, finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::holdPointReached, [&] { reached = true; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream(prog);
+        spin(300, [] { return false; });
+        check(s.canLiftHold(), "hold: possible mid-program");
+        check(s.queueHoldPoint({QStringLiteral("G53 G0 Z-5"), QStringLiteral("M5")}), "hold: the lines go in");
+        spin(3000, [&] { return reached; });
+        check(reached && s.isHeldAtPoint(), "hold: the program stands at the point");
+        const int up = grbl.seen.indexOf("G53 G0 Z-5"), off = grbl.seen.indexOf("M5");
+        check(up >= 0 && off > up, "hold: Z up first, then the spindle off");
+        const int sentAtHold = int(grbl.seen.size());
+        spin(400, [] { return false; });
+        check(int(grbl.seen.size()) == sentAtHold && !finished, "hold: nothing more is sent while held");
+        const QStringList down = s.resumeLinesAfterHold();
+        check(down.contains(QStringLiteral("M03S16000")) && down.contains(QStringLiteral("G1F600.0"))
+                  && down.contains(QStringLiteral("G4P3.00")),
+              "hold: the way back starts the spindle and restores the feed");
+        s.continueAfterHold(down);
+        spin(6000, [&] { return finished; });
+        check(finished, "hold: the program carries on to its end");
+        check(grbl.seen.lastIndexOf("M03S16000") > off, "hold: the spindle comes on again after the lift");
+    }
+
     // Two bits with the same number: the program changes tools twice at
     // `M0 ;T1`, and each pause says which of the program's tool changes it is,
     // so the prompt can name the bit actually wanted.

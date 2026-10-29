@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.45 (build 135) — 2026-10-29
+
+> Hold now lifts Z to the top and stops the spindle, without moving in XY; Resume starts the spindle, goes back down and carries on
+
+- **Machine:**
+  - Hold (during a program): the moves already sent finish, then Z goes up to the top and the spindle stops. X and Y stay where they are. The button says Resume.
+  - Resume: spindle on and up to speed, back down to the cut depth, the program's feed and motion mode restored, then the program goes on.
+  - If it cannot be done (not homed, at a tool change, nothing left to cut), Hold is the plain feed hold as before.
+
 ## v1.3.44 (build 134) — 2026-10-29
 
 > New checkbox under Probe zero (BitZero): "Ask before moving after Zero" — the bit stays put until you have taken off the magnet and BitZero and pressed OK

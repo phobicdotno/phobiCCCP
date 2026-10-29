@@ -65,6 +65,32 @@ public:
     bool isConnected() const;
     bool isStreaming() const { return m_streaming; }
     bool isParkedForTool() const { return m_streaming && m_waitingTool >= 0; }
+    // Hold with a lift: instead of stopping dead, the program carries on
+    // with the lines already sent, then runs `lines` (Z up, spindle off) and
+    // waits at a point that no cutting line passes until continueAfterHold().
+    // Nothing moves in XY meanwhile. False when it cannot be done now (not
+    // streaming, parked, nothing left to cut, or the program's modal state
+    // cannot be read back): the caller falls back to a feed hold.
+    bool canLiftHold() const;
+    bool queueHoldPoint(const QStringList &lines);
+    bool isHoldQueued() const { return m_streaming && m_holdQueued; }
+    bool isHeldAtPoint() const { return m_streaming && m_waitingHold; }
+    // After the hold: spindle back on (and its spin-up), down to where the
+    // program was, and its motion mode and feed as the program left them.
+    QStringList resumeLinesAfterHold() const;
+    void continueAfterHold(const QStringList &lines);
+    // What the program has sent up to line `upTo`: the last motion mode (G0..G3),
+    // feed, spindle command and speed, and work Z. `valid` is false when a
+    // line cannot be followed (G91, an unreadable word).
+    struct Modal {
+        bool valid = true;
+        int motion = -1;                 // 0..3, -1 unknown
+        double feed = 0;     bool haveFeed = false;
+        QChar spindle;                   // '3', '4', '5' or null
+        double speed = 0;    bool haveSpeed = false;
+        double z = 0;        bool haveZ = false;
+    };
+    static Modal scanModal(const QStringList &lines, int upTo);
     // sendCommand() lines written but not yet answered. Continuous jog uses it
     // to stop queueing faster than the controller retires.
     int pendingCommands() const { return m_adhocPending; }
@@ -158,6 +184,8 @@ signals:
     void statusChanged(const c2d::MachineStatus &st);
     void progressChanged(int acked, int total);
     void streamFinished(bool ok);
+    // The lines of a lift-hold are all answered: the program waits for continueAfterHold().
+    void holdPointReached();
     // Program parked at `M0 ;T<n>`. `ordinal` counts the program's tool
     // changes from 0: two bits can share a number, so the number alone does
     // not say which bit the program wants next.
@@ -207,6 +235,9 @@ private:
     bool m_hadError = false;
     bool m_conservative = false;
     int m_waitingTool = -1;                     // >=0: parked at a tool marker
+    bool m_holdQueued = false;                  // a lift-hold's lines are in the queue
+    bool m_waitingHold = false;                 // standing at its marker
+    int m_holdAt = 0;                           // queue index of its first line
     int m_toolChanges = 0;                      // markers parked at in this program
     QElapsedTimer m_ackClock;                   // restarted on stream start + acks
 
