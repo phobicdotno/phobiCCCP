@@ -442,7 +442,7 @@ int main(int argc, char *argv[])
         const c2d::Element *rr = d.elementById(r.id);
         check(rr && rr->raw.value("width").toDouble() == 30 && rr->raw.value("height").toDouble() == 40,
               "rotate: the rectangle lies the other way");
-        check(d.boardWidth() == sw && d.boardHeight() == sh, "rotate: the stock stays as it is");
+        check(d.boardWidth() == sh && d.boardHeight() == sw, "rotate: the stock turns with the design");
         check(d.toolpaths().size() == tpsBefore.size() && d.toolpaths().at(0).json.value("elements") == tpsBefore.at(0).json.value("elements"),
               "rotate: the toolpaths still machine the same vectors");
         check(w.m_canvas->undoStack()->index() == undoAt + 1, "rotate: one undo step");
@@ -452,6 +452,7 @@ int main(int argc, char *argv[])
         for (int i = 0; same && i < before.size(); ++i)
             same = d.elements().at(i).raw == before.at(i).raw;
         check(same, "rotate: Ctrl+Z puts every vector back");
+        check(d.boardWidth() == sw && d.boardHeight() == sh, "rotate: and the stock");
         w.m_canvas->undoStack()->redo();
         check(d.elementById(r.id)->raw.value("width").toDouble() == 30, "rotate: and Ctrl+Y turns it again");
         w.m_canvas->undoStack()->undo();

@@ -522,6 +522,9 @@ int main(int argc, char **argv)
     // not to -20 (which is down from where it stands).
     {
         grbl.mz = -20;
+        for (QToolButton *b : panel.findChildren<QToolButton *>())
+            if (b->text() == QLatin1String("10"))
+                b->click();               // the step starts at 1 mm
         button(QStringLiteral("STOP"))->click();
         key(Qt::Key_PageUp, true);
         key(Qt::Key_PageUp, false);
