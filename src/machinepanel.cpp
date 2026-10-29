@@ -438,6 +438,15 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(probeBig, &QPushButton::clicked, this, [this] { openBitZero(); });
     pv->addWidget(probeBig);
     m_idleOnly << probeBig;
+    m_bzAsk = new QCheckBox(QStringLiteral("Ask before moving after Zero"), posCard);
+    m_bzAsk->setToolTip(QStringLiteral(
+        "After BitZero has set the zero, wait for you to take the magnet and BitZero "
+        "off and press OK before the bit moves."));
+    m_bzAsk->setChecked(QSettings().value(QStringLiteral("machine/bitzero/askBeforeMoving"), false).toBool());
+    connect(m_bzAsk, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(QStringLiteral("machine/bitzero/askBeforeMoving"), on);
+    });
+    pv->addWidget(m_bzAsk);
     cols->addWidget(posCard, 10);
 
     // ---- Jog card ----------------------------------------------------------
@@ -2176,30 +2185,54 @@ void MachinePanel::bitZeroApply()
         const auto machine = appsettings::machine(sset);
         const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
         const double waitX = qMax(bs.x - 100.0, -tx + 5.0), waitY = bs.y;
-        if (m_bzWantZ && bs.enabled) {
-            m_phase = Phase::MeasureForRef;
-            m_grbl->startMacro(cmds + riseToTop()
-                               + GrblStreamer::measureToolLines(bs, true, waitX, waitY));
-            log(QStringLiteral("BitZero: %1set — measuring the tool now in the spindle on the "
-                               "BitSetter as the reference").arg(what));
-            log(QStringLiteral("!! If that was the probing pin: the cutting bit must be measured "
-                               "before it cuts. The job's first tool-change prompt does it — "
-                               "answer OK there, never Ignore — or press Measure bit after "
-                               "changing."));
-        } else {
-            // Then straight up, out of the way of the plate and the magnet.
-            QStringList after = cmds + riseToTop();
-            if (m_homed && bs.enabled)
-                after << QStringLiteral("G90")
-                      << QStringLiteral("G53 G0 X%1 Y%2").arg(waitX, 0, 'f', 3).arg(waitY, 0, 'f', 3);
-            for (const QString &c : after)
+        // What happens after the zero is set: up, then measure the pin on the
+        // BitSetter or wait at the spot. Run at once, or after OK when asked.
+        auto moveOn = [this, bs, what, waitX, waitY](QStringList cmds) {
+            if (m_bzWantZ && bs.enabled) {
+                m_phase = Phase::MeasureForRef;
+                m_grbl->startMacro(cmds + riseToTop()
+                                   + GrblStreamer::measureToolLines(bs, true, waitX, waitY));
+                log(QStringLiteral("BitZero: %1set — measuring the tool now in the spindle on the "
+                                   "BitSetter as the reference").arg(what));
+                log(QStringLiteral("!! If that was the probing pin: the cutting bit must be measured "
+                                   "before it cuts. The job's first tool-change prompt does it — "
+                                   "answer OK there, never Ignore — or press Measure bit after "
+                                   "changing."));
+            } else {
+                // Then straight up, out of the way of the plate and the magnet.
+                QStringList after = cmds + riseToTop();
+                if (m_homed && bs.enabled)
+                    after << QStringLiteral("G90")
+                          << QStringLiteral("G53 G0 X%1 Y%2").arg(waitX, 0, 'f', 3).arg(waitY, 0, 'f', 3);
+                for (const QString &c : after)
+                    m_grbl->sendCommand(c);
+                if (m_bzWantZ)
+                    forgetReference();   // see zero()
+                if (m_bzWantZ && m_manualZero)
+                    m_awaitToolZero = true;      // m_zeroedForTool on the G10's ok
+                log(QStringLiteral("BitZero: %1set. Remove the plate and the magnet before cutting")
+                        .arg(what));
+            }
+        };
+        if (m_bzAsk && m_bzAsk->isChecked()) {
+            // The zero is set and nothing moves until the plate and magnet are off.
+            for (const QString &c : cmds)
                 m_grbl->sendCommand(c);
-            if (m_bzWantZ)
-                forgetReference();   // see zero()
             if (m_bzWantZ && m_manualZero)
-                m_awaitToolZero = true;      // m_zeroedForTool on the G10's ok
-            log(QStringLiteral("BitZero: %1set. Remove the plate and the magnet before cutting")
-                    .arg(what));
+                m_awaitToolZero = true;
+            log(QStringLiteral("BitZero: %1set — waiting for OK before moving").arg(what));
+            const quint64 resets = m_resets;
+            whenIdle([this, moveOn, resets] {
+                QMessageBox box(QMessageBox::Information, QStringLiteral("BitZero"),
+                                QStringLiteral("Remove the magnet and BitZero, then press OK."),
+                                QMessageBox::Ok, this);
+                box.exec();
+                if (resets != m_resets || !m_homed)
+                    return;                  // a reset while waiting: the position is gone
+                moveOn({});
+            });
+        } else {
+            moveOn(cmds);
         }
         m_hits.clear();
         if (m_bzPanel)

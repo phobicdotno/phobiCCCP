@@ -205,6 +205,7 @@ private:
     bool m_zZeroKnown = false, m_zZeroWithMap = false;
     double m_zZeroSent = 0, m_zZeroMx = 0, m_zZeroMy = 0, m_zZeroWco = 0;
     QCheckBox *m_useMap = nullptr;
+    QCheckBox *m_bzAsk = nullptr;        // BitZero: wait for OK before moving after the zero
     QLabel *m_mapLabel = nullptr;
     QLabel *m_ovLabel = nullptr;         // live feed/rapid/spindle override, beside the +/- buttons
     void startSurfaceMap();

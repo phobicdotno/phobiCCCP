@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.44 (build 134) — 2026-10-29
+
+> New checkbox under Probe zero (BitZero): "Ask before moving after Zero" — the bit stays put until you have taken off the magnet and BitZero and pressed OK
+
+- **Machine:**
+  - With the box ticked, BitZero sets the zero, then asks "Remove the magnet and BitZero, then press OK." and does not move until OK. Unticked (the default), nothing changes.
+
 ## v1.3.43 (build 133) — 2026-10-29
 
 > Rotate 90° keeps the stock lying the same way as the design, even in a file that an older version had turned without the stock
