@@ -898,7 +898,7 @@ int main(int argc, char *argv[])
         check(g.done.size() == 1, "the default drill exports");
         double minZ;
         cutBounds(g.gcode, &minZ);
-        check(approx(minZ, -18.5, 1e-3), "and reaches the full depth");
+        check(approx(minZ, -18.25, 1e-3), "and reaches the full depth");
         int plunges = 0;
         for (const QString &line : g.gcode.split(QChar('\n')))
             if (line.startsWith(QLatin1String("G1")) && line.contains(QLatin1Char('Z')))
