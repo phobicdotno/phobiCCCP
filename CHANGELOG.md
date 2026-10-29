@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.3.40 (build 130) — 2026-10-29
+
+> After BitZero the bit waits 10 cm left of the BitSetter instead of going back over the zero point; the Machine page starts at 5000 mm/min and a 1 mm step
+
+- **Machine:**
+  - BitZero ends with the bit at the top, 10 cm left of the BitSetter (it used to return over the corner it had just zeroed).
+  - Jog speed starts at rapid (5000 mm/min) and the step at 1 mm.
+
 ## v1.3.39 (build 129) — 2026-10-28
 
 > Rotate 90° turns the stock too, and the Open dialog shows one plain document icon for every file

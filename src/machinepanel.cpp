@@ -485,7 +485,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_step = new QComboBox(jogCard);
     m_step->addItems({QStringLiteral("0.1"), QStringLiteral("1"),
                       QStringLiteral("10"), QStringLiteral("100")});
-    m_step->setCurrentIndex(2);
+    m_step->setCurrentIndex(1);   // 1 mm
     m_step->hide();
     auto *stepBox = new QWidget(jogCard);
     stepBox->setObjectName(QStringLiteral("stepBox"));
@@ -523,7 +523,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_speed->addItem(QStringLiteral("medium"), 1000);
     m_speed->addItem(QStringLiteral("fast"), 3000);
     m_speed->addItem(QStringLiteral("rapid"), 5000);   // $110/$111 on the Shapeoko 5 Pro
-    m_speed->setCurrentIndex(1);
+    m_speed->setCurrentIndex(3);   // rapid, 5000
     m_speed->hide();
     auto *speedBox = new QWidget(jogCard);
     speedBox->setObjectName(QStringLiteral("stepBox"));
@@ -2171,10 +2171,13 @@ void MachinePanel::bitZeroApply()
         BitSetterConfig bs = bitSetter();
         if (m_homed)
             bs.safeZ = -switchClearance();   // risen to the top first, below
+        // Done, it waits 10 cm left of the BitSetter, not back over the corner.
+        const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
+        const double waitX = qMax(bs.x - 100.0, -tx + 5.0), waitY = bs.y;
         if (m_bzWantZ && bs.enabled) {
             m_phase = Phase::MeasureForRef;
             m_grbl->startMacro(cmds + riseToTop()
-                               + GrblStreamer::measureToolLines(bs, true, st.mx, st.my));
+                               + GrblStreamer::measureToolLines(bs, true, waitX, waitY));
             log(QStringLiteral("BitZero: %1set — measuring the tool now in the spindle on the "
                                "BitSetter as the reference").arg(what));
             log(QStringLiteral("!! If that was the probing pin: the cutting bit must be measured "
@@ -2183,7 +2186,11 @@ void MachinePanel::bitZeroApply()
                                "changing."));
         } else {
             // Then straight up, out of the way of the plate and the magnet.
-            for (const QString &c : cmds + riseToTop())
+            QStringList after = cmds + riseToTop();
+            if (m_homed && bs.enabled)
+                after << QStringLiteral("G90")
+                      << QStringLiteral("G53 G0 X%1 Y%2").arg(waitX, 0, 'f', 3).arg(waitY, 0, 'f', 3);
+            for (const QString &c : after)
                 m_grbl->sendCommand(c);
             if (m_bzWantZ)
                 forgetReference();   // see zero()
