@@ -2172,6 +2172,8 @@ void MachinePanel::bitZeroApply()
         if (m_homed)
             bs.safeZ = -switchClearance();   // risen to the top first, below
         // Done, it waits 10 cm left of the BitSetter, not back over the corner.
+        QSettings sset;
+        const auto machine = appsettings::machine(sset);
         const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
         const double waitX = qMax(bs.x - 100.0, -tx + 5.0), waitY = bs.y;
         if (m_bzWantZ && bs.enabled) {
