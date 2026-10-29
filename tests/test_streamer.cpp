@@ -279,7 +279,6 @@ int main(int argc, char **argv)
         QObject::connect(&s, &c2d::GrblStreamer::holdPointReached, [&] { reached = true; });
         QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
         s.startStream(prog);
-        spin(300, [] { return false; });
         check(s.canLiftHold(), "hold: possible mid-program");
         check(s.queueHoldPoint({QStringLiteral("G53 G0 Z-5"), QStringLiteral("M5")}), "hold: the lines go in");
         spin(3000, [&] { return reached; });
