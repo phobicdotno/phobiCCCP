@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.49 (build 139) — 2026-10-30
+
+> Unlock and BitSetter now hide while a job is cutting, like the other buttons
+
+- **Machine:** the bottom row kept Unlock and BitSetter on screen during a run (they were missed when the others were hidden). Nothing there to press by mistake while cutting; they come back at a tool change and at the end.
+
 ## v1.3.48 (build 138) — 2026-10-30
 
 > New bit in the library: #1203, 3-flute 1.5 mm with 5 mm of flute

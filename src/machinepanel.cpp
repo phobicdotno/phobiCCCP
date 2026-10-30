@@ -762,7 +762,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     auto *bsBtn = bigBtn(new QPushButton(QStringLiteral("BitSetter"), body), 44);
     bsBtn->setToolTip(QStringLiteral("BitSetter position, probe feeds, tool-change spot, "
                                      "reference and rehearsal"));
-    m_idleOnly << homeBtn << parkBtn;
+    m_idleOnly << homeBtn << parkBtn << unlockBtn << bsBtn;
     foot->addWidget(homeBtn);
     foot->addWidget(parkBtn);
     foot->addWidget(unlockBtn);
@@ -2100,7 +2100,7 @@ void MachinePanel::continueAfterToolChange()
 
 // While a job streams the middle column shows the job view and the
 // buttons that are not in use while cutting (zeroing, go to zero, measure,
-// probe, Initialize, Park) hide: nothing to press by mistake, and the room
+// probe, Initialize, Park, Unlock, BitSetter) hide: nothing to press by mistake, and the room
 // goes to what is happening. A tool-change pause and the end bring them back.
 void MachinePanel::setJobRunning(bool on)
 {
