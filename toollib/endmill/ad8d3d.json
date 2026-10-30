@@ -1,0 +1,70 @@
+{
+  "id": "ad8d3d",
+  "number": 112,
+  "model": "112",
+  "name": "#112 End Mill (1/16\")",
+  "kind": "endmill",
+  "diameter": 1.5875,
+  "flutes": 2,
+  "angle": 0,
+  "corner_radius": 0,
+  "length": 6.35,
+  "shank": 3.175,
+  "url": "https://shop.carbide3d.com/products/112-0625-end-mill-cutter-qty-2",
+  "notes": "Square end mill on a 1/8\" shank.",
+  "feeds": {
+    "mdf": {
+      "rpm": 18000,
+      "feed": 762,
+      "plunge": 203,
+      "stepdown": 0.508,
+      "stepover_pct": 50
+    },
+    "softwood": {
+      "rpm": 18000,
+      "feed": 1000,
+      "plunge": 203,
+      "stepdown": 0.508,
+      "stepover_pct": 50
+    },
+    "hardwood": {
+      "rpm": 18000,
+      "feed": 635,
+      "plunge": 152,
+      "stepdown": 0.381,
+      "stepover_pct": 50
+    },
+    "acrylic": {
+      "rpm": 18000,
+      "feed": 508,
+      "plunge": 127,
+      "stepdown": 0.254,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 18000,
+      "feed": 635,
+      "plunge": 400,
+      "stepdown": 0.381,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 254,
+      "plunge": 51,
+      "stepdown": 0.076,
+      "stepover_pct": 25,
+      "guess": true
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 1000,
+      "plunge": 300,
+      "stepdown": 0.5,
+      "stepover_pct": 40,
+      "guess": true
+    }
+  }
+}

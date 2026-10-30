@@ -1,0 +1,79 @@
+{
+  "id": "dd6efc",
+  "number": 1202,
+  "model": "XCAN-ENG-SET10",
+  "name": "XCAN Engraver Set 30° (1/8\")",
+  "kind": "engraver",
+  "vendor": "XCAN (AliExpress)",
+  "flutes": 1,
+  "angle": 30,
+  "corner_radius": 0,
+  "diameter": 3.175,
+  "shank": 3.175,
+  "length": 10.0,
+  "currency": "USD",
+  "price": 2.5,
+  "price_note": "10-piece set $24.99, XCAN store 2022",
+  "bought": 10,
+  "url": "https://www.aliexpress.com/",
+  "uncertain": true,
+  "notes": "Mixed tips, entered as 30° with a 0.1 mm tip until measured. Feeds are guesses.",
+  "feeds": {
+    "mdf": {
+      "rpm": 18000,
+      "feed": 800,
+      "plunge": 200,
+      "stepdown": 0.5,
+      "stepover_pct": 30,
+      "guess": true
+    },
+    "softwood": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 200,
+      "stepdown": 0.5,
+      "stepover_pct": 30,
+      "guess": true
+    },
+    "hardwood": {
+      "rpm": 18000,
+      "feed": 600,
+      "plunge": 150,
+      "stepdown": 0.4,
+      "stepover_pct": 30,
+      "guess": true
+    },
+    "acrylic": {
+      "rpm": 18000,
+      "feed": 500,
+      "plunge": 120,
+      "stepdown": 0.3,
+      "stepover_pct": 30,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 18000,
+      "feed": 600,
+      "plunge": 400,
+      "stepdown": 0.4,
+      "stepover_pct": 30,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 12000,
+      "feed": 200,
+      "plunge": 50,
+      "stepdown": 0.1,
+      "stepover_pct": 20,
+      "guess": true
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 200,
+      "stepdown": 0.5,
+      "stepover_pct": 30,
+      "guess": true
+    }
+  }
+}

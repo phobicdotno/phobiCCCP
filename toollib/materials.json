@@ -1,0 +1,71 @@
+{
+  "_comment": [
+    "phobiCCCP tool library: the Carbide 3D cutter catalogue with per-material feeds & speeds.",
+    "Lengths in mm, feeds in mm/min, rpm, stepdown in mm, stepover in % of diameter.",
+    "'uncertain' on a tool: catalogue number / spec written from memory, not verified against the shop page.",
+    "'guess' on a feeds entry: NOT a remembered Carbide Create default — a conservative value; check before cutting.",
+    "Remembered CC defaults (imperial chart): #201 softwood 18000 rpm / 75 ipm / 15 ipm plunge / 0.060\" DOC (= 1905 / 381 / 1.524 mm, matches the CC 853 sample file);",
+    "hardwood 60 ipm / 0.050\"; acrylic 40 ipm / 0.030\"; HDPE 60 ipm / 0.050\"; aluminium 10000 rpm / 20 ipm / 5 ipm / 0.010\".",
+    "'price' on a tool: per bit, in 'currency' (USD unless given); 'price_note' says what was actually paid (pack size, shop).",
+    "'bought' on a tool: bits per pack as bought; the stock count a fresh install starts with (edited in the library dialog, kept in settings)."
+  ],
+  "version": 1,
+  "materials": [
+    {
+      "id": "mdf",
+      "name": "MDF / plywood",
+      "cc_names": [
+        "MDF",
+        "Plywood",
+        "Any"
+      ]
+    },
+    {
+      "id": "softwood",
+      "name": "Soft wood",
+      "cc_names": [
+        "Softwood",
+        "Soft Wood"
+      ]
+    },
+    {
+      "id": "hardwood",
+      "name": "Hard wood",
+      "cc_names": [
+        "Hardwood",
+        "Hard Wood"
+      ]
+    },
+    {
+      "id": "acrylic",
+      "name": "Acrylic",
+      "cc_names": [
+        "Acrylic",
+        "Hard Plastic"
+      ]
+    },
+    {
+      "id": "hdpe",
+      "name": "HDPE",
+      "cc_names": [
+        "HDPE",
+        "Soft Plastic"
+      ]
+    },
+    {
+      "id": "aluminium",
+      "name": "Aluminium",
+      "cc_names": [
+        "Aluminum",
+        "Aluminium"
+      ]
+    },
+    {
+      "id": "pvc",
+      "name": "PVC",
+      "cc_names": [
+        "PVC"
+      ]
+    }
+  ]
+}

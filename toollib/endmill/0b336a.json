@@ -1,0 +1,74 @@
+{
+  "id": "0b336a",
+  "number": 278,
+  "model": "278",
+  "name": "#278 End Mill (1/32\")",
+  "kind": "endmill",
+  "uncertain": true,
+  "diameter": 0.79375,
+  "flutes": 2,
+  "angle": 0,
+  "corner_radius": 0,
+  "length": 3.175,
+  "shank": 3.175,
+  "url": "https://shop.carbide3d.com/",
+  "notes": "Square end mill on a 1/8\" shank. Feeds are guesses.",
+  "feeds": {
+    "mdf": {
+      "rpm": 18000,
+      "feed": 508,
+      "plunge": 127,
+      "stepdown": 0.254,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "softwood": {
+      "rpm": 18000,
+      "feed": 1000,
+      "plunge": 127,
+      "stepdown": 0.254,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hardwood": {
+      "rpm": 18000,
+      "feed": 381,
+      "plunge": 102,
+      "stepdown": 0.2,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "acrylic": {
+      "rpm": 18000,
+      "feed": 381,
+      "plunge": 102,
+      "stepdown": 0.152,
+      "stepover_pct": 30,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 18000,
+      "feed": 381,
+      "plunge": 200,
+      "stepdown": 0.2,
+      "stepover_pct": 30,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 152,
+      "plunge": 25,
+      "stepdown": 0.05,
+      "stepover_pct": 20,
+      "guess": true
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 1000,
+      "plunge": 150,
+      "stepdown": 0.25,
+      "stepover_pct": 40,
+      "guess": true
+    }
+  }
+}

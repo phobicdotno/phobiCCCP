@@ -77,6 +77,25 @@ void extension(QPainter &p, const QPointF &a, const QPointF &b)
 // from y = 20 down to y = 150, the cutting end from 150 to 270.
 void paintToolDiagram(QPainter &p, const QRectF &box, const LibraryTool &t, bool dims)
 {
+    // A kind this code has no drawing for (added later in toollib/) shows its
+    // own sketch from toollib/<kind>/kind.png.
+    static const QStringList drawn{QStringLiteral("endmill"), QStringLiteral("ball"),
+                                   QStringLiteral("vbit"), QStringLiteral("engraver"),
+                                   QStringLiteral("roundover")};
+    if (!drawn.contains(t.kind)) {
+        const QImage img = ToolLibrary::kindImage(t.kind);
+        if (!img.isNull()) {
+            QSizeF sz = img.size();
+            sz.scale(box.size(), Qt::KeepAspectRatio);
+            QRectF to(QPointF(0, 0), sz);
+            to.moveCenter(box.center());
+            p.save();
+            p.setRenderHint(QPainter::SmoothPixmapTransform);
+            p.drawImage(to, img);
+            p.restore();
+            return;
+        }
+    }
     p.save();
     p.setRenderHint(QPainter::Antialiasing);
     const double k = std::min(box.width() / 200.0, box.height() / 300.0);

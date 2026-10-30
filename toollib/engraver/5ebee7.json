@@ -1,0 +1,70 @@
+{
+  "id": "5ebee7",
+  "number": 501,
+  "model": "501",
+  "name": "#501 Engraver 30° (1/8\")",
+  "kind": "engraver",
+  "diameter": 3.175,
+  "flutes": 1,
+  "angle": 30,
+  "corner_radius": 0,
+  "length": 5.0,
+  "shank": 3.175,
+  "url": "https://shop.carbide3d.com/products/501-engraver-30",
+  "notes": "Single flute, 0.1 mm tip, cut as a 30° V-bit.",
+  "feeds": {
+    "mdf": {
+      "rpm": 18000,
+      "feed": 1016,
+      "plunge": 254,
+      "stepdown": 0.508,
+      "stepover_pct": 10
+    },
+    "softwood": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 254,
+      "stepdown": 0.508,
+      "stepover_pct": 10
+    },
+    "hardwood": {
+      "rpm": 18000,
+      "feed": 762,
+      "plunge": 203,
+      "stepdown": 0.381,
+      "stepover_pct": 10
+    },
+    "acrylic": {
+      "rpm": 18000,
+      "feed": 508,
+      "plunge": 127,
+      "stepdown": 0.254,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 18000,
+      "feed": 762,
+      "plunge": 500,
+      "stepdown": 0.381,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 254,
+      "plunge": 51,
+      "stepdown": 0.127,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 400,
+      "stepdown": 0.5,
+      "stepover_pct": 10,
+      "guess": true
+    }
+  }
+}

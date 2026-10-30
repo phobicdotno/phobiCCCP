@@ -1,0 +1,70 @@
+{
+  "id": "f4c2ee",
+  "number": 202,
+  "model": "202",
+  "name": "#202 Ball End Mill (1/4\")",
+  "kind": "ball",
+  "diameter": 6.35,
+  "flutes": 3,
+  "angle": 0,
+  "corner_radius": 3.175,
+  "length": 19.05,
+  "shank": 6.35,
+  "url": "https://shop.carbide3d.com/products/202-25-ball-cutter",
+  "notes": "Ball nose for finishing passes, 10 % stepover.",
+  "feeds": {
+    "mdf": {
+      "rpm": 18000,
+      "feed": 1905,
+      "plunge": 381,
+      "stepdown": 1.524,
+      "stepover_pct": 10
+    },
+    "softwood": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 381,
+      "stepdown": 1.524,
+      "stepover_pct": 10
+    },
+    "hardwood": {
+      "rpm": 18000,
+      "feed": 1524,
+      "plunge": 381,
+      "stepdown": 1.27,
+      "stepover_pct": 10
+    },
+    "acrylic": {
+      "rpm": 18000,
+      "feed": 1016,
+      "plunge": 254,
+      "stepdown": 0.762,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 18000,
+      "feed": 1524,
+      "plunge": 800,
+      "stepdown": 1.27,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 508,
+      "plunge": 127,
+      "stepdown": 0.254,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 800,
+      "stepdown": 1.5,
+      "stepover_pct": 10,
+      "guess": true
+    }
+  }
+}

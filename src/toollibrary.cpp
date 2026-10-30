@@ -1,6 +1,11 @@
 #include "toollibrary.h"
 
+#include <QDir>
+#include <QDirIterator>
 #include <QFile>
+#include <QRegularExpression>
+#include <QStandardPaths>
+#include <algorithm>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -31,19 +36,82 @@ const ToolFeeds *LibraryTool::feedsFor(const QString &materialId) const
     return it == feeds.constEnd() ? nullptr : &it.value();
 }
 
+QString ToolLibrary::cacheDir()
+{
+    const QByteArray env = qgetenv("PHOBIC_TOOLLIB_CACHE");
+    if (!env.isEmpty())
+        return QString::fromLocal8Bit(env);
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+           + QStringLiteral("/toollib");
+}
+
+QMap<QString, QByteArray> ToolLibrary::readTree(const QString &root)
+{
+    QMap<QString, QByteArray> out;
+    if (root.isEmpty())
+        return out;
+    const QString base = root.endsWith(QLatin1Char('/')) ? root.chopped(1) : root;
+    QDirIterator it(base, QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        QFile f(path);
+        if (f.size() > (2 << 20) || !f.open(QIODevice::ReadOnly))
+            continue;
+        out.insert(path.mid(base.size() + 1), f.readAll());
+    }
+    return out;
+}
+
+QImage ToolLibrary::kindImage(const QString &kind)
+{
+    initToolResources();
+    static const QRegularExpression ok(QStringLiteral("^[a-z0-9_-]+$"));
+    if (!ok.match(kind).hasMatch())
+        return QImage();
+    const QString rel = kind + QStringLiteral("/kind.png");
+    QImage img(cacheDir() + QLatin1Char('/') + rel);
+    if (img.isNull())
+        img.load(QStringLiteral(":/data/toollib/") + rel);
+    return img;
+}
+
 bool ToolLibrary::loadDefault(QString *err)
 {
     initToolResources();
-    QFile f(QStringLiteral(":/data/tool-library.json"));
-    if (!f.open(QIODevice::ReadOnly)) {
-        if (err)
-            *err = QStringLiteral("embedded tool library missing");
+    QMap<QString, QByteArray> files = readTree(QStringLiteral(":/data/toollib"));
+    const QMap<QString, QByteArray> synced = readTree(cacheDir());
+    for (auto it = synced.constBegin(); it != synced.constEnd(); ++it)
+        files.insert(it.key(), it.value());           // the synced copy wins, file by file
+    if (!loadFiles(files, err))
         return false;
+    m_source = synced.isEmpty() ? QStringLiteral("built-in") : QStringLiteral("built-in + synced");
+    return true;
+}
+
+bool ToolLibrary::loadFiles(const QMap<QString, QByteArray> &files, QString *err)
+{
+    static const QRegularExpression toolPath(QStringLiteral("^([a-z0-9_-]+)/([0-9a-f]{6})\\.json$"));
+    QJsonArray tools;
+    for (auto it = files.constBegin(); it != files.constEnd(); ++it) {
+        const QRegularExpressionMatch m = toolPath.match(it.key());
+        if (!m.hasMatch())
+            continue;
+        QJsonParseError pe;
+        const QJsonDocument doc = QJsonDocument::fromJson(it.value(), &pe);
+        if (!doc.isObject())
+            continue;                                  // a broken file drops that one tool
+        QJsonObject o = doc.object();
+        o.insert(QStringLiteral("id"), m.captured(2));
+        if (!o.contains(QStringLiteral("kind")))
+            o.insert(QStringLiteral("kind"), m.captured(1));
+        tools.append(o);
     }
-    const bool ok = loadJson(f.readAll(), err);
-    if (ok)
-        m_source = QStringLiteral("built-in");
-    return ok;
+    QJsonObject root;
+    const QByteArray mats = files.value(QStringLiteral("materials.json"));
+    if (!mats.isEmpty())
+        root = QJsonDocument::fromJson(mats).object();
+    root.insert(QStringLiteral("tools"), tools);
+    return loadJson(QJsonDocument(root).toJson(QJsonDocument::Compact), err);
 }
 
 bool ToolLibrary::loadFile(const QString &path, QString *err)
@@ -86,6 +154,7 @@ bool ToolLibrary::loadJson(const QByteArray &json, QString *err)
         const QJsonObject t = v.toObject();
         LibraryTool lt;
         lt.number = t.value("number").toInt();
+        lt.id = t.value("id").toString();
         lt.model = t.value("model").toString(QString::number(lt.number));
         lt.name = t.value("name").toString();
         lt.kind = t.value("kind").toString(QStringLiteral("endmill"));
@@ -124,6 +193,8 @@ bool ToolLibrary::loadJson(const QByteArray &json, QString *err)
             *err = QStringLiteral("tool library: no tools");
         return false;
     }
+    std::stable_sort(tools.begin(), tools.end(),
+                     [](const LibraryTool &a, const LibraryTool &b) { return a.number < b.number; });
     m_materials = mats;
     m_tools = tools;
     return true;

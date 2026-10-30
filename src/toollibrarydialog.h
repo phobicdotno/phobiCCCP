@@ -43,6 +43,7 @@ private:
     void rebuildCollections(const QString &show);
     QString shownCollection() const;   // empty: all bits
     void collectionsChanged(const QString &show);
+    void reloadFromSettings();            // a peer changed the stock or collections
     void fillAddMenu();
     void newCollection(int addTool);
     void renameCollection();

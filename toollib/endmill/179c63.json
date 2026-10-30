@@ -1,0 +1,78 @@
+{
+  "id": "179c63",
+  "number": 1105,
+  "model": "SS2F-8x32x60",
+  "name": "Straight End Mill 8 mm (32 mm flute)",
+  "diameter": 8.0,
+  "shank": 8.0,
+  "length": 32.0,
+  "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
+  "feeds": {
+    "mdf": {
+      "rpm": 16000,
+      "feed": 2800,
+      "plunge": 550,
+      "stepdown": 4.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "softwood": {
+      "rpm": 16000,
+      "feed": 5000,
+      "plunge": 550,
+      "stepdown": 4.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hardwood": {
+      "rpm": 16000,
+      "feed": 1876,
+      "plunge": 368,
+      "stepdown": 2.4,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "acrylic": {
+      "rpm": 16000,
+      "feed": 1400,
+      "plunge": 275,
+      "stepdown": 1.6,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 16000,
+      "feed": 1876,
+      "plunge": 1000,
+      "stepdown": 2.4,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 476,
+      "plunge": 94,
+      "stepdown": 0.4,
+      "stepover_pct": 30,
+      "guess": true,
+      "note": "poor chip clearing in metal: air blast, light passes"
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 550,
+      "stepdown": 2.4,
+      "stepover_pct": 45,
+      "guess": true
+    }
+  },
+  "kind": "endmill",
+  "vendor": "Generic (AliExpress)",
+  "flutes": 2,
+  "angle": 0,
+  "corner_radius": 0,
+  "currency": "USD",
+  "url": "https://www.aliexpress.com/",
+  "bought": 10,
+  "price_note": "10-pack, AliExpress 2024, price not noted"
+}

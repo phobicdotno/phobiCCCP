@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.50 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.51 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,6 +58,7 @@ add_library(phobicccp_core STATIC
     src/importers.cpp
     src/toollibrary.cpp
     src/toolcollections.cpp
+    src/stockstamp.cpp
     src/toolpathfactory.cpp
     src/tiling.cpp
     data/tools.qrc
@@ -98,6 +99,8 @@ add_library(phobicccp_ui STATIC
     src/dragscroll.cpp
     src/toolpathform.cpp
     src/toollibrarydialog.cpp
+    src/toolsync.cpp
+    src/stocksync.cpp
     src/tooldiagram.cpp
     src/toolstrip.cpp
     src/machinepanel.cpp
@@ -303,6 +306,12 @@ if(Qt6Test_FOUND)
     add_executable(test_toollibrarydialog tests/test_toollibrarydialog.cpp data/tools.qrc)
     target_link_libraries(test_toollibrarydialog PRIVATE phobicccp_ui)
     add_test(NAME toollibrarydialog COMMAND test_toollibrarydialog)
+    # The toollib/ folder as the tool library, and syncing it.
+    add_executable(test_toollib tests/test_toollib.cpp)
+    target_link_libraries(test_toollib PRIVATE phobicccp_ui)
+    target_compile_definitions(test_toollib PRIVATE TOOLLIB_DIR="${CMAKE_SOURCE_DIR}/toollib")
+    add_test(NAME toollib COMMAND test_toollib)
+    set_tests_properties(toollib PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_toolpathform tests/test_toolpathform.cpp)
     target_link_libraries(test_toolpathform PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME toolpathform COMMAND test_toolpathform)

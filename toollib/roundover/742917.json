@@ -1,0 +1,73 @@
+{
+  "id": "742917",
+  "number": 1040,
+  "model": "ICT4F-R4.0-H10",
+  "name": "Corner Rounding R4 (10 mm head)",
+  "kind": "roundover",
+  "vendor": "Generic",
+  "diameter": 2.0,
+  "flutes": 4,
+  "angle": 0,
+  "corner_radius": 0,
+  "length": 4.0,
+  "shank": 10.0,
+  "notes": "Round-over: Contour outside the vector, 4 mm deep. Simulation cuts it as a flat tip.",
+  "feeds": {
+    "mdf": {
+      "rpm": 16000,
+      "feed": 1500,
+      "plunge": 300,
+      "stepdown": 2.0,
+      "stepover_pct": 50,
+      "guess": true
+    },
+    "softwood": {
+      "rpm": 16000,
+      "feed": 5000,
+      "plunge": 300,
+      "stepdown": 2.0,
+      "stepover_pct": 50,
+      "guess": true
+    },
+    "hardwood": {
+      "rpm": 16000,
+      "feed": 1200,
+      "plunge": 250,
+      "stepdown": 2.0,
+      "stepover_pct": 50,
+      "guess": true
+    },
+    "acrylic": {
+      "rpm": 16000,
+      "feed": 900,
+      "plunge": 200,
+      "stepdown": 1.0,
+      "stepover_pct": 50,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 16000,
+      "feed": 1200,
+      "plunge": 600,
+      "stepdown": 2.0,
+      "stepover_pct": 50,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 400,
+      "plunge": 100,
+      "stepdown": 0.5,
+      "stepover_pct": 50,
+      "guess": true
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 600,
+      "stepdown": 2.0,
+      "stepover_pct": 50,
+      "guess": true
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "id": "aa9b3a",
+  "number": 1104,
+  "model": "SS2F-6x42x70",
+  "name": "Straight End Mill 6 mm (42 mm flute)",
+  "diameter": 6.0,
+  "shank": 6.0,
+  "length": 42.0,
+  "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
+  "feeds": {
+    "mdf": {
+      "rpm": 16000,
+      "feed": 2500,
+      "plunge": 500,
+      "stepdown": 3.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "softwood": {
+      "rpm": 16000,
+      "feed": 5000,
+      "plunge": 500,
+      "stepdown": 3.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hardwood": {
+      "rpm": 16000,
+      "feed": 1675,
+      "plunge": 335,
+      "stepdown": 1.8,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "acrylic": {
+      "rpm": 16000,
+      "feed": 1250,
+      "plunge": 250,
+      "stepdown": 1.2,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 16000,
+      "feed": 1675,
+      "plunge": 1000,
+      "stepdown": 1.8,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 425,
+      "plunge": 85,
+      "stepdown": 0.3,
+      "stepover_pct": 30,
+      "guess": true,
+      "note": "poor chip clearing in metal: air blast, light passes"
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 500,
+      "stepdown": 1.8,
+      "stepover_pct": 45,
+      "guess": true
+    }
+  },
+  "kind": "endmill",
+  "vendor": "Generic (AliExpress)",
+  "flutes": 2,
+  "angle": 0,
+  "corner_radius": 0,
+  "currency": "USD",
+  "url": "https://www.aliexpress.com/",
+  "bought": 10,
+  "price": 4.31,
+  "price_note": "10-pack $43.14, AliExpress 2024"
+}

@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.51 (build 141) — 2026-10-30
+
+> The bits now live in a toollib/ folder in the repo and sync at every start, and bit stock and Collections sync between copies on the network
+
+- **Tool library:** one file per bit, `toollib/<kind>/<6 hex id>.json`, with a sketch picture per kind. The app has them built in, and at each start fetches new or changed bits from GitHub (only what differs; offline changes nothing). A new kind only needs a folder and a `kind.png`. See `toollib/README.md`.
+- **Stock:** In stock, broken counts and Collections are shared with other phobiCCCP copies on the same network (laptop, CNC PC, vega): the newest change wins. No server and no login, so use it on your own network only. The tool-number in saved files is unchanged.
+
 ## v1.3.50 (build 140) — 2026-10-30
 
 > Menus now light up the item under the mouse, including "Add to" a collection

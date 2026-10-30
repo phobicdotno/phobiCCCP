@@ -1,7 +1,36 @@
 <!DOCTYPE RCC>
 <RCC version="1.0">
   <qresource prefix="/data">
-    <file>tool-library.json</file>
+    <file alias="toollib/index.json">../toollib/index.json</file>
+    <file alias="toollib/ball/222d41.json">../toollib/ball/222d41.json</file>
+    <file alias="toollib/ball/7e1632.json">../toollib/ball/7e1632.json</file>
+    <file alias="toollib/ball/f4c2ee.json">../toollib/ball/f4c2ee.json</file>
+    <file alias="toollib/ball/kind.png">../toollib/ball/kind.png</file>
+    <file alias="toollib/endmill/006138.json">../toollib/endmill/006138.json</file>
+    <file alias="toollib/endmill/0b336a.json">../toollib/endmill/0b336a.json</file>
+    <file alias="toollib/endmill/179c63.json">../toollib/endmill/179c63.json</file>
+    <file alias="toollib/endmill/2453f6.json">../toollib/endmill/2453f6.json</file>
+    <file alias="toollib/endmill/25cd21.json">../toollib/endmill/25cd21.json</file>
+    <file alias="toollib/endmill/286411.json">../toollib/endmill/286411.json</file>
+    <file alias="toollib/endmill/37376b.json">../toollib/endmill/37376b.json</file>
+    <file alias="toollib/endmill/3ece79.json">../toollib/endmill/3ece79.json</file>
+    <file alias="toollib/endmill/63a719.json">../toollib/endmill/63a719.json</file>
+    <file alias="toollib/endmill/7ad78e.json">../toollib/endmill/7ad78e.json</file>
+    <file alias="toollib/endmill/aa9b3a.json">../toollib/endmill/aa9b3a.json</file>
+    <file alias="toollib/endmill/ad8d3d.json">../toollib/endmill/ad8d3d.json</file>
+    <file alias="toollib/endmill/d5eae3.json">../toollib/endmill/d5eae3.json</file>
+    <file alias="toollib/endmill/ed6d99.json">../toollib/endmill/ed6d99.json</file>
+    <file alias="toollib/endmill/kind.png">../toollib/endmill/kind.png</file>
+    <file alias="toollib/engraver/5ebee7.json">../toollib/engraver/5ebee7.json</file>
+    <file alias="toollib/engraver/884cee.json">../toollib/engraver/884cee.json</file>
+    <file alias="toollib/engraver/dd6efc.json">../toollib/engraver/dd6efc.json</file>
+    <file alias="toollib/engraver/kind.png">../toollib/engraver/kind.png</file>
+    <file alias="toollib/materials.json">../toollib/materials.json</file>
+    <file alias="toollib/roundover/742917.json">../toollib/roundover/742917.json</file>
+    <file alias="toollib/roundover/kind.png">../toollib/roundover/kind.png</file>
+    <file alias="toollib/vbit/95af6b.json">../toollib/vbit/95af6b.json</file>
+    <file alias="toollib/vbit/c73a07.json">../toollib/vbit/c73a07.json</file>
+    <file alias="toollib/vbit/kind.png">../toollib/vbit/kind.png</file>
     <file alias="CHANGELOG.md">../CHANGELOG.md</file>
     <file alias="logo.svg">../desktop/phobicccp.svg</file>
   </qresource>

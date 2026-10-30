@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QSaveFile>
 #include <QSettings>
+#include "stockstamp.h"
 
 namespace c2d {
 
@@ -157,6 +158,7 @@ ToolCollections ToolCollections::loadSettings()
 void ToolCollections::saveSettings() const
 {
     QSettings().setValue(QLatin1String(kSettingsKey), toJson());
+    stampCollections();
 }
 
 } // namespace c2d

@@ -1,0 +1,70 @@
+{
+  "id": "95af6b",
+  "number": 301,
+  "model": "301",
+  "name": "#301 V Cutter 90° (1/2\")",
+  "kind": "vbit",
+  "diameter": 12.7,
+  "flutes": 2,
+  "angle": 90,
+  "corner_radius": 0,
+  "length": 6.35,
+  "shank": 6.35,
+  "url": "https://shop.carbide3d.com/products/301-90-v-cutter",
+  "notes": "1/2\" wide, 1/4\" shank.",
+  "feeds": {
+    "mdf": {
+      "rpm": 18000,
+      "feed": 1524,
+      "plunge": 381,
+      "stepdown": 2.54,
+      "stepover_pct": 10
+    },
+    "softwood": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 381,
+      "stepdown": 2.54,
+      "stepover_pct": 10
+    },
+    "hardwood": {
+      "rpm": 18000,
+      "feed": 1270,
+      "plunge": 305,
+      "stepdown": 2.032,
+      "stepover_pct": 10
+    },
+    "acrylic": {
+      "rpm": 18000,
+      "feed": 762,
+      "plunge": 254,
+      "stepdown": 1.27,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 18000,
+      "feed": 1270,
+      "plunge": 800,
+      "stepdown": 2.032,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 381,
+      "plunge": 102,
+      "stepdown": 0.254,
+      "stepover_pct": 10,
+      "guess": true
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 800,
+      "stepdown": 2.0,
+      "stepover_pct": 10,
+      "guess": true
+    }
+  }
+}

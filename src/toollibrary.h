@@ -1,13 +1,18 @@
 #pragma once
 #include <QHash>
+#include <QImage>
 #include <QJsonObject>
+#include <QMap>
 #include <QString>
 #include <QStringList>
 #include <QVector>
 
 // Tool library / speeds & feeds: the Carbide 3D cutter catalogue with
-// per-material defaults, loaded from the embedded data/tool-library.json
-// (or any file with the same schema). applyToToolpath() writes a chosen tool
+// per-material defaults. The library is the repo's toollib/ folder
+// (toollib/<kind>/<6 hex id>.json, one tool per file, plus materials.json and
+// a kind.png sketch per kind), built into the app and overlaid by a synced
+// copy in the app's data folder (see ToolSync). A single-file library with the
+// old schema can still be loaded with loadFile(). applyToToolpath() writes a chosen tool
 // into a Carbide Create toolpath payload using CC's own key names — the
 // embedded `tool` object (diameter, number, angle, type, flutes, ...), the
 // `speeds` object (feedrate, plungerate, rpm) and the per-type depth/stepover
@@ -25,6 +30,7 @@ struct ToolFeeds {
 
 struct LibraryTool {
     int number = 0;
+    QString id;                             // 6 hex digits, the file name in toollib/
     QString model, name, kind, url, notes, vendor;   // kind: endmill/ball/vbit/engraver
     double diameter = 0, angle = 0, cornerRadius = 0, length = 0, shank = 0;
     int flutes = 0;
@@ -46,7 +52,12 @@ struct LibraryMaterial {
 class ToolLibrary
 {
 public:
-    bool loadDefault(QString *err = nullptr);             // embedded resource
+    bool loadDefault(QString *err = nullptr);             // built-in toollib/ + synced overlay
+    // Files keyed by path under toollib/ ("endmill/aa9b3a.json", "materials.json").
+    bool loadFiles(const QMap<QString, QByteArray> &files, QString *err = nullptr);
+    static QString cacheDir();                            // synced copy; PHOBIC_TOOLLIB_CACHE overrides
+    static QMap<QString, QByteArray> readTree(const QString &root);   // dir or :/ resource
+    static QImage kindImage(const QString &kind);         // toollib/<kind>/kind.png, or null
     bool loadFile(const QString &path, QString *err = nullptr);
     bool loadJson(const QByteArray &json, QString *err = nullptr);
 

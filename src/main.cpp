@@ -36,6 +36,11 @@
 #include <QSettings>
 #include <QStatusBar>
 #include "settingsdialog.h"
+#include "toollibrary.h"
+#include "toolsync.h"
+#include "stocksync.h"
+#include "tooldiagram.h"
+#include <QTimer>
 #include <QComboBox>
 #include <QDir>
 #include <QStandardPaths>
@@ -1594,6 +1599,33 @@ int main(int argc, char *argv[])
     }
 #endif // PHOBICCCP_DEV_TOOLS
 
+    // --export-tool-sketches <dir>: write <dir>/<kind>/kind.png, the side-view
+    // sketch of each kind of bit the app draws, for the repo's toollib/ folder.
+    if (argc == 3 && QByteArray(argv[1]) == "--export-tool-sketches") {
+        c2d::ToolLibrary lib;
+        if (!lib.loadDefault()) {
+            qWarning() << "tool library did not load";
+            return 1;
+        }
+        QSet<QString> done;
+        for (const c2d::LibraryTool &t : lib.tools()) {
+            if (done.contains(t.kind))
+                continue;
+            done.insert(t.kind);
+            QImage img(400, 600, QImage::Format_ARGB32);
+            img.fill(QColor(0x1b, 0x1e, 0x24));
+            QPainter p(&img);
+            c2d::paintToolDiagram(p, QRectF(0, 0, 400, 600), t, false);
+            p.end();
+            const QString dir = QString::fromLocal8Bit(argv[2]) + QLatin1Char('/') + t.kind;
+            QDir().mkpath(dir);
+            if (!img.save(dir + QStringLiteral("/kind.png")))
+                return 1;
+            qInfo() << "wrote" << dir + QStringLiteral("/kind.png");
+        }
+        return 0;
+    }
+
     // --export-tiled <in.c2d> <outbase> [tile_height_mm]: headless tiled
     // export, one complete program per tile: <outbase>_tile1.nc, _tile2.nc…
     // Tile height defaults to the document's tile_height param.
@@ -1685,6 +1717,29 @@ int main(int argc, char *argv[])
         w.openFile(QString::fromLocal8Bit(argv[1]));
     if (!w.hasDocument())
         w.newUntitled();
+
+    // Tool library: pick up new or changed bits from the repo's toollib/
+    // folder at every start. Offline just means no change.
+    c2d::ToolSync toolSync;
+    if (QSettings().value(QStringLiteral("tools/syncAtStart"), true).toBool()) {
+        QObject::connect(&toolSync, &c2d::ToolSync::finished, &w,
+                         [&w](int updated, int failed, const QString &note) {
+                             if (updated > 0 || failed > 0)
+                                 w.statusBar()->showMessage(
+                                     QStringLiteral("Tool library: %1").arg(note), 8000);
+                         });
+        QTimer::singleShot(1500, &toolSync, [&toolSync] {
+            toolSync.start(c2d::ToolSync::defaultBaseUrl(), c2d::ToolLibrary::cacheDir());
+        });
+    }
+
+    // Bit stock and Collections follow the other copies of the app on this network.
+    if (QSettings().value(QStringLiteral("tools/syncStock"), true).toBool()) {
+        auto *stockSync = new c2d::StockSync(QString(), c2d::StockSync::kPort,
+                                             QHostAddress::Broadcast, c2d::StockSync::kPort, &app);
+        if (stockSync->start())
+            stockSync->setAsInstance();
+    }
 
     return app.exec();
 }

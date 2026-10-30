@@ -1,0 +1,79 @@
+{
+  "id": "286411",
+  "number": 1106,
+  "model": "SS2F-10x32x70",
+  "name": "Straight End Mill 10 mm (32 mm flute)",
+  "diameter": 10.0,
+  "shank": 10.0,
+  "length": 32.0,
+  "notes": "Straight flutes: clean top edges, poor chip clearing in deep slots. Feeds are guesses.",
+  "feeds": {
+    "mdf": {
+      "rpm": 16000,
+      "feed": 3000,
+      "plunge": 600,
+      "stepdown": 5.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "softwood": {
+      "rpm": 16000,
+      "feed": 5000,
+      "plunge": 600,
+      "stepdown": 5.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hardwood": {
+      "rpm": 16000,
+      "feed": 2010,
+      "plunge": 402,
+      "stepdown": 3.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "acrylic": {
+      "rpm": 16000,
+      "feed": 1500,
+      "plunge": 300,
+      "stepdown": 2.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "hdpe": {
+      "rpm": 16000,
+      "feed": 2010,
+      "plunge": 1000,
+      "stepdown": 3.0,
+      "stepover_pct": 40,
+      "guess": true
+    },
+    "aluminium": {
+      "rpm": 10000,
+      "feed": 510,
+      "plunge": 102,
+      "stepdown": 0.5,
+      "stepover_pct": 30,
+      "guess": true,
+      "note": "poor chip clearing in metal: air blast, light passes"
+    },
+    "pvc": {
+      "rpm": 18000,
+      "feed": 5000,
+      "plunge": 600,
+      "stepdown": 3.0,
+      "stepover_pct": 45,
+      "guess": true
+    }
+  },
+  "kind": "endmill",
+  "vendor": "Generic (AliExpress)",
+  "flutes": 2,
+  "angle": 0,
+  "corner_radius": 0,
+  "currency": "USD",
+  "url": "https://www.aliexpress.com/",
+  "bought": 10,
+  "price": 10.65,
+  "price_note": "10-pack $106.48, AliExpress 2024"
+}

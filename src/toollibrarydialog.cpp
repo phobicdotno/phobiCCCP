@@ -1,9 +1,12 @@
 #include "toollibrarydialog.h"
+#include "stockstamp.h"
+#include "stocksync.h"
 #include "tooldiagram.h"
 
 #include <algorithm>
 
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QInputDialog>
@@ -170,9 +173,12 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
     right->addLayout(stock);
     mid->addLayout(right, 2);
     lay->addLayout(mid, 1);
+    if (auto *ss = QCoreApplication::instance()->findChild<StockSync *>())
+        connect(ss, &StockSync::changed, this, &ToolLibraryDialog::reloadFromSettings);
     connect(m_stock, &QSpinBox::valueChanged, this, [this](int v) {
         if (const LibraryTool *t = selectedTool()) {
             QSettings().setValue(QStringLiteral("toolStock/%1/have").arg(t->number), v);
+            stampStock(t->number);
             // The bin and the list's "· N in stock" follow the typed count,
             // not the one the bit was selected with.
             m_trash->setEnabled(v > 0);
@@ -187,6 +193,8 @@ ToolLibraryDialog::ToolLibraryDialog(const ToolLibrary &lib, const QString &mate
         QSettings st;
         st.setValue(QStringLiteral("toolStock/%1/broken").arg(t->number), stockBroken(*t) + 1);
         st.setValue(QStringLiteral("toolStock/%1/have").arg(t->number), qMax(0, stockHave(*t) - 1));
+        st.sync();
+        stampStock(t->number);
         updateStock();
     });
 
@@ -337,6 +345,13 @@ void ToolLibraryDialog::rebuildCollections(const QString &show)
     }
     QSettings().setValue(QStringLiteral("ui/toolCollection"), shownCollection());
     m_removeFrom->setEnabled(!shownCollection().isEmpty());
+}
+
+void ToolLibraryDialog::reloadFromSettings()
+{
+    m_collections = ToolCollections::loadSettings();
+    collectionsChanged(shownCollection());
+    updateStock();
 }
 
 void ToolLibraryDialog::collectionsChanged(const QString &show)
