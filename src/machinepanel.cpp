@@ -438,15 +438,6 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(probeBig, &QPushButton::clicked, this, [this] { openBitZero(); });
     pv->addWidget(probeBig);
     m_idleOnly << probeBig;
-    m_bzAsk = new QCheckBox(QStringLiteral("Ask before moving after Zero"), posCard);
-    m_bzAsk->setToolTip(QStringLiteral(
-        "After BitZero has set the zero, wait for you to take the magnet and BitZero "
-        "off and press OK before the bit moves."));
-    m_bzAsk->setChecked(QSettings().value(QStringLiteral("machine/bitzero/askBeforeMoving"), false).toBool());
-    connect(m_bzAsk, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(QStringLiteral("machine/bitzero/askBeforeMoving"), on);
-    });
-    pv->addWidget(m_bzAsk);
     cols->addWidget(posCard, 10);
 
     // ---- Jog card ----------------------------------------------------------
@@ -2239,7 +2230,7 @@ void MachinePanel::bitZeroApply()
                         .arg(what));
             }
         };
-        if (m_bzAsk && m_bzAsk->isChecked()) {
+        if (QSettings().value(QStringLiteral("machine/bitzero/askBeforeMoving"), false).toBool()) {
             // The zero is set and nothing moves until the plate and magnet are off.
             for (const QString &c : cmds)
                 m_grbl->sendCommand(c);

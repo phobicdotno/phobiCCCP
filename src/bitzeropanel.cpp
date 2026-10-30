@@ -179,6 +179,15 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
     contactHint->setWordWrap(true);
     contactHint->setStyleSheet(QStringLiteral("color: #8b93a1; font-size: 12px;"));
     lay->addWidget(contactHint);
+    auto *askMove = new QCheckBox(QStringLiteral("Ask before moving after Zero"), this);
+    askMove->setToolTip(QStringLiteral(
+        "After BitZero has set the zero, wait for you to take the magnet and BitZero "
+        "off and press OK before the bit moves."));
+    askMove->setChecked(QSettings().value(QStringLiteral("machine/bitzero/askBeforeMoving"), false).toBool());
+    connect(askMove, &QCheckBox::toggled, this, [](bool on) {
+        QSettings().setValue(QStringLiteral("machine/bitzero/askBeforeMoving"), on);
+    });
+    lay->addWidget(askMove);
 
     // Plate and feeds, folded like "Feed override, air cut" on the job page.
     auto *dimsToggle = new QToolButton(this);

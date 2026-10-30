@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.47 (build 137) — 2026-10-30
+
+> "Ask before moving after Zero" now sits under the green Probe box in the BitZero panel
+
+- **Machine:** the checkbox moved from under the "Probe zero (BitZero)…" button to the BitZero panel, right below the Probe open/closed box. Same setting, still off by default.
+
 ## v1.3.46 (build 136) — 2026-10-30
 
 > Wheel zoom is gentler (2 % a notch), and selecting a number leaves its unit out
