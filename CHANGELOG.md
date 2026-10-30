@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.50 (build 140) — 2026-10-30
+
+> Menus now light up the item under the mouse, including "Add to" a collection
+
+- **All pop-up menus:** the padding style given to menu items had switched off the default hover highlight, so nothing showed which item the mouse was on. The hovered item now gets the accent colour, and greyed-out items stay flat.
+
 ## v1.3.49 (build 139) — 2026-10-30
 
 > Unlock and BitSetter now hide while a job is cutting, like the other buttons

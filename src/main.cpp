@@ -304,6 +304,8 @@ static void applyDarkTheme(QApplication &app)
         QMenuBar::item:selected { background: #333945; }
         QMenu { font-size: 14px; }
         QMenu::item { padding: 6px 28px 6px 12px; }
+        QMenu::item:selected { background: palette(highlight); color: palette(highlighted-text); }
+        QMenu::item:disabled { color: palette(mid); background: transparent; }
         QToolBar { spacing: 4px; padding: 4px; border: 0; }
         QToolButton { padding: 4px 8px; border-radius: 4px; }
         QToolButton:checked { background: #3a4150; }
