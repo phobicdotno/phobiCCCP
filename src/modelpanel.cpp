@@ -130,7 +130,7 @@ protected:
         if (m_img.isNull()) return;
         const double steps = e->angleDelta().y() / 120.0;
         if (steps == 0) return;
-        const double f = qPow(1.25, steps);
+        const double f = qPow(1.02, steps);   // 2 % per wheel notch
         const QPointF pos = e->position();
         m_off = pos - f * (pos - m_off);
         m_scale *= f;

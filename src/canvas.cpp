@@ -3234,7 +3234,9 @@ void Canvas::wheelEvent(QWheelEvent *event)
 {
     const int dy = event->angleDelta().y();
     if (dy == 0) { QGraphicsView::wheelEvent(event); return; }   // horizontal scroll: pan, not zoom
-    const double factor = dy > 0 ? 1.15 : 1.0 / 1.15;
+    // 2 % per wheel notch (120 units). Touchpads and pinches send smaller
+    // deltas, many per gesture, so the step scales with the delta.
+    const double factor = qPow(1.02, dy / 120.0);
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     scale(factor, factor);
     emitZoom();

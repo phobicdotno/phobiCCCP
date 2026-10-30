@@ -211,7 +211,7 @@ protected:
         const double steps = e->angleDelta().y() / 120.0;
         if (steps == 0)
             return;
-        const double f = qPow(1.25, steps);
+        const double f = qPow(1.02, steps);   // 2 % per wheel notch
         // Zoom about the cursor: keep the world point under it fixed.
         const QPointF c(width() / 2.0, height() / 2.0);
         const QPointF pos = e->position();

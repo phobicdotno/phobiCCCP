@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.46 (build 136) — 2026-10-30
+
+> Wheel zoom is gentler (2 % a notch), and selecting a number leaves its unit out
+
+- **Drawing:**
+  - The mouse wheel and touchpad zoom 2 % per notch instead of 15 % (25 % in the 3D, simulation
+    and image views). Touchpad scrolls and pinches that arrive as small wheel steps zoom in
+    proportion, so they no longer jump a whole step each.
+- **Panels:**
+  - Selecting the text in a number field ("1.000 mm") takes only the number, never the unit or the
+    space before it, so typing over it keeps the unit. Applies to every number field.
+
 ## v1.3.45 (build 135) — 2026-10-29
 
 > Hold now lifts Z to the top and stops the spindle, without moving in XY; Resume starts the spindle, goes back down and carries on

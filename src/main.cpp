@@ -13,6 +13,10 @@
 #include "tiling.h"
 #include "vcarve.h"
 #include <QSet>
+#include <QAbstractSpinBox>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
+#include <QSpinBox>
 #include <QApplication>
 #include <QDebug>
 #include <QFile>
@@ -222,6 +226,50 @@ private:
     QPoint m_pos, m_global;
     bool m_eatRelease = false;
 };
+
+// A number field's unit ("1.000 mm") is never part of a selection, nor the
+// space before it: triple-click, drag or a select-all takes the number only,
+// so typing replaces it and the unit stays. Hooked on first focus, so every
+// field, in every window and dialog, is covered.
+static void keepUnitOutOfSelection(QWidget *now)
+{
+    auto *sb = qobject_cast<QAbstractSpinBox *>(now);
+    if (!sb && now && qobject_cast<QLineEdit *>(now))
+        sb = qobject_cast<QAbstractSpinBox *>(now->parentWidget());
+    QLineEdit *le = sb ? sb->findChild<QLineEdit *>() : nullptr;
+    if (!le || le->property("unitClampHooked").toBool())
+        return;
+    le->setProperty("unitClampHooked", true);
+    QObject::connect(le, &QLineEdit::selectionChanged, le, [sb, le] {
+        if (!le->hasSelectedText())
+            return;
+        QString prefix, suffix;
+        if (auto *d = qobject_cast<QDoubleSpinBox *>(sb)) {
+            prefix = d->prefix();
+            suffix = d->suffix();
+        } else if (auto *i = qobject_cast<QSpinBox *>(sb)) {
+            prefix = i->prefix();
+            suffix = i->suffix();
+        }
+        const QString t = le->text();
+        // Not showing the unit (an expression is being edited): leave it.
+        const int lo = !prefix.isEmpty() && t.startsWith(prefix) ? int(prefix.size()) : 0;
+        int hi = !suffix.isEmpty() && t.endsWith(suffix) ? int(t.size() - suffix.size()) : int(t.size());
+        while (hi > lo && t.at(hi - 1).isSpace())
+            --hi;
+        const int start = le->selectionStart();
+        const int end = start + int(le->selectedText().size());
+        const int cs = qBound(lo, start, hi), ce = qBound(lo, end, hi);
+        if (cs == start && ce == end)
+            return;
+        // Keep the direction: a selection dragged leftwards keeps its cursor at the start.
+        if (le->cursorPosition() == start)
+            le->setSelection(ce, cs - ce);
+        else
+            le->setSelection(cs, ce - cs);
+    });
+}
+
 
 // Fusion + a hand-tuned dark palette; small QSS pass for spacing/accents.
 static void applyDarkTheme(QApplication &app)
@@ -657,6 +705,8 @@ int main(int argc, char *argv[])
             }
     app.installEventFilter(new FileDialogIcons(&app));
     app.installEventFilter(new TouchHold(&app));
+    QObject::connect(&app, &QApplication::focusChanged, &app,
+                     [](QWidget *, QWidget *now) { keepUnitOutOfSelection(now); });
 #ifdef Q_OS_ANDROID
     // Qt's own file dialog, as on the desktop: Android's picker hands back
     // content:// links, which a design (an SQLite file) cannot be opened
