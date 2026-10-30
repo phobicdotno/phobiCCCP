@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.48 (build 138) — 2026-10-30
+
+> New bit in the library: #1203, 3-flute 1.5 mm with 5 mm of flute
+
+- **Tool library:** #1203 3F-1.5x5x50 — 1.5 mm cutting diameter, 5 mm flute, 50° taper up to a 4 mm shank, 50 mm overall, 3 flutes. Feeds are cautious guesses; check them before cutting.
+
 ## v1.3.47 (build 137) — 2026-10-30
 
 > "Ask before moving after Zero" now sits under the green Probe box in the BitZero panel

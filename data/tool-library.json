@@ -1669,6 +1669,78 @@
           "guess": true
         }
       }
+    },
+    {
+      "number": 1203,
+      "model": "3F-1.5x5x50",
+      "name": "3-Flute Taper-Neck 1.5 mm (5 mm flute)",
+      "kind": "endmill",
+      "vendor": "Generic",
+      "flutes": 3,
+      "angle": 0,
+      "corner_radius": 0,
+      "diameter": 1.5,
+      "shank": 4.0,
+      "length": 5.0,
+      "notes": "3 flutes, 1.5 mm tip with 5 mm of flute, then a 50° taper up to the 4 mm shank; 50 mm overall. Cut no deeper than 5 mm. Feeds are guesses.",
+      "feeds": {
+        "mdf": {
+          "rpm": 18000,
+          "feed": 1000,
+          "plunge": 150,
+          "stepdown": 0.6,
+          "stepover_pct": 35,
+          "guess": true
+        },
+        "softwood": {
+          "rpm": 18000,
+          "feed": 1500,
+          "plunge": 150,
+          "stepdown": 0.8,
+          "stepover_pct": 35,
+          "guess": true
+        },
+        "hardwood": {
+          "rpm": 18000,
+          "feed": 800,
+          "plunge": 100,
+          "stepdown": 0.4,
+          "stepover_pct": 30,
+          "guess": true
+        },
+        "acrylic": {
+          "rpm": 18000,
+          "feed": 700,
+          "plunge": 100,
+          "stepdown": 0.3,
+          "stepover_pct": 30,
+          "guess": true
+        },
+        "hdpe": {
+          "rpm": 18000,
+          "feed": 800,
+          "plunge": 200,
+          "stepdown": 0.4,
+          "stepover_pct": 30,
+          "guess": true
+        },
+        "aluminium": {
+          "rpm": 12000,
+          "feed": 150,
+          "plunge": 40,
+          "stepdown": 0.08,
+          "stepover_pct": 15,
+          "guess": true
+        },
+        "pvc": {
+          "rpm": 18000,
+          "feed": 1200,
+          "plunge": 150,
+          "stepdown": 0.5,
+          "stepover_pct": 35,
+          "guess": true
+        }
+      }
     }
   ]
 }
