@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.51 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.52 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +56,7 @@ add_library(phobicccp_core STATIC
     src/sketchgeom.cpp
     src/setupsheet.cpp
     src/importers.cpp
+    src/dxfexport.cpp
     src/toollibrary.cpp
     src/toolcollections.cpp
     src/stockstamp.cpp
@@ -224,6 +225,9 @@ add_executable(test_import tests/test_import.cpp)
 target_link_libraries(test_import PRIVATE phobicccp_core)
 target_compile_definitions(test_import PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")
 add_test(NAME import COMMAND test_import)
+add_executable(test_dxfexport tests/test_dxfexport.cpp)
+target_link_libraries(test_dxfexport PRIVATE phobicccp_core)
+add_test(NAME dxfexport COMMAND test_dxfexport)
 add_executable(test_cccpfile tests/test_cccpfile.cpp)
 target_link_libraries(test_cccpfile PRIVATE phobicccp_core)
 target_compile_definitions(test_cccpfile PRIVATE TEST_DATA_DIR="${CMAKE_SOURCE_DIR}/tests/data")

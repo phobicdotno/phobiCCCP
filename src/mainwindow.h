@@ -77,6 +77,7 @@ private slots:
     void onSettings();
     void onExportGcode();
     void onExportGcodeTiled();   // one program per tile_height band in Y
+    void onExportDxf();          // vectors (or the selection) as an R12 DXF in mm
     // `interactive` (every edit with Preview on) schedules the export: a
     // moment after the last edit it runs on a worker with a snapshot of the
     // document, and only the result for the newest edit is shown. The window

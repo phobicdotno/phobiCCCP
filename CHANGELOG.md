@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.52 (build 142) — 2026-11-06
+
+> File → Export DXF saves the vectors (or just the selected ones) as a DXF in mm
+
+- **Export DXF:** plain R12 DXF that CAD, CAM and laser programs read. Circles stay circles, curves and text become fine polylines (0.01 mm), each CC layer becomes a DXF layer, construction lines are left out.
+
 ## v1.3.51 (build 141) — 2026-10-30
 
 > The bits now live in a toollib/ folder in the repo and sync at every start, and bit stock and Collections sync between copies on the network

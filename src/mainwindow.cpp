@@ -35,6 +35,7 @@
 #include "vectoractions.h"
 #include "importui.h"
 #include "setupsheet.h"
+#include "dxfexport.h"
 #include <QDesktopServices>
 #include <QUrl>
 
@@ -761,6 +762,9 @@ MainWindow::MainWindow(QWidget *parent)
             ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
     fileMenu->addAction(QStringLiteral("Export G-code (&tiled)…"), this,
                         &MainWindow::onExportGcodeTiled);
+    fileMenu->addAction(QStringLiteral("Export D&XF…"), this, &MainWindow::onExportDxf)
+            ->setToolTip(QStringLiteral("Save the vectors as a DXF in mm (only the selected "
+                                        "ones when something is selected)"));
     fileMenu->addAction(QStringLiteral("Setup S&heet…"), this, [this] {
         // Fusion's setup sheet: a printable page of the job for the machine.
         if (m_doc.toolpaths().isEmpty()) {
@@ -1828,6 +1832,43 @@ void MainWindow::onExportGcode()
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
     if (!r.notes.isEmpty())
         msg += QStringLiteral("  (%1)").arg(r.notes.join(QStringLiteral("; ")));
+    statusBar()->showMessage(msg, 8000);
+}
+
+void MainWindow::onExportDxf()
+{
+    commitEdits();
+    const QStringList sel = m_canvas->selectedElementIds();
+    QVector<c2d::Element> els;
+    for (const c2d::Element &e : m_doc.elements())
+        if (sel.isEmpty() || sel.contains(e.id))
+            els.append(e);
+    const c2d::DxfExportResult r = c2d::exportDxf(els);
+    if (r.entities == 0) {
+        QMessageBox::information(this, QStringLiteral("Export DXF"),
+                                 QStringLiteral("There are no vectors to export."));
+        return;
+    }
+    QString suggestion = gcodeSuggestion();
+    suggestion.chop(3);   // ".nc"
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export DXF"), suggestion + QStringLiteral(".dxf"),
+        QStringLiteral("DXF (*.dxf);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    QSaveFile f(path);
+    f.setDirectWriteFallback(true);
+    if (!f.open(QIODevice::WriteOnly) || f.write(r.data) != r.data.size()
+        || !commitKeepingMode(f)) {
+        QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
+        return;
+    }
+    QString msg = QStringLiteral("Exported %1 %2 vector(s) to %3")
+                      .arg(QString::number(els.size() - r.skipped),
+                           sel.isEmpty() ? QStringLiteral("") : QStringLiteral("selected"),
+                           path).simplified();
+    if (r.skipped > 0)
+        msg += QStringLiteral("  (%1 construction left out)").arg(r.skipped);
     statusBar()->showMessage(msg, 8000);
 }
 
