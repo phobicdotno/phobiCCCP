@@ -510,17 +510,13 @@ int main(int argc, char *argv[])
     // there, and in about one job in twelve that was inside a tab: a hole
     // through the bridge, then the lift over what was left of it.
     {
-        int inside = 0, cases = 0, noTabs = 0;
-        for (double w : {40.0, 55.0, 73.0, 120.0, 200.0})
-        for (double step : {3.0, 2.0, 1.5, 4.0})
-        for (double ang : {20.0, 5.0, 10.0}) {
+        // Whether any cut goes below the tab top in the middle of a tab (over
+        // 1 mm from its ends); *lifts: whether there were tabs at all.
+        auto tabHit = [&](double w, const char *type, const QJsonObject &params, double tabTop, bool *lifts) {
             Rig r;
             r.addShape(c2d::Element::makeRectangle({30, 20}, w, 20 + w / 3, layer));
-            r.addToolpath("cutout", {{"cut_depth", 12.0}, {"depth_per_pass", step},
-                                     {"tab_height", 2.9}, {"ignore_tabs", false},
-                                     {"enable_ramping", true}, {"ramp_angle", ang}});
+            r.addToolpath(type, params);
             const c2d::GcodeResult g = c2d::exportGcode(r.doc);
-            const double tabTop = -9.1;
             // The stretches crossed at the tab top (no pass is at that depth).
             QVector<QVector<QLineF>> tabs;
             double px = 0, py = 0, pz = 5;
@@ -540,7 +536,7 @@ int main(int argc, char *argv[])
             // A cut below the tab top on such a stretch, over 1 mm from its ends.
             bool hit = false;
             for (const c2d::Op &op : g.ops) {
-                if (op.kind != c2d::Op::Feed || !(op.z < tabTop - 1e-6))
+                if ((op.kind != c2d::Op::Feed && op.kind != c2d::Op::Arc) || !(op.z < tabTop - 1e-6))
                     continue;
                 const QPointF q(op.x, op.y);
                 for (const QVector<QLineF> &tab : tabs) {
@@ -557,12 +553,48 @@ int main(int argc, char *argv[])
                     }
                 }
             }
+            *lifts = !tabs.isEmpty();
+            return hit;
+        };
+        int inside = 0, cases = 0, noTabs = 0;
+        for (double w : {40.0, 55.0, 73.0, 120.0, 200.0})
+        for (double step : {3.0, 2.0, 1.5, 4.0})
+        for (double ang : {20.0, 5.0, 10.0}) {
+            bool lifts = false;
+            inside += tabHit(w, "cutout", {{"cut_depth", 12.0}, {"depth_per_pass", step},
+                                           {"tab_height", 2.9}, {"ignore_tabs", false},
+                                           {"enable_ramping", true}, {"ramp_angle", ang}}, -9.1, &lifts);
             ++cases;
-            inside += hit;
-            noTabs += tabs.isEmpty();
+            noTabs += !lifts;
         }
         check(cases == 60 && noTabs == 0, "ramped cutouts with tabs: every one lifts over its tabs");
         check(inside == 0, "ramped cutouts with tabs: no pass plunges in the middle of a tab");
+
+        // The same for contours, with every way they have of getting down:
+        // ramp, lead-in arcs, a plain plunge; with and without finishing
+        // passes; outside and inside the vector.
+        inside = cases = noTabs = 0;
+        for (double w : {40.0, 73.0, 120.0, 200.0})
+        for (double step : {3.0, 2.0, 4.0})
+        for (int dir : {1, -1})
+        for (int entry : {0, 1, 2})
+        for (int fin : {0, 2}) {
+            QJsonObject p{{"end_depth", QStringLiteral("12.000")}, {"stepdown", step}, {"ofset_dir", dir},
+                          {"tab_height", 2.9}, {"ignore_tabs", false},
+                          {"finish_passes", fin}, {"finish_stepover", 0.4}, {"spring_pass", fin > 0}};
+            if (entry == 1) {
+                p.insert("enable_ramping", true);
+                p.insert("ramp_angle", 10.0);
+            } else if (entry == 2) {
+                p.insert("lead_radius", 3.0);
+            }
+            bool lifts = false;
+            inside += tabHit(w, "contour", p, -9.1, &lifts);
+            ++cases;
+            noTabs += !lifts;
+        }
+        check(cases == 144 && noTabs == 0, "contours with tabs: every one lifts over its tabs");
+        check(inside == 0, "contours with tabs (ramp, leads, finishing passes): no cut through the middle of a tab");
     }
 
     // --- feed rate 0 is refused, not posted as F0 --------------------------

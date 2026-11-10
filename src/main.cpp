@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "decimalkey.h"
 #include "phobiversion.h"
 #include "cccpfile.h"
 #include "shopdialog.h"
@@ -696,6 +697,7 @@ int main(int argc, char *argv[])
     if (qEnvironmentVariableIsEmpty("QT_LINUX_ACCESSIBILITY_ALWAYS_ON"))
         qputenv("QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "1");
     QApplication app(argc, argv);
+    c2d::DecimalKey::install(&app);   // "." and "," both type the decimal sign in number boxes
     c2d::installModelProvider();   // heightModelFor(doc) reads the 3D model stored in the .c2d
     QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
     QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));

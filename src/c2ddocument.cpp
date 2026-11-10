@@ -489,12 +489,18 @@ bool Document::createBlank(const QString &path, double width, double height,
 {
     // Same table layout the loader and save() rely on; save() clones this
     // file, so everything later edits are written into is created here.
-    QFile::remove(path);
+    //
+    // Built beside the destination and moved into place when it is complete.
+    // SQLite makes the file, empty, the moment it is opened: a folder sync
+    // that looked just then (or a crash) left a 0-byte .c2d behind, and a
+    // failure used to delete whatever file had been there before.
+    const QString tmp = path + QStringLiteral(".phobinew");
+    QFile::remove(tmp);
     const QString conn = QStringLiteral("c2dn_%1").arg(QUuid::createUuid().toString());
     bool ok = true;
     {
         QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
-        db.setDatabaseName(path);
+        db.setDatabaseName(tmp);
         if (!db.open()) {
             if (error) *error = db.lastError().text();
             ok = false;
@@ -558,8 +564,14 @@ bool Document::createBlank(const QString &path, double width, double height,
         }
     }
     QSqlDatabase::removeDatabase(conn);
-    if (!ok)
+    if (ok) {
         QFile::remove(path);
+        ok = QFile::rename(tmp, path);
+        if (!ok && error)
+            *error = QStringLiteral("Could not write %1").arg(path);
+    }
+    if (!ok)
+        QFile::remove(tmp);
     return ok;
 }
 

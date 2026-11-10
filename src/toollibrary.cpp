@@ -1,5 +1,6 @@
 #include "toollibrary.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -62,6 +63,77 @@ QMap<QString, QByteArray> ToolLibrary::readTree(const QString &root)
     return out;
 }
 
+bool ToolLibrary::validPath(const QString &rel)
+{
+    static const QRegularExpression ok(
+        QStringLiteral("^(materials\\.json|[a-z0-9_-]+/(kind\\.png|[0-9a-f]{6}\\.json))$"));
+    return ok.match(rel).hasMatch();
+}
+
+int ToolLibrary::indexSerial(const QByteArray &indexJson)
+{
+    return QJsonDocument::fromJson(indexJson).object().value(QStringLiteral("serial")).toInt(0);
+}
+
+namespace {
+QByteArray readSmall(const QString &path)
+{
+    QFile f(path);
+    if (f.size() > (2 << 20) || !f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return f.readAll();
+}
+
+// The synced copy's index (path -> sha1) when that copy is the one in use:
+// its serial is above the built-in index's. Empty otherwise.
+QJsonObject syncedIndex(QByteArray *raw = nullptr)
+{
+    const QByteArray idx = readSmall(ToolLibrary::cacheDir() + QStringLiteral("/index.json"));
+    if (idx.isEmpty()
+        || ToolLibrary::indexSerial(idx)
+               <= ToolLibrary::indexSerial(readSmall(QStringLiteral(":/data/toollib/index.json"))))
+        return QJsonObject();
+    if (raw)
+        *raw = idx;
+    return QJsonDocument::fromJson(idx).object().value(QStringLiteral("files")).toObject();
+}
+
+// One file of the synced copy: the cached one when it is what the index
+// says, else the built-in one (most files of a synced copy are the built-in
+// ones and are never downloaded).
+QByteArray syncedFile(const QString &rel, const QString &sha)
+{
+    const QByteArray b = readSmall(ToolLibrary::cacheDir() + QLatin1Char('/') + rel);
+    if (!b.isEmpty()
+        && QString::fromLatin1(QCryptographicHash::hash(b, QCryptographicHash::Sha1).toHex()) == sha)
+        return b;
+    return readSmall(QStringLiteral(":/data/toollib/") + rel);
+}
+} // namespace
+
+QMap<QString, QByteArray> ToolLibrary::currentTree(bool *synced)
+{
+    initToolResources();
+    if (synced)
+        *synced = false;
+    QByteArray raw;
+    const QJsonObject files = syncedIndex(&raw);
+    if (files.isEmpty())
+        return readTree(QStringLiteral(":/data/toollib"));
+    QMap<QString, QByteArray> out;
+    out.insert(QStringLiteral("index.json"), raw);
+    for (auto it = files.constBegin(); it != files.constEnd(); ++it) {
+        if (!validPath(it.key()))
+            continue;
+        const QByteArray b = syncedFile(it.key(), it.value().toString());
+        if (!b.isEmpty())
+            out.insert(it.key(), b);
+    }
+    if (synced)
+        *synced = true;
+    return out;
+}
+
 QImage ToolLibrary::kindImage(const QString &kind)
 {
     initToolResources();
@@ -69,22 +141,23 @@ QImage ToolLibrary::kindImage(const QString &kind)
     if (!ok.match(kind).hasMatch())
         return QImage();
     const QString rel = kind + QStringLiteral("/kind.png");
-    QImage img(cacheDir() + QLatin1Char('/') + rel);
-    if (img.isNull())
-        img.load(QStringLiteral(":/data/toollib/") + rel);
-    return img;
+    const QJsonObject files = syncedIndex();
+    if (!files.isEmpty())
+        return files.contains(rel) ? QImage::fromData(syncedFile(rel, files.value(rel).toString()))
+                                   : QImage();
+    return QImage(QStringLiteral(":/data/toollib/") + rel);
 }
 
 bool ToolLibrary::loadDefault(QString *err)
 {
-    initToolResources();
-    QMap<QString, QByteArray> files = readTree(QStringLiteral(":/data/toollib"));
-    const QMap<QString, QByteArray> synced = readTree(cacheDir());
-    for (auto it = synced.constBegin(); it != synced.constEnd(); ++it)
-        files.insert(it.key(), it.value());           // the synced copy wins, file by file
-    if (!loadFiles(files, err))
-        return false;
-    m_source = synced.isEmpty() ? QStringLiteral("built-in") : QStringLiteral("built-in + synced");
+    bool synced = false;
+    if (!loadFiles(currentTree(&synced), err)) {
+        // A synced copy that does not load must not take the library away.
+        if (!synced || !loadFiles(readTree(QStringLiteral(":/data/toollib")), err))
+            return false;
+        synced = false;
+    }
+    m_source = synced ? QStringLiteral("built-in + synced") : QStringLiteral("built-in");
     return true;
 }
 

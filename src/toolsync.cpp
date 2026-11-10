@@ -13,6 +13,7 @@
 #include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QUrl>
 
 namespace c2d {
@@ -38,9 +39,7 @@ QString ToolSync::defaultBaseUrl()
 
 bool ToolSync::validPath(const QString &rel)
 {
-    static const QRegularExpression ok(
-        QStringLiteral("^(materials\\.json|[a-z0-9_-]+/(kind\\.png|[0-9a-f]{6}\\.json))$"));
-    return ok.match(rel).hasMatch();
+    return ToolLibrary::validPath(rel);
 }
 
 void ToolSync::start(const QString &baseUrl, const QString &cacheDir)
@@ -49,7 +48,10 @@ void ToolSync::start(const QString &baseUrl, const QString &cacheDir)
     m_cache = cacheDir;
     m_queue.clear();
     m_sha.clear();
-    m_updated = m_failed = 0;
+    m_got.clear();
+    m_listed.clear();
+    m_index.clear();
+    m_updated = m_failed = m_missed = 0;
     QNetworkRequest rq{QUrl(m_base + QStringLiteral("index.json"))};
     rq.setTransferTimeout(8000);
     QNetworkReply *r = m_net->get(rq);
@@ -59,27 +61,37 @@ void ToolSync::start(const QString &baseUrl, const QString &cacheDir)
             done(QStringLiteral("offline: %1").arg(r->errorString()));
             return;
         }
-        const QJsonObject files = QJsonDocument::fromJson(r->read(kMaxFile)).object()
+        m_index = r->read(kMaxFile);
+        const QJsonObject files = QJsonDocument::fromJson(m_index).object()
                                       .value(QStringLiteral("files")).toObject();
         if (files.isEmpty()) {
             done(QStringLiteral("index.json has no files"));
             return;
         }
+        const QMap<QString, QByteArray> built = ToolLibrary::readTree(QStringLiteral(":/data/toollib"));
+        const int builtSerial = ToolLibrary::indexSerial(built.value(QStringLiteral("index.json")));
+        if (ToolLibrary::indexSerial(m_index) <= builtSerial) {
+            // The app was built from this toollib/ or a later one. A synced
+            // copy older than the built-in one is of no use any more.
+            QFile ix(m_cache + QStringLiteral("/index.json"));
+            if (!ix.open(QIODevice::ReadOnly) || ToolLibrary::indexSerial(ix.read(kMaxFile)) <= builtSerial) {
+                ix.close();
+                prune({});
+            }
+            done(QStringLiteral("up to date"));
+            return;
+        }
         // What the app has now: the synced copy, else the built-in one.
-        const QMap<QString, QByteArray> have = [&] {
-            QMap<QString, QByteArray> m = ToolLibrary::readTree(QStringLiteral(":/data/toollib"));
-            const QMap<QString, QByteArray> c = ToolLibrary::readTree(m_cache);
-            for (auto it = c.constBegin(); it != c.constEnd(); ++it)
-                m.insert(it.key(), it.value());
-            return m;
-        }();
+        const QMap<QString, QByteArray> cached = ToolLibrary::readTree(m_cache);
         for (auto it = files.constBegin(); it != files.constEnd(); ++it) {
             const QString sha = it.value().toString();
             if (!validPath(it.key()) || sha.size() != 40) {
                 ++m_failed;
                 continue;
             }
-            if (have.contains(it.key()) && QString::fromLatin1(sha1Of(have.value(it.key()))) == sha)
+            m_listed << it.key();
+            if ((cached.contains(it.key()) && QString::fromLatin1(sha1Of(cached.value(it.key()))) == sha)
+                || (built.contains(it.key()) && QString::fromLatin1(sha1Of(built.value(it.key()))) == sha))
                 continue;
             m_sha.insert(it.key(), sha);
             m_queue << it.key();
@@ -91,9 +103,7 @@ void ToolSync::start(const QString &baseUrl, const QString &cacheDir)
 void ToolSync::fetchNext()
 {
     if (m_queue.isEmpty()) {
-        done(m_updated || m_failed
-                 ? QStringLiteral("%1 updated, %2 rejected").arg(m_updated).arg(m_failed)
-                 : QStringLiteral("up to date"));
+        commit();
         return;
     }
     const QString rel = m_queue.takeFirst();
@@ -109,15 +119,71 @@ void ToolSync::fetchNext()
             ok = !QImage::fromData(body).isNull();
         else if (ok)
             ok = QJsonDocument::fromJson(body).isObject();
-        if (ok) {
-            const QString path = m_cache + QLatin1Char('/') + rel;
-            QDir().mkpath(QFileInfo(path).absolutePath());
-            QSaveFile f(path);
-            ok = f.open(QIODevice::WriteOnly) && f.write(body) == body.size() && f.commit();
-        }
-        ok ? ++m_updated : ++m_failed;
+        if (ok)
+            m_got.insert(rel, body);
+        else
+            ++m_missed;
         fetchNext();
     });
+}
+
+// All of it or none: the index is what makes the synced copy count, and a
+// copy with one file of the new index missing would show that bit as the
+// built-in (older) one, or not at all. The files first, the index last.
+void ToolSync::commit()
+{
+    if (m_missed > 0) {
+        m_failed += m_missed;
+        done(QStringLiteral("%1 file(s) did not arrive; trying again at the next start").arg(m_missed));
+        return;
+    }
+    bool ok = true;
+    auto write = [&](const QString &rel, const QByteArray &body) {
+        const QString path = m_cache + QLatin1Char('/') + rel;
+        QDir().mkpath(QFileInfo(path).absolutePath());
+        QSaveFile f(path);
+        return f.open(QIODevice::WriteOnly) && f.write(body) == body.size() && f.commit();
+    };
+    for (auto it = m_got.constBegin(); ok && it != m_got.constEnd(); ++it) {
+        ok = write(it.key(), it.value());
+        if (ok)
+            ++m_updated;
+    }
+    QFile cur(m_cache + QStringLiteral("/index.json"));
+    const bool sameIndex = cur.open(QIODevice::ReadOnly) && cur.read(kMaxFile + 1) == m_index;
+    cur.close();
+    if (ok && !sameIndex)
+        ok = write(QStringLiteral("index.json"), m_index);
+    if (!ok) {
+        ++m_failed;
+        done(QStringLiteral("could not write to %1").arg(m_cache));
+        return;
+    }
+    if (!m_listed.isEmpty())
+        prune(m_listed);
+    done(m_updated || m_failed
+             ? QStringLiteral("%1 updated, %2 rejected").arg(m_updated).arg(m_failed)
+             : QStringLiteral("up to date"));
+}
+
+// Library files in the cache that are not in `keep` (and, with nothing to
+// keep, its index too). Only files of the library's own pattern are touched.
+void ToolSync::prune(const QStringList &keep)
+{
+    const QSet<QString> want(keep.constBegin(), keep.constEnd());
+    const QMap<QString, QByteArray> cached = ToolLibrary::readTree(m_cache);
+    QSet<QString> dirs;
+    for (auto it = cached.constBegin(); it != cached.constEnd(); ++it) {
+        const bool ours = validPath(it.key()) || (keep.isEmpty() && it.key() == QLatin1String("index.json"));
+        if (!ours || want.contains(it.key()))
+            continue;
+        QFile::remove(m_cache + QLatin1Char('/') + it.key());
+        const int slash = it.key().indexOf(QLatin1Char('/'));
+        if (slash > 0)
+            dirs.insert(it.key().left(slash));
+    }
+    for (const QString &d : dirs)
+        QDir(m_cache).rmdir(d);   // only when it is empty now
 }
 
 void ToolSync::done(const QString &note)

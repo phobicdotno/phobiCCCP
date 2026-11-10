@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.54 (build 144) — 2026-11-10
+
+> Typing a number with a dot now works on a PC set to comma decimals (3.175 no longer becomes 317), and the tool library no longer keeps old synced bits
+
+- **Numbers:** on a PC with comma decimals (Norwegian number format, as on the shop PC) a typed dot was thrown away, so 3.175 became 317. Dot and comma now both work as the decimal key in every number box.
+- **Tool library:** after an app update, an older synced copy of a bit no longer hides the newer one that came with the update.
+- **Tool library:** a bit taken out of the library is now also removed on the PCs that had synced it.
+- **Files:** a new design file only appears once it is complete, so a folder sync can no longer pick up an empty one.
+
 ## v1.3.53 (build 143) — 2026-11-10
 
 > A ramped cutout no longer plunges into one of its own tabs; bit stock and Collections sharing between copies is steadier; quitting while a surface map is being probed no longer crashes

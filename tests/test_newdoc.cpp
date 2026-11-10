@@ -5,6 +5,7 @@
 #include "../src/recovery.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QDateTime>
 #include <QFileInfo>
@@ -31,6 +32,24 @@ int main(int argc, char **argv)
     QString err;
 
     check(c2d::Document::createBlank(blank, 300, 200, 19, &err), "createBlank");
+    check(!QFileInfo::exists(blank + QStringLiteral(".phobinew")), "no staging file left behind");
+    {
+        // A blank that cannot be made (no such folder) leaves nothing behind,
+        // and one that fails does not take an existing file with it.
+        const QString nowhere = dir.filePath(QStringLiteral("no/such/folder/x.c2d"));
+        check(!c2d::Document::createBlank(nowhere, 10, 10, 1, &err) && !QFileInfo::exists(nowhere)
+                  && !QFileInfo::exists(nowhere + QStringLiteral(".phobinew")),
+              "a blank that cannot be written leaves no empty file");
+        const QString kept = dir.filePath(QStringLiteral("kept.c2d"));
+        QFile k(kept);
+        k.open(QIODevice::WriteOnly);
+        k.write("mine");
+        k.close();
+        QDir().mkdir(kept + QStringLiteral(".phobinew"));   // the staging name is taken by a folder
+        check(!c2d::Document::createBlank(kept, 10, 10, 1, &err) && QFileInfo(kept).size() == 4,
+              "a failed blank leaves the file that was there");
+        QDir().rmdir(kept + QStringLiteral(".phobinew"));
+    }
     c2d::Document doc;
     check(doc.load(blank, &err), "load blank");
     check(doc.elements().isEmpty(), "blank has no elements");

@@ -25,10 +25,15 @@ that picture. `phobicccp --export-tool-sketches <dir>` writes the five built-in
 sketches.
 
 **How the app gets it:** the folder is built into every release, and at every
-start the app fetches `index.json` from GitHub and downloads only the files
-whose sha1 differs, into `~/.local/share/phobicdotno/phobiCCCP/toollib/`. Those
-files win over the built-in ones. Offline changes nothing. Turn it off with the
-setting `tools/syncAtStart=false`.
+start the app fetches `index.json` from GitHub. `index.json` has a `serial`
+that `make_index.py` raises by one with every change. When the serial on GitHub
+is above the one built into the app, the files whose sha1 differs are
+downloaded into `~/.local/share/phobicdotno/phobiCCCP/toollib/` (all of them or
+none), and the library is then exactly what that index lists: changed bits are
+replaced, new ones added, removed ones gone. When the app itself is updated to
+the same or a newer serial, the built-in library is used again and the synced
+copy is cleared. Offline changes nothing. Turn it off with the setting
+`tools/syncAtStart=false`.
 
 The bit stock counts and the Collections are not here: they are synced between
 copies of the app on the same network (see src/stocksync.h).

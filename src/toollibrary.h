@@ -10,8 +10,9 @@
 // Tool library / speeds & feeds: the Carbide 3D cutter catalogue with
 // per-material defaults. The library is the repo's toollib/ folder
 // (toollib/<kind>/<6 hex id>.json, one tool per file, plus materials.json and
-// a kind.png sketch per kind), built into the app and overlaid by a synced
-// copy in the app's data folder (see ToolSync). A single-file library with the
+// a kind.png sketch per kind), built into the app, with a synced copy in the
+// app's data folder that takes over while it is the newer one (see ToolSync
+// and currentTree()). A single-file library with the
 // old schema can still be loaded with loadFile(). applyToToolpath() writes a chosen tool
 // into a Carbide Create toolpath payload using CC's own key names — the
 // embedded `tool` object (diameter, number, angle, type, flutes, ...), the
@@ -52,12 +53,21 @@ struct LibraryMaterial {
 class ToolLibrary
 {
 public:
-    bool loadDefault(QString *err = nullptr);             // built-in toollib/ + synced overlay
+    bool loadDefault(QString *err = nullptr);             // the built-in toollib/ or the synced copy, whichever is newer
     // Files keyed by path under toollib/ ("endmill/aa9b3a.json", "materials.json").
     bool loadFiles(const QMap<QString, QByteArray> &files, QString *err = nullptr);
     static QString cacheDir();                            // synced copy; PHOBIC_TOOLLIB_CACHE overrides
     static QMap<QString, QByteArray> readTree(const QString &root);   // dir or :/ resource
     static QImage kindImage(const QString &kind);         // toollib/<kind>/kind.png, or null
+    // The files the library is made of right now. index.json carries a
+    // `serial` that toollib/make_index.py raises with every change: the synced
+    // copy is used only while its index is newer than the built-in one, and
+    // then the library is exactly what that index lists (a bit taken out of
+    // the repo is gone). An app update that ships a newer toollib/ wins over
+    // an older synced copy from then on, online or not.
+    static QMap<QString, QByteArray> currentTree(bool *synced = nullptr);
+    static int indexSerial(const QByteArray &indexJson);  // 0 when it has none
+    static bool validPath(const QString &rel);            // materials.json, <kind>/kind.png, <kind>/<6 hex>.json
     bool loadFile(const QString &path, QString *err = nullptr);
     bool loadJson(const QByteArray &json, QString *err = nullptr);
 

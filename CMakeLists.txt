@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.53 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.54 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -97,7 +97,7 @@ add_library(phobicccp_ui STATIC
     src/propertiespanel.cpp
     src/parameterspanel.cpp
     src/toolpathpanel.cpp src/shapestrip.cpp
-    src/dragscroll.cpp
+    src/dragscroll.cpp src/decimalkey.cpp
     src/toolpathform.cpp
     src/toollibrarydialog.cpp
     src/toolsync.cpp
@@ -319,6 +319,11 @@ if(Qt6Test_FOUND)
     add_executable(test_toolpathform tests/test_toolpathform.cpp)
     target_link_libraries(test_toolpathform PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME toolpathform COMMAND test_toolpathform)
+    # "." and "," both work as the decimal key, whatever the number format.
+    add_executable(test_decimalkey tests/test_decimalkey.cpp)
+    target_link_libraries(test_decimalkey PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME decimalkey COMMAND test_decimalkey)
+    set_tests_properties(decimalkey PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # Panel <-> canvas selection handover (needs the real widgets).
     add_executable(test_panels tests/test_panels.cpp)
     target_link_libraries(test_panels PRIVATE phobicccp_ui Qt6::Test)

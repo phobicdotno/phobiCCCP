@@ -4,6 +4,7 @@
 // Plain asserts, no framework; exits 0 on success.
 
 #include "../src/toolpathform.h"
+#include "../src/decimalkey.h"
 #include "../src/c2ddocument.h"
 
 #include <QAbstractButton>
@@ -45,6 +46,7 @@ int main(int argc, char *argv[])
 {
     qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
+    c2d::DecimalKey::install(&app);   // as the app does: the checks type "." whatever the number format
 
     QJsonObject speeds{{"feedrate", 3000.0}, {"plungerate", 600.0}, {"rpm", 16000.0}};
     QJsonObject tool{{"number", 1106}, {"diameter", 10.0}, {"flutes", 2}, {"type", 0},

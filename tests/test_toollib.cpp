@@ -44,7 +44,7 @@ static QByteArray sha1(const QByteArray &b)
 }
 
 // A source folder like the repo's, with index.json made from what is in it.
-static void writeIndex(const QString &dir, const QStringList &extraBad = {})
+static void writeIndex(const QString &dir, int serial, const QStringList &extraBad = {})
 {
     QJsonObject files;
     const QMap<QString, QByteArray> t = c2d::ToolLibrary::readTree(dir);
@@ -54,6 +54,7 @@ static void writeIndex(const QString &dir, const QStringList &extraBad = {})
     for (const QString &b : extraBad)
         files.insert(b, QString(40, QLatin1Char('a')));
     QJsonObject root;
+    root.insert(QStringLiteral("serial"), serial);
     root.insert(QStringLiteral("files"), files);
     put(dir + QStringLiteral("/index.json"), QJsonDocument(root).toJson());
 }
@@ -116,9 +117,17 @@ int main(int argc, char **argv)
         shaOk = shaOk && repo.contains(it.key()) && QString::fromLatin1(sha1(repo.value(it.key()))) == it.value().toString();
     check(shaOk && idx.size() == want.size() - 1, "index.json is current (run toollib/make_index.py)");
 
-    // Overlay: a file in the synced copy replaces the built-in one, a new id adds a tool.
+    const int serial = c2d::ToolLibrary::indexSerial(built.value(QStringLiteral("index.json")));
+    check(serial >= 1, "index.json has a serial");
+
+    // A synced copy counts only while its index is newer than the built-in
+    // one, and then the library is exactly what that index lists.
     {
         const c2d::LibraryTool *one = lib.byNumber(1203);
+        const QString gone = lib.byNumber(201) ? lib.byNumber(201)->id : QString();
+        for (auto it = built.constBegin(); it != built.constEnd(); ++it)
+            if (it.key() != QLatin1String("index.json") && !it.key().endsWith(gone + ".json"))
+                put(cache + "/" + it.key(), it.value());
         QJsonObject o = QJsonDocument::fromJson(repo.value(QStringLiteral("endmill/") + one->id + ".json")).object();
         o.insert(QStringLiteral("notes"), QStringLiteral("edited here"));
         put(cache + "/endmill/" + one->id + ".json", QJsonDocument(o).toJson());
@@ -126,10 +135,29 @@ int main(int argc, char **argv)
         n.insert(QStringLiteral("id"), QStringLiteral("abcdef"));
         n.insert(QStringLiteral("number"), 9999);
         put(cache + "/endmill/abcdef.json", QJsonDocument(n).toJson());
+        writeIndex(cache, serial + 1);
         c2d::ToolLibrary l2;
         check(l2.loadDefault() && l2.byNumber(9999) && l2.byNumber(1203)->notes == QLatin1String("edited here"),
-              "synced copy overlays and adds");
+              "a newer synced copy replaces and adds");
+        check(!gone.isEmpty() && !l2.byNumber(201), "a bit the newer index no longer lists is gone");
         check(l2.source() == QLatin1String("built-in + synced"), "source says synced");
+        // A file in the cache that is not what the index says is not used.
+        put(cache + "/endmill/" + one->id + ".json", QByteArray("{\"number\":1203,\"notes\":\"tampered\"}"));
+        c2d::ToolLibrary l2b;
+        check(l2b.loadDefault() && l2b.byNumber(1203) && l2b.byNumber(1203)->notes != QLatin1String("tampered"),
+              "a cached file that does not match the index is not used");
+        // The app updated since: its built-in library is as new as the synced
+        // copy (or newer), so the synced one no longer counts, offline too.
+        writeIndex(cache, serial);
+        c2d::ToolLibrary l2c;
+        check(l2c.loadDefault() && !l2c.byNumber(9999) && l2c.byNumber(201)
+                  && l2c.byNumber(1203)->notes != QLatin1String("edited here")
+                  && l2c.source() == QLatin1String("built-in"),
+              "an older synced copy does not override the built-in library");
+        // ...and a copy from before the serial (bare files, no index) neither.
+        QFile::remove(cache + "/index.json");
+        c2d::ToolLibrary l2d;
+        check(l2d.loadDefault() && !l2d.byNumber(9999), "a synced copy without an index is not used");
         QDir(cache).removeRecursively();
     }
 
@@ -138,10 +166,16 @@ int main(int argc, char **argv)
     for (auto it = repo.constBegin(); it != repo.constEnd(); ++it)
         if (want.contains(it.key()))
             put(src + "/" + it.key(), it.value());
-    writeIndex(src);
+    writeIndex(src, serial);
+    // A stale copy from an older version is cleared away by the sync.
+    put(cache + "/endmill/abcdef.json", QByteArray("{\"number\":9999}"));
+    put(cache + "/keep.txt", QByteArray("not ours"));
     auto r = runSync(src, cache);
     check(r.updated == 0 && r.failed == 0, "same as built-in: nothing to fetch");
-    check(!QDir(cache).exists() || QDir(cache).isEmpty(), "and nothing written");
+    check(!QFileInfo::exists(cache + "/endmill/abcdef.json") && !QFileInfo::exists(cache + "/index.json"),
+          "and the stale synced copy is cleared");
+    check(QFileInfo::exists(cache + "/keep.txt"), "a file that is not the library's is left alone");
+    QFile::remove(cache + "/keep.txt");
 
     const QString id = lib.byNumber(1203)->id;
     QJsonObject o = QJsonDocument::fromJson(repo.value("endmill/" + id + ".json")).object();
@@ -150,7 +184,7 @@ int main(int argc, char **argv)
     o.insert(QStringLiteral("id"), QStringLiteral("0a0b0c"));
     o.insert(QStringLiteral("number"), 4242);
     put(src + "/endmill/0a0b0c.json", QJsonDocument(o).toJson());
-    writeIndex(src, {QStringLiteral("../evil.json"), QStringLiteral("endmill/notahex.json")});
+    writeIndex(src, serial + 1, {QStringLiteral("../evil.json"), QStringLiteral("endmill/notahex.json")});
     r = runSync(src, cache);
     check(r.updated == 2, "one changed and one new tool fetched");
     check(r.failed == 2, "paths off the pattern are refused");
@@ -161,6 +195,40 @@ int main(int argc, char **argv)
           "library sees the synced tools");
     r = runSync(src, cache);
     check(r.updated == 0 && r.failed == 2, "second run: up to date");
+
+    // A bit taken out of the repo: gone from the cache and from the library,
+    // a synced one and a built-in one alike.
+    {
+        const QString out201 = lib.byNumber(201)->id;
+        QFile::remove(src + "/endmill/0a0b0c.json");
+        QFile::remove(src + "/endmill/" + out201 + ".json");
+        writeIndex(src, serial + 2);
+        r = runSync(src, cache);
+        check(r.failed == 0 && !QFileInfo::exists(cache + "/endmill/0a0b0c.json"),
+              "a bit removed from the repo is removed from the synced copy");
+        c2d::ToolLibrary l4;
+        check(l4.loadDefault() && !l4.byNumber(4242) && !l4.byNumber(201)
+                  && l4.byNumber(1203)->notes == QLatin1String("new note"),
+              "and from the library, the rest stays");
+    }
+
+    // One file that does not arrive whole: nothing of that sync is kept, and
+    // what was synced before stays in use.
+    put(src + "/endmill/0a0b0c.json", QJsonDocument(o).toJson());
+    writeIndex(src, serial + 3);
+    {
+        QJsonObject p2 = o;
+        p2.insert(QStringLiteral("id"), QStringLiteral("0d0e0f"));
+        p2.insert(QStringLiteral("number"), 4343);
+        put(src + "/endmill/0d0e0f.json", QJsonDocument(p2).toJson());
+        writeIndex(src, serial + 3);
+        put(src + "/endmill/0d0e0f.json", QJsonDocument(p2).toJson(QJsonDocument::Compact));   // differs from the index
+        r = runSync(src, cache);
+        c2d::ToolLibrary l5;
+        check(r.updated == 0 && r.failed >= 1 && l5.loadDefault() && !l5.byNumber(4242) && !l5.byNumber(4343)
+                  && l5.byNumber(1203)->notes == QLatin1String("new note"),
+              "a sync with a file missing changes nothing");
+    }
 
     // A file that does not match its sha1 is dropped.
     put(src + "/endmill/0a0b0c.json", QJsonDocument(o).toJson(QJsonDocument::Compact));   // differs from the index
