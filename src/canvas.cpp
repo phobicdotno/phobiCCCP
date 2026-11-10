@@ -523,6 +523,15 @@ Canvas::Canvas(QWidget *parent)
     });
     connect(this, &Canvas::zoomChanged, this, [this] { updateHud(); });
     updateHud();
+
+    // The stock size, top left, as on the Simulate page.
+    m_stockLabel = new QLabel(this);
+    m_stockLabel->setObjectName(QStringLiteral("canvasStock"));
+    m_stockLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_stockLabel->setStyleSheet(QStringLiteral(
+        "#canvasStock { background: rgba(22,24,29,215); color: #aab1bd; border-radius: 8px;"
+        " padding: 5px 10px; }"));
+    m_stockLabel->hide();
     connect(m_scene, &QGraphicsScene::selectionChanged,
             this, &Canvas::onSelectionChanged);
 }
@@ -893,6 +902,26 @@ void Canvas::updateHud()
         : QStringLiteral("X \u2014   Y \u2014");
     m_hudText->setText(QStringLiteral("%1%   %2").arg(qRound(qAbs(transform().m11()) * 100.0)).arg(pos));
     placeHud();
+}
+
+// "Stock 470 × 470 × 10 mm" from the open design; hidden with no design.
+void Canvas::updateStockLabel()
+{
+    if (!m_stockLabel)
+        return;
+    const double w = m_doc ? m_doc->boardWidth() : 0, h = m_doc ? m_doc->boardHeight() : 0;
+    if (!(w > 0 && h > 0)) {
+        m_stockLabel->hide();
+        return;
+    }
+    const double t = m_doc->params().value("thickness", "0").toDouble();
+    m_stockLabel->setText(t > 0
+        ? QStringLiteral("Stock %1 \u00d7 %2 \u00d7 %3 mm").arg(w, 0, 'g', 5).arg(h, 0, 'g', 5).arg(t, 0, 'g', 4)
+        : QStringLiteral("Stock %1 \u00d7 %2 mm").arg(w, 0, 'g', 5).arg(h, 0, 'g', 5));
+    m_stockLabel->adjustSize();
+    m_stockLabel->move(10, 10);
+    m_stockLabel->show();
+    m_stockLabel->raise();
 }
 
 void Canvas::placeHud()
@@ -1554,6 +1583,7 @@ void Canvas::zoomFit()
 
 void Canvas::rebuild()
 {
+    updateStockLabel();
     // The scene is rebuilt from scratch; keep the selection (and with it the
     // node-edit target and the properties panel) across the edit.
     const QStringList selected = selectedElementIds();
@@ -1627,6 +1657,7 @@ void Canvas::resizeEvent(QResizeEvent *event)
 {
     QGraphicsView::resizeEvent(event);
     placeHud();
+    updateStockLabel();
     if (!m_fitted && m_doc && m_doc->boardWidth() > 0 && m_doc->boardHeight() > 0
         && viewport()->width() > 100) {
         zoomFit();

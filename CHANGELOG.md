@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.56 (build 146) — 2026-11-10
+
+> The stock size now shows in the top left corner of the drawing on the Design and Toolpaths pages, like on Simulate.
+
+- **Stock size:** "Stock 470 × 470 × 10 mm" is shown top left on the Design and Toolpaths pages.
+
 ## v1.3.55 (build 145) — 2026-11-10
 
 > A pocket now shows as a solid yellow area with only every 5th ring drawn, and the Machine page has a Hover 5 cm button that traces the job outline above the work.

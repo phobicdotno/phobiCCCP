@@ -203,6 +203,8 @@ private:
     void onSelectionChanged();
     void emitZoom();
     void placeHud();
+    void updateStockLabel();
+    QLabel *m_stockLabel = nullptr;     // top-left: the stock size
     QWidget *m_hud = nullptr;           // bottom-right: zoom - / + and the live readout
     QLabel *m_hudText = nullptr;
     QPointF m_hudPos;
