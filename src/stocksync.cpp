@@ -1,6 +1,7 @@
 #include "stocksync.h"
 
 #include "stockstamp.h"
+#include "toolcollections.h"
 
 #include <QDateTime>
 #include <QJsonDocument>
@@ -36,6 +37,8 @@ QSettings *StockSync::open() const
 
 bool StockSync::start()
 {
+    if (m_sock)
+        return true;                                    // started already
     m_sock = new QUdpSocket(this);
     if (!m_sock->bind(QHostAddress::AnyIPv4, m_listen,
                       QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint)) {
@@ -120,8 +123,12 @@ bool StockSync::merge(const QByteArray &data)
     const QJsonObject coll = root.value(QStringLiteral("coll")).toObject();
     const qint64 cts = static_cast<qint64>(coll.value(QStringLiteral("ts")).toDouble());
     const QByteArray cj = coll.value(QStringLiteral("json")).toString().toUtf8();
+    // Only what the Collections reader takes: any other JSON object ("{}")
+    // read back as nothing and showed the two built-in lists instead of the
+    // user's own, which the next edit then saved over them.
+    ToolCollections parsed;
     if (cts > 0 && cts <= limit && cts > s->value(QLatin1String(kCollTs), 0).toLongLong()
-        && QJsonDocument::fromJson(cj).isObject() && cj.size() < 50000) {
+        && cj.size() < 50000 && ToolCollections::fromJson(cj, &parsed)) {
         s->setValue(QLatin1String(kCollKey), cj);
         s->setValue(QLatin1String(kCollTs), cts);
         changed = true;
@@ -153,12 +160,17 @@ void StockSync::incoming()
         const QJsonObject root = QJsonDocument::fromJson(data).object();
         if (root.value(QStringLiteral("from")).toString() == m_self)
             continue;                                   // our own broadcast
+        // Not one of ours: no answer either, or any stray packet on this port
+        // makes every copy broadcast its numbers.
+        if (root.value(QStringLiteral("app")).toString() != QLatin1String(kApp)
+            || root.value(QStringLiteral("v")).toInt() != 1)
+            continue;
         const bool changed = merge(data);
         if (changed)
             emit this->changed();
         // The sender may be behind: tell it what we have, at most every 2 s.
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (!changed && now - m_lastReply > 2000 && payload() != QByteArray()) {
+        if (!changed && now - m_lastReply > 2000) {
             m_lastReply = now;
             announceSoon();
         }

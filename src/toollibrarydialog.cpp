@@ -349,8 +349,14 @@ void ToolLibraryDialog::rebuildCollections(const QString &show)
 
 void ToolLibraryDialog::reloadFromSettings()
 {
+    // Shown, not saved: saving stamps the Collections as changed here and
+    // now, which sends them out again as the newest. Two copies with this
+    // window open then answered each other for ever, and a copy that only
+    // heard a stock count passed its old Collections off as the latest.
     m_collections = ToolCollections::loadSettings();
-    collectionsChanged(shownCollection());
+    const QString show = shownCollection();
+    rebuildCollections(show);
+    rebuildList();
     updateStock();
 }
 

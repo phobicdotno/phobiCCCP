@@ -3,6 +3,7 @@
 // The stock row's "Broke one" and the list's "N in stock" follow the count.
 #include "../src/toollibrarydialog.h"
 #include "../src/toollibrary.h"
+#include "../src/stocksync.h"
 
 #include <QApplication>
 #include <QComboBox>
@@ -188,6 +189,30 @@ int main(int argc, char **argv)
         check(QSettings().value(key + QStringLiteral("/broken"), 0).toInt() == 1,
               "a disabled Broke one counts nothing");
         QSettings().remove(key);
+    }
+    // A peer's Collections arrive while the window is open: they are shown,
+    // and not stamped as changed here (that sent them straight back as the
+    // newest, two open windows answering each other without end).
+    {
+        auto *ss = new c2d::StockSync(QStringLiteral("unused.ini"), 0, QHostAddress(QHostAddress::LocalHost), 9, &app);
+        c2d::ToolLibraryDialog dlg(lib, QString(), -1);
+        QSettings st;
+        st.setValue(QStringLiteral("tools/collections"),
+                    QByteArray("{\"collections\":[{\"name\":\"From the laptop\",\"tools\":[201]}]}"));
+        st.setValue(QStringLiteral("tools/collectionsTs"), 4242);
+        st.sync();
+        emit ss->changed();
+        bool shown = false;
+        for (QComboBox *c : dlg.findChildren<QComboBox *>())
+            shown = shown || c->findData(QStringLiteral("From the laptop")) >= 0;
+        check(shown, "a peer's collection shows in the open window");
+        check(QSettings().value(QStringLiteral("tools/collectionsTs")).toLongLong() == 4242,
+              "showing a peer's collections does not stamp them as changed here");
+        check(QSettings().value(QStringLiteral("tools/collections")).toByteArray().contains("From the laptop"),
+              "and leaves them as they came");
+        delete ss;
+        QSettings().remove(QStringLiteral("tools/collections"));
+        QSettings().remove(QStringLiteral("tools/collectionsTs"));
     }
     return g_fail ? 1 : 0;
 }

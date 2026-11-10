@@ -1368,6 +1368,12 @@ MachinePanel::MachinePanel(QWidget *parent)
 MachinePanel::~MachinePanel()
 {
     disconnect(m_grbl, nullptr, this, nullptr);
+    // The streamer closes the port as it is deleted, after this panel's own
+    // members are gone. A surface map still probing hears that and reports
+    // "failed" to the panel: quitting while it mapped wrote to the log and the
+    // BitZero panel of a half-destroyed window. The gamepad likewise.
+    disconnect(m_mapper, nullptr, this, nullptr);
+    disconnect(m_pad, nullptr, this, nullptr);
 }
 
 // ---- small helpers -----------------------------------------------------------

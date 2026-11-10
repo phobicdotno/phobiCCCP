@@ -264,6 +264,10 @@ int main(int argc, char **argv)
         check(m.haveZ && m.z == -2.733, "modal: work Z, a G53 line leaves it alone");
         check(!GrblStreamer::scanModal({"G0Z5", "G91", "G1Z-1F300"}, 3).valid, "modal: G91 cannot be followed");
         check(GrblStreamer::scanModal({"G0Z5", "M05"}, 2).spindle == QChar('5'), "modal: M05 is spindle off");
+        {
+            const GrblStreamer::Modal c = GrblStreamer::scanModal({"G1Z-3F400", "G1X5 (back to Z9 F99 G0)"}, 2);
+            check(c.z == -3 && c.feed == 400 && c.motion == 1, "modal: words inside a ( ) comment set nothing");
+        }
         check(GrblStreamer::scanModal({"G90G21", "G1Z0F600"}, 2).motion == 1,
               "modal: G21 is not a motion mode");
 
@@ -296,6 +300,9 @@ int main(int argc, char **argv)
         spin(6000, [&] { return finished; });
         check(finished, "hold: the program carries on to its end");
         check(grbl.seen.lastIndexOf("M03S16000") > off, "hold: the spindle comes on again after the lift");
+        // The flags above end with this block; the streamer lives on.
+        QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
 
     // Two bits with the same number: the program changes tools twice at

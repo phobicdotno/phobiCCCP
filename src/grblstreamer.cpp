@@ -289,10 +289,13 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
     static const QRegularExpression sWord(QStringLiteral("(?:^|[^A-Z])S(-?[0-9.]+)"));
     static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z(-?[0-9.]+)"));
     static const QRegularExpression mWord(QStringLiteral("(?:^|[^A-Z0-9.])M0*([345])(?![0-9.])"));
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
     Modal m;
     for (int i = 0; i < upTo && i < lines.size(); ++i) {
         QString l = lines.at(i);
-        l = l.left(l.indexOf(QChar(';')) < 0 ? l.size() : l.indexOf(QChar(';'))).toUpper();
+        l = l.left(l.indexOf(QChar(';')) < 0 ? l.size() : l.indexOf(QChar(';')));
+        l.remove(paren);                 // "(depth Z-3 F200)" after a move sets nothing
+        l = l.toUpper();
         if (l.startsWith(kToolMarker) || l == kHoldMarker || l.trimmed().isEmpty())
             continue;
         bool machine = false;
@@ -792,6 +795,10 @@ qint64 GrblStreamer::msSinceAck() const
 void GrblStreamer::onReadyRead()
 {
     m_rx += m_port->readAll();
+    // Noise with no line end in it (wrong baud rate, a device that is not
+    // GRBL) would be kept and searched again on every read, for ever.
+    if (m_rx.size() > 65536 && !m_rx.contains('\n'))
+        m_rx.clear();
     int nl;
     while ((nl = m_rx.indexOf('\n')) >= 0) {
         const QByteArray line = m_rx.left(nl).trimmed();

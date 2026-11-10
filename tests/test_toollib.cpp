@@ -4,10 +4,12 @@
 #include "../src/toollibrary.h"
 #include "../src/toolsync.h"
 #include "../src/stocksync.h"
+#include "../src/stockstamp.h"
 #include <QSettings>
 #include <QTimer>
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
@@ -214,6 +216,33 @@ int main(int argc, char **argv)
               "older numbers do not overwrite newer ones");
         check(!B.merge("not json") && !B.merge("{\"app\":\"phobiCCCP-stock\",\"v\":1,\"stock\":{\"201\":{\"have\":99999,\"broken\":0,\"ts\":9999999999999}}}"),
               "junk and out-of-range numbers are ignored");
+        // Collections that are JSON but not Collections would read back as
+        // none at all: the user's own lists gone, the two built-in ones shown.
+        const QByteArray before = QSettings(b, QSettings::IniFormat).value("tools/collections").toByteArray();
+        check(!B.merge("{\"app\":\"phobiCCCP-stock\",\"v\":1,\"coll\":{\"ts\":900000,\"json\":\"{}\"}}")
+                  && QSettings(b, QSettings::IniFormat).value("tools/collections").toByteArray() == before,
+              "collections that are not collections are refused");
+        check(B.start(), "a second start is harmless");
+    }
+    // A stamp is never older than the one it replaces (a peer's clock ahead).
+    {
+        QCoreApplication::setOrganizationName(QStringLiteral("phobicccp-test"));
+        QCoreApplication::setApplicationName(QStringLiteral("test_toollib"));
+        const qint64 ahead = QDateTime::currentMSecsSinceEpoch() + 3600 * 1000;
+        QSettings().setValue(QStringLiteral("toolStock/77/ts"), ahead);
+        QSettings().setValue(QStringLiteral("tools/collectionsTs"), ahead);
+        c2d::stampStock(77);
+        c2d::stampCollections();
+        check(QSettings().value(QStringLiteral("toolStock/77/ts")).toLongLong() > ahead,
+              "a stock change here is newer than a stamp from a clock that runs ahead");
+        check(QSettings().value(QStringLiteral("tools/collectionsTs")).toLongLong() > ahead,
+              "and so is a Collections change");
+        QSettings().remove(QStringLiteral("toolStock/77"));
+        QSettings().remove(QStringLiteral("tools/collectionsTs"));
+        c2d::stampStock(78);
+        check(qAbs(QSettings().value(QStringLiteral("toolStock/78/ts")).toLongLong()
+                   - QDateTime::currentMSecsSinceEpoch()) < 5000, "a first stamp is the time now");
+        QSettings().remove(QStringLiteral("toolStock/78"));
     }
     return g_fail ? 1 : 0;
 }
