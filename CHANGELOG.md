@@ -2,8 +2,9 @@
 
 ## v1.3.53 (build 143) — 2026-11-10
 
-> Bit stock and Collections sharing between copies is steadier, and quitting while a surface map is being probed no longer crashes
+> A ramped cutout no longer plunges into one of its own tabs; bit stock and Collections sharing between copies is steadier; quitting while a surface map is being probed no longer crashes
 
+- **Toolpaths:** with ramping on and tabs, the first pass below the tab tops started wherever the last ramp had ended, and now and then that was the middle of a tab: the bit went straight down through the bridge holding the part. It now goes back along the slot to the start of the cut first, which is always clear of the tabs.
 - **Stock:** two copies with the tool library open at the same time no longer send the Collections back and forth without end, and a copy that only heard a stock count no longer passes its own older Collections off as the newest.
 - **Stock:** a change made here now also wins when another copy's clock runs ahead (it used to be put back a moment later).
 - **Stock:** Collections from the network are only taken when they really are Collections, so a bad packet cannot empty your lists; and stray packets on the port are no longer answered.

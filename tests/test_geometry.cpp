@@ -504,6 +504,67 @@ int main(int argc, char *argv[])
               "ramped cutout with tabs: the last pass leaves the tabs standing");
     }
 
+    // --- ramping + tabs: no pass starts in the middle of a tab --------------
+    // The ramped passes above the tabs end where their ramp reached depth,
+    // anywhere on the ring; the first pass below the tab tops plunged right
+    // there, and in about one job in twelve that was inside a tab: a hole
+    // through the bridge, then the lift over what was left of it.
+    {
+        int inside = 0, cases = 0, noTabs = 0;
+        for (double w : {40.0, 55.0, 73.0, 120.0, 200.0})
+        for (double step : {3.0, 2.0, 1.5, 4.0})
+        for (double ang : {20.0, 5.0, 10.0}) {
+            Rig r;
+            r.addShape(c2d::Element::makeRectangle({30, 20}, w, 20 + w / 3, layer));
+            r.addToolpath("cutout", {{"cut_depth", 12.0}, {"depth_per_pass", step},
+                                     {"tab_height", 2.9}, {"ignore_tabs", false},
+                                     {"enable_ramping", true}, {"ramp_angle", ang}});
+            const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+            const double tabTop = -9.1;
+            // The stretches crossed at the tab top (no pass is at that depth).
+            QVector<QVector<QLineF>> tabs;
+            double px = 0, py = 0, pz = 5;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind != c2d::Op::Feed && op.kind != c2d::Op::Rapid && op.kind != c2d::Op::Arc)
+                    continue;
+                if (op.kind == c2d::Op::Feed && std::abs(op.z - tabTop) < 1e-6 && std::abs(pz - tabTop) < 1e-6
+                    && std::hypot(op.x - px, op.y - py) > 1e-6) {
+                    const QLineF l(px, py, op.x, op.y);
+                    if (!tabs.isEmpty() && QLineF(tabs.last().last().p2(), l.p1()).length() < 1e-6)
+                        tabs.last() << l;
+                    else
+                        tabs << QVector<QLineF>{l};
+                }
+                px = op.x; py = op.y; pz = op.z;
+            }
+            // A cut below the tab top on such a stretch, over 1 mm from its ends.
+            bool hit = false;
+            for (const c2d::Op &op : g.ops) {
+                if (op.kind != c2d::Op::Feed || !(op.z < tabTop - 1e-6))
+                    continue;
+                const QPointF q(op.x, op.y);
+                for (const QVector<QLineF> &tab : tabs) {
+                    double total = 0, run = 0;
+                    for (const QLineF &l : tab)
+                        total += l.length();
+                    for (const QLineF &l : tab) {
+                        const QPointF u = l.p2() - l.p1();
+                        const double t = qBound(0.0, QPointF::dotProduct(q - l.p1(), u) / QPointF::dotProduct(u, u), 1.0);
+                        const double along = run + t * l.length();
+                        if (QLineF(q, l.p1() + t * u).length() < 0.3 && along > 1.0 && along < total - 1.0)
+                            hit = true;
+                        run += l.length();
+                    }
+                }
+            }
+            ++cases;
+            inside += hit;
+            noTabs += tabs.isEmpty();
+        }
+        check(cases == 60 && noTabs == 0, "ramped cutouts with tabs: every one lifts over its tabs");
+        check(inside == 0, "ramped cutouts with tabs: no pass plunges in the middle of a tab");
+    }
+
     // --- feed rate 0 is refused, not posted as F0 --------------------------
     {
         Rig r;

@@ -2295,6 +2295,38 @@ public:
         retract();
     }
 
+    // From where we stand on the closed ring to its first vertex, along the
+    // ring the shorter way round, at depth z (a slot already cut to z: no
+    // new cut, and never a chord across the part). Off the ring, or its start
+    // not found on it: up, over and down to z instead.
+    void walkToStart(const QPolygonF &ring, double z)
+    {
+        const QPointF start = ring.first();
+        if (QLineF(pos(), start).length() < 1e-6)
+            return;
+        const QPolygonF r = distToPoly(pos(), ring) < 1e-6 ? startNearest(ring, pos()) : QPolygonF();
+        int k = -1;
+        for (int i = 1; i < r.size() - 1 && k < 0; ++i)
+            if (QLineF(r.at(i), start).length() < 1e-6)
+                k = i;
+        if (k < 0 || QLineF(r.first(), pos()).length() > 1e-6) {
+            retract();
+            rapidTo(start);
+            plungeTo(start, z);
+            return;
+        }
+        double ahead = 0, back = 0;
+        for (int i = 1; i < r.size(); ++i)
+            (i <= k ? ahead : back) += QLineF(r.at(i - 1), r.at(i)).length();
+        if (ahead <= back) {
+            for (int i = 1; i <= k; ++i)
+                feedAt(r.at(i), z, m_feed);
+        } else {
+            for (int i = r.size() - 2; i >= k; --i)
+                feedAt(r.at(i), z, m_feed);
+        }
+    }
+
     void runJob(const Job &job, const CutParams &cp)
     {
         // A contour's one roughing ring and its finishing rings share their
@@ -2327,6 +2359,7 @@ public:
         bool first = true;
         bool more = true;
         bool forward = true;
+        double zWas = cp.zTop;                // the depth of the pass before this one
         while (more) {
             z = qMax(cp.zBot, z - cp.stepdown);
             more = z > cp.zBot + 1e-9;
@@ -2364,6 +2397,15 @@ public:
                 if (ramp) {
                     rampAt = rampDescend(lap, z + cp.stepdown, z, cp.rampAngle);
                 } else {
+                    // The first pass below the tab tops after ramped ones:
+                    // we stand where the last ramp reached depth, anywhere
+                    // on the ring, and the tabs were placed clear of the
+                    // ring's own start only. Plunging here could be the
+                    // middle of a tab - a hole through the bridge that holds
+                    // the part. Back along the slot already cut, at the depth
+                    // it was cut to, to the ring's start first.
+                    if (hasTabs(firstRing, z, cp))
+                        walkToStart(firstRing, zWas);
                     plungeTo(pos(), z);   // in place — we ended here last pass
                     // ...which can be mid-edge (where the last ramp got to
                     // depth): the lap starts there, never with a chord to
@@ -2401,6 +2443,7 @@ public:
                 followRing(ring, z, cp);
             }
             forward = !forward;
+            zWas = z;
         }
         // Finishing rings at the final depth, each started next to where
         // the last cut ended - the lap above ends where its ramp reached
