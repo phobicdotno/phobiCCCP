@@ -121,6 +121,7 @@ public:
     void setToolpathPreview(const QVector<Op> &ops);
     void clearToolpathPreview();
     bool hasToolpathPreview() const { return !m_previewOps.isEmpty(); }
+    void setSimplePreview(bool on);   // solid yellow fill + every 5th ring, vs every ring
 
     // ---- parametric sketching (canvasparametric.cpp) -----------------------
     // The Constrain tool's constraint (Coincident ... Symmetric).
@@ -316,6 +317,7 @@ private:
     NodeGrab m_grab = GrabNone;
     bool m_grabBreak = false;               // Alt/Shift held when the handle was grabbed
 
+    bool m_simplePreview = true;
     QVector<Op> m_previewOps;               // g-code overlay (empty = off)
     const BackgroundImage *m_bg = nullptr;  // background picture (backgroundimage.h)
 

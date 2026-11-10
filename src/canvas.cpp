@@ -1681,6 +1681,14 @@ void Canvas::removePreviewItems()
 // Draw the generated machine motion over the vectors: rapids as dashed gray,
 // cutting moves colored shallow-yellow → deep-red by Z, arcs sampled to
 // segments. Overlay items are unselectable and sit above the elements.
+//
+// Simple mode (the default, View > Simplified toolpath preview): the swept
+// area is one opaque yellow stroke the width of the bit, so a pocket is a
+// solid patch instead of a hatch, and only every 5th ring of a cut chain is
+// drawn as a line on top (always the first and last ring; a chain with no
+// closed ring, like a contour, is drawn in full). A ring is found as the
+// point where the XY path returns to the vertex where that ring began; the
+// link move to the next ring stays down between rings.
 void Canvas::renderPreviewOps()
 {
     double zMin = 0;
@@ -1695,12 +1703,62 @@ void Canvas::renderPreviewOps()
     };
     QVector<QPainterPath> cut(NB);
     QPainterPath rapids;
+    QPainterPath sweep;            // simple mode: centre line of every cut
+    double toolDia = 0;
+
+    struct Piece { int bucket; int ring; QPainterPath path; };
+    QVector<Piece> chain;          // simple mode: the current cut chain
+    int ring = 0;
+    double ringLen = 0, rsx = 0, rsy = 0;
+    bool linkPending = false, chainOpen = false;
+
+    auto flushChain = [&]() {
+        const int last = ring;
+        for (const Piece &p : chain) {
+            sweep.addPath(p.path);
+            const bool keep = last == 0 || p.ring == 0 || p.ring == last || p.ring % 5 == 0;
+            if (keep)
+                cut[p.bucket].addPath(p.path);
+        }
+        chain.clear();
+        ring = 0; ringLen = 0; linkPending = false; chainOpen = false;
+    };
+
+    // One cut move from (x0,y0) to (x1,y1): in simple mode it joins the
+    // current chain and may close a ring; otherwise it is drawn as it is.
+    auto addCut = [&](int b, const QPainterPath &seg, double x0, double y0, double x1, double y1, double len) {
+        if (!m_simplePreview) {
+            cut[b].addPath(seg);
+            return;
+        }
+        if (!chainOpen) {
+            chainOpen = true;
+            rsx = x0; rsy = y0; ringLen = 0; ring = 0; linkPending = false;
+        }
+        chain.append({b, ring, seg});
+        if (linkPending) {            // the link to the next ring: it ends where that ring begins
+            rsx = x1; rsy = y1; ringLen = 0; linkPending = false;
+            return;
+        }
+        ringLen += len;
+        (void)x0; (void)y0;
+        if (ringLen > 1.0 && qAbs(x1 - rsx) < 1e-3 && qAbs(y1 - rsy) < 1e-3) {
+            ++ring;
+            linkPending = true;
+        }
+    };
 
     double x = 0, y = 0;
     bool have = false;
     for (const Op &op : m_previewOps) {
         switch (op.kind) {
+        case Op::Tool:
+            if (op.x > 0)
+                toolDia = op.x;
+            break;
         case Op::Rapid:
+            if (m_simplePreview)
+                flushChain();
             if (have && (op.x != x || op.y != y)) {
                 rapids.moveTo(x, y);
                 rapids.lineTo(op.x, op.y);
@@ -1711,15 +1769,19 @@ void Canvas::renderPreviewOps()
             const int b = bucketOf(op.z);
             if (have) {
                 if (op.x == x && op.y == y) {
-                    // pure plunge: mark with a tiny diamond
+                    // pure plunge: mark with a tiny diamond; it also ends a chain
+                    if (m_simplePreview)
+                        flushChain();
                     cut[b].moveTo(x - 0.4, y);
                     cut[b].lineTo(x, y + 0.4);
                     cut[b].lineTo(x + 0.4, y);
                     cut[b].lineTo(x, y - 0.4);
                     cut[b].closeSubpath();
                 } else {
-                    cut[b].moveTo(x, y);
-                    cut[b].lineTo(op.x, op.y);
+                    QPainterPath seg;
+                    seg.moveTo(x, y);
+                    seg.lineTo(op.x, op.y);
+                    addCut(b, seg, x, y, op.x, op.y, QLineF(x, y, op.x, op.y).length());
                 }
             }
             x = op.x; y = op.y; have = true;
@@ -1735,11 +1797,13 @@ void Canvas::renderPreviewOps()
             if (op.cw) { while (a1 >= a0 - 1e-12) a1 -= 2 * M_PI; }
             else       { while (a1 <= a0 + 1e-12) a1 += 2 * M_PI; }
             const int steps = qMax(8, int(qAbs(a1 - a0) / (M_PI / 36)));
-            cut[b].moveTo(x, y);
+            QPainterPath seg;
+            seg.moveTo(x, y);
             for (int i = 1; i <= steps; ++i) {
                 const double a = a0 + (a1 - a0) * i / steps;
-                cut[b].lineTo(cx + r * qCos(a), cy + r * qSin(a));
+                seg.lineTo(cx + r * qCos(a), cy + r * qSin(a));
             }
+            addCut(b, seg, x, y, op.x, op.y, r * qAbs(a1 - a0));
             x = op.x; y = op.y; have = true;
             break;
         }
@@ -1747,6 +1811,8 @@ void Canvas::renderPreviewOps()
             break;
         }
     }
+    if (m_simplePreview)
+        flushChain();
 
     QPen rapidPen(QColor(0x8a, 0x94, 0xa6, 140));
     rapidPen.setCosmetic(true);
@@ -1755,18 +1821,42 @@ void Canvas::renderPreviewOps()
     ri->setZValue(5);
     m_previewItems.append(ri);
 
+    if (m_simplePreview && !sweep.isEmpty()) {
+        QPen fillPen(QColor(0xff, 0xd6, 0x00));          // opaque: overlaps do not stack
+        fillPen.setCosmetic(toolDia <= 0);
+        fillPen.setWidthF(toolDia > 0 ? toolDia : 2.0);
+        fillPen.setCapStyle(Qt::RoundCap);
+        fillPen.setJoinStyle(Qt::RoundJoin);
+        auto *fi = m_scene->addPath(sweep, fillPen);
+        fi->setZValue(5.5);
+        m_previewItems.append(fi);
+    }
+
     for (int b = 0; b < NB; ++b) {
         if (cut.at(b).isEmpty())
             continue;
         const double f = NB > 1 ? double(b) / (NB - 1) : 0;
-        QColor col = QColor::fromHsvF(0.14 * (1.0 - f), 0.9, 1.0);   // yellow→red
-        col.setAlpha(200);
+        QColor col = m_simplePreview
+            ? QColor::fromHsvF(0.10 * (1.0 - f), 1.0, 0.80)       // orange→red on the yellow
+            : QColor::fromHsvF(0.14 * (1.0 - f), 0.9, 1.0);       // yellow→red
+        col.setAlpha(m_simplePreview ? 255 : 200);
         QPen pen(col);
         pen.setCosmetic(true);
         pen.setWidthF(1.4);
         auto *it = m_scene->addPath(cut.at(b), pen);
         it->setZValue(6);
         m_previewItems.append(it);
+    }
+}
+
+void Canvas::setSimplePreview(bool on)
+{
+    if (m_simplePreview == on)
+        return;
+    m_simplePreview = on;
+    if (!m_previewOps.isEmpty()) {
+        removePreviewItems();
+        renderPreviewOps();
     }
 }
 

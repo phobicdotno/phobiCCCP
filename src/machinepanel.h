@@ -267,6 +267,7 @@ private:
     bool needsInit();            // true (and says so in the log) while in Alarm
     void initializeMachine();    // $H, then park()
     void park(bool afterHoming = false);   // safe Z, then the tool-change XY
+    void hoverDryRun();   // trace the job outline 50 mm up, spindle off
     void parkSpot(double &x, double &y) const;   // where Park goes (machine)
     QStringList endOfJobMoves();          // a finished job: top, park spot, M5
     bool m_parkAfterHome = false;

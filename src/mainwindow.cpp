@@ -865,6 +865,18 @@ MainWindow::MainWindow(QWidget *parent)
             m_canvas->setShowConstraints(on);
             QSettings().setValue(QStringLiteral("ui/showConstraints"), on);
         });
+        QAction *simplePrev = viewMenu->addAction(QStringLiteral("&Simplified toolpath preview"));
+        simplePrev->setCheckable(true);
+        simplePrev->setToolTip(QStringLiteral(
+            "Show a pocket as a solid yellow area with only every 5th ring drawn. "
+            "Off: draw every ring of every toolpath."));
+        const bool sp = QSettings().value(QStringLiteral("ui/simpleToolpathPreview"), true).toBool();
+        simplePrev->setChecked(sp);
+        m_canvas->setSimplePreview(sp);
+        connect(simplePrev, &QAction::toggled, this, [this](bool on) {
+            m_canvas->setSimplePreview(on);
+            QSettings().setValue(QStringLiteral("ui/simpleToolpathPreview"), on);
+        });
         QAction *paramsAct = viewMenu->addAction(QStringLiteral("&Parameters"));
         paramsAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_P));
         connect(paramsAct, &QAction::triggered, this, &MainWindow::showParameters);

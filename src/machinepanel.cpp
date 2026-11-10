@@ -762,9 +762,15 @@ MachinePanel::MachinePanel(QWidget *parent)
     auto *bsBtn = bigBtn(new QPushButton(QStringLiteral("BitSetter"), body), 44);
     bsBtn->setToolTip(QStringLiteral("BitSetter position, probe feeds, tool-change spot, "
                                      "reference and rehearsal"));
-    m_idleOnly << homeBtn << parkBtn << unlockBtn << bsBtn;
+    auto *hoverBtn = bigBtn(new QPushButton(QStringLiteral("Hover 5 cm"), body), 44);
+    hoverBtn->setToolTip(QStringLiteral(
+        "Dry run before cutting: the spindle (off) traces the outer rectangle of "
+        "the job 50 mm above the work zero, so you can check the stock and the zero."));
+    connect(hoverBtn, &QPushButton::clicked, this, [this] { hoverDryRun(); });
+    m_idleOnly << homeBtn << parkBtn << unlockBtn << bsBtn << hoverBtn;
     foot->addWidget(homeBtn);
     foot->addWidget(parkBtn);
+    foot->addWidget(hoverBtn);
     foot->addWidget(unlockBtn);
     foot->addWidget(bsBtn);
     foot->addStretch(1);
@@ -3183,6 +3189,134 @@ void MachinePanel::initializeMachine()
 
 // Up to safe Z, then at rapid speed to the front-right corner (parkSpot),
 // where the collet is in reach for changing bits.
+// The XY box of everything the job cuts (feeds and arcs, arcs by their own
+// extremes), in work coordinates. False when it cuts nothing.
+static bool cutBounds(const QVector<Op> &ops, double &x0, double &y0, double &x1, double &y1)
+{
+    x0 = y0 = 1e300;
+    x1 = y1 = -1e300;
+    auto grow = [&](double x, double y) {
+        x0 = qMin(x0, x); x1 = qMax(x1, x);
+        y0 = qMin(y0, y); y1 = qMax(y1, y);
+    };
+    double px = 0, py = 0;
+    for (const Op &o : ops) {
+        if (o.kind == Op::Rapid) {
+            px = o.x; py = o.y;
+            continue;
+        }
+        if (o.kind != Op::Feed && o.kind != Op::Arc)
+            continue;
+        grow(px, py);
+        grow(o.x, o.y);
+        if (o.kind == Op::Arc) {
+            const double cx = px + o.ci, cy = py + o.cj, r = std::hypot(o.ci, o.cj);
+            const double a0 = std::atan2(py - cy, px - cx), a1 = std::atan2(o.y - cy, o.x - cx);
+            double sweep = o.cw ? a0 - a1 : a1 - a0;
+            while (sweep <= 1e-9)
+                sweep += 2 * M_PI;
+            for (int q = 0; q < 4; ++q) {
+                const double a = q * M_PI / 2;
+                double t = o.cw ? a0 - a : a - a0;
+                while (t < 0)
+                    t += 2 * M_PI;
+                while (t >= 2 * M_PI)
+                    t -= 2 * M_PI;
+                if (t <= sweep)
+                    grow(cx + r * std::cos(a), cy + r * std::sin(a));
+            }
+        }
+        px = o.x; py = o.y;
+    }
+    return x0 <= x1;
+}
+
+// Hover dry run: before cutting, trace the outer rectangle of the job 50 mm
+// above the work zero (spindle off, nothing touched) to check that the stock
+// and the zero are where they should be. Ends hovering over the first corner.
+void MachinePanel::hoverDryRun()
+{
+    constexpr double kHover = 50.0, kFeed = 3000.0;
+    if (jobWindingDown(QStringLiteral("Hover dry run")))
+        return;
+    if (!m_grbl->isConnected()) {
+        shopTell(this, QStringLiteral("Machine"), QStringLiteral("Connect to the controller first."));
+        return;
+    }
+    if (!m_grbl->canSendCommand()) {
+        log(QStringLiteral("!! busy — cannot hover now"));
+        return;
+    }
+    if (needsInit() || !requireHomed(QStringLiteral("Hover dry run")) || movingStill(QStringLiteral("Hover dry run")))
+        return;
+    if (!m_doc) {
+        shopTell(this, QStringLiteral("Machine"), QStringLiteral("Open a .c2d file first."));
+        return;
+    }
+    const GcodeResult r = exportWithProgress(this, *m_doc, QStringLiteral("Preparing program"));
+    if (r.cancelled)
+        return;
+    double x0, y0, x1, y1;
+    if (r.done.isEmpty() || !cutBounds(r.ops, x0, y0, x1, y1)) {
+        shopTell(this, QStringLiteral("Machine"), QStringLiteral("The job has nothing to trace."));
+        return;
+    }
+    if (!m_grbl->status().valid) {
+        shopTell(this, QStringLiteral("Machine"), QStringLiteral("No position from the controller yet."));
+        return;
+    }
+    // Inside the travel from the current work zero, like the program check.
+    {
+        const auto &st = m_grbl->status();
+        const double off[3] = {st.mx - st.wx, st.my - st.wy, st.mz - st.wz};
+        QSettings sset;
+        const auto machine = appsettings::machine(sset);
+        const double travel[2] = {m_grbl->setting(130, machine.width), m_grbl->setting(131, machine.height)};
+        const double top = -switchClearance();
+        const double hi[2] = {x1, y1}, lo[2] = {x0, y0};
+        QStringList over;
+        for (int k = 0; k < 2; ++k) {
+            const QChar ax = QChar::fromLatin1("XY"[k]);
+            if (hi[k] + off[k] > top + 1e-6)
+                over << QStringLiteral("%1 %2 mm past its home switch").arg(ax).arg(hi[k] + off[k] - top, 0, 'f', 1);
+            if (lo[k] + off[k] < -travel[k] - 1e-6)
+                over << QStringLiteral("%1 %2 mm past the far end of its travel").arg(ax).arg(-travel[k] - (lo[k] + off[k]), 0, 'f', 1);
+        }
+        if (kHover + off[2] > top + 1e-6)
+            over << QStringLiteral("Z %1 mm above the top of its travel").arg(kHover + off[2] - top, 0, 'f', 1);
+        if (!over.isEmpty()) {
+            shopTell(this, QStringLiteral("Machine"), QStringLiteral("The outline goes off the machine."),
+                     QStringLiteral("From the current work zero it reaches %1. Set the zero again or move the design.")
+                         .arg(over.join(QStringLiteral(", "))));
+            return;
+        }
+    }
+    ShopAsk ask;
+    ask.title = QStringLiteral("Hover dry run");
+    ask.headline = QStringLiteral("Trace the job outline 50 mm above the work zero?");
+    ask.body = QStringLiteral("X %1 to %2, Y %3 to %4 (%5 × %6 mm), at Z +50 mm, feed %7 mm/min. "
+                              "Spindle stays off. It ends hovering over the first corner.")
+                   .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1)
+                   .arg(x1 - x0, 0, 'f', 1).arg(y1 - y0, 0, 'f', 1).arg(kFeed, 0, 'f', 0);
+    ask.note = QStringLiteral("Nothing is cut: the bit stays 5 cm up.");
+    ask.okText = QStringLiteral("▶ Trace");
+    ask.defaultOk = false;
+    if (!shopAsk(this, ask))
+        return;
+    QStringList lines = riseToTop();
+    lines << QStringLiteral("G21") << QStringLiteral("G90")
+          << QStringLiteral("G0 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y0, 0, 'f', 3)
+          << QStringLiteral("G0 Z%1").arg(kHover, 0, 'f', 3)
+          << QStringLiteral("G1 F%1 X%2 Y%3").arg(kFeed, 0, 'f', 0).arg(x1, 0, 'f', 3).arg(y0, 0, 'f', 3)
+          << QStringLiteral("G1 X%1 Y%2").arg(x1, 0, 'f', 3).arg(y1, 0, 'f', 3)
+          << QStringLiteral("G1 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y1, 0, 'f', 3)
+          << QStringLiteral("G1 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y0, 0, 'f', 3);
+    log(QStringLiteral("hover dry run: X %1..%2 Y %3..%4 at Z +%5")
+            .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1).arg(kHover, 0, 'f', 0));
+    m_grbl->startMacro(lines);
+}
+
+
 void MachinePanel::park(bool afterHoming)
 {
     if (jobWindingDown(QStringLiteral("Park")))

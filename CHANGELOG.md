@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.55 (build 145) — 2026-11-10
+
+> A pocket now shows as a solid yellow area with only every 5th ring drawn, and the Machine page has a Hover 5 cm button that traces the job outline above the work.
+
+- **Preview:** pockets are drawn as one solid yellow area with every 5th ring as a line on top, instead of a hatch of every ring. View → Simplified toolpath preview turns it off to get every ring back.
+- **Machine:** new Hover 5 cm button. It asks first, then the spindle (off) traces the outer rectangle of the job 50 mm above the work zero and stops over the first corner, so you can check the stock and the zero before cutting.
+
 ## v1.3.54 (build 144) — 2026-11-10
 
 > Typing a number with a dot now works on a PC set to comma decimals (3.175 no longer becomes 317), and the tool library no longer keeps old synced bits
