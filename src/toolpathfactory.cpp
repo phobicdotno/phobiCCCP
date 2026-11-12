@@ -138,7 +138,9 @@ ToolPick pickTool(const Document &doc, CutterKind kind)
             else if (kind == Flat && lf && lf->stepoverPct > 0)
                 p.stepover = dia * lf->stepoverPct / 100.0;
             else
-                p.stepover = dia / 2.0;
+                // A V-bit or engraver has no half-diameter stepover: the same
+                // 0.2 mm a fresh one gets below.
+                p.stepover = kind == Flat ? dia / 2.0 : 0.2;
             if (p.speeds.isEmpty()) {
                 p.speeds.insert(QStringLiteral("feedrate"), tool.value("slot_feedrate").toDouble(1905));
                 p.speeds.insert(QStringLiteral("plungerate"), tool.value("plungerate").toDouble(381));

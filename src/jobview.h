@@ -17,6 +17,7 @@ class QTreeWidgetItem;
 namespace c2d {
 
 class Document;
+class JobStepItem;
 struct Op;
 
 // One depth level of a shape, as queue indices [qStart, qEnd).
@@ -137,14 +138,27 @@ private:
     QElapsedTimer m_clock;
     qint64 m_parkedAt = -1;
     qint64 m_parkedTotal = 0;
+    // How long the job ran, in ms without the tool change waits, kept from
+    // the moment it stopped or finished: a late answer or an override change
+    // after that must not read the clock again. -1 while it runs.
+    qint64 m_ranMs = -1;
+    // What a row was last drawn from. Every answered line comes through
+    // refresh(), and a job has hundreds of rows of which only the one being
+    // cut changes with it: a row whose inputs are the same is left alone.
+    struct RowShown {
+        int state = -1;      // 0 to come, 1 running, 2 stopped, 3 done; -1 = not drawn yet
+        int q = -1;          // the line it stood at, while it is started and not done
+        int feed = 0;        // the feed override its time was scaled by, until it is done
+    };
+    QVector<RowShown> m_rowShown;
+    QVector<int> m_toolpathsUpTo;                      // distinct toolpaths in sections [0, i]
 
     QLabel *m_title = nullptr;
     QLabel *m_summary = nullptr;
     QLabel *m_current = nullptr;
     QProgressBar *m_passBar = nullptr;
     QTreeWidget *m_tree = nullptr;
-    QVector<QTreeWidgetItem *> m_sectionItems;
-    QVector<QIcon> m_sectionIcons;                     // cut preview + bit, one per section
+    QVector<JobStepItem *> m_sectionItems;             // each draws its own picture when first asked
     QVector<QString> m_previewPng;                     // the cut preview alone, base64 PNG, for the pad
     QVector<QVector<QTreeWidgetItem *>> m_passItems;
     QTimer *m_tick = nullptr;

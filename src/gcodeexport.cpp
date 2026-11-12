@@ -4073,6 +4073,13 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             const bool fill = mode == QLatin1String("fill") || mode == QLatin1String("both");
             const bool trace = mode != QLatin1String("fill");
             cp.stepdown = qMax(0.02, numOr(j.value("stepdown"), cp.zTop - cp.zBot));
+            // The pass-count guard above went by the general 0.05 mm floor
+            // (and a 1 mm default); an engrave steps finer than that, so
+            // count again with the stepdown it actually cuts at.
+            if (!((cp.zTop - cp.zBot) / cp.stepdown < 100000.0)) {
+                res.skipped << QStringLiteral("%1 (cut depth needs too many passes)").arg(name);
+                continue;
+            }
             QVector<const Element *> closedEls;
             for (const Element *e : elems) {
                 bool anyClosed = false;

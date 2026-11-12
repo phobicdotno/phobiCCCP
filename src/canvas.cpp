@@ -183,6 +183,34 @@ private:
     bool m_hover = false;
 };
 
+// A toolpath preview overlay: drawn, never picked. A plain QGraphicsPathItem
+// answers every scene hit test (hover finds the items under the cursor on
+// each mouse move) by stroking its whole path again, which stalls the UI on
+// a preview of a few hundred thousand segments.
+class OverlayItem : public QGraphicsPathItem
+{
+public:
+    OverlayItem(const QPainterPath &path, const QPen &pen)
+        : QGraphicsPathItem(path)
+    {
+        setPen(pen);
+        setAcceptedMouseButtons(Qt::NoButton);
+    }
+    QPainterPath shape() const override { return QPainterPath(); }
+    bool contains(const QPointF &) const override { return false; }
+    // QGraphicsPathItem sizes its bounds from shape(), which is empty here.
+    // A full pen width each side of the path covers every cap and join the
+    // overlay pens use (round, square, bevel), without stroking the path.
+    QRectF boundingRect() const override
+    {
+        const QPainterPath p = path();
+        if (p.isEmpty())
+            return QRectF();
+        const double w = pen().style() == Qt::NoPen ? 0.0 : qMax(0.0, pen().widthF());
+        return p.controlPointRect().adjusted(-w, -w, w, w);
+    }
+};
+
 // ---- undo commands -------------------------------------------------------
 // Each command mutates the Document, then re-syncs the canvas and notifies.
 namespace {
@@ -392,7 +420,8 @@ public:
     void redo() override
     {
         for (const auto &p : m_tps) m_d->replaceToolpath(p.second);
-        swap(m_before, m_after);
+        for (const Element &e : m_before) m_d->removeElementById(e.id);
+        for (const Element &e : m_after) m_d->addElement(e);
         // 3D "From vectors" components follow their vectors like toolpaths
         // do: one built on a replaced element uses all of its pieces, not
         // only the piece that kept its id. Each original separately, so a
@@ -404,6 +433,9 @@ public:
                 if (!m_model.contains(w.key()))   // the first is the one before the edit
                     m_model.insert(w.key(), w.value());
         }
+        // Last, as in undo: whoever listens to documentChanged must find
+        // the components already on their new vectors.
+        refresh(m_c);
     }
     void undo() override
     {
@@ -420,12 +452,6 @@ public:
         refresh(m_c);
     }
 private:
-    void swap(const QVector<Element> &out, const QVector<Element> &in)
-    {
-        for (const Element &e : out) m_d->removeElementById(e.id);
-        for (const Element &e : in) m_d->addElement(e);
-        refresh(m_c);
-    }
     Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
     QVector<int> m_beforeAt;
     QVector<QPair<Toolpath, Toolpath>> m_tps;
@@ -916,7 +942,12 @@ void Canvas::updateHud()
     const QString pos = m_hudHasPos
         ? QStringLiteral("X %1   Y %2 mm").arg(m_hudPos.x(), 0, 'f', 2).arg(m_hudPos.y(), 0, 'f', 2)
         : QStringLiteral("X \u2014   Y \u2014");
-    m_hudText->setText(QStringLiteral("%1%   %2").arg(qRound(qAbs(transform().m11()) * 100.0)).arg(pos));
+    const QString text = QStringLiteral("%1%   %2").arg(qRound(qAbs(transform().m11()) * 100.0)).arg(pos);
+    // This runs on every mouse move. A readout that still reads the same
+    // keeps its size and place; a resize places the bar from resizeEvent.
+    if (text == m_hudText->text())
+        return;
+    m_hudText->setText(text);
     placeHud();
 }
 
@@ -1610,6 +1641,8 @@ void Canvas::rebuild()
     m_preview = nullptr;           // owned by the scene; clear() deletes it
     m_resizing = false;            // its preview is gone with the scene
     m_previewItems.clear();        // likewise
+    m_modifyModels.clear();        // decoded from the elements as they were
+    m_modifyDecoded.clear();
     m_scene->clear();
     if (!m_doc) {
         m_scene->blockSignals(false);
@@ -1753,8 +1786,12 @@ void Canvas::renderPreviewOps()
     };
     QVector<QPainterPath> cut(NB);
     QPainterPath rapids;
-    QPainterPath sweep;            // simple mode: centre line of every cut
+    QPainterPath sweep;            // simple mode: centre line of every cut with the current bit
     double toolDia = 0;
+    // ...and of the bits before it: each is stroked at its own width, so a
+    // job with several tools does not show them all as wide as the last one.
+    struct Sweep { double dia; QPainterPath path; };
+    QVector<Sweep> sweeps;
 
     struct Piece { int bucket; int ring; QPainterPath path; };
     QVector<Piece> chain;          // simple mode: the current cut chain
@@ -1763,10 +1800,13 @@ void Canvas::renderPreviewOps()
     bool linkPending = false, chainOpen = false;
 
     auto flushChain = [&]() {
-        const int last = ring;
+        // `ring` counts the rings closed so far. A chain that ends as a ring
+        // closes (linkPending: no link move followed) has no piece numbered
+        // `ring`; its last ring is the one before.
+        const int last = linkPending ? ring - 1 : ring;
         for (const Piece &p : chain) {
             sweep.addPath(p.path);
-            const bool keep = last == 0 || p.ring == 0 || p.ring == last || p.ring % 5 == 0;
+            const bool keep = ring == 0 || p.ring == 0 || p.ring == last || p.ring % 5 == 0;
             if (keep)
                 cut[p.bucket].addPath(p.path);
         }
@@ -1803,8 +1843,17 @@ void Canvas::renderPreviewOps()
     for (const Op &op : m_previewOps) {
         switch (op.kind) {
         case Op::Tool:
-            if (op.x > 0)
+            if (op.x > 0 && op.x != toolDia) {
+                // A bit of another width: what was cut so far keeps its own.
+                if (m_simplePreview) {
+                    flushChain();
+                    if (!sweep.isEmpty()) {
+                        sweeps.append({toolDia, sweep});
+                        sweep = QPainterPath();
+                    }
+                }
                 toolDia = op.x;
+            }
             break;
         case Op::Rapid:
             if (m_simplePreview)
@@ -1867,18 +1916,22 @@ void Canvas::renderPreviewOps()
     QPen rapidPen(QColor(0x8a, 0x94, 0xa6, 140));
     rapidPen.setCosmetic(true);
     rapidPen.setStyle(Qt::DashLine);
-    auto *ri = m_scene->addPath(rapids, rapidPen);
+    auto *ri = new OverlayItem(rapids, rapidPen);
     ri->setZValue(5);
+    m_scene->addItem(ri);
     m_previewItems.append(ri);
 
-    if (m_simplePreview && !sweep.isEmpty()) {
+    if (m_simplePreview && !sweep.isEmpty())
+        sweeps.append({toolDia, sweep});
+    for (const Sweep &s : std::as_const(sweeps)) {
         QPen fillPen(QColor(0xff, 0xd6, 0x00));          // opaque: overlaps do not stack
-        fillPen.setCosmetic(toolDia <= 0);
-        fillPen.setWidthF(toolDia > 0 ? toolDia : 2.0);
+        fillPen.setCosmetic(s.dia <= 0);
+        fillPen.setWidthF(s.dia > 0 ? s.dia : 2.0);
         fillPen.setCapStyle(Qt::RoundCap);
         fillPen.setJoinStyle(Qt::RoundJoin);
-        auto *fi = m_scene->addPath(sweep, fillPen);
+        auto *fi = new OverlayItem(s.path, fillPen);
         fi->setZValue(5.5);
+        m_scene->addItem(fi);
         m_previewItems.append(fi);
     }
 
@@ -1893,8 +1946,9 @@ void Canvas::renderPreviewOps()
         QPen pen(col);
         pen.setCosmetic(true);
         pen.setWidthF(1.4);
-        auto *it = m_scene->addPath(cut.at(b), pen);
+        auto *it = new OverlayItem(cut.at(b), pen);
         it->setZValue(6);
+        m_scene->addItem(it);
         m_previewItems.append(it);
     }
 }
@@ -1933,18 +1987,27 @@ void Canvas::drawBackground(QPainter *p, const QRectF &rect)
         const double pxPerMm = transform().m11();
         const bool minors = g * pxPerMm >= 6.0;
         QPen minorPen(kGridMinor, 0), majorPen(kGridMajor, 0);
-        for (int i = 1; i * g < w; ++i) {
-            const bool major = (i % 5) == 0;
-            if (!major && !minors) continue;
-            p->setPen(major ? majorPen : minorPen);
-            p->drawLine(QLineF(i * g, 0, i * g, h));
-        }
-        for (int i = 1; i * g < h; ++i) {
-            const bool major = (i % 5) == 0;
-            if (!major && !minors) continue;
-            p->setPen(major ? majorPen : minorPen);
-            p->drawLine(QLineF(0, i * g, w, i * g));
-        }
+        // Only the lines that can show in the exposed rect are walked (2 px
+        // more each side, for the pen and its antialiasing), and only the
+        // majors when the minors are off: a fine grid on a big board used to
+        // cost a pass over every line of the board at every paint.
+        const double pad = 2.0 / qMax(1e-9, std::fabs(p->worldTransform().m11()));
+        auto gridLines = [&](double from, double to, double extent, bool vertical) {
+            const double top = 4e18;   // any spacing keeps the line number inside qint64
+            const double a = std::ceil((from - pad) / g), b = std::floor((to + pad) / g);
+            if (!(b >= 1.0) || !(a <= top))   // nothing exposed on the board (or not a number)
+                return;
+            qint64 i = a > 1.0 ? qint64(a) : 1;
+            const qint64 last = b < top ? qint64(b) : qint64(top);
+            if (!minors)
+                i += (5 - i % 5) % 5;         // the first major at or after i
+            for (; i <= last && i * g < extent; i += minors ? 1 : 5) {
+                p->setPen(i % 5 == 0 ? majorPen : minorPen);
+                p->drawLine(vertical ? QLineF(i * g, 0, i * g, h) : QLineF(0, i * g, w, i * g));
+            }
+        };
+        gridLines(rect.left(), rect.right(), w, true);
+        gridLines(rect.top(), rect.bottom(), h, false);
     }
 
     // Origin axes along the board's bottom/left edges.
@@ -2264,17 +2327,31 @@ bool Canvas::modifyTarget(const QPointF &q, QString *id, PathModel *model,
     const double tol = pxToMm(8);
     double best = tol;
     int bestIdx = -1;
-    QVector<PathModel> models;
     const QVector<Element> &els = m_doc->elements();
+    // Each element is decoded once and kept until the next rebuild(), and
+    // only when it is needed: this runs on every mouse move, and decoding
+    // every element each time made the tools drag on a big drawing.
+    if (m_modifyModels.size() != els.size() || m_modifyDecoded.size() != els.size()) {
+        m_modifyModels = QVector<PathModel>(els.size());
+        m_modifyDecoded = QVector<bool>(els.size(), false);
+    }
+    auto modelAt = [&](int i) -> const PathModel & {
+        if (!m_modifyDecoded.at(i)) {
+            // Text and sketch points: empty, never a target nor a bound.
+            m_modifyModels[i] = Element::isPoint(els.at(i)) ? PathModel()
+                                                            : Element::pathModel(els.at(i));
+            m_modifyDecoded[i] = true;
+        }
+        return m_modifyModels.at(i);
+    };
     for (int i = 0; i < els.size(); ++i) {
-        // Text and sketch points: empty, never a target nor a bound.
-        models.append(Element::isPoint(els.at(i)) ? PathModel() : Element::pathModel(els.at(i)));
         int sub;
         double g;
         if (!els.at(i).painterPath.boundingRect().adjusted(-tol, -tol, tol, tol).contains(q))
             continue;
-        if (sketch::pick(models.last(), q, best, &sub, &g)) {
-            const SubPath &sp = models.last().subs.at(sub);
+        const PathModel &pm = modelAt(i);
+        if (sketch::pick(pm, q, best, &sub, &g)) {
+            const SubPath &sp = pm.subs.at(sub);
             const int seg = qMin(int(g), sp.segmentCount() - 1);
             best = QLineF(sp.pointAt(seg, g - seg), q).length();
             bestIdx = i;
@@ -2283,11 +2360,15 @@ bool Canvas::modifyTarget(const QPointF &q, QString *id, PathModel *model,
     if (bestIdx < 0)
         return false;
     *id = els.at(bestIdx).id;
-    *model = models.at(bestIdx);
+    *model = modelAt(bestIdx);
     others->clear();
-    for (int i = 0; i < models.size(); ++i)
-        if (i != bestIdx && !models.at(i).isEmpty())
-            others->append(models.at(i));
+    for (int i = 0; i < els.size(); ++i) {
+        if (i == bestIdx)
+            continue;
+        const PathModel &pm = modelAt(i);
+        if (!pm.isEmpty())
+            others->append(pm);
+    }
     return true;
 }
 
@@ -2326,6 +2407,10 @@ void Canvas::modifyAt(const QPointF &q)
     QString id;
     PathModel m;
     QVector<PathModel> others;
+    // An edit never works from paths decoded earlier: should the elements
+    // have changed without a rebuild(), only a hover preview may be stale.
+    m_modifyModels.clear();
+    m_modifyDecoded.clear();
     if (!modifyTarget(q, &id, &m, &others)) {
         emit statusHint(tr("No curve there"));
         return;

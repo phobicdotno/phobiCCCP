@@ -306,6 +306,11 @@ private:
                       QVector<PathModel> *others) const;
     QPainterPath modifyPreview(const QPointF &q) const;
     void modifyAt(const QPointF &q);
+    // The elements' decoded paths, by element index, as modifyTarget came
+    // to need them (the hover preview asks on every mouse move). rebuild()
+    // empties both, and a click decodes afresh before it edits.
+    mutable QVector<PathModel> m_modifyModels;
+    mutable QVector<bool> m_modifyDecoded;
 
     // Pen (path) tool: click = corner, click-drag = symmetric handles.
     QVector<PathNode> m_penNodes;

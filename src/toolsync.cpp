@@ -44,6 +44,11 @@ bool ToolSync::validPath(const QString &rel)
 
 void ToolSync::start(const QString &baseUrl, const QString &cacheDir)
 {
+    // One sync at a time: a second start would clear the queue and the
+    // fetched files under the replies still on their way.
+    if (m_busy)
+        return;
+    m_busy = true;
     m_base = baseUrl.endsWith(QLatin1Char('/')) ? baseUrl : baseUrl + QLatin1Char('/');
     m_cache = cacheDir;
     m_queue.clear();
@@ -188,6 +193,7 @@ void ToolSync::prune(const QStringList &keep)
 
 void ToolSync::done(const QString &note)
 {
+    m_busy = false;   // before the signal: a slot may start the next sync
     emit finished(m_updated, m_failed, note);
 }
 

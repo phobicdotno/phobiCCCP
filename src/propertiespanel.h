@@ -34,6 +34,7 @@ public slots:
 private:
     void apply();
     void applyText();
+    void noteShown();             // remember what the number fields show
     QDoubleSpinBox *spin(double max);
 
     Canvas *m_canvas;
@@ -43,6 +44,10 @@ private:
     // What the text spin boxes showed after refresh, already rounded to their
     // decimals: an edit is a change from these, not from the stored value.
     double m_fontHeightShown = 0, m_arcRadiusShown = 0, m_arcAngleShown = 0;
+    // Likewise for the shape fields: apply() sends only the ones edited.
+    double m_xShown = 0, m_yShown = 0, m_radiusShown = 0, m_widthShown = 0, m_heightShown = 0,
+           m_rotationShown = 0;
+    int m_sidesShown = 0;
     bool m_loading = false;       // guard: setValue must not trigger apply
 
     QLabel *m_typeLabel;

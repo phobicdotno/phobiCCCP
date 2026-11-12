@@ -157,6 +157,16 @@ public:
     }
 };
 
+// The list of steps. While a layout of the whole list is pending it does not
+// measure a row the moment the row changes, and after it only the rows it
+// shows: the way to change many rows at once.
+class StepTree : public QTreeWidget
+{
+public:
+    using QTreeWidget::QTreeWidget;
+    using QTreeWidget::scheduleDelayedItemsLayout;
+};
+
 // The cut preview: the toolpath's own cutting moves from above, fitted to a
 // box like the shape thumbnails on the toolpath cards. Drilling, which never
 // moves sideways, shows its holes.
@@ -260,7 +270,10 @@ QVector<CutShape> cutShapes(const QVector<Op> &ops)
             inPath = false;
         } else {
             CutShape &c = out.last();
-            const bool flat = std::abs(o.x - x) < 1e-9 && std::abs(o.y - y) < 1e-9;
+            // An arc that ends where it starts is a full circle around its
+            // centre, not a move straight down.
+            const bool circle = o.kind == Op::Arc && std::hypot(o.ci, o.cj) > 1e-9;
+            const bool flat = !circle && std::abs(o.x - x) < 1e-9 && std::abs(o.y - y) < 1e-9;
             if (flat) {
                 if (o.z < z - 1e-9 && (c.plunges.isEmpty() || c.plunges.last() != QPointF(x, y)))
                     c.plunges.append(QPointF(x, y));
@@ -344,6 +357,45 @@ void groupPasses(JobSection &sec)
 }
 
 } // namespace
+
+// A step's row. Its picture (the cut preview and the bit's outline) is drawn
+// the first time the list asks for it, not when the job starts: a job of
+// thousands of steps starts at once and holds only the pictures of the rows
+// the list has measured or painted.
+class JobStepItem : public QTreeWidgetItem
+{
+public:
+    JobStepItem(QTreeWidget *tree, const JobSection &section) : QTreeWidgetItem(tree), m_section(section) {}
+
+    QVariant data(int column, int role) const override
+    {
+        if (column != 0 || role != Qt::DecorationRole)
+            return QTreeWidgetItem::data(column, role);
+        if (m_icon.isNull()) {
+            m_icon = sectionIcon(m_section);
+            if (m_done)
+                m_icon = greyed(m_icon);
+        }
+        return m_icon;
+    }
+    // A finished step shows its picture greyed, like its text, from then on.
+    void setDone()
+    {
+        if (m_done)
+            return;
+        m_done = true;
+        if (!m_icon.isNull())
+            m_icon = greyed(m_icon);
+        emitDataChanged();
+    }
+
+private:
+    static QIcon greyed(const QIcon &icon) { return QIcon(icon.pixmap(QSize(86, 52), QIcon::Disabled)); }
+
+    const JobSection m_section;
+    bool m_done = false;
+    mutable QIcon m_icon;                              // null until first asked for
+};
 
 JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document *doc, double rapidRate)
 {
@@ -596,7 +648,7 @@ JobView::JobView(QWidget *parent) : QWidget(parent)
         "QProgressBar { background: #2a2e36; border: none; border-radius: 9px; color: #16181d;"
         " font-size: 12px; font-weight: 700; }"
         "QProgressBar::chunk { background: #f2a536; border-radius: 9px; }"));
-    m_tree = new QTreeWidget(this);
+    m_tree = new StepTree(this);
     m_tree->setItemDelegate(new StepDelegate(m_tree));
     m_tree->setColumnCount(2);
     m_tree->setHeaderLabels({QStringLiteral("Step"), QStringLiteral("Time")});
@@ -636,13 +688,15 @@ void JobView::clear()
     m_stopped = false;
     m_parkedAt = -1;
     m_parkedTotal = 0;
+    m_ranMs = -1;
     m_sectionStart.clear();
     m_sectionDone.clear();
     m_passStart.clear();
     m_passDone.clear();
     m_sectionItems.clear();
-    m_sectionIcons.clear();
     m_previewPng.clear();
+    m_rowShown.clear();
+    m_toolpathsUpTo.clear();
     m_passItems.clear();
     m_tree->clear();
     m_title->setText(QStringLiteral("No job running"));
@@ -666,19 +720,28 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
     m_passStart.resize(n);
     m_passDone.resize(n);
     m_sectionItems.resize(n);
-    m_sectionIcons.resize(n);
     m_previewPng.resize(n);
+    m_rowShown = QVector<RowShown>(n);
+    m_toolpathsUpTo.resize(n);
     m_passItems.resize(n);
+    // One layout of the whole list once the rows are in: measuring each row
+    // as it is filled in would draw every row's picture here and now.
+    static_cast<StepTree *>(m_tree)->scheduleDelayedItemsLayout();
+    QSet<QString> names;
     for (int i = 0; i < n; ++i) {
         const JobSection &s = plan.sections.at(i);
-        auto *it = new QTreeWidgetItem(m_tree);
+        if (s.kind == JobSection::Toolpath)
+            names.insert(s.name);
+        m_toolpathsUpTo[i] = int(names.size());
+        auto *it = new JobStepItem(m_tree, s);
         it->setText(0, s.detail.isEmpty() ? s.title() : s.title() + QStringLiteral("   —  ") + s.detail);
         it->setText(1, clock(s.estSec));
         it->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
-        m_sectionIcons[i] = sectionIcon(s);
+        // The pad's copy is made now, before the first line is sent: every
+        // status answer to the pad carries all of them, and drawing them on
+        // its first question would stall the sender in the middle of a cut.
         if (s.kind == JobSection::Toolpath)
             m_previewPng[i] = previewPng(s, 52);
-        it->setIcon(0, m_sectionIcons.at(i));
         m_sectionItems[i] = it;
         const int np = s.passes.size();
         m_passStart[i] = QVector<qint64>(np, -1);
@@ -750,14 +813,12 @@ void JobView::setStopped()
 
 // Site order cuts one toolpath in several stretches with others between
 // them, and tool changes are steps too: the count the operator knows is the
-// toolpaths, each once.
+// toolpaths, each once. Counted once per plan, in setPlan().
 int JobView::toolpathsUpTo(int section) const
 {
-    QSet<QString> names;
-    for (int i = 0; i <= section && i < m_plan.sections.size(); ++i)
-        if (m_plan.sections.at(i).kind == JobSection::Toolpath)
-            names.insert(m_plan.sections.at(i).name);
-    return int(names.size());
+    if (section < 0 || m_toolpathsUpTo.isEmpty())
+        return 0;
+    return m_toolpathsUpTo.at(qMin(section, int(m_toolpathsUpTo.size()) - 1));
 }
 
 QJsonArray JobView::stepsJson() const
@@ -766,7 +827,7 @@ QJsonArray JobView::stepsJson() const
     const int q = qBound(0, m_acked - m_inserted, m_plan.total);
     for (int i = 0; i < m_plan.sections.size(); ++i) {
         const JobSection &s = m_plan.sections.at(i);
-        const QTreeWidgetItem *it = m_sectionItems.value(i);
+        const JobStepItem *it = m_sectionItems.value(i);
         QJsonObject o{{QStringLiteral("name"), s.title()},
                       {QStringLiteral("detail"), s.detail},
                       {QStringLiteral("kind"), s.kind == JobSection::ToolChange ? QStringLiteral("change")
@@ -824,43 +885,66 @@ void JobView::refresh()
     const QColor cDone(0x6a, 0x71, 0x7d), cRun(0xf2, 0xa5, 0x36), cAhead(0xd6, 0xdb, 0xe3),
                  cStop(0xe0, 0x6c, 0x6c);
     int runSec = -1, runPass = -1, stopSec = -1;
+    int redrawn = 0;
     for (int i = 0; i < m_plan.sections.size(); ++i) {
         const JobSection &s = m_plan.sections.at(i);
-        QTreeWidgetItem *it = m_sectionItems.at(i);
+        JobStepItem *it = m_sectionItems.at(i);
         const bool started = q >= s.qStart;
         const bool finished = q >= s.qEnd;
         if (started && m_sectionStart[i] < 0)
             m_sectionStart[i] = now;
         if (finished && m_sectionDone[i] < 0) {
             m_sectionDone[i] = now;
-            it->setIcon(0, QIcon(m_sectionIcons.at(i).pixmap(QSize(86, 52), QIcon::Disabled)));
+            it->setDone();
         }
-        QFont f = it->font(0);
-        f.setBold(started && !finished);
-        it->setFont(0, f);
-        it->setFont(1, f);
-        const bool stoppedHere = m_stopped && started && !finished;
-        const QColor col = finished ? cDone : stoppedHere ? cStop : started ? cRun : cAhead;
-        it->setForeground(0, col);
-        it->setForeground(1, col);
-        if (stoppedHere) {
-            it->setText(1, QStringLiteral("stopped"));
+        const bool live = started && !finished;
+        const bool stoppedHere = m_stopped && live;
+        if (stoppedHere)
             stopSec = i;
-        } else if (finished) {
-            const qint64 took = m_sectionDone[i] - qMax<qint64>(0, m_sectionStart[i]);
-            it->setText(1, QStringLiteral("✓ %1").arg(clock(took / 1000.0)));
-        } else if (started) {
-            it->setText(1, QStringLiteral("%1 left").arg(clock(spanSec(q, s.qEnd))));
+        else if (live)
             runSec = i;
-        } else {
-            it->setText(1, clock(s.estSec * 100.0 / qMax(10, m_override)));
-        }
-        if (s.kind == JobSection::Toolpath) {
-            const double whole = spanSec(s.qStart, s.qEnd);
-            const double f = finished ? 1.0 : !started ? 0.0
-                           : whole > 0 ? spanSec(s.qStart, q) / whole
-                                       : double(q - s.qStart) / qMax(1, s.qEnd - s.qStart);
-            it->setData(0, ProgressRole, f);
+        // A done row shows the time it took, which is kept; a row to come
+        // its estimate, which only the feed override changes; the one being
+        // cut follows every line. Anything else is as it was drawn.
+        const RowShown shown{finished ? 3 : stoppedHere ? 2 : started ? 1 : 0,
+                             live ? q : -1, finished ? 0 : m_override};
+        RowShown &was = m_rowShown[i];
+        if (shown.state != was.state || shown.q != was.q || shown.feed != was.feed) {
+            was = shown;
+            // Many rows at once (a feed override change rescales every row
+            // to come): the list would measure each of them as it changes,
+            // drawing its picture to do so, in view or not, and that in the
+            // middle of a cut. One layout of the whole list instead.
+            if (++redrawn == 16)
+                static_cast<StepTree *>(m_tree)->scheduleDelayedItemsLayout();
+            QFont f = it->font(0);
+            f.setBold(live);
+            it->setFont(0, f);
+            it->setFont(1, f);
+            const QColor col = finished ? cDone : stoppedHere ? cStop : started ? cRun : cAhead;
+            it->setForeground(0, col);
+            it->setForeground(1, col);
+            if (stoppedHere) {
+                it->setText(1, QStringLiteral("stopped"));
+            } else if (finished) {
+                const qint64 took = m_sectionDone[i] - qMax<qint64>(0, m_sectionStart[i]);
+                it->setText(1, QStringLiteral("✓ %1").arg(clock(took / 1000.0)));
+            } else if (started) {
+                it->setText(1, QStringLiteral("%1 left").arg(clock(spanSec(q, s.qEnd))));
+            } else {
+                it->setText(1, clock(s.estSec * 100.0 / qMax(10, m_override)));
+            }
+            if (s.kind == JobSection::Toolpath) {
+                const double whole = spanSec(s.qStart, s.qEnd);
+                const double share = finished ? 1.0 : !started ? 0.0
+                                   : whole > 0 ? spanSec(s.qStart, q) / whole
+                                               : double(q - s.qStart) / qMax(1, s.qEnd - s.qStart);
+                it->setData(0, ProgressRole, share);
+            }
+        } else if (!live) {
+            // Not being cut and drawn from the same: its passes have not
+            // moved either (none started yet, or all of them timed already).
+            continue;
         }
         for (int k = 0; k < s.passes.size(); ++k) {
             const JobPass &p = s.passes.at(k);
@@ -925,19 +1009,24 @@ void JobView::refresh()
                 open.insert(s.name);
                 ++done;
             }
+        if (m_ranMs < 0)
+            m_ranMs = now - m_parkedTotal;
         m_summary->setText(QStringLiteral("%1 of %2 toolpath%3 done  ·  ran %4")
                                .arg(done).arg(toolpaths).arg(toolpaths == 1 ? "" : "s")
-                               .arg(clock((now - m_parkedTotal) / 1000.0)));
+                               .arg(clock(m_ranMs / 1000.0)));
         m_current->setText(stopSec >= 0 ? QStringLiteral("Stopped  ·  %1").arg(m_plan.sections.at(stopSec).title())
                                         : QStringLiteral("Stopped"));
         m_current->setStyleSheet(QStringLiteral("color: #e06c6c; font-size: 15px; font-weight: 600;"));
         m_tick->stop();
     } else if (q >= m_plan.total) {
+        if (m_ranMs < 0)
+            m_ranMs = now - m_parkedTotal;
         m_summary->setText(QStringLiteral("All %1 toolpath%2 done  ·  took %3")
-                               .arg(toolpaths).arg(toolpaths == 1 ? "" : "s").arg(clock((now - m_parkedTotal) / 1000.0)));
+                               .arg(toolpaths).arg(toolpaths == 1 ? "" : "s").arg(clock(m_ranMs / 1000.0)));
         m_current->setText(QStringLiteral("Finished"));
         m_tick->stop();
     } else {
+        m_ranMs = -1;                                // running: the end is not reached (again)
         m_summary->setText(QStringLiteral("%1 left  ·  done about %2  ·  toolpath %3 of %4%5")
                                .arg(clock(left), eta(left)).arg(qMax(1, toolpathsUpTo(runSec))).arg(toolpaths).arg(ov));
         if (runSec >= 0) {

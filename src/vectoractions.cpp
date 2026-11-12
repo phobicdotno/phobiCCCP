@@ -719,15 +719,35 @@ static QStringList idsOf(const QVector<Element> &els)
     return ids;
 }
 
+// The box around all of `els`. By hand: QRectF::isNull() and united() both
+// take a box of no size (a zero-length line) for "no box", which left such a
+// vector out of the selection's box. Only an empty path has no box.
+static QRectF selectionBox(const QVector<Element> &els)
+{
+    QRectF box;
+    bool have = false;
+    for (const Element &e : els) {
+        if (e.painterPath.isEmpty())
+            continue;
+        const QRectF b = e.painterPath.boundingRect();
+        if (!have) {
+            box = b;
+            have = true;
+            continue;
+        }
+        box = QRectF(QPointF(qMin(box.left(), b.left()), qMin(box.top(), b.top())),
+                     QPointF(qMax(box.right(), b.right()), qMax(box.bottom(), b.bottom())));
+    }
+    return box;
+}
+
 void VectorActions::align(vec::Align mode)
 {
     const QVector<Element> els = orderedSelection();
     if (els.size() < 2)
         return;
     const QVector<QRectF> boxes = boxesOf(els);
-    QRectF ref;
-    for (const QRectF &b : boxes)
-        ref = ref.isNull() ? b : ref.united(b);
+    const QRectF ref = selectionBox(els);
     pushMoves(idsOf(els), vec::alignDeltas(boxes, mode, ref), tr("align %1 vectors").arg(els.size()));
 }
 
@@ -752,16 +772,6 @@ void VectorActions::distribute(vec::Axis axis)
 }
 
 // ---- mirror and array ------------------------------------------------------
-
-static QRectF selectionBox(const QVector<Element> &els)
-{
-    QRectF box;
-    for (const Element &e : els) {
-        const QRectF b = e.painterPath.boundingRect();
-        box = box.isNull() ? b : box.united(b);
-    }
-    return box;
-}
 
 void VectorActions::mirror(vec::Axis axis)
 {

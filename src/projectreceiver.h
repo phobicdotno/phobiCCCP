@@ -98,7 +98,8 @@ QString safeFileName(const QString &name);
 // Write the received files into a new folder under `baseDir`
 // (<baseDir>/<name>, or <name>-2, -3 … when taken). Returns the folder, or an
 // empty string with `error` set. Paths of the written files are filled into
-// `paths` (same order as project.files).
+// `paths` (same order as project.files). Two files of the same name: the
+// second is saved as <name>-2 (one copy for both when they are identical).
 QString saveReceived(const ReceivedProject &project, const QString &baseDir,
                      QStringList *paths, QString *error = nullptr);
 
@@ -118,6 +119,8 @@ public:
     // Pads keep a connection open while they sync, so leave room for a few.
     static constexpr int kMaxConns = 8;
     // One API request line; a design with many path points is the big one.
+    // From its first byte it has to be complete within kDeadlineMs plus one
+    // second per kMinRate bytes received (a waiting pad is not on the clock).
     static constexpr qint64 kMaxRequest = 16LL * 1024 * 1024;
     // Lines that are not a request before the connection is cut off.
     static constexpr int kMaxBadLines = 16;

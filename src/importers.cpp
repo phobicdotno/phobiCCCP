@@ -1127,7 +1127,8 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                 const QXmlStreamAttributes at = xml.attributes();
                 Frame f{at.value(QLatin1String("id")).toString(),
                         parseSvgTransform(at.value(QLatin1String("transform")).toString()), {},
-                        svgHidden(at, hiddenClasses), {}, {}, noDraw.contains(xml.name().toString())};
+                        svgHidden(at, hiddenClasses), {}, {}, noDraw.contains(xml.name().toString()),
+                        0, 0, false, {}, {}, {}};
                 // Lengths in % are of the nearest viewport: a nested <svg>'s.
                 const double vpW = stack.isEmpty() ? rootW : stack.last().vw;
                 const double vpH = stack.isEmpty() ? rootH : stack.last().vh;
@@ -1192,7 +1193,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                 if (f.nested && !f.id.isEmpty() && !f.path.isEmpty())
                     defs.insert(f.id, SvgDef{f.path, f.viewBox, f.aspect, true, f.at, f.size, f.outer});
                 else if (!f.id.isEmpty() && !mapped.isEmpty())
-                    defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect});
+                    defs.insert(f.id, SvgDef{mapped, f.viewBox, f.aspect, false, {}, {}, {}});
                 if (!stack.isEmpty() && !mapped.isEmpty() && !f.noDraw)
                     stack.last().path.addPath(mapped);
                 if (defs.size() > 100000)
@@ -1412,7 +1413,7 @@ struct Block { QPointF base; QVector<Entity> entities; };
 struct DxfCtx {
     ImportResult *res;
     QHash<QString, int> *skipped;
-    QHash<QString, Block> blocks;
+    QHash<QString, Block> blocks;   // by upper-cased name: DXF names ignore case
     double unit = 1;        // mm per drawing unit
     double tol = 0.02;
     QPainterPath out;       // mm, Y-up
@@ -1795,12 +1796,13 @@ void emitEntity(DxfCtx &ctx, const Entity &e, const QTransform &xfIn, int depth)
         return;
     } else if (t == QLatin1String("INSERT")) {
         const QString name = pairS(ps, 2);
-        if (!ctx.blocks.contains(name) || depth > 8) {
+        const QString key = name.toUpper();   // DXF names ignore case
+        if (!ctx.blocks.contains(key) || depth > 8) {
             addSkipped(*ctx.res, *ctx.skipped, QStringLiteral("INSERT (%1)").arg(
                 depth > 8 ? QStringLiteral("nested too deep") : QStringLiteral("unknown block ") + name));
             return;
         }
-        const Block &b = ctx.blocks.value(name);
+        const Block &b = ctx.blocks.value(key);
         const double sx = pairD(ps, 41, 1), sy = pairD(ps, 42, 1);
         const double rot = pairD(ps, 50, 0);
         const QPointF ins(pairD(ps, 10), pairD(ps, 20));
@@ -1938,7 +1940,7 @@ ImportResult importDxfData(const QByteArray &data, const ImportOptions &opt,
                                && pairs.at(i).value != QLatin1String("ENDBLK")
                                && pairs.at(i).value != QLatin1String("ENDSEC"))
                             b.entities.append(readEntity(i));
-                        if (!name.isEmpty()) ctx.blocks.insert(name, b);
+                        if (!name.isEmpty()) ctx.blocks.insert(name.toUpper(), b);
                     } else {
                         ++i;
                     }

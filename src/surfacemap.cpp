@@ -12,7 +12,10 @@ namespace c2d {
 
 bool SurfaceMap::isValid() const
 {
-    if (cols < 1 || rows < 1 || cols * rows < 2 || z.size() != cols * rows)
+    // 64-bit: a corrupt map's cols x rows overflows int and could then match
+    // z.size() by accident. No probed grid is anywhere near a million points.
+    const qint64 points = qint64(cols) * qint64(rows);
+    if (cols < 1 || rows < 1 || points < 2 || points > 1000000 || qint64(z.size()) != points)
         return false;
     if ((cols > 1 && !(x1 > x0)) || (rows > 1 && !(y1 > y0)))
         return false;

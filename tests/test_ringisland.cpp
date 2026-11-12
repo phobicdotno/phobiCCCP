@@ -11,7 +11,8 @@
 #include <cstdio>
 using namespace c2d;
 static QPainterPath eo(const QVector<QPainterPath> &ps){QPainterPath r; r.setFillRule(Qt::OddEvenFill);
- for(auto&p:ps) for(const QPolygonF&g:p.toSubpathPolygons(QTransform::fromScale(50,50))) r.addPolygon(QTransform::fromScale(0.02,0.02).map(g)); return r;}
+ for(auto&p:ps){ for(const QPolygonF&g:p.toSubpathPolygons(QTransform::fromScale(50,50))){ r.addPolygon(QTransform::fromScale(0.02,0.02).map(g)); } }
+ return r;}
 static QVector<QPointF> keyhole(double gap){const double R=10,r=6;int n=200; double ao=std::asin(gap/2/R), ai=std::asin(gap/2/r); QVector<QPointF> p; for(int i=0;i<=n;i++){double a=ao+(2*M_PI-2*ao)*i/n;p<<QPointF(50+R*cos(a),50+R*sin(a));} for(int i=0;i<=n;i++){double a=2*M_PI-ai-(2*M_PI-2*ai)*i/n;p<<QPointF(50+r*cos(a),50+r*sin(a));} return p;}
 static QVector<QPointF> horseshoe(double gap){double g=gap/2; QVector<QPointF> p{{0,0},{10,0},{10,10},{5+g,10},{5+g,8},{8,8},{8,2},{2,2},{2,8},{5-g,8},{5-g,10},{0,10}}; for(auto&q:p)q+=QPointF(20,20); return p;}
 int main(int argc,char**argv){

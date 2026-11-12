@@ -93,7 +93,10 @@ DxfExportResult exportDxf(const QVector<Element> &elements, double tolerance)
         for (QPolygonF poly : finePolygons(e.painterPath, tolerance)) {
             if (poly.size() < 2)
                 continue;
-            const bool closed = poly.size() > 2 && poly.isClosed();
+            // A ring has three corners at least: there and back again
+            // (A, B, A) stays an open polyline, or dropping its last point
+            // would leave a closed one of two vertices.
+            const bool closed = poly.size() > 3 && poly.isClosed();
             if (closed)
                 poly.removeLast();   // flag 70 = 1 closes it
             ents.pair(0, QStringLiteral("POLYLINE"));

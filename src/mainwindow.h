@@ -228,11 +228,24 @@ private:
     QAction *m_previewAct;       // toolpath overlay toggle
     QAction *m_fullScreenAct = nullptr;
     bool m_dirty = false;
+    // Undoing back to the design as saved clears m_dirty again, but only
+    // while the undo stack's clean mark still stands for what is in the
+    // file. Anything undo cannot take back (the 3D model, the background, a
+    // recovered design, a save that only half worked) drops this, and then
+    // only a save clears m_dirty: in doubt the design stays edited.
+    bool m_undoMarksSaved = false;
+    // A Canvas::documentChanged no undo step has claimed yet. A step announces
+    // its change from inside redo()/undo(), just before the stack moves; one
+    // still unclaimed when the event loop is back was made past the stack.
+    bool m_changeUnclaimed = false;
+    void trackChange();          // on every Canvas::documentChanged
+    void markSaved();            // memory and file agree: just saved, or just opened
     bool m_untitled = false;     // Save asks for a name (the file is scratch)
     QString m_untitledFrom;      // the vector file an untitled design was opened from
     QString m_untitledPath;
     Document m_doc;
     BackgroundImage m_bg;        // tracing background (params + sqlar/background.png)
+    BackgroundImage m_bgSaved;   // as it was when last saved or opened (see m_undoMarksSaved)
     Recovery m_recovery;
 };
 

@@ -17,8 +17,10 @@
 #include <QGestureEvent>
 #include <QtMath>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 
 namespace c2d {
 
@@ -223,10 +225,21 @@ protected:
 private:
     QPointF raw(double x, double y, double z) const
     {
-        const double yr = qDegreesToRadians(m_yaw), pr = qDegreesToRadians(m_pitch);
-        const double x1 = x * qCos(yr) - y * qSin(yr);
-        const double y1 = x * qSin(yr) + y * qCos(yr);
-        return QPointF(x1, -(z * qCos(pr) + y1 * qSin(pr)));
+        // The angles change only on an orbit: their sines and cosines are
+        // worked out once for it, not four of them for every point of a
+        // route of hundreds of thousands.
+        if (m_trigYaw != m_yaw || m_trigPitch != m_pitch) {
+            const double yr = qDegreesToRadians(m_yaw), pr = qDegreesToRadians(m_pitch);
+            m_cosYaw = qCos(yr);
+            m_sinYaw = qSin(yr);
+            m_cosPitch = qCos(pr);
+            m_sinPitch = qSin(pr);
+            m_trigYaw = m_yaw;
+            m_trigPitch = m_pitch;
+        }
+        const double x1 = x * m_cosYaw - y * m_sinYaw;
+        const double y1 = x * m_sinYaw + y * m_cosYaw;
+        return QPointF(x1, -(z * m_cosPitch + y1 * m_sinPitch));
     }
     QPointF proj(double x, double y, double z) const
     {
@@ -234,6 +247,27 @@ private:
     }
     void fit();
     void boundsCorners(QVector<QPointF> &out) const;
+    void projectRoute();
+
+    // One drawn line of the route as it lies on screen: when it is cut and
+    // which pen it takes (a depth bucket, or kBuckets for a rapid).
+    struct Drawn {
+        QLineF line;
+        double t0, t1;
+        int slot;
+    };
+    // The route projected for the view in m_drawnView. Playback moves only
+    // the time, so a tick sorts these lines into done and to come and
+    // projects nothing; an orbit, zoom, pan, resize or new job projects anew.
+    QVector<Drawn> m_drawn;
+    int m_drawnPerSlot[kBuckets + 1] = {};
+    std::array<double, 9> m_drawnView{};
+    bool m_drawnValid = false;
+
+    // The angles m_cosYaw... belong to (NaN: none yet).
+    mutable double m_trigYaw = std::numeric_limits<double>::quiet_NaN();
+    mutable double m_trigPitch = std::numeric_limits<double>::quiet_NaN();
+    mutable double m_cosYaw = 1, m_sinYaw = 0, m_cosPitch = 1, m_sinPitch = 0;
 
     QVector<Seg> m_segs;
     QVector<ToolChange> m_toolChanges;
@@ -341,6 +375,7 @@ void IsoView::setJob(const QVector<Op> &ops, double w, double h, double t)
     m_time = tm;   // start "finished": whole route bright, tool at the end
     const int n = m_segs.size();
     m_stride = n > kMaxDrawSegs ? (n + kMaxDrawSegs - 1) / kMaxDrawSegs : 1;
+    m_drawnValid = false;
 
     if (m_w > 0 && m_h > 0) {
         if (!haveBounds) { m_bx0 = m_by0 = m_bz0 = 0; m_bx1 = m_bx0; m_by1 = m_by0; m_bz1 = 0; }
@@ -404,6 +439,42 @@ void IsoView::fit()
         m_scale = 1;
 }
 
+void IsoView::projectRoute()
+{
+    const std::array<double, 9> view{m_yaw, m_pitch, m_scale, m_pan.x(), m_pan.y(),
+                                     m_center.x(), m_center.y(), m_rawCenter.x(), m_rawCenter.y()};
+    if (m_drawnValid && view == m_drawnView)
+        return;
+    m_drawnView = view;
+    m_drawnValid = true;
+    m_drawn.clear();
+    std::fill(std::begin(m_drawnPerSlot), std::end(m_drawnPerSlot), 0);
+    const int n = m_segs.size();
+    m_drawn.reserve((n + m_stride - 1) / m_stride);
+    for (int i = 0; i < n;) {
+        // A route of more than kMaxDrawSegs moves is drawn m_stride moves to
+        // a line, from the first one's start to the last one's end. Only
+        // moves of one kind that follow on from each other share a line:
+        // drawn across the change from a rapid to a cut (or across a jump)
+        // it would be a long line where the bit never goes.
+        const Seg &a = m_segs.at(i);
+        const int stop = qMin(n - 1, i + m_stride - 1);
+        int last = i;
+        while (last < stop) {
+            const Seg &here = m_segs.at(last), &next = m_segs.at(last + 1);
+            if (next.rapid != a.rapid || std::abs(next.ax - here.bx) > 1e-6
+                || std::abs(next.ay - here.by) > 1e-6 || std::abs(next.az - here.bz) > 1e-6)
+                break;
+            ++last;
+        }
+        const Seg &b = m_segs.at(last);
+        const int slot = a.rapid ? kBuckets : a.bucket;
+        m_drawn.append(Drawn{QLineF(proj(a.ax, a.ay, a.az), proj(b.bx, b.by, b.bz)), a.t0, b.t1, slot});
+        ++m_drawnPerSlot[slot];
+        i = last + 1;
+    }
+}
+
 void IsoView::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -461,20 +532,20 @@ void IsoView::paintEvent(QPaintEvent *)
     // Route: bucket lines into [done|remaining] x [rapid|cut buckets].
     const Cursor cur = cursorAt(m_time);
     const QPointF toolPt = proj(cur.x, cur.y, cur.z);
+    projectRoute();
     QVector<QLineF> done[kBuckets + 1], todo[kBuckets + 1];   // index kBuckets = rapid
-    const int n = m_segs.size();
-    for (int i = 0; i < n; i += m_stride) {
-        const Seg &a = m_segs.at(i);
-        const Seg &b = m_segs.at(qMin(n - 1, i + m_stride - 1));
-        const int slot = a.rapid ? kBuckets : a.bucket;
-        const QPointF pa = proj(a.ax, a.ay, a.az), pb = proj(b.bx, b.by, b.bz);
-        if (b.t1 <= m_time)
-            done[slot].append(QLineF(pa, pb));
-        else if (a.t0 >= m_time)
-            todo[slot].append(QLineF(pa, pb));
+    for (int s = 0; s <= kBuckets; ++s) {
+        done[s].reserve(m_drawnPerSlot[s]);
+        todo[s].reserve(m_drawnPerSlot[s]);
+    }
+    for (const Drawn &d : std::as_const(m_drawn)) {
+        if (d.t1 <= m_time)
+            done[d.slot].append(d.line);
+        else if (d.t0 >= m_time)
+            todo[d.slot].append(d.line);
         else {
-            done[slot].append(QLineF(pa, toolPt));
-            todo[slot].append(QLineF(toolPt, pb));
+            done[d.slot].append(QLineF(d.line.p1(), toolPt));
+            todo[d.slot].append(QLineF(toolPt, d.line.p2()));
         }
     }
     const bool anyTodo = m_time < m_total;

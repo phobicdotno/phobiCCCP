@@ -160,7 +160,7 @@ Report turnDocument(Document &doc, const QTransform &q)
         QJsonObject j = t.json;
         QJsonObject binds = j.value(QStringLiteral("phobic_expr")).toObject();
         bool any = false;
-        for (const QString key : {QStringLiteral("angle"), QStringLiteral("raster_angle")}) {
+        for (const QString &key : {QStringLiteral("angle"), QStringLiteral("raster_angle")}) {
             if (!directional(t.type, key) || !j.contains(key))
                 continue;
             j.insert(key, turnAngle(numOr(j.value(key), 0)));

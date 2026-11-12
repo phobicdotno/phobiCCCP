@@ -270,8 +270,11 @@ QString GrblStreamer::crossToFirstCut(const QStringList &lines, int from)
         l.remove(paren);                 // "(Pocket X2)" names no position
         l = l.trimmed().toUpper();
         // A tool change next: the machine parks first, and the resume crosses then.
-        if (pause.match(l).hasMatch() || l.contains(QStringLiteral("G91"))
-            || l.contains(QStringLiteral("G53")))
+        // In the queue its `M0 ;T<n>` is a marker by now, which the pause
+        // test does not know: without this the look-ahead ran on into the
+        // next tool's section and crossed to an X or Y taken from there.
+        if (pause.match(l).hasMatch() || l.startsWith(kToolMarker) || l == kHoldMarker
+            || l.contains(QStringLiteral("G91")) || l.contains(QStringLiteral("G53")))
             break;
         const auto mx = wx.match(l), my = wy.match(l);
         if (mx.hasMatch()) gx = mx.captured(1);
@@ -1019,7 +1022,12 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         emit commandAnswered(sent, ok);
         if (m_adhocPending == 0) {
-            flushTlo();
+            // No G43.1 on the back of an alarm: GRBL refuses it in Alarm, and
+            // after a probe or homing alarm the line's own ok still follows.
+            // That ok was counted as the G43.1's, which then passed for
+            // applied. It stays pending for the $X or $H that comes next.
+            if (!alarm)
+                flushTlo();
             pumpMacro();
             pump();
         }
@@ -1038,6 +1046,16 @@ void GrblStreamer::handleLine(const QByteArray &line)
             m_macroError = true;
             m_macroQueue.clear();
             emit errorOccurred(QString::fromLatin1(line));
+        }
+        if (alarm) {
+            // The macro ends here, as pumpMacro() ends it, but with no G43.1
+            // sent after it. A probe that found nothing says ALARM:4/5 and
+            // then the ok of its own line: a G43.1 written in between took
+            // that ok for its own, while GRBL refused it (error:9 in Alarm).
+            // It stays pending for the $X or $H that comes next.
+            m_macroActive = false;
+            emit macroFinished(false);
+            return;
         }
         pumpMacro();
         return;

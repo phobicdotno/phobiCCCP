@@ -32,7 +32,8 @@ public:
     // Delete the current copy: the edits are saved, or deliberately dropped.
     void discard();
     // Make an existing copy the current one (the design was just opened from
-    // it), so the next write or discard replaces it.
+    // it), so the next write or discard replaces it. A copy another running
+    // session holds is left to that session: current() stays empty.
     void adopt(const QString &copy);
     QString current() const { return m_current; }
     QString dir() const { return m_dir; }
@@ -53,7 +54,7 @@ private:
     QString m_dir;
     QString m_current;
     int m_instance = 0;   // tells apart untitled designs of one process
-    std::unique_ptr<QLockFile> m_lock;
+    std::unique_ptr<QLockFile> m_lock;   // held whenever m_current is set
 };
 
 } // namespace c2d

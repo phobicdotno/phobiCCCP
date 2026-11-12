@@ -723,8 +723,10 @@ double compensatedZ(const HeightModel &m, const ToolGeom &tool, double x, double
 
     // Flat part of the footprint (end mill face, bull-nose centre): the model
     // is bilinear between cell centres, so its maximum over the disc is
-    // attained at a node of some cell the disc meets — exact, whatever the
-    // wall steepness.
+    // attained at a node of some cell the disc meets. Every node within one
+    // cell of the disc is taken, which covers those and may take a node up
+    // to a cell further out: never too low (no gouge, whatever the wall
+    // steepness), at most one cell conservative.
     const double rFlat = tool.kind == ToolGeom::Flat ? r - qMin(tool.cornerRadius, r) : 0.0;
     if (rFlat > 1e-9) {
         const double reach = rFlat + cell;

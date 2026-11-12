@@ -174,10 +174,10 @@ static C2::Path64 toPath64(const QPolygonF &poly, bool trimClosed = true)
     const int n = trimClosed && poly.isClosed() ? poly.size() - 1 : poly.size();
     p.reserve(size_t(n));
     // Clamped: a coordinate past ~1e15 units overflows Clipper's integer maths
-    // and shapes vanish silently. NaN becomes 0.
+    // and shapes vanish silently. Infinity clamps by its sign; NaN becomes 0.
     auto q = [](double v) {
         const double s = v * kScale;
-        return std::isfinite(s) ? qRound64(qBound(-1e15, s, 1e15)) : qint64(0);
+        return std::isnan(s) ? qint64(0) : qRound64(qBound(-1e15, s, 1e15));
     };
     for (int i = 0; i < n; ++i)
         p.push_back(C2::Point64(q(poly.at(i).x()), q(poly.at(i).y())));
@@ -444,9 +444,22 @@ QVector<QPointF> alignDeltas(const QVector<QRectF> &boxes, Align mode, const QRe
 
 QVector<QPointF> centerDeltas(const QVector<QRectF> &boxes, Center mode, const QRectF &stock)
 {
+    // By hand: isNull() and united() both take a box of no size (a zero-length
+    // line) for "no box", which left such a vector out of the group. Only the
+    // box of an empty path, QRectF(), is no box.
     QRectF all;
-    for (const QRectF &b : boxes)
-        all = all.isNull() ? b : all.united(b);
+    bool have = false;
+    for (const QRectF &b : boxes) {
+        if (b == QRectF())
+            continue;
+        if (!have) {
+            all = b;
+            have = true;
+            continue;
+        }
+        all = QRectF(QPointF(qMin(all.left(), b.left()), qMin(all.top(), b.top())),
+                     QPointF(qMax(all.right(), b.right()), qMax(all.bottom(), b.bottom())));
+    }
     const QPointF shift = stock.center() - all.center();
     const QPointF d(mode == Center::Vertical ? 0.0 : shift.x(),
                     mode == Center::Horizontal ? 0.0 : shift.y());

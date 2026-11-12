@@ -641,7 +641,9 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
             cur.v[nv][k] = f;
             finite = finite && std::isfinite(f) && std::fabs(f) <= 1e6f;
         }
-        badTri = badTri || !finite;   // like the binary reader: a bad triangle is dropped
+        // Same limits as the binary reader, but here only the bad triangle is
+        // dropped (the binary reader refuses the whole file).
+        badTri = badTri || !finite;
         if (++nv == 3) {
             if (!badTri)
                 tris->append(cur);

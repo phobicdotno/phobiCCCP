@@ -1,4 +1,5 @@
 #pragma once
+#include <QHash>
 #include <QIcon>
 #include <QPainterPath>
 #include <QSet>
@@ -14,6 +15,7 @@ namespace c2d {
 
 class Canvas;
 class Document;
+class Element;
 class ToolpathForm;
 struct Toolpath;
 
@@ -59,7 +61,9 @@ private:
     // selection, so a shape can be traced back to its toolpaths.
     QStringList vectorIdsOf(const QString &uuid) const;
     void updateHighlight();           // halo follows the list's selection
-    QString describeVectors(const QStringList &ids) const;
+    // `byId` is the document's elements by id, built once per refresh.
+    QString describeVectors(const QStringList &ids,
+                            const QHash<QString, const Element *> &byId) const;
     void markUsage(const QStringList &selectedElementIds);
     // Each card's "v" opens a thumbnail per shape it cuts, each with a bin
     // that takes the shape out of the toolpath. Where toolpaths sit on top of

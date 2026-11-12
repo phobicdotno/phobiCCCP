@@ -1054,6 +1054,25 @@ void ToolpathPanel::refresh()
     m_list->clear();
     QTreeWidgetItem *keepItem = nullptr;
     if (m_doc) {
+        // One pass over the elements instead of a scan per referenced vector:
+        // this runs on every document change. The first element of an id
+        // wins, as in Document::elementById.
+        QHash<QString, const Element *> byId;
+        if (!m_doc->toolpaths().isEmpty()) {
+            const QVector<Element> &els = m_doc->elements();
+            byId.reserve(els.size());
+            for (const Element &e : els)
+                if (!byId.contains(e.id))
+                    byId.insert(e.id, &e);
+        }
+        // Open cards of toolpaths that are gone are forgotten.
+        if (!m_expanded.isEmpty()) {
+            QSet<QString> open;
+            for (const Toolpath &t : m_doc->toolpaths())
+                if (m_expanded.contains(t.uuid))
+                    open.insert(t.uuid);
+            m_expanded = open;
+        }
         for (const Toolpath &t : m_doc->toolpaths()) {
             auto *it = new QTreeWidgetItem(m_list);
             it->setText(0, t.json.value("name").toString());
@@ -1085,7 +1104,7 @@ void ToolpathPanel::refresh()
                 vids << v.toObject().value("uuid").toString();
             it->setToolTip(0, QStringLiteral("T%1  %2\n%3")
                                   .arg(int(tool.value("number").toDouble()))
-                                  .arg(tool.value("name").toString(), describeVectors(vids)));
+                                  .arg(tool.value("name").toString(), describeVectors(vids, byId)));
             it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable
                          | Qt::ItemIsDragEnabled);
             it->setData(0, AreaIdsRole, vids);
@@ -1160,7 +1179,8 @@ QStringList ToolpathPanel::vectorIdsOf(const QString &uuid) const
 // A human summary of a vector list: "2 x circle, 1 x rectangle". Ids that no
 // longer resolve are counted as missing, which is worth seeing — it means the
 // toolpath refers to a shape that has since been deleted.
-QString ToolpathPanel::describeVectors(const QStringList &ids) const
+QString ToolpathPanel::describeVectors(const QStringList &ids,
+                                       const QHash<QString, const Element *> &byId) const
 {
     if (ids.isEmpty())
         return QStringLiteral("No vectors assigned — select shapes on the canvas "
@@ -1169,7 +1189,7 @@ QString ToolpathPanel::describeVectors(const QStringList &ids) const
     QHash<QString, int> hist;
     int missing = 0;
     for (const QString &id : ids) {
-        const Element *e = m_doc ? m_doc->elementById(id) : nullptr;
+        const Element *e = byId.value(id, nullptr);
         if (!e) {
             ++missing;
             continue;

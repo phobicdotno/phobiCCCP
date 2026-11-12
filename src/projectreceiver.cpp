@@ -2,6 +2,7 @@
 #include "phobiversion.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QHostAddress>
 #include <QJsonArray>
@@ -199,8 +200,37 @@ QString saveReceived(const ReceivedProject &project, const QString &baseDir,
         return {};
     }
     const QDir dir(base.filePath(dirName));
+    // The name each file was saved under, in project.files order. Two files
+    // can ask for the same one ("a" and "A" are one file on some disks):
+    // PackageReader refuses such a manifest, a project put together any
+    // other way had the second written over the first.
+    QStringList written;
+    auto takenBy = [&written](const QString &name) {
+        for (int i = 0; i < written.size(); ++i)
+            if (written.at(i).compare(name, Qt::CaseInsensitive) == 0)
+                return i;
+        return -1;
+    };
     for (const ReceivedFile &f : project.files) {
-        const QString path = dir.filePath(safeFileName(f.name));
+        QString fileName = safeFileName(f.name);
+        const int twin = takenBy(fileName);
+        if (twin >= 0 && project.files.at(twin).data == f.data) {
+            // The same file listed twice: the one copy serves both.
+            const QString same = written.at(twin);
+            written.append(same);
+            if (paths) paths->append(dir.filePath(same));
+            continue;
+        }
+        if (twin >= 0) {
+            // Same name, other content: beside the first as name-2, name-3 …
+            const qsizetype dot = fileName.lastIndexOf(QLatin1Char('.'));
+            const QString stem = dot > 0 ? fileName.left(dot) : fileName;
+            const QString ext = dot > 0 ? fileName.mid(dot) : QString();
+            for (int n = 2; takenBy(fileName) >= 0; ++n)
+                fileName = QStringLiteral("%1-%2%3").arg(stem, QString::number(n), ext);
+        }
+        written.append(fileName);
+        const QString path = dir.filePath(fileName);
         QFile out(path);
         if (!out.open(QIODevice::WriteOnly) || out.write(f.data) != f.data.size()) {
             if (error) *error = QStringLiteral("Cannot write %1: %2").arg(path, out.errorString());
@@ -224,6 +254,7 @@ struct ProjectReceiver::Conn {
     bool pending = false; // an API request is waiting for respond()
     QByteArray buf;       // API bytes not yet read as a request
     int badLines = 0;     // lines that were not a JSON object
+    QElapsedTimer reqClock;   // since the first byte of the request still arriving
 };
 
 ProjectReceiver::ProjectReceiver(QObject *parent) : QObject(parent) {}
@@ -320,6 +351,18 @@ void ProjectReceiver::onConnection()
         c->idle.start();
         c->deadline.setSingleShot(true);
         connect(&c->deadline, &QTimer::timeout, this, [this, s] {
+            Conn *conn = m_conns.value(s);
+            if (conn && conn->api && conn->reqClock.isValid()) {
+                // A pad's request still arriving: like a transfer, it gets
+                // one more second per kMinRate bytes (here: brought so far).
+                const qint64 left = m_deadlineMs + conn->buf.size() / kMinRate * 1000
+                                    - conn->reqClock.elapsed();
+                if (left > 0)
+                    conn->deadline.start(int(left));
+                else
+                    drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"timed out\"}\n"));
+                return;
+            }
             drop(s, QByteArrayLiteral("ERR timed out\n"));
         });
         c->deadline.start(m_deadlineMs);
@@ -355,7 +398,9 @@ void ProjectReceiver::onData(QTcpSocket *s)
             c->api = true;
             c->buf = c->head.mid(kApiHello.size());
             c->head.clear();
-            c->deadline.stop();   // a pad may stay a while; idle still applies
+            // A pad may stay a while: idle still applies, and each request
+            // has a deadline of its own from its first byte (onApiData).
+            c->deadline.stop();
             onApiData(s);
             return;
         }
@@ -406,8 +451,15 @@ void ProjectReceiver::onApiData(QTcpSocket *s)
     for (;;) {
         const qsizetype nl = c->buf.indexOf('\n');
         if (nl < 0) {
-            if (c->buf.size() > kMaxRequest)
+            if (c->buf.size() > kMaxRequest) {
                 drop(s, QByteArrayLiteral("{\"ok\":false,\"error\":\"request too long\"}\n"));
+            } else if (!c->buf.isEmpty() && !c->deadline.isActive()) {
+                // The start of a request. Every byte of it restarts the idle
+                // timer, so a client that trickles one now and then held
+                // the connection (one of kMaxConns) for as long as it liked.
+                c->reqClock.start();
+                c->deadline.start(m_deadlineMs);
+            }
             return;
         }
         if (nl > kMaxRequest) {
@@ -416,6 +468,7 @@ void ProjectReceiver::onApiData(QTcpSocket *s)
         }
         const QByteArray line = c->buf.left(nl);
         c->buf.remove(0, nl + 1);
+        c->deadline.stop();   // that line is complete
         doc = QJsonDocument::fromJson(line);
         if (doc.isObject())
             break;

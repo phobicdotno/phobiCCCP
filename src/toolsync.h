@@ -24,6 +24,7 @@ public:
     explicit ToolSync(QObject *parent = nullptr);
     // PHOBIC_TOOLLIB_URL, else the raw GitHub folder of the main branch.
     static QString defaultBaseUrl();
+    // Does nothing while an earlier sync is still running (no finished() for it).
     void start(const QString &baseUrl, const QString &cacheDir);
     static bool validPath(const QString &rel);
 
@@ -48,6 +49,7 @@ private:
     QByteArray m_index;                // the index being synced to
     QStringList m_listed;              // every valid path in it
     int m_updated = 0, m_failed = 0, m_missed = 0;   // missed: wanted files that did not arrive
+    bool m_busy = false;               // a sync is running: start() does nothing
 };
 
 } // namespace c2d

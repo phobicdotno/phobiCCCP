@@ -168,7 +168,14 @@ void Recovery::discard()
 void Recovery::adopt(const QString &copy)
 {
     discard();
-    m_lock = takeLock(copy);
+    // No lock: another running session holds the copy (two windows were
+    // offered it at the same time, and that one answered first). It stays
+    // that session's. Made current here without its lock, the next write
+    // or discard deleted it under the session that owns it.
+    std::unique_ptr<QLockFile> lock = takeLock(copy);
+    if (!lock)
+        return;
+    m_lock = std::move(lock);
     m_current = copy;
 }
 

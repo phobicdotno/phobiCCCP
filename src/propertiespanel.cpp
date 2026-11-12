@@ -260,6 +260,7 @@ void PropertiesPanel::refresh()
         m_typeLabel->setText(QStringLiteral("no selection"));
         m_x->setValue(0);
         m_y->setValue(0);
+        noteShown();
         m_loading = false;
         return;
     }
@@ -277,7 +278,7 @@ void PropertiesPanel::refresh()
     }
 
     if (e->geometryType == QLatin1String("circle")) {
-        // Still loaded for a point: apply() sends it with every X/Y edit.
+        // Loaded for a point as well, though its row is hidden.
         m_radiusRow->setVisible(!isPoint);
         m_radius->setValue(e->raw.value("radius").toDouble());
     } else if (e->geometryType == QLatin1String("rectangle")) {
@@ -311,9 +312,25 @@ void PropertiesPanel::refresh()
         m_arcAngleShown = m_arcAngle->value();
         m_arcBottom->setChecked(e->raw.value("arc_text_on_bottom").toBool());
     }
+    noteShown();
     m_loading = false;
 }
 
+void PropertiesPanel::noteShown()
+{
+    m_xShown = m_x->value();
+    m_yShown = m_y->value();
+    m_radiusShown = m_radius->value();
+    m_widthShown = m_width->value();
+    m_heightShown = m_height->value();
+    m_rotationShown = m_rotation->value();
+    m_sidesShown = m_sides->value();
+}
+
+// Only the fields that differ from what they showed after refresh() are sent:
+// the boxes hold the values rounded to three decimals (and the rotation
+// clamped to its range), so sending an untouched one would write that rounding
+// into the element. Element::regen keeps what it is not given.
 void PropertiesPanel::apply()
 {
     if (!m_doc || m_id.isEmpty())
@@ -322,19 +339,30 @@ void PropertiesPanel::apply()
     if (!e)
         return;
 
+    const bool xEdited = m_x->value() != m_xShown;
+    const bool yEdited = m_y->value() != m_yShown;
     if (e->raw.contains(QLatin1String("center"))) {
         QHash<QString, double> p;
-        p.insert(QStringLiteral("cx"), m_x->value());
-        p.insert(QStringLiteral("cy"), m_y->value());
-        p.insert(QStringLiteral("radius"), m_radius->value());
-        p.insert(QStringLiteral("width"), m_width->value());
-        p.insert(QStringLiteral("height"), m_height->value());
-        p.insert(QStringLiteral("num_sides"), m_sides->value());
-        p.insert(QStringLiteral("rotation"), m_rotation->value());
-        m_canvas->editElement(m_id, p);
+        if (xEdited)
+            p.insert(QStringLiteral("cx"), m_x->value());
+        if (yEdited)
+            p.insert(QStringLiteral("cy"), m_y->value());
+        if (m_radius->value() != m_radiusShown)
+            p.insert(QStringLiteral("radius"), m_radius->value());
+        if (m_width->value() != m_widthShown)
+            p.insert(QStringLiteral("width"), m_width->value());
+        if (m_height->value() != m_heightShown)
+            p.insert(QStringLiteral("height"), m_height->value());
+        if (m_sides->value() != m_sidesShown)
+            p.insert(QStringLiteral("num_sides"), m_sides->value());
+        if (m_rotation->value() != m_rotationShown)
+            p.insert(QStringLiteral("rotation"), m_rotation->value());
+        if (!p.isEmpty())
+            m_canvas->editElement(m_id, p);
     } else {
         const QPointF bc = e->painterPath.boundingRect().center();
-        m_canvas->moveElementBy(m_id, m_x->value() - bc.x(), m_y->value() - bc.y());
+        m_canvas->moveElementBy(m_id, xEdited ? m_x->value() - bc.x() : 0.0,
+                                yEdited ? m_y->value() - bc.y() : 0.0);
     }
 }
 

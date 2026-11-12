@@ -15,6 +15,7 @@
 #include "post_grbl.h"
 #include "tiling.h"
 
+#include <QApplication>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDialog>
@@ -213,6 +214,19 @@ static QDoubleSpinBox *mmSpin(QWidget *parent, double lo, double hi, double val,
     s->setKeyboardTracking(false);
     s->setMinimumWidth(70);         // the range would otherwise set a wide minimum
     return s;
+}
+
+// One of the Machine page's own questions or messages (shopAsk, shopTell,
+// the export's progress) is on screen.
+static bool questionOpen(const QWidget *panel)
+{
+    const QWidgetList tops = QApplication::topLevelWidgets();
+    for (const QWidget *w : tops) {
+        const QWidget *p = w->parentWidget();
+        if (w->isVisible() && w->isModal() && p && (p == panel || panel->isAncestorOf(p)))
+            return true;
+    }
+    return false;
 }
 
 MachinePanel::MachinePanel(QWidget *parent)
@@ -1396,7 +1410,14 @@ void MachinePanel::log(const QString &line)
         const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
         QDir().mkpath(dir);
         file.setFileName(dir + QStringLiteral("/machine.log"));
-        file.open(QIODevice::Append | QIODevice::Text);
+        // Tried again on every line (the disk may come back), but said only
+        // once: a log that is quietly not kept is missed when it is needed.
+        static bool told = false;
+        if (!file.open(QIODevice::Append | QIODevice::Text) && !told) {
+            told = true;
+            m_console->appendPlainText(QStringLiteral("!! cannot write %1: %2 — this log is on screen only")
+                                           .arg(file.fileName(), file.errorString()));
+        }
     }
     if (file.isOpen()) {
         file.write(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss.zzz  ")).toUtf8());
@@ -1591,7 +1612,12 @@ void MachinePanel::keyPressEvent(QKeyEvent *event)
 // hold delay becomes one step, holding becomes continuous motion.
 void MachinePanel::beginHoldJog(char axis, int dir)
 {
-    stopHoldJog();
+    // A direction pressed while another is still held (a pad flipped from +
+    // to -, a second arrow key): the held jog stops the way a release stops
+    // it, with the second cancel for a $J= still unread in GRBL's buffer.
+    // One cancel alone let that jog run on in the old direction. A press
+    // not yet held is dropped, not taken as a tap.
+    if (m_holdJogging) endHoldJog(); else stopHoldJog();
     if (needsInit())
         return;
     if (m_parkAfterHome || m_homingStarted || m_machineState.startsWith(QLatin1String("Home"))) {
@@ -2358,6 +2384,7 @@ void MachinePanel::showPage(const QString &name)
 void MachinePanel::setDocument(Document *doc)
 {
     m_doc = doc;
+    ++m_docSeq;
     refreshJobInfo();
 }
 
@@ -2492,6 +2519,14 @@ void MachinePanel::clearJob()
 void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
 {
     m_grbl->pauseStream();               // again: harmless when already held
+    // One wait and one reset at a time. A second one started meanwhile
+    // (Disconnect confirmed while Cancel job still waits for the hold)
+    // cleared m_resetPending under the first when that finished, and then
+    // reset the controller again, into whatever the first had gone on to do.
+    // Its step joins the wait under way instead.
+    m_resetThen.append(ResetStep{std::move(then), evenAfterStop});
+    if (m_resetPending)
+        return;
     m_resetPending = true;
     // Wait for the hold to finish decelerating (Hold:0), at most 5 s. The
     // first 300 ms are not trusted: the last report may predate the hold.
@@ -2501,13 +2536,15 @@ void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
     // A Stop while waiting has already reset the controller: nothing more
     // goes out after it. (The job finishing meanwhile is no Stop: its last
     // lines went into the held planner, and the reset is still needed.)
-    connect(t, &QTimer::timeout, this, [this, t, tries, then, evenAfterStop, seq = m_stopSeq] {
+    connect(t, &QTimer::timeout, this, [this, t, tries, seq = m_stopSeq] {
         if (seq != m_stopSeq) {
             m_resetPending = false;
             t->stop();
             t->deleteLater();
-            if (evenAfterStop && then)
-                then();   // no motion in it (a disconnect): still wanted
+            const QVector<ResetStep> steps = std::exchange(m_resetThen, {});
+            for (const ResetStep &s : steps)
+                if (s.evenAfterStop && s.then)
+                    s.then();   // no motion in it (a disconnect): still wanted
             return;
         }
         const bool still = m_machineState == QLatin1String("Hold:0")
@@ -2520,8 +2557,10 @@ void MachinePanel::holdResetThen(std::function<void()> then, bool evenAfterStop)
         m_resetPending = false;
         resetFlow();
         m_grbl->stopStream();
-        if (then)
-            then();
+        const QVector<ResetStep> steps = std::exchange(m_resetThen, {});
+        for (const ResetStep &s : steps)
+            if (s.then)
+                s.then();
     });
     t->start();
 }
@@ -2666,6 +2705,15 @@ void MachinePanel::gamepadButton(int number, bool pressed)
         m_pauseBtn->click();              // same path as the on-screen button
     } else if (action == QLatin1String("stop")) {
         m_stopBtn->click();
+    } else if ((action == QLatin1String("zeroxy") || action == QLatin1String("zeroz")
+                || action == QLatin1String("home")) && questionOpen(this)) {
+        // What a question on this page says was worked out before it opened
+        // (Run and Hover check the travel from the work zero as it was): a
+        // pad button bumped meanwhile must not move the zero or home the
+        // machine under it. Hold and Stop stay, and so do jogs: the answers
+        // wait for the machine to stand still.
+        log(QStringLiteral("gamepad: %1 ignored while a question is open on screen — answer it first")
+                .arg(action));
     } else if (action == QLatin1String("zeroxy")) {
         zero(QStringLiteral("XY"));
     } else if (action == QLatin1String("zeroz")) {
@@ -3253,8 +3301,20 @@ void MachinePanel::hoverDryRun()
         shopTell(this, QStringLiteral("Machine"), QStringLiteral("Open a .c2d file first."));
         return;
     }
+    // The outline traced is that of the design as it is now. Preparing it
+    // and asking both run the event loop: a pad can send a new version of
+    // the open design (or another one) meanwhile, and the rectangle asked
+    // about would no longer be the job's.
+    const quint64 docAtStart = m_docSeq;
+    auto designSwapped = [&]() -> bool {
+        if (m_docSeq == docAtStart)
+            return false;
+        shopTell(this, QStringLiteral("Machine"), QStringLiteral("The design changed meanwhile."),
+                 QStringLiteral("Press Hover 5 cm again to trace the one that is open now."));
+        return true;
+    };
     const GcodeResult r = exportWithProgress(this, *m_doc, QStringLiteral("Preparing program"));
-    if (r.cancelled)
+    if (r.cancelled || designSwapped())
         return;
     double x0, y0, x1, y1;
     if (r.done.isEmpty() || !cutBounds(r.ops, x0, y0, x1, y1)) {
@@ -3305,7 +3365,7 @@ void MachinePanel::hoverDryRun()
     ask.note = QStringLiteral("Nothing is cut: the bit stays 5 cm up.");
     ask.okText = QStringLiteral("▶ Trace");
     ask.defaultOk = false;
-    if (!shopAsk(this, ask))
+    if (!shopAsk(this, ask) || designSwapped())
         return;
     // The dialog was modal-ish: state and zero can have changed meanwhile.
     if (!m_grbl->isConnected() || !m_grbl->canSendCommand() || !m_grbl->status().valid

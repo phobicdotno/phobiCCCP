@@ -546,6 +546,16 @@ static QIcon toolIcon(const QString &kind)
     return QIcon(pm);
 }
 
+// Everything BackgroundImage::saveTo writes. The background is changed past
+// the undo stack, so "undone back to the saved design" checks it by value.
+static bool sameBackground(const BackgroundImage &a, const BackgroundImage &b)
+{
+    return a.image.isNull() == b.image.isNull() && a.pngData == b.pngData
+        && a.visible == b.visible && a.locked == b.locked && a.userChanged == b.userChanged
+        && a.x == b.x && a.y == b.y && a.scale == b.scale
+        && a.rotationDeg == b.rotationDeg && a.opacity == b.opacity;
+}
+
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
@@ -717,6 +727,7 @@ MainWindow::MainWindow(QWidget *parent)
     // change what the 3D toolpaths cut.
     connect(m_model, &ModelPanel::modelChanged, this, [this] {
         m_dirty = true;
+        m_undoMarksSaved = false;   // model edits are not undo steps
         updateTitle();
     });
     connect(m_model, &ModelPanel::modelRebuilt, this, [this] {
@@ -1210,6 +1221,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(m_canvas, &Canvas::documentChanged, this, [this] {
         m_dirty = true;
+        trackChange();
         updateTitle();
         refreshInfo();
         m_props->refresh();
@@ -1223,6 +1235,31 @@ MainWindow::MainWindow(QWidget *parent)
                 markIsoStale();
         }
         statusBar()->showMessage(QStringLiteral("Edited — Ctrl+S to save"));
+    });
+    // A design undone back to how it was saved is not edited any more. The
+    // mark stayed until the next save: Save, an edit and Ctrl+Z still showed
+    // the * and closing asked about changes that were gone. Only ever when it
+    // is certain (see m_undoMarksSaved): a pad may replace a clean file.
+    QUndoStack *undo = m_canvas->undoStack();
+    connect(undo, &QUndoStack::indexChanged, this, [this, undo] {
+        // The stack moved: the change announced just before was that step's.
+        // Not when it was emptied for another design, which is no step.
+        if (undo->count() > 0)
+            m_changeUnclaimed = false;
+    });
+    connect(undo, &QUndoStack::cleanChanged, this, [this, undo](bool clean) {
+        if (!clean)
+            return;
+        if (undo->count() == 0) {
+            // Emptied, not undone: its new clean mark says nothing about the file.
+            m_undoMarksSaved = false;
+            return;
+        }
+        if (!m_dirty || !m_undoMarksSaved || m_changeUnclaimed || !sameBackground(m_bg, m_bgSaved))
+            return;
+        m_dirty = false;
+        updateTitle();
+        statusBar()->showMessage(QStringLiteral("Back to the design as saved"), 5000);
     });
     connect(m_canvas, &Canvas::statusHint, this, [this](const QString &m) {
         statusBar()->showMessage(m);
@@ -1963,6 +2000,9 @@ struct MainWindow::PreviewRun {
 
 MainWindow::~MainWindow()
 {
+    // The canvas is deleted after this body, and its undo stack signals as it
+    // empties itself: the window's members are gone by then.
+    disconnect(m_canvas->undoStack(), nullptr, this, nullptr);
     // A preview export still running reads its own snapshot only, but the
     // process must not tear down under it.
     if (m_previewRun) {
@@ -2312,10 +2352,13 @@ void MainWindow::saveExtras(const QString &path)
                      !mdOk ? QStringLiteral("the 3D model")
                            : QStringLiteral("the background image"),
                      !mdOk ? mdErr : bgErr));
+        // The vectors did go into the file: the point undo calls "saved" is
+        // an older one that the file no longer holds.
+        m_undoMarksSaved = false;
         updateTitle();
         return;                       // still dirty: the next save retries
     }
-    m_dirty = false;
+    markSaved();
     m_recovery.discard();
     updateTitle();
     statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
@@ -2357,6 +2400,37 @@ void MainWindow::onSaveAs()
         saveExtras(path);
         padShareSaved(path);
     }
+}
+
+// What is in memory is what is in the file. The undo stack is told, so that
+// undoing (or redoing) back to this point is clean again.
+void MainWindow::markSaved()
+{
+    m_dirty = false;
+    m_changeUnclaimed = false;
+    m_bgSaved = m_bg;
+    QUndoStack *undo = m_canvas->undoStack();
+    undo->setClean();
+    // Refused in the middle of a macro: then nothing vouches for the mark.
+    m_undoMarksSaved = undo->isClean();
+}
+
+// A change made by an undo step is followed at once by the stack moving,
+// which claims it (QUndoStack moves its index only after redo()/undo()
+// returns, so there is nothing to tell them apart by here). One made past
+// the stack is never claimed, and from then on no undo leads back to the
+// saved design.
+void MainWindow::trackChange()
+{
+    if (!m_undoMarksSaved || m_changeUnclaimed)
+        return;
+    m_changeUnclaimed = true;
+    QMetaObject::invokeMethod(this, [this] {
+        if (m_changeUnclaimed) {
+            m_changeUnclaimed = false;
+            m_undoMarksSaved = false;
+        }
+    }, Qt::QueuedConnection);
 }
 
 // m_dirty was tracked and shown in the title bar but never acted on: opening
@@ -2560,7 +2634,7 @@ void MainWindow::openPath(const QString &path, bool untitled)
     m_tp->setDocument(&m_doc);
     m_machine->setDocument(&m_doc);
     m_model->setDocument(&m_doc);
-    m_dirty = false;
+    markSaved();
     m_recovery.discard();             // the design it replaces was saved or let go
     if (m_untitledPath != path)
         removeUntitledFile();         // the untitled design it replaces
@@ -2670,6 +2744,7 @@ void MainWindow::offerRecovery()
         m_recovery.adopt(e.copy);     // kept until the next copy or a save
         m_untitledFrom = e.untitled ? QString() : e.source;
         m_dirty = true;
+        m_undoMarksSaved = false;     // never saved by the user: no undo makes it so
         updateTitle();
         statusBar()->showMessage(QStringLiteral("Recovered %1; save it to keep it").arg(what), 10000);
         return;
@@ -3884,8 +3959,8 @@ private:
         m_d->setElements(s.els);
         m_d->setToolpaths(s.tps);
         m_d->setParametric(s.par);
-        m_d->setParam(QStringLiteral("width"), s.stockW);
-        m_d->setParam(QStringLiteral("height"), s.stockH);
+        setStock(QStringLiteral("width"), s.stockW);
+        setStock(QStringLiteral("height"), s.stockH);
         if (m_hasModel)
             m_m->setModel(s.model);
         if (!m_bg->isNull()) {
@@ -3897,6 +3972,14 @@ private:
         m_c->rebuild();
         m_c->viewport()->update();
         emit m_c->documentChanged();
+    }
+    // Only a size that changes is written. A file with no stock has no
+    // width/height params, and setting them (to nothing) added two empty
+    // ones to the design on every turn and undo.
+    void setStock(const QString &key, const QString &value)
+    {
+        if (m_d->params().value(key) != value)
+            m_d->setParam(key, value);
     }
     Canvas *m_c;
     Document *m_d;
