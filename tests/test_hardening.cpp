@@ -1903,6 +1903,46 @@ int main(int argc, char *argv[])
         check(worst <= M_PI + 0.01, "a thread's sliver of a turn is not cut as a full circle by GRBL");
     }
 
+    // -----------------------------------------------------------------------
+    // SVG <use> chain: each level copies the one before, so geometry doubles
+    // per level. A 1 KB file must not run for minutes; and a drawing a light
+    // year wide must be refused, not imported and then dropped by Boolean ops.
+    {
+        QByteArray svg = "<svg xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'"
+                         " width='100mm' height='100mm' viewBox='0 0 100 100'><defs>"
+                         "<g id='g0'><rect x='0' y='0' width='1' height='1'/></g>";
+        for (int i = 1; i <= 40; ++i)
+            svg += "<g id='g" + QByteArray::number(i) + "'><use xlink:href='#g" + QByteArray::number(i - 1)
+                   + "'/><use xlink:href='#g" + QByteArray::number(i - 1) + "' x='1'/></g>";
+        svg += "</defs><use xlink:href='#g40'/></svg>";
+        QElapsedTimer tm;
+        tm.start();
+        c2d::ImportOptions o;
+        (void)c2d::importSvgData(svg, o, QStringLiteral("bomb.svg"));
+        check(tm.elapsed() < 20000, "a doubling <use> chain is cut off by a budget, not expanded for minutes");
+
+        const QByteArray huge = "<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                                "viewBox='0 0 100 100'><rect x='0' y='0' width='1e15' height='5'/></svg>";
+        const c2d::ImportResult hr = c2d::importSvgData(huge, o, QStringLiteral("huge.svg"));
+        check(!hr.ok && !hr.error.isEmpty(), "an absurdly large drawing is refused with a message");
+
+        const QByteArray far = "<svg xmlns='http://www.w3.org/2000/svg' width='100mm' height='100mm' "
+                               "viewBox='0 0 100 100'><rect x='6000000' y='7000000' width='20' height='10'/></svg>";
+        c2d::ImportOptions fo;
+        fo.autoPlace = true;
+        fo.stockWidth = 300;
+        fo.stockHeight = 300;
+        check(c2d::importSvgData(far, fo, QStringLiteral("far.svg")).ok, "a small part far from the origin still imports");
+    }
+
+    // Truncated zlib data must not pass as complete.
+    {
+        const QByteArray raw(5000, 'x');
+        QByteArray z = c2d::zlibDeflate(raw);
+        check(c2d::zlibInflate(z, raw.size()) == raw, "zlib round trip");
+        check(c2d::zlibInflate(z.left(z.size() / 2), raw.size()).isEmpty(), "a truncated zlib stream gives nothing, not half");
+    }
+
     std::printf("test_hardening: %d checks OK\n", g_checks);
     return 0;
 }

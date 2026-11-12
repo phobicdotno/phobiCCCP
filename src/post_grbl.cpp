@@ -228,7 +228,7 @@ QString GrblPost::generate(const QVector<Op> &ops) const
     Modal X{QStringLiteral("X"), coordDigits, {}};
     Modal Y{QStringLiteral("Y"), coordDigits, {}};
     Modal Z{QStringLiteral("Z"), coordDigits, {}};
-    Modal F{QStringLiteral("F"), 1, {}};
+    Modal F{QStringLiteral("F"), m_metric ? 1 : 3, {}};   // inch feeds are small numbers: one decimal was up to 1.3 % off
     Modal G{QStringLiteral("G"), 0, {}};
 
     QStringList out;

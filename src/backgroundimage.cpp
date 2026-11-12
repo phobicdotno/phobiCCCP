@@ -1,3 +1,4 @@
+#include <cmath>
 #include "backgroundimage.h"
 #include "zlibutil.h"
 
@@ -125,7 +126,7 @@ bool BackgroundImage::loadFrom(const QString &c2dPath, QString *error)
             else if (k == QLatin1String("background_opacity"))    opacity = v.toDouble();
             else if (k == QLatin1String("background_locked"))     locked = (v.trimmed() == QLatin1String("1"));
         }
-        if (scale <= 0)
+        if (!(scale > 0) || !std::isfinite(scale))
             scale = 1.0;
         opacity = qBound(0.0, opacity, 1.0);
 

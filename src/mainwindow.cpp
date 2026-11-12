@@ -1772,7 +1772,10 @@ void MainWindow::setMode(Mode m, bool autoRun)
     } else if (m == Mode::Machine) {
         m_machine->setFocus();            // arrow keys jog straight away
     }
-    QSettings().setValue(QStringLiteral("ui/mode"), int(m));
+    // Only the user's own mode choice (autoRun) is remembered: a received file
+    // or a pad send also switches mode and must not become the next start page.
+    if (autoRun)
+        QSettings().setValue(QStringLiteral("ui/mode"), int(m));
 }
 
 void MainWindow::onExportGcode()

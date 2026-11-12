@@ -626,6 +626,7 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
     }
     StlTriangle cur{};
     int nv = 0;
+    bool badTri = false;
     const QStringList lines = text.split(QChar('\n'), Qt::SkipEmptyParts);
     for (const QString &raw : lines) {
         const QString line = raw.trimmed();
@@ -634,10 +635,17 @@ bool parseStl(const QByteArray &bytes, QVector<StlTriangle> *tris, QString *erro
         const QStringList parts = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
         if (parts.size() < 4)
             continue;
-        for (int k = 0; k < 3; ++k)
-            cur.v[nv][k] = parts.at(1 + k).toFloat();
+        bool finite = true;
+        for (int k = 0; k < 3; ++k) {
+            const float f = parts.at(1 + k).toFloat();
+            cur.v[nv][k] = f;
+            finite = finite && std::isfinite(f) && std::fabs(f) <= 1e6f;
+        }
+        badTri = badTri || !finite;   // like the binary reader: a bad triangle is dropped
         if (++nv == 3) {
-            tris->append(cur);
+            if (!badTri)
+                tris->append(cur);
+            badTri = false;
             nv = 0;
         }
     }

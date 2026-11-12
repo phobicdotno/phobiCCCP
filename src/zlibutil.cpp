@@ -40,6 +40,8 @@ QByteArray zlibInflate(const QByteArray &in, int expectedSize)
     } while (ret != Z_STREAM_END && zs.avail_out == 0);
 
     inflateEnd(&zs);
+    if (ret != Z_STREAM_END)
+        return {};   // truncated: partial data must not pass as complete
     return out;
 }
 

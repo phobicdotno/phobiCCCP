@@ -87,6 +87,7 @@ bool Document::load(const QString &path, QString *error)
             q.exec(QStringLiteral(
                 "SELECT type, sz, data, uuid, name, version FROM items "
                 "WHERE type IN ('element','toolpath','toolpath_group') ORDER BY id"));
+            QSet<QString> seenElementIds;
             while (q.next()) {
                 const QString type = q.value(0).toString();
                 const int sz = q.value(1).toInt();
@@ -106,7 +107,13 @@ bool Document::load(const QString &path, QString *error)
                 }
 
                 if (type == QLatin1String("element")) {
-                    m_elements.append(Element::fromJson(obj));
+                    Element el = Element::fromJson(obj);
+                    // The items table needs a unique, non-empty id per row: a
+                    // file with a blank or repeated one would load but never save.
+                    if (el.id.isEmpty() || seenElementIds.contains(el.id))
+                        el.id = QUuid::createUuid().toString();
+                    seenElementIds.insert(el.id);
+                    m_elements.append(el);
                 } else if (type == QLatin1String("toolpath_group")) {
                     ToolpathGroup g;
                     g.uuid = obj.value("uuid").toString();
@@ -426,12 +433,20 @@ bool Document::save(const QString &destPath, QString *error)
                     QFile::encodeName(realDest).constData()) != 0) {
         // Non-POSIX or an odd filesystem: fall back to remove-then-rename,
         // which is not atomic but still only runs on known-good content.
-        QFile::remove(realDest);
+        // The old file is moved aside first and put back if the rename fails,
+        // so a failed save never costs the original; the new copy is kept too.
+        const QString aside = realDest + QStringLiteral(".saving-old");
+        QFile::remove(aside);
+        const bool hadOld = QFile::exists(realDest) && QFile::rename(realDest, aside);
         if (!QFile::rename(tmpPath, realDest)) {
-            if (error) *error = QStringLiteral("Could not move the saved file into %1").arg(destPath);
-            QFile::remove(tmpPath);
+            if (hadOld)
+                QFile::rename(aside, realDest);
+            if (error) *error = QStringLiteral("Could not move the saved file into %1 (the new copy is kept as %2)")
+                                    .arg(destPath, tmpPath);
             return false;
         }
+        if (hadOld)
+            QFile::remove(aside);
     }
 
     // Later saves belong to the file we just wrote. Without this, Save As

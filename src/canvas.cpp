@@ -886,8 +886,24 @@ void Canvas::emitZoom()
     emit zoomChanged(qAbs(transform().m11()) * 100.0);
 }
 
+// Holds a zoom step inside a sane range: unbounded, held-down zoom-out drives
+// the scale to zero (and the view to NaN), zoom-in to an unusable blur.
+static double limitZoom(double current, double factor)
+{
+    constexpr double kMin = 0.02, kMax = 2000.0;   // view pixels per mm
+    const double now = qAbs(current);
+    if (!(now > 0) || !(factor > 0) || !std::isfinite(factor))
+        return 1.0;
+    // Only the side the zoom moves toward is limited: a view already past a
+    // limit (fit to a tiny shape) must still be able to move back.
+    if (factor > 1.0)
+        return qMin(factor, qMax(1.0, kMax / now));
+    return qMax(factor, qMin(1.0, kMin / now));
+}
+
 void Canvas::zoomBy(double factor)
 {
+    factor = limitZoom(transform().m11(), factor);
     setTransformationAnchor(QGraphicsView::AnchorViewCenter);
     scale(factor, factor);
     emitZoom();
@@ -1459,6 +1475,9 @@ void Canvas::setDocument(Document *doc)
     // A selection carried over by id would show on the canvas while the
     // panels, handed the new document after this, show none.
     m_scene->clearSelection();
+    // The old design's toolpath preview and highlight must not follow it.
+    clearToolpathPreview();
+    setVectorHighlight({});
     rebuild();
 }
 
@@ -3161,11 +3180,15 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
 
     // Element menu (Select or Nodes tool): pick the item under the cursor if
     // it is not part of the selection.
-    if (QGraphicsItem *it = itemAt(event->pos())) {
-        if (it->data(0).isValid() && !it->isSelected()) {
+    // Preview overlays sit on top and carry no element: look through them.
+    for (QGraphicsItem *it : items(event->pos())) {
+        if (!it->data(0).isValid())
+            continue;
+        if (!it->isSelected()) {
             m_scene->clearSelection();
             it->setSelected(true);
         }
+        break;
     }
     const QStringList ids = selectedElementIds();
     if (ids.isEmpty())
@@ -3337,7 +3360,8 @@ bool Canvas::viewportEvent(QEvent *event)
         // Zoom about the point between the fingers, as the wheel does about the mouse.
         const QPoint at = viewport()->mapFromGlobal(pg->centerPoint().toPoint());
         const QPointF before = mapToScene(at);
-        scale(f, f);
+        const double fl = limitZoom(transform().m11(), f);
+        scale(fl, fl);
         const QPoint moved = mapFromScene(before) - at;
         horizontalScrollBar()->setValue(horizontalScrollBar()->value() + moved.x());
         verticalScrollBar()->setValue(verticalScrollBar()->value() + moved.y());
@@ -3357,7 +3381,7 @@ void Canvas::wheelEvent(QWheelEvent *event)
     if (dy == 0) { QGraphicsView::wheelEvent(event); return; }   // horizontal scroll: pan, not zoom
     // 2 % per wheel notch (120 units). Touchpads and pinches send smaller
     // deltas, many per gesture, so the step scales with the delta.
-    const double factor = qPow(1.02, dy / 120.0);
+    const double factor = limitZoom(transform().m11(), qPow(1.02, dy / 120.0));
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     scale(factor, factor);
     emitZoom();

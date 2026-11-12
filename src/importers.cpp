@@ -526,6 +526,17 @@ static void finish(ImportResult &res, QPainterPath mm, const ImportOptions &opt)
         bb = mm.boundingRect();
         res.relocated = true;
     }
+    // Checked after placing, so a small part far from the origin still imports.
+    // Nothing a machine can cut is a kilometre wide; Boolean/Offset (integer
+    // maths in 1/1000 mm) silently drop shapes far beyond that.
+    constexpr double kLimit = 1e6;
+    if (!std::isfinite(bb.left()) || !std::isfinite(bb.top()) || !std::isfinite(bb.right())
+        || !std::isfinite(bb.bottom()) || std::fabs(bb.left()) > kLimit || std::fabs(bb.top()) > kLimit
+        || std::fabs(bb.right()) > kLimit || std::fabs(bb.bottom()) > kLimit) {
+        res.ok = false;
+        res.error = QStringLiteral("The drawing is absurdly large (over 1000 m), so nothing was imported.");
+        return;
+    }
     res.elements = elementsFromPath(joinSubpaths(mm), opt.layer);
     res.bounds = bb;
     res.ok = true;
@@ -1094,6 +1105,7 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
         QStringLiteral("defs"), QStringLiteral("symbol"), QStringLiteral("clipPath"),
         QStringLiteral("mask"), QStringLiteral("pattern"), QStringLiteral("marker")};
     QHash<QString, SvgDef> defs;
+    qint64 useBudget = 2000000;   // path elements all <use> copies may add up to
     struct Frame { QString id; QTransform own; QPainterPath path; bool hidden = false;
                    QRectF viewBox; QString aspect; bool noDraw = false;
                    double vw = 0, vh = 0;   // the viewport its children's % lengths use
@@ -1128,6 +1140,11 @@ QHash<QString, SvgDef> svgDefinitions(const QByteArray &data, const QSet<QString
                         f.path = svgPlaceUse(*here, at, vpW, vpH);
                     else if (before != earlier.constEnd())
                         f.path = svgPlaceUse(*before, at, vpW, vpH);
+                    // A chain of <use> that each copy the one before doubles the
+                    // geometry per level: spend a budget, draw nothing past it.
+                    useBudget -= f.path.elementCount();
+                    if (useBudget < 0)
+                        f.path = QPainterPath();
                 } else if (xml.name() == QLatin1String("symbol")) {
                     Scanner sc{at.value(QLatin1String("viewBox"))};
                     double a[4];
@@ -1204,6 +1221,8 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
     double wMm = -1, hMm = -1;
     QString aspect;   // the root's preserveAspectRatio
     int malformed = 0;
+    qint64 useSpent = 0;
+    bool useWarned = false;
     const QSet<QString> hiddenClasses = svgHiddenClasses(data);
 
     static const QStringList skipContainers = {
@@ -1320,7 +1339,14 @@ ImportResult importSvgData(const QByteArray &data, const ImportOptions &opt,
                 if (ref == defs.constEnd()) {
                     addSkipped(res, skippedCounts, name);
                 } else {
-                    user.addPath(ctx.xf.map(svgPlaceUse(*ref, at, ctx.vpW, ctx.vpH)));
+                    const QPainterPath placed = ctx.xf.map(svgPlaceUse(*ref, at, ctx.vpW, ctx.vpH));
+                    useSpent += placed.elementCount();
+                    if (useSpent <= 4000000)
+                        user.addPath(placed);
+                    else if (!useWarned) {
+                        useWarned = true;
+                        res.notes << QStringLiteral("Too much repeated geometry (<use>): the rest was left out.");
+                    }
                 }
             } else if (name == QLatin1String("g") || name == QLatin1String("svg")
                        || name == QLatin1String("a") || name == QLatin1String("switch")) {

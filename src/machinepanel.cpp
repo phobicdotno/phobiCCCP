@@ -3266,7 +3266,8 @@ void MachinePanel::hoverDryRun()
         return;
     }
     // Inside the travel from the current work zero, like the program check.
-    {
+    // Run again after the dialog: the pad or a zero button may have moved things.
+    auto travelOk = [&]() -> bool {
         const auto &st = m_grbl->status();
         const double off[3] = {st.mx - st.wx, st.my - st.wy, st.mz - st.wz};
         QSettings sset;
@@ -3288,9 +3289,12 @@ void MachinePanel::hoverDryRun()
             shopTell(this, QStringLiteral("Machine"), QStringLiteral("The outline goes off the machine."),
                      QStringLiteral("From the current work zero it reaches %1. Set the zero again or move the design.")
                          .arg(over.join(QStringLiteral(", "))));
-            return;
+            return false;
         }
-    }
+        return true;
+    };
+    if (!travelOk())
+        return;
     ShopAsk ask;
     ask.title = QStringLiteral("Hover dry run");
     ask.headline = QStringLiteral("Trace the job outline 50 mm above the work zero?");
@@ -3302,6 +3306,11 @@ void MachinePanel::hoverDryRun()
     ask.okText = QStringLiteral("▶ Trace");
     ask.defaultOk = false;
     if (!shopAsk(this, ask))
+        return;
+    // The dialog was modal-ish: state and zero can have changed meanwhile.
+    if (!m_grbl->isConnected() || !m_grbl->canSendCommand() || !m_grbl->status().valid
+        || needsInit() || !requireHomed(QStringLiteral("Hover dry run")) || movingStill(QStringLiteral("Hover dry run"))
+        || !travelOk())
         return;
     QStringList lines = riseToTop();
     lines << QStringLiteral("G21") << QStringLiteral("G90")

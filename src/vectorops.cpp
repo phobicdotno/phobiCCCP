@@ -173,9 +173,14 @@ static C2::Path64 toPath64(const QPolygonF &poly, bool trimClosed = true)
     C2::Path64 p;
     const int n = trimClosed && poly.isClosed() ? poly.size() - 1 : poly.size();
     p.reserve(size_t(n));
+    // Clamped: a coordinate past ~1e15 units overflows Clipper's integer maths
+    // and shapes vanish silently. NaN becomes 0.
+    auto q = [](double v) {
+        const double s = v * kScale;
+        return std::isfinite(s) ? qRound64(qBound(-1e15, s, 1e15)) : qint64(0);
+    };
     for (int i = 0; i < n; ++i)
-        p.push_back(C2::Point64(qRound64(poly.at(i).x() * kScale),
-                                qRound64(poly.at(i).y() * kScale)));
+        p.push_back(C2::Point64(q(poly.at(i).x()), q(poly.at(i).y())));
     return p;
 }
 

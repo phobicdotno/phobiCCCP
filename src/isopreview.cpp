@@ -124,7 +124,7 @@ public:
                 const QPointF c(width() / 2.0, height() / 2.0);
                 if (f > 0.0 && std::isfinite(f)) {
                     m_pan = pos - c - f * (pos - c - m_pan);
-                    m_scale *= f;
+                    m_scale = qBound(1e-3, m_scale * f, 1e5);
                 }
                 m_pan += pg->centerPoint() - pg->lastCenterPoint();
                 update();
@@ -158,7 +158,7 @@ public:
     }
     void zoomBy(double f)
     {
-        m_scale *= f;
+        m_scale = qBound(1e-3, m_scale * f, 1e5);
         update();
     }
     void setLive(double x, double y, double z, bool valid)
@@ -216,7 +216,7 @@ protected:
         const QPointF c(width() / 2.0, height() / 2.0);
         const QPointF pos = e->position();
         m_pan = pos - c - f * (pos - c - m_pan);
-        m_scale *= f;
+        m_scale = qBound(1e-3, m_scale * f, 1e5);
         update();
     }
 

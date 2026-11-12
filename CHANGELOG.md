@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.57 (build 147) — 2026-11-12
+
+> Bug check pass: safer Hover 5 cm, a few import and save fixes, smoother zoom.
+
+- **Hover 5 cm:** checks the machine again after you press Trace, in case the zero moved meanwhile.
+- **SVG import:** a file with endlessly repeated shapes no longer hangs the app.
+- **Huge drawings:** absurdly large coordinates are refused with a message instead of silently losing shapes.
+- **Saving:** a failed save keeps your old file; duplicate or blank ids in a file no longer block saving.
+- **Zoom:** can no longer be zoomed out into nothing.
+- **Right-click:** works on the shape under the cursor while a toolpath preview is showing.
+- **Opening a file:** the previous file's toolpath preview is cleared.
+- **Start page:** receiving a file from the pad no longer changes which page the app starts on.
+- **Inch mode:** feed rates have more decimals.
+
 ## v1.3.56 (build 146) — 2026-11-10
 
 > The stock size now shows in the top left corner of the drawing on the Design and Toolpaths pages, like on Simulate.
