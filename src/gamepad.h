@@ -21,6 +21,9 @@ namespace gamepadmap {
 QStringList actions();                       // x+ x- y+ y- z+ z- step+ step- hold ...
 QString label(const QString &action);        // "Jog X+", "Hold / resume", ...
 GamepadMap defaults();                       // SNES-style layout
+// The defaults for one pad style ("nes", "snes" or "xbox"). NES and SNES clones
+// share one numbering; an Xbox 360 pad has its own.
+GamepadMap defaults(const QString &style);
 GamepadMap load(QSettings &s);               // defaults + the user's overrides
 void save(QSettings &s, const GamepadMap &map);
 } // namespace gamepadmap

@@ -742,6 +742,11 @@ void JobView::setPlan(const JobPlan &plan, const QString &jobName)
         // its first question would stall the sender in the middle of a cut.
         if (s.kind == JobSection::Toolpath)
             m_previewPng[i] = previewPng(s, 52);
+        // The row's own picture likewise, for a plan of ordinary length: left
+        // for later it would be drawn when the row scrolls in or changes,
+        // between two lines of a running cut.
+        if (n <= 200)
+            it->data(0, Qt::DecorationRole);
         m_sectionItems[i] = it;
         const int np = s.passes.size();
         m_passStart[i] = QVector<qint64>(np, -1);

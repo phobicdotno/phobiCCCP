@@ -2,7 +2,8 @@
 // the same stock. Four turns give back exactly what was there; one turn cuts
 // exactly what the original cut, turned (the material-removal simulation of
 // both, compared cell by cell); constraints still hold, so a solve moves
-// nothing; the 3D model's images, meshes and textures turn with the vectors.
+// nothing; the 3D model's images, meshes and textures turn with the vectors;
+// the stock turned with the design is still turned after a save and reopen.
 // Plain asserts, exits 0 on success.
 
 #include "../src/backgroundimage.h"
@@ -19,6 +20,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QTemporaryDir>
 
 #include <cmath>
 #include <cstdio>
@@ -422,6 +424,56 @@ int main(int argc, char **argv)
         for (int k = 0; k < 3; ++k)
             jobrotate::turnBackground(bg, q);
         check(bg.rotationDeg == 0, "and comes back to its own angle after four turns");
+    }
+
+    // ---- the turned stock is saved with the turned design ---------------------
+    // Rotate 90° swaps the stock's width and height in memory. A save wrote
+    // the vectors and left the params as the file had them: the design came
+    // back turned, on the stock lying the old way.
+    {
+        QTemporaryDir dir;
+        check(dir.isValid(), "temp dir");
+        const QString path = dir.filePath(QStringLiteral("turned.c2d"));
+        QString err;
+        check(Document::createBlank(path, 290, 420, 12, &err), "a blank 290 x 420 design");
+        // A setting this build gives no meaning to: it has to survive the save.
+        check(Document::writeParam(path, QStringLiteral("some_later_setting"), QStringLiteral("keep me"), &err),
+              "with a setting of its own");
+        Document doc;
+        check(doc.load(path, &err), "it opens");
+        const QHash<QString, QString> asRead = doc.params();
+        check(asRead.value("some_later_setting") == QLatin1String("keep me"), "and has that setting");
+        doc.addElement(Element::makeRectangle({100, 150}, 60, 30, doc.defaultLayer()));
+        const QRectF stock(0, 0, doc.boardWidth(), doc.boardHeight());
+        check(stock.contains(jobrotate::designBounds(doc)), "the design lies on the stock");
+
+        // What Rotate 90° does: the design turns about the stock's corner, and
+        // the stock's width and height swap.
+        jobrotate::turnDocument(doc, jobrotate::quarterTurn(stock));
+        doc.setParam("width", asRead.value("height"));
+        doc.setParam("height", asRead.value("width"));
+        // The application's cut-order setting, set on every open document.
+        doc.setParam("site_order", "1");
+        check(doc.save(path, &err), "the turned design saves");
+
+        Document back;
+        check(back.load(path, &err), "and opens again");
+        check(back.boardWidth() == 420 && back.boardHeight() == 290, "the stock is saved turned");
+        check(QRectF(0, 0, 420, 290).contains(jobrotate::designBounds(back)),
+              "so the turned design still lies on it");
+        QHash<QString, QString> turned = asRead;
+        turned.insert("width", asRead.value("height"));
+        turned.insert("height", asRead.value("width"));
+        check(back.params() == turned,
+              "every other setting is as it was: none lost, none added, the unknown one kept");
+
+        // Undo puts the stock back, and that is saved as well.
+        back.setParam("width", asRead.value("width"));
+        back.setParam("height", asRead.value("height"));
+        check(back.save(path, &err), "the stock turned back saves");
+        Document again;
+        check(again.load(path, &err), "and opens once more");
+        check(again.params() == asRead, "with the settings it started with");
     }
 
     std::printf("test_jobrotate: %d checks OK\n", g_checks);

@@ -95,6 +95,29 @@ int main(int argc, char **argv)
     check(near(rect.left(), 60) && near(rect.top(), 40), "rectangle in place");
     check(near(circ.center().x(), 20) && near(circ.center().y(), 20), "circle in place");
 
+    // There and back again (A, B, A) reads as closed, its last point being
+    // its first, but is no ring: it went out as a closed polyline of two
+    // vertices. A triangle is the smallest ring.
+    {
+        auto entities = [](const DxfExportResult &x) {
+            const QString t = QString::fromUtf8(x.data);
+            return t.mid(t.indexOf(QStringLiteral("\nENTITIES\n")));
+        };
+        const DxfExportResult back2 = exportDxf({Element::makePath({{0, 0}, {10, 0}, {0, 0}}, false, cut)});
+        QString t = entities(back2);
+        check(back2.entities == 1 && t.count("\nVERTEX\n") == 3, "there and back: all three vertices written");
+        check(t.contains("\n70\n0\n") && !t.contains("\n70\n1\n"), "there and back: an open polyline");
+        const ImportResult again = importDxfData(back2.data, opt, QStringLiteral("thereandback.dxf"));
+        check(again.ok && again.elements.size() == 1
+                  && near(again.elements.first().painterPath.length(), 20),
+              "there and back: read back as 10 mm out and 10 mm home");
+
+        const DxfExportResult tri = exportDxf({Element::makePath({{0, 0}, {10, 0}, {0, 10}}, true, cut)});
+        t = entities(tri);
+        check(tri.entities == 1 && t.count("\nVERTEX\n") == 3 && t.contains("\n70\n1\n"),
+              "a triangle is still a closed polyline of three vertices");
+    }
+
     std::printf("dxfexport: %d checks passed\n", g_checks);
     return 0;
 }

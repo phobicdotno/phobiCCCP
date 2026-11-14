@@ -248,6 +248,56 @@ int main(int argc, char **argv)
               "cross: still nothing past a pause (M0, M00, M1, M01)");
         check(GrblStreamer::crossToFirstCut({"G0Z5", "(Hole X9 Y9)", "G0X1Y2"}, 0) == "G90 G0 X1 Y2",
               "cross: a toolpath name in a comment is not a position");
+        // In the queue a tool change is a marker by now, not `M0 ;T<n>`, and
+        // a hold point is one too: the look-ahead ends there all the same.
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "@TOOL:2", "G0X10Y10"}, 0).isEmpty(),
+              "cross: nothing past a tool-change marker");
+        check(GrblStreamer::crossToFirstCut({"G0X10", "@TOOL:2", "G0Y4"}, 0).isEmpty(),
+              "cross: no Y borrowed from behind a tool-change marker");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "@HOLD", "G0X1Y2"}, 0).isEmpty(),
+              "cross: nothing past a hold marker");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "G0X1Y2", "@TOOL:2", "G0X8Y9"}, 0) == "G90 G0 X1 Y2",
+              "cross: a marker after the first X/Y changes nothing");
+        check(GrblStreamer::crossToFirstCut({"G0Z5", "@TOOL:2", "G0X10Y10"}, 2) == "G90 G0 X10 Y10",
+              "cross: from behind the marker, that section's own X/Y");
+    }
+
+    // The same look-ahead where it really runs, over the queue: a program
+    // with two tool changes, and between them a section that names no X/Y
+    // (2026-11-12: the resume after the first change read on past the second
+    // one's marker and crossed to the first cut of the bit not yet fitted).
+    {
+        QList<int> parks;
+        bool finished = false, finishedOk = false;
+        grbl.seen.clear();
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parks << t; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        const QStringList rise = {QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")};
+        s.startStream({QStringLiteral("G90"), QStringLiteral("M0 ;T1"), QStringLiteral("G0Z5"),
+                       QStringLiteral("M05"), QStringLiteral("M0 ;T2"), QStringLiteral("G0Z5"),
+                       QStringLiteral("G0X10Y10"), QStringLiteral("G1Z-1F300")});
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 1, "queue cross: parks for the first bit");
+        s.continueAfterToolChange(rise);
+        spin(2000, [&] { return parks.size() == 2; });
+        check(parks.size() == 2 && parks.at(1) == 2, "queue cross: parks for the second bit");
+        check(grbl.seen.contains("G53 G0 Z-2.500") && grbl.seen.last() == "M05",
+              "queue cross: the first section ran, behind its rise");
+        check(!grbl.seen.contains("G90 G0 X10 Y10"),
+              "queue cross: no crossing to the next bit's first cut before that bit is in");
+        const int before = int(grbl.seen.size());
+        s.continueAfterToolChange(rise);
+        spin(3000, [&] { return finished; });
+        check(finished && finishedOk, "queue cross: the program finishes");
+        check(grbl.seen.size() == before + 6 && grbl.seen.at(before + 1) == "G53 G0 Z-2.500"
+                  && grbl.seen.at(before + 2) == "G90 G0 X10 Y10" && grbl.seen.at(before + 3) == "G0Z5"
+                  && grbl.seen.count("G90 G0 X10 Y10") == 1,
+              "queue cross: after the second change the crossing comes, once, ahead of the way down");
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
 
     // Hold with a lift: what the program has sent is read back (motion mode,

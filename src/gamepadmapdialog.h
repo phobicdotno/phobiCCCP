@@ -23,7 +23,7 @@ class PadCanvas;
 // get pickers in the "Other buttons" row underneath.
 //
 // Which pad number is which drawn button (A, B, Select…) is per pad style
-// (NES or SNES) and stored under "gamepadLayout/<style>/<name>"; the
+// (NES, SNES or Xbox 360) and stored under "gamepadLayout/<style>/<name>"; the
 // defaults are the numbering of the clones on the shop PC.
 //
 // The owner must not act on pad presses while this is open: mapping Stop
@@ -35,7 +35,10 @@ public:
     GamepadMapDialog(const GamepadMap &map, Gamepad *pad, QWidget *parent = nullptr);
 
     GamepadMap mapping() const;
-    QString padStyle() const { return m_style; }   // "nes" or "snes"
+    QString padStyle() const { return m_style; }   // "nes", "snes" or "xbox"
+    // What the NES / SNES / XBOX buttons do. A mapping still on the old
+    // style's defaults moves to the new style's; a changed one is kept.
+    void setPadStyle(const QString &style);
 
     // Select (adding a picker if needed) the button `number`. What a pad
     // press does; public so the tests can drive it without a pad.
@@ -44,8 +47,9 @@ public:
     // dialog shows no picker for it at all.
     QString actionFor(int number) const;
     void setAction(int number, const QString &action);
-    // Light a button (as a press on the pad does) or a D-pad direction:
-    // axis 0 is X, 1 is Y; dir -1, 0 or +1.
+    // Light a button (as a press on the pad does) or a direction: `axis` is
+    // the pad's own axis number, dir -1, 0 or +1. Axes 0 and 1 are the D-pad
+    // (on an Xbox pad the left stick, with the D-pad on 6 and 7).
     void showPressed(int number, bool on) { setPressed(number, on); }
     void showAxis(int axis, int dir);
 
@@ -65,7 +69,7 @@ private:
     QWidget *m_others = nullptr;
     QHBoxLayout *m_othersLay = nullptr;
     QLabel *m_hint = nullptr;
-    QPushButton *m_nesBtn = nullptr, *m_snesBtn = nullptr;
+    QPushButton *m_nesBtn = nullptr, *m_snesBtn = nullptr, *m_xboxBtn = nullptr;
     QList<Slot> m_slots;
     QString m_style;
 };

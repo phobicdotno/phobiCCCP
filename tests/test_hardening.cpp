@@ -1789,7 +1789,35 @@ int main(int argc, char *argv[])
         // A lock this process really holds is still respected.
         check(c2d::Recovery(recDir).write(doc, source, false, &err).isEmpty(),
               "recovery: a copy held by a live session (this one) is not taken over");
+
+        // Two windows were offered the same copy, and the other one answered
+        // first: it holds the copy now. Adopted here without its lock, the
+        // next save or discard deleted it under the session that owns it.
+        {
+            c2d::Recovery late(recDir);
+            late.adopt(copy);
+            check(late.current().isEmpty(), "recovery: a copy another session holds is not adopted");
+            late.discard();
+            check(QFile::exists(copy) && QFile::exists(copy + QStringLiteral(".source")),
+                  "recovery: and a discard here leaves that session's copy alone");
+        }
+        check(QFile::exists(copy) && next.current() == copy && next.write(doc, source, false, &err) == copy,
+              "recovery: the session that holds it carries on saving into it");
         next.discard();
+        check(!QFile::exists(copy), "recovery: its own discard removes the copy");
+
+        // A copy nobody holds is adopted, lock and all, and goes with a discard.
+        {
+            c2d::Recovery gone(recDir);
+            check(gone.write(doc, source, false, &err) == copy, "recovery: a copy left by a session that ended");
+        }
+        c2d::Recovery heir(recDir);
+        heir.adopt(copy);
+        check(heir.current() == copy, "recovery: a free copy is adopted");
+        check(c2d::Recovery(recDir).write(doc, source, false, &err).isEmpty(),
+              "recovery: and held from then on");
+        heir.discard();
+        check(!QFile::exists(copy) && heir.current().isEmpty(), "recovery: discarded with the design opened from it");
     }
 
     // Adaptive from Start 3 with nothing cut above: its first level hops and
@@ -1933,6 +1961,34 @@ int main(int argc, char *argv[])
         fo.stockWidth = 300;
         fo.stockHeight = 300;
         check(c2d::importSvgData(far, fo, QStringLiteral("far.svg")).ok, "a small part far from the origin still imports");
+    }
+
+    // An engrave steps finer than the 0.05 mm floor the pass-count guard
+    // counts with (down to 0.02): 2.5 m at 0.02 mm passed as 50000 passes and
+    // was then cut in 125000. Counted again at the stepdown it cuts with.
+    {
+        Rig deep;
+        deep.addShape(c2d::Element::makeRectangle({30, 30}, 10, 10, layer));
+        deep.addToolpath("engrave_toolpath", {{"mode", "outline"}, {"end_depth", "2500.000"}, {"stepdown", 0.02}});
+        const c2d::GcodeResult dg = c2d::exportGcode(deep.doc);
+        check(dg.done.isEmpty() && dg.skipped.size() == 1
+                  && dg.skipped.first().contains(QLatin1String("too many passes")),
+              "engrave: the pass count is checked at the stepdown it really cuts with");
+        // A fine engrave of a sane depth is cut as before, at its own stepdown.
+        Rig fine;
+        fine.addShape(c2d::Element::makeRectangle({30, 30}, 10, 10, layer));
+        fine.addToolpath("engrave_toolpath", {{"mode", "outline"}, {"end_depth", "3.000"}, {"stepdown", 0.03}});
+        const c2d::GcodeResult fg = c2d::exportGcode(fine.doc);
+        QSet<long> levels;
+        double lowest = 0;
+        for (const c2d::Op &o : fg.ops)
+            if (o.kind == c2d::Op::Feed && o.z < -1e-6) {
+                levels.insert(std::lround(o.z * 1000));
+                lowest = std::min(lowest, o.z);
+            }
+        check(fg.skipped.isEmpty() && fg.done.size() == 1 && std::fabs(lowest + 3.0) < 1e-6
+                  && levels.size() >= 100 && levels.size() <= 101,
+              "engrave: 3 mm at 0.03 mm a pass is still cut, in its hundred passes");
     }
 
     // Truncated zlib data must not pass as complete.

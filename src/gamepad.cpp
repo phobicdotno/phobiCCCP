@@ -67,6 +67,25 @@ GamepadMap defaults()
     };
 }
 
+// An Xbox 360 pad as the kernel's xpad driver numbers it: A 0, B 1, X 2, Y 3,
+// LB 4, RB 5, Back 6, Start 7, Guide 8, stick clicks 9 and 10. The stick
+// clicks are left alone: they get pressed by accident while steering.
+GamepadMap defaults(const QString &style)
+{
+    if (style != QLatin1String("xbox"))
+        return defaults();
+    return {
+        {4, QStringLiteral("z-")},        // LB
+        {5, QStringLiteral("z+")},        // RB
+        {6, QStringLiteral("step+")},     // Back:  next larger jog step
+        {7, QStringLiteral("hold")},      // Start: hold / resume
+        {1, QStringLiteral("stop")},      // B (the red one)
+        {0, QStringLiteral("zeroxy")},    // A
+        {3, QStringLiteral("zeroz")},     // Y
+        {2, QStringLiteral("unlock")},    // X
+    };
+}
+
 GamepadMap load(QSettings &s)
 {
     GamepadMap map = defaults();

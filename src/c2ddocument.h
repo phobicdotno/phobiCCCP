@@ -39,8 +39,10 @@ public:
     // DELETE elements, re-INSERT zlib(J1 JSON) with sz = uncompressed length,
     // blank the stale render/g-code blobs so CC regenerates them). Toolpath
     // rows are rewritten the same way, in vector order, so deletions, moves
-    // and new toolpaths persist; layer, model and params are preserved
-    // (params.num_toolpaths is kept in sync). Requires a file previously load()ed.
+    // and new toolpaths persist; layer and model are preserved, and so are the
+    // params, but for those changed in memory since the load (setParam), which
+    // are written (params.num_toolpaths is kept in sync; site_order is the
+    // application's setting and never written). Requires a file previously load()ed.
     bool save(const QString &destPath, QString *error = nullptr);
     // Writes a minimal, empty .c2d container (stock W x H x T mm) at path,
     // so a design can be started without an existing file to clone from.
@@ -65,8 +67,8 @@ public:
     // copy that must be written from another container than its own file.
     void setFilePath(const QString &path) { m_path = path; }
     const QHash<QString, QString> &params() const { return m_params; }
-    // Params are normally only ever read from the container; this exists so a
-    // caller (and the tests) can set one without a round trip through a file.
+    // Sets one param in memory (the stock turned by Rotate 90°; the tests,
+    // without a round trip through a file). save() writes it to the file.
     void setParam(const QString &key, const QString &value) { m_params.insert(key, value); }
     const QVector<Element> &elements() const { return m_elements; }
     QVector<Element> &elementsRef() { return m_elements; }   // for editing

@@ -4,22 +4,32 @@
 //   finishes open, clicking the start closes; each path is one undo step;
 // - node editor: anchor drag, double-click insert, Delete remove — one undo
 //   step each, the document JSON carries the edited control points;
-// - convert-to-path and text edits are undoable.
+// - convert-to-path and text edits are undoable;
+// - the toolpath preview overlay: painted, never picked, a strip per bit, the
+//   last ring of a pocket; the grid and the zoom bar; the properties panel
+//   writes only the field that was edited.
 //
 // Plain asserts, no test framework; exits 0 on success.
 
 #include "../src/canvas.h"
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
+#include "../src/model3d.h"
 #include "../src/propertiespanel.h"
 
 #include <QApplication>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLabel>
+#include <QMouseEvent>
+#include <QPixmap>
 #include <QPushButton>
+#include <QSpinBox>
 #include <QTest>
 #include <QUndoStack>
 #include <QWheelEvent>
@@ -52,6 +62,16 @@ static void drag(c2d::Canvas *c, QPointF from, QPointF to, Qt::KeyboardModifiers
     QTest::mouseMove(c->viewport(), vp(c, (from + to) / 2));
     QTest::mouseMove(c->viewport(), vp(c, to));
     QTest::mouseRelease(c->viewport(), Qt::LeftButton, mods, vp(c, to));
+}
+
+// A mouse move with no button down, straight to this canvas: QTest moves the
+// cursor for that, which reaches whichever window comes first under it.
+static void hoverAt(c2d::Canvas *c, QPointF mm)
+{
+    const QPoint p = vp(c, mm);
+    QMouseEvent me(QEvent::MouseMove, QPointF(p), QPointF(c->viewport()->mapToGlobal(p)), Qt::NoButton,
+                   Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(c->viewport(), &me);
 }
 
 static QPointF row(const QJsonObject &o, const char *key, int i)
@@ -488,6 +508,93 @@ int main(int argc, char *argv[])
         const int steps = u->count();
         click(&cv, {90, 90});
         check(u->count() == steps, "clicking empty space does nothing");
+
+        // The hover outline decodes a path once and keeps it until the scene
+        // is rebuilt (it decoded every element on every mouse move). After an
+        // edit and after its undo it is the piece between the lines as they
+        // are now, and a click cuts exactly that.
+        cv.setTool(c2d::Canvas::Trim);
+        auto hover = [&](QPointF at) {
+            hoverAt(&cv, at + QPointF(1, 1));
+            hoverAt(&cv, at);
+            for (QGraphicsItem *it : cv.scene()->items())
+                if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(it);
+                    pi && !pi->data(0).isValid() && pi->pen().color() == QColor(0xe0, 0x50, 0x50))
+                    return pi->path().boundingRect();
+            return QRectF();
+        };
+        auto spans = [](const QRectF &r, double x0, double x1) {
+            return std::fabs(r.left() - x0) < 1e-6 && std::fabs(r.right() - x1) < 1e-6;
+        };
+        auto cutOut = [&](double x0, double x1) {
+            const c2d::PathModel t = c2d::Element::pathModel(*d2.elementById(h.id));
+            return t.subs.size() == 2 && near(t.subs[0].nodes.last().p, {x0, 50})
+                   && near(t.subs[1].nodes.first().p, {x1, 50});
+        };
+        check(spans(hover({50, 50}), 30, 70), "trim hover: the piece between the verticals");
+        cv.moveElementBy(v1.id, 10, 0);
+        check(spans(hover({50, 50}), 40, 70), "trim hover: follows a line moved since");
+        u->undo();
+        check(spans(hover({50, 50}), 30, 70), "trim hover: and the undo of the move");
+        u->redo();
+        check(spans(hover({50, 50}), 40, 70), "trim hover: and its redo");
+        click(&cv, {50, 50});
+        check(cutOut(40, 70), "trim after a move cuts at the moved line");
+        u->undo();                                   // the trim
+        u->undo();                                   // the move
+        check(spans(hover({50, 50}), 30, 70), "trim hover: back to the start");
+        // A click decodes afresh, whatever a hover decoded before it: here a
+        // line changes in the document with no rebuild of the scene between.
+        QJsonObject shifted = c2d::Element::makePath({{45, 0}, {45, 100}}, false, layer).raw;
+        shifted.insert("id", v1.raw.value("id"));
+        check(d2.replaceElement(c2d::Element::fromJson(shifted)), "the first vertical is replaced");
+        click(&cv, {50, 50});
+        check(cutOut(45, 70), "a trim click never cuts by paths decoded for an earlier hover");
+        u->undo();
+        d2.replaceElement(v1);
+        cv.rebuild();
+
+        // Break a line a 3D "From vectors" component is built on: whoever
+        // hears documentChanged finds the component on the pieces already.
+        // Redo announced the change first and moved the component after it,
+        // so a listener (the model's rebuild) read the old vectors.
+        {
+            c2d::ModelStore store;
+            store.attach(&d2);
+            c2d::ModelComponent comp;
+            comp.id = c2d::Model3D::newId();
+            comp.vectorIds = QStringList{h.id};
+            store.model.components << comp;
+            QList<QStringList> heard;
+            const QMetaObject::Connection conn =
+                QObject::connect(&cv, &c2d::Canvas::documentChanged, &cv, [&] {
+                    QStringList ids = store.model.components.first().vectorIds;
+                    ids.sort();
+                    heard << ids;
+                });
+            auto allHeard = [&](const QStringList &want) {
+                bool ok = !heard.isEmpty();
+                for (const QStringList &ids : std::as_const(heard))
+                    ok = ok && ids == want;
+                heard.clear();
+                return ok;
+            };
+            cv.setTool(c2d::Canvas::Break);
+            click(&cv, {50, 50});
+            QStringList pieces;
+            for (const c2d::Element &e : d2.elements())
+                if (e.raw.value("group_id").toString() == "g-break")
+                    pieces << e.id;
+            pieces.sort();
+            check(pieces.size() == 3 && pieces.contains(h.id), "the line is broken in three");
+            check(allHeard(pieces), "break: a listener finds the 3D component on all the pieces");
+            u->undo();
+            check(d2.elements().size() == 4 && allHeard({h.id}), "undo break: and on the whole line again");
+            u->redo();
+            check(allHeard(pieces), "redo break: on the pieces again");
+            u->undo();
+            QObject::disconnect(conn);
+        }
         cv.setTool(c2d::Canvas::Select);
     }
 
@@ -830,6 +937,314 @@ int main(int argc, char *argv[])
               "resize commits and drops its outline");
     }
 
+    // --- the toolpath preview: painted, never picked; a strip per bit; the last ring ---
+    {
+        c2d::Document odoc;
+        c2d::Canvas oc;
+        oc.resize(900, 700);
+        oc.show();
+        oc.setDocument(&odoc);
+        oc.resetTransform();
+        oc.scale(3, -3);
+        oc.centerOn(QPointF(100, 100));
+        auto bit = [](int n, double dia) { c2d::Op o = c2d::Op::tool(n); o.x = dia; return o; };
+        // The overlay's items at one height: rapids 5, swept strips 5.5, cut lines 6.
+        auto overlay = [&](double z) {
+            QList<QGraphicsPathItem *> out;
+            for (QGraphicsItem *it : oc.scene()->items())
+                if (!it->data(0).isValid() && it->zValue() == z)
+                    if (auto *pi = qgraphicsitem_cast<QGraphicsPathItem *>(it))
+                        out << pi;
+            return out;
+        };
+        // Overlay items a hit test finds at a point: by the view, by the scene,
+        // and by a small rectangle around it.
+        auto picked = [&](QPointF mm) {
+            int n = 0;
+            for (QGraphicsItem *it : oc.items(vp(&oc, mm)))
+                n += !it->data(0).isValid();
+            for (QGraphicsItem *it : oc.scene()->items(mm))
+                n += !it->data(0).isValid();
+            for (QGraphicsItem *it : oc.scene()->items(QRectF(mm.x() - 0.5, mm.y() - 0.5, 1, 1)))
+                n += !it->data(0).isValid();
+            return n;
+        };
+        QImage shot;
+        auto grab = [&] {
+            QApplication::processEvents();
+            shot = oc.viewport()->grab().toImage();
+        };
+        auto px = [&](QPointF mm, QPoint off = {}) {
+            return shot.pixelColor((vp(&oc, mm) + off) * shot.devicePixelRatio()).rgb();
+        };
+        const QRgb yellow = QColor(0xff, 0xd6, 0x00).rgb();
+        // A cut line (orange to red) on the yellow strip, within a pixel of the point.
+        auto cutLineAt = [&](QPointF mm) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                const QColor c(px(mm, {0, dy}));
+                if (c.red() > 150 && c.green() < 170 && c.blue() < 80)
+                    return true;
+            }
+            return false;
+        };
+
+        // A 3 mm bit cuts along y = 40, then a 6 mm bit along y = 80; the
+        // rapid between them crosses (50, 60).
+        oc.setToolpathPreview({bit(1, 3), c2d::Op::rapid(20, 40, 5), c2d::Op::feedTo(20, 40, -1, 100),
+                               c2d::Op::feedTo(80, 40, -1, 100), c2d::Op::rapid(80, 40, 5),
+                               bit(2, 6), c2d::Op::rapid(20, 80, 5), c2d::Op::feedTo(20, 80, -2, 100),
+                               c2d::Op::feedTo(80, 80, -2, 100), c2d::Op::rapid(80, 80, 5)});
+        check(overlay(5).size() == 1 && !overlay(6).isEmpty(), "preview: rapids and cut lines are in the scene");
+        check(picked({50, 40}) == 0 && picked({50, 80}) == 0 && picked({50, 60}) == 0
+                  && oc.itemAt(vp(&oc, {50, 40})) == nullptr,
+              "preview: no hit test finds a strip, a cut line or a rapid");
+        // The overlay answers no hit test, so its bounds are its own: they
+        // have to hold all that is painted, or it is not painted at all.
+        {
+            QVector<double> widths;
+            bool holds = true;
+            for (QGraphicsPathItem *s : overlay(5.5)) {
+                const double w = s->pen().widthF();
+                widths << w;
+                holds = holds && s->boundingRect().contains(
+                            s->path().boundingRect().adjusted(-w / 2, -w / 2, w / 2, w / 2));
+                // Each strip holds the cuts of its own bit only.
+                holds = holds && s->path().boundingRect().center().y() == (w == 3 ? 40 : 80);
+            }
+            std::sort(widths.begin(), widths.end());
+            check(widths == QVector<double>({3, 6}), "preview: each bit sweeps a strip of its own width");
+            for (double z : {5.0, 6.0})
+                for (QGraphicsPathItem *it : overlay(z))
+                    holds = holds && it->boundingRect().contains(it->path().boundingRect())
+                            && !it->boundingRect().isEmpty();
+            check(holds, "preview: every overlay item's bounds hold what it paints");
+        }
+        grab();
+        check(px({50, 41}) == yellow && px({50, 39}) == yellow, "preview: the 3 mm bit's strip is painted");
+        check(px({50, 42.5}) != yellow && px({50, 37.5}) != yellow,
+              "preview: and is 3 mm wide, not as wide as the 6 mm bit that follows");
+        check(px({50, 82.5}) == yellow && px({50, 77.5}) == yellow && px({50, 84}) != yellow,
+              "preview: the 6 mm bit's strip is 6 mm wide");
+        check(cutLineAt({50, 40}) && cutLineAt({50, 80}), "preview: the cut lines are painted on the strips");
+        {
+            // Dashed: some of the pixels along it, none beside it.
+            int on = 0, beside = 0;
+            for (int k = 20; k <= 80; ++k) {
+                const QPointF at(80 - 0.6 * k, 40 + 0.4 * k);
+                on += px(at) != px({60, 20});
+                beside += px(at + QPointF(2, 3)) != px({60, 20});
+            }
+            check(on > 10 && beside == 0, "preview: the rapid is painted");
+        }
+
+        // Every ring as a line (simplified preview off): painted and not picked either.
+        oc.setSimplePreview(false);
+        grab();
+        check(overlay(5.5).isEmpty() && px({50, 41}) != yellow, "full preview: no strips");
+        check(px({50, 40}) != px({50, 20}) || px({50, 40}, {0, 1}) != px({50, 20})
+                  || px({50, 40}, {0, -1}) != px({50, 20}),
+              "full preview: the cut line is painted");
+        check(picked({50, 40}) == 0 && picked({50, 60}) == 0, "full preview: nothing of it is picked");
+        oc.setSimplePreview(true);
+
+        // A shape under the overlay is picked through it.
+        const c2d::Element under = c2d::Element::makeRectangle({50, 40}, 30, 6, odoc.defaultLayer());
+        odoc.addElement(under);
+        oc.rebuild();
+        check(overlay(5.5).size() == 2 && picked({50, 40}) == 0, "preview: redrawn with the scene, still not picked");
+        oc.setTool(c2d::Canvas::Select);
+        click(&oc, {50, 40});
+        check(oc.selectedElementIds() == QStringList{under.id}, "preview: a click on a strip takes the shape under it");
+        odoc.removeElementById(under.id);
+        oc.rebuild();
+
+        // One width all through (the bit named again, and a bit of no known
+        // width): one strip, as before.
+        oc.setToolpathPreview({bit(1, 3), c2d::Op::rapid(20, 40, 5), c2d::Op::feedTo(20, 40, -1, 100),
+                               c2d::Op::feedTo(80, 40, -1, 100), c2d::Op::rapid(80, 40, 5),
+                               bit(1, 3), c2d::Op::tool(2), c2d::Op::rapid(20, 80, 5),
+                               c2d::Op::feedTo(20, 80, -1, 100), c2d::Op::feedTo(80, 80, -1, 100)});
+        check(overlay(5.5).size() == 1 && overlay(5.5).first()->pen().widthF() == 3
+                  && overlay(5.5).first()->path().boundingRect().height() == 40,
+              "preview: one bit, one strip over all its cuts");
+
+        // A pocket: n square rings around (50, 50), ring i with a half side
+        // of 5 + 5 i, each closed and linked to the next with the bit down.
+        // Returns the rings the simplified preview draws as lines.
+        auto ringsDrawn = [&](int n, bool lastLeftOpen = false) {
+            QVector<c2d::Op> r{bit(1, 3), c2d::Op::rapid(45, 45, 5), c2d::Op::feedTo(45, 45, -1, 100)};
+            for (int i = 0; i < n; ++i) {
+                const double h = 5 + 5 * i;
+                if (i > 0)
+                    r << c2d::Op::feedTo(50 - h, 50 - h, -1, 100);       // the link
+                r << c2d::Op::feedTo(50 + h, 50 - h, -1, 100) << c2d::Op::feedTo(50 + h, 50 + h, -1, 100);
+                if (lastLeftOpen && i == n - 1)
+                    break;
+                r << c2d::Op::feedTo(50 - h, 50 + h, -1, 100) << c2d::Op::feedTo(50 - h, 50 - h, -1, 100);
+            }
+            r << c2d::Op::rapid(r.last().x, r.last().y, 5);
+            oc.setToolpathPreview(r);
+            QVector<int> drawn;
+            for (int i = 0; i < n; ++i) {
+                const QPointF corner(55 + 5 * i, 55 + 5 * i);
+                bool on = false;
+                for (QGraphicsPathItem *it : overlay(6)) {
+                    const QPainterPath p = it->path();
+                    for (int k = 0; k < p.elementCount(); ++k)
+                        on = on || near(QPointF(p.elementAt(k)), corner);
+                }
+                if (on)
+                    drawn << i;
+            }
+            return drawn;
+        };
+        check(ringsDrawn(1) == QVector<int>({0}), "rings: a single ring is drawn");
+        check(ringsDrawn(2) == QVector<int>({0, 1}), "rings: of two, both (the last was dropped)");
+        check(ringsDrawn(4) == QVector<int>({0, 3}), "rings: of four, the first and the last");
+        check(ringsDrawn(6) == QVector<int>({0, 5}), "rings: of six, the first and the last, a fifth one");
+        check(ringsDrawn(7) == QVector<int>({0, 5, 6}), "rings: of seven, the first, every fifth and the last");
+        check(ringsDrawn(12) == QVector<int>({0, 5, 10, 11}), "rings: of twelve likewise");
+        check(ringsDrawn(4, true) == QVector<int>({0, 3}), "rings: a last ring that does not close is drawn too");
+        {
+            // The yellow strip is under all of them all the same.
+            ringsDrawn(4);
+            const QList<QGraphicsPathItem *> strips = overlay(5.5);
+            check(strips.size() == 1 && strips.first()->path().boundingRect() == QRectF(30, 30, 40, 40),
+                  "rings: the strip covers every ring");
+            grab();
+            check(px({60, 50}) == yellow && px({65, 50}) == yellow && cutLineAt({50, 70}) && !cutLineAt({50, 65}),
+                  "rings: the rings between are yellow only, the last one has its line");
+        }
+        oc.setSimplePreview(false);
+        check(ringsDrawn(4) == QVector<int>({0, 1, 2, 3}), "rings: the full preview draws every ring");
+        oc.setSimplePreview(true);
+        // A cut that never closes (a contour) is drawn whole.
+        oc.setToolpathPreview({bit(1, 3), c2d::Op::rapid(20, 20, 5), c2d::Op::feedTo(20, 20, -1, 100),
+                               c2d::Op::feedTo(60, 20, -1, 100), c2d::Op::feedTo(60, 50, -1, 100),
+                               c2d::Op::feedTo(90, 50, -1, 100), c2d::Op::rapid(90, 50, 5)});
+        {
+            int corners = 0;
+            for (QGraphicsPathItem *it : overlay(6)) {
+                const QPainterPath p = it->path();
+                for (int k = 0; k < p.elementCount(); ++k)
+                    if (p.elementAt(k).isLineTo())
+                        corners += near(QPointF(p.elementAt(k)), {60, 20}) + near(QPointF(p.elementAt(k)), {60, 50})
+                                   + near(QPointF(p.elementAt(k)), {90, 50});
+            }
+            check(corners == 3, "rings: an open cut is drawn whole");
+        }
+        oc.clearToolpathPreview();
+        check(overlay(5).isEmpty() && overlay(5.5).isEmpty() && overlay(6).isEmpty(),
+              "preview: cleared, nothing of it is left");
+    }
+
+    // --- the grid: only the lines in the exposed part are walked; the same picture ---
+    {
+        c2d::Document gdoc;
+        gdoc.setParam("width", "100");
+        gdoc.setParam("height", "80");
+        c2d::Canvas gc;
+        gc.resize(900, 700);
+        gc.show();
+        gc.setDocument(&gdoc);
+        check(gdoc.boardWidth() == 100 && gdoc.boardHeight() == 80, "grid: a 100 x 80 board");
+        for (double zoom : {3.0, 1.0}) {             // 5 mm lines 15 px apart, then 5 px: majors only
+            gc.resetTransform();
+            gc.scale(zoom, -zoom);
+            gc.centerOn(QPointF(50, 40));
+            QApplication::processEvents();
+            const QImage full = gc.viewport()->grab().toImage();
+            const QRgb fill = full.pixel(vp(&gc, {12.5, 12.5}));
+            auto lineAt = [&](QPointF mm) {
+                const QPoint p = vp(&gc, mm);
+                for (int dx = -1; dx <= 1; ++dx)
+                    for (int dy = -1; dy <= 1; ++dy)
+                        if (full.pixel(p + QPoint(dx, dy)) != fill)
+                            return true;
+                return false;
+            };
+            bool lines = true, gaps = true;
+            for (int i = 1; i * 5 < 100; ++i) {
+                const bool want = zoom >= 3 || i % 5 == 0;
+                lines = lines && lineAt({i * 5.0, 12.5}) == want;
+                gaps = gaps && (zoom < 3 || !lineAt({i * 5.0 - 2.5, 12.5}));
+            }
+            for (int i = 1; i * 5 < 80; ++i) {
+                const bool want = zoom >= 3 || i % 5 == 0;
+                lines = lines && lineAt({12.5, i * 5.0}) == want;
+                gaps = gaps && (zoom < 3 || !lineAt({12.5, i * 5.0 - 2.5}));
+            }
+            check(lines, zoom >= 3 ? "grid: every 5 mm line is drawn" : "grid: zoomed out, every 25 mm line and no other");
+            check(gaps, "grid: nothing between the lines");
+            // A part of the view repainted alone is the same picture: a strip
+            // inside the board, one over its edges, and small patches walked
+            // across the lines.
+            bool same = true;
+            QVector<QRect> parts{QRect(vp(&gc, {12, 62}), vp(&gc, {38, 18})),
+                                 QRect(vp(&gc, {-10, 90}), vp(&gc, {27, 70})),
+                                 QRect(vp(&gc, {74, 12}), vp(&gc, {120, -10}))};
+            for (int k = 0; k < 40; ++k)
+                parts << QRect(vp(&gc, {20, 30}) + QPoint(k, -k), QSize(2, 2));
+            for (const QRect &r : std::as_const(parts))
+                same = same && gc.viewport()->grab(r).toImage() == full.copy(r);
+            check(same, "grid: a part repainted alone matches the whole");
+        }
+
+        // The zoom bar (floating, bottom right): it stays where it is while
+        // the readout reads the same, and is placed again when it changes or
+        // the canvas is resized.
+        QWidget *bar = gc.zoomBar();
+        auto *readout = bar ? bar->findChild<QLabel *>() : nullptr;
+        check(bar && readout && bar->parentWidget() == &gc, "zoom bar: floats on the canvas");
+        auto bottomRight = [&] {
+            return bar->x() + bar->width() == gc.width() - 10 && bar->y() + bar->height() == gc.height() - 10;
+        };
+        hoverAt(&gc, {5, 5});
+        const QString at5 = readout->text();
+        const QRect g5 = bar->geometry();
+        check(at5.contains(QStringLiteral("X 5.00")) && bottomRight(), "zoom bar: reads the position, bottom right");
+        hoverAt(&gc, {5, 5});
+        check(readout->text() == at5 && bar->geometry() == g5, "zoom bar: the same reading leaves it in place");
+        hoverAt(&gc, {-123, 70});
+        check(readout->text() != at5 && readout->text().contains(QStringLiteral("X -123.00")) && bottomRight(),
+              "zoom bar: a new, longer reading is shown and the bar still ends bottom right");
+        gc.resize(700, 500);
+        QApplication::processEvents();
+        check(bottomRight(), "zoom bar: follows a resize though the reading did not change");
+        gc.zoomBy(2);
+        check(readout->text().contains(QStringLiteral("200%")) && bottomRight(), "zoom bar: shows the new zoom");
+
+        // A very fine grid on a big board, zoomed far in: a paint walks the
+        // lines in view, not every line of the board (here 2 x 10^8 of them,
+        // which took many seconds per paint).
+        gdoc.setParam("width", "1000");
+        gdoc.setParam("height", "1000");
+        gdoc.setParam("grid_spacing", "0.00001");
+        gc.resize(900, 700);
+        gc.rebuild();
+        gc.resetTransform();
+        gc.scale(1e5, -1e5);
+        gc.centerOn(QPointF(500, 500));
+        QApplication::processEvents();
+        QElapsedTimer fine;
+        fine.start();
+        const QImage fineShot = gc.viewport()->grab().toImage();
+        check(!fineShot.isNull() && fine.elapsed() < 2000, "grid: a fine grid on a big board paints promptly");
+        {
+            // Its majors are 5 px apart at this zoom: lines and gaps across the middle.
+            int changes = 0;
+            const int yMid = fineShot.height() / 2;
+            for (int x = 1; x < fineShot.width(); ++x)
+                changes += fineShot.pixel(x, yMid) != fineShot.pixel(x - 1, yMid);
+            check(changes > 50, "grid: and its lines are there");
+        }
+        // And a spacing too small for a line number of any width: no lines, no hang.
+        gdoc.setParam("grid_spacing", "1e-300");
+        fine.restart();
+        gc.viewport()->grab();
+        check(fine.elapsed() < 2000, "grid: a spacing of next to nothing paints promptly");
+    }
+
     // --- open paths are picked within a few screen pixels at any zoom -----------------
     {
         c2d::Document hdoc;
@@ -1103,6 +1518,105 @@ int main(int argc, char *argv[])
         const c2d::Element *te = pdoc.elementById(txt.id);
         check(te && std::fabs(te->raw.value("font_height").toDouble() - 5) < 1e-6,
               "setting text Height to 10 draws it 10 mm high");
+    }
+
+    // --- Properties: one field edited leaves the others as they are stored ------------
+    // Every field was written back as its box showed it: rounded to three
+    // decimals, and the rotation cut to the box's 360 degrees.
+    {
+        c2d::Document pdoc;
+        const QJsonObject layer = pdoc.defaultLayer();
+        const c2d::Element poly = c2d::Element::makePolygon({30.00049, 20.00049}, 5.12345678, 6, layer, 450);
+        const c2d::Element rect = c2d::Element::makeRectangle({60.00049, 20.00049}, 10.00049, 8.00049, layer);
+        const c2d::Element ring = c2d::Element::makeCircle({90.00049, 20.00049}, 4.00049, layer);
+        // Its box is centred on (20, 42.34567): shown as 42.346.
+        const c2d::Element line = c2d::Element::makePath({{10, 40.00017}, {30, 44.69117}}, false, layer);
+        for (const c2d::Element &e : {poly, rect, ring, line})
+            pdoc.addElement(e);
+        c2d::Canvas pc;
+        c2d::PropertiesPanel panel(&pc);
+        pc.setDocument(&pdoc);
+        panel.setDocument(&pdoc);
+        panel.show();
+        // As in the main window: the panel reads the document again after every change.
+        QObject::connect(&pc, &c2d::Canvas::documentChanged, &panel, &c2d::PropertiesPanel::refresh);
+        auto shown = [&] {
+            QList<QDoubleSpinBox *> out;
+            for (QDoubleSpinBox *s : panel.findChildren<QDoubleSpinBox *>())
+                if (s->isVisibleTo(&panel))
+                    out << s;
+            return out;
+        };
+        auto num = [&](const c2d::Element &e, const char *key) {
+            return pdoc.elementById(e.id)->raw.value(QLatin1String(key)).toDouble();
+        };
+        auto centre = [&](const c2d::Element &e) {
+            const QJsonArray c = pdoc.elementById(e.id)->raw.value("center").toArray();
+            return QPointF(c.at(0).toDouble(), c.at(1).toDouble());
+        };
+        QUndoStack *pu = pc.undoStack();
+
+        // Polygon: Center x, y, Radius, Rotation (and Sides).
+        panel.setSelection({poly.id});
+        check(shown().size() == 4 && shown().at(3)->value() == 360, "polygon: four fields, rotation shown at the box's limit");
+        shown().at(0)->setValue(35);
+        check(pu->count() == 1 && centre(poly) == QPointF(35, 20.00049), "polygon X: y is not rounded");
+        check(num(poly, "radius") == 5.12345678 && num(poly, "rotation") == 450 && num(poly, "num_sides") == 6,
+              "polygon X: radius, rotation and sides are as stored");
+        shown().at(1)->setValue(25);
+        check(pu->count() == 2 && centre(poly) == QPointF(35, 25) && num(poly, "radius") == 5.12345678
+                  && num(poly, "rotation") == 450,
+              "polygon Y: only y changes");
+        shown().at(2)->setValue(7);
+        check(pu->count() == 3 && num(poly, "radius") == 7 && num(poly, "rotation") == 450
+                  && centre(poly) == QPointF(35, 25),
+              "polygon Radius: the rotation beyond 360 is kept");
+        QSpinBox *sides = nullptr;
+        for (QSpinBox *s : panel.findChildren<QSpinBox *>())
+            if (s->isVisibleTo(&panel))
+                sides = s;
+        check(sides && sides->value() == 6, "polygon: the Sides field");
+        sides->setValue(8);
+        check(pu->count() == 4 && num(poly, "num_sides") == 8 && num(poly, "rotation") == 450
+                  && num(poly, "radius") == 7,
+              "polygon Sides: only the sides change");
+        shown().at(3)->setValue(90);
+        check(pu->count() == 5 && num(poly, "rotation") == 90 && num(poly, "radius") == 7
+                  && num(poly, "num_sides") == 8 && centre(poly) == QPointF(35, 25),
+              "polygon Rotation: an edit of it is written");
+
+        // Rectangle: Center x, y, W, H.
+        panel.setSelection({rect.id});
+        check(shown().size() == 4, "rectangle: four fields");
+        shown().at(3)->setValue(12);
+        check(num(rect, "height") == 12 && num(rect, "width") == 10.00049 && centre(rect) == QPointF(60.00049, 20.00049),
+              "rectangle H: width and centre are not rounded");
+        shown().at(2)->setValue(20);
+        check(num(rect, "width") == 20 && num(rect, "height") == 12 && centre(rect) == QPointF(60.00049, 20.00049),
+              "rectangle W: height and centre stay");
+
+        // Circle: Center x, y, Radius.
+        panel.setSelection({ring.id});
+        shown().at(0)->setValue(95);
+        check(centre(ring) == QPointF(95, 20.00049) && num(ring, "radius") == 4.00049,
+              "circle X: y and radius are not rounded");
+
+        // A path has no centre of its own: X and Y move its box, and the
+        // axis that was not edited moves by nothing at all.
+        panel.setSelection({line.id});
+        check(shown().size() == 2 && shown().at(1)->value() == 42.346, "path: X and Y, the box centre rounded for show");
+        auto shift = [&] {
+            const QJsonArray a = pdoc.elementById(line.id)->raw.value("position").toArray();
+            return QPointF(a.at(0).toDouble(), a.at(1).toDouble());
+        };
+        const int before = pu->count();
+        shown().at(0)->setValue(25);
+        check(pu->count() == before + 1 && shift() == QPointF(5, 0),
+              "path X: moved in x only, in y by nothing at all");
+        shown().at(1)->setValue(50);
+        check(shift().x() == 5
+                  && std::fabs(pdoc.elementById(line.id)->painterPath.boundingRect().center().y() - 50) < 1e-9,
+              "path Y: moved in y only");
     }
 
     // --- pen tool: clicking the start after one more straight node does not close --

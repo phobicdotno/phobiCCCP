@@ -1948,11 +1948,11 @@ public:
             // what of the lift's centre line no other pass comes within a
             // bit radius of - the longest such stretch.
             QVector<QPointF> mid;
-            QRectF box;
-            for (double t = s0; t <= s1 + 1e-9; t += 0.25) {
+            for (double t = s0; t <= s1 + 1e-9; t += 0.25)
                 mid << pointAt(qMin(t, s1));
-                box = box.isNull() ? QRectF(mid.last(), QSizeF(0, 0)) : box.united(QRectF(mid.last(), QSizeF(0, 0)));
-            }
+            // The box of every point: built up from empty rectangles it was
+            // only ever the last one.
+            QRectF box = QPolygonF(mid).boundingRect();
             box.adjust(-cp.tabToolR - 0.1, -cp.tabToolR - 0.1, cp.tabToolR + 0.1, cp.tabToolR + 0.1);
             QVector<QLineF> cut;
             for (int i = 0; i + 1 < ring.size(); ++i) {

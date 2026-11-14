@@ -2355,10 +2355,16 @@ void MainWindow::saveExtras(const QString &path)
         // The vectors did go into the file: the point undo calls "saved" is
         // an older one that the file no longer holds.
         m_undoMarksSaved = false;
+        m_dirty = true;
         updateTitle();
         return;                       // still dirty: the next save retries
     }
     markSaved();
+    // A save taken in the middle of a mouse gesture (Ctrl+S while a dimension
+    // label is being dragged) may hold a half-done state that no undo step
+    // leads back to, so undo is not allowed to call it "saved" again.
+    if (QGuiApplication::mouseButtons() != Qt::NoButton)
+        m_undoMarksSaved = false;
     m_recovery.discard();
     updateTitle();
     statusBar()->showMessage(QStringLiteral("Saved %1").arg(path), 5000);
@@ -3680,7 +3686,9 @@ void MainWindow::padDesignChanged(const QString &id)
         // half of it ("2" of "2.5").
         // m_holdDoc: inside commitEdits (Save, Export, close, ...), a value
         // just committed may still be on its way into the document.
-        if (open && (m_dirty || typingPending() || m_holdDoc > 0 || m_machine->isBusy())) {
+        // docHeld: a question on the Machine page or an export is working on
+        // the design as it was opened; reloading it would swap it under them.
+        if (open && (m_dirty || typingPending() || m_holdDoc > 0 || docHeld() || m_machine->isBusy())) {
             statusBar()->showMessage(QStringLiteral("“%1” changed on a pad; save or finish %2 first, "
                                                     "then send it again from the pad")
                                          .arg(name, file), 10000);

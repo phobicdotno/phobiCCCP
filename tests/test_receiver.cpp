@@ -144,6 +144,56 @@ int main(int argc, char **argv)
         check(paths.size() == 3 && f.open(QIODevice::ReadOnly) && f.readAll() == "SOLID",
               "files written");
     }
+    // Two files asking for one name (the reader refuses such a manifest, a
+    // project put together any other way can still hold them): the second
+    // used to be written over the first. It goes beside it as name-2, and
+    // the very same file listed twice is kept once.
+    {
+        auto named = [](const char *name, const char *data) {
+            ReceivedFile f;
+            f.name = QLatin1String(name);
+            f.role = QStringLiteral("vectors");
+            f.data = data;
+            return f;
+        };
+        auto read = [](const QString &path) {
+            QFile f(path);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray("<unreadable>");
+        };
+        ReceivedProject p;
+        p.name = QStringLiteral("twins");
+        p.files = {named("a.dxf", "one"), named("a.dxf", "two"), named("a.dxf", "one"),
+                   named("A.dxf", "three"), named("plan", "p1"), named("plan", "p2"),
+                   named("a-2.dxf", "four"), named("b.dxf", "five")};
+        QStringList paths;
+        QString err;
+        const QString dir = saveReceived(p, tmp.path(), &paths, &err);
+        QStringList names;
+        for (const QString &path : paths)
+            names << QFileInfo(path).fileName();
+        check(!dir.isEmpty() && paths.size() == p.files.size(), "twins: saved, one path per file");
+        check(names.value(0) == QLatin1String("a.dxf") && names.value(1) == QLatin1String("a-2.dxf"),
+              "twins: the second of a name is saved beside the first as name-2");
+        check(read(paths.value(0)) == "one" && read(paths.value(1)) == "two",
+              "twins: and the first keeps what it held");
+        check(paths.value(2) == paths.value(0), "twins: the same file listed twice is one file");
+        check(names.value(3).compare(QLatin1String("a-3.dxf"), Qt::CaseInsensitive) == 0
+                  && read(paths.value(3)) == "three",
+              "twins: a name differing only in case counts as the same name");
+        check(names.value(4) == QLatin1String("plan") && names.value(5) == QLatin1String("plan-2")
+                  && read(paths.value(4)) == "p1" && read(paths.value(5)) == "p2",
+              "twins: a name without an extension gets its number at the end");
+        check(names.value(6).compare(names.value(1), Qt::CaseInsensitive) != 0
+                  && read(paths.value(6)) == "four" && read(paths.value(1)) == "two",
+              "twins: a file really called name-2 does not land on the renamed one");
+        check(names.value(7) == QLatin1String("b.dxf") && read(paths.value(7)) == "five",
+              "twins: a name of its own is kept as it is");
+        bool allIn = true;
+        for (const QString &path : paths)
+            allIn = allIn && QFileInfo(path).absolutePath() == QFileInfo(dir).absoluteFilePath();
+        check(allIn && QDir(dir).entryList(QDir::Files).size() == 7,
+              "twins: seven files in the project's folder for eight listed");
+    }
 
     // ---- loopback: discovery, transfer, the user's answer ----
     ProjectReceiver rx;
@@ -320,6 +370,79 @@ int main(int argc, char **argv)
             waitFor([] { return false; }, 100);
         }
         check(s.readLine() == "ERR timed out\n" && t.elapsed() < 3000, "trickling sender hits the deadline");
+    }
+
+    // The pad's side: a request has a deadline of its own from its first
+    // byte. One trickled in a byte at a time kept the idle timer happy and
+    // held the connection (one of a few) for as long as it liked.
+    {
+        ProjectReceiver slow;
+        slow.setTimeouts(400, 600);
+        slow.start(0);
+        QTcpSocket s;
+        s.connectToHost(QHostAddress::LocalHost, slow.port());
+        s.waitForConnected(3000);
+        s.write("PHOBICCCP-API 1\n");
+        const QByteArray req = "{\"op\":\"info\",\"pad\":\"" + QByteArray(100, 'x');   // never finished
+        int sent = 0;
+        QElapsedTimer t;
+        t.start();
+        while (!s.canReadLine() && s.state() == QAbstractSocket::ConnectedState && t.elapsed() < 3000) {
+            if (sent < req.size())
+                s.write(req.mid(sent++, 1));
+            waitFor([] { return false; }, 100);
+        }
+        check(s.readLine() == "{\"ok\":false,\"error\":\"timed out\"}\n" && t.elapsed() < 2500,
+              "a trickling pad request hits its deadline, and is told so in the pad's own format");
+        check(waitFor([&] { return s.state() != QAbstractSocket::ConnectedState; }, 2000),
+              "and its connection is closed");
+    }
+    // Only a request still arriving is on that clock: not a pad waiting for
+    // its answer, not one that is quiet between requests, and not the start
+    // of a next request queued behind one that waits (its time starts when
+    // it is read).
+    {
+        ProjectReceiver pad;
+        pad.setTimeouts(5000, 300);
+        pad.start(0);
+        QList<int> asked;
+        QObject::connect(&pad, &ProjectReceiver::request,
+                         [&](int id, const QJsonObject &, const QString &) { asked.append(id); });
+        auto pause = [](int ms) { waitFor([] { return false; }, ms); };
+        auto answered = [&](QTcpSocket &s) {
+            return waitFor([&] { return s.canReadLine(); }, 2000)
+                   && QJsonDocument::fromJson(s.readLine()).object().value(QStringLiteral("ok")).toBool();
+        };
+        QTcpSocket s;
+        s.connectToHost(QHostAddress::LocalHost, pad.port());
+        s.waitForConnected(3000);
+        s.write("PHOBICCCP-API 1\n{\"op\":");
+        s.flush();
+        pause(100);
+        s.write("\"info\"}\n");
+        check(waitFor([&] { return asked.size() == 1; }, 2000), "deadline: a request in two parts arrives");
+        pause(500);                          // the user takes longer than the deadline to answer
+        check(asked.size() == 1 && pad.isWaiting(asked.value(0)) && !s.canReadLine()
+                  && s.state() == QAbstractSocket::ConnectedState,
+              "deadline: a request waiting for its answer is not timed");
+        pad.respond(asked.value(0), QJsonObject{{QStringLiteral("ok"), true}});
+        check(answered(s), "deadline: answered");
+        pause(500);
+        check(!s.canReadLine() && s.state() == QAbstractSocket::ConnectedState,
+              "deadline: a pad quiet between requests is not timed");
+        s.write("{\"op\":\"tools\"}\n{\"op\":");
+        check(waitFor([&] { return asked.size() == 2; }, 2000), "deadline: the next request arrives");
+        pause(500);
+        check(pad.isWaiting(asked.value(1)) && !s.canReadLine()
+                  && s.state() == QAbstractSocket::ConnectedState,
+              "deadline: half a request behind a waiting one is not timed yet");
+        QElapsedTimer t;
+        t.start();
+        pad.respond(asked.value(1), QJsonObject{{QStringLiteral("ok"), true}});
+        check(answered(s), "deadline: the waiting one is answered");
+        check(waitFor([&] { return s.canReadLine(); }, 2000)
+                  && s.readLine() == "{\"ok\":false,\"error\":\"timed out\"}\n" && t.elapsed() >= 250,
+              "deadline: then the half request has its own time, and runs out of it");
     }
 
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");

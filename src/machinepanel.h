@@ -221,7 +221,10 @@ private:
     QLabel *m_padLabel = nullptr;
     QHash<int, QString> m_padMap;        // button number -> action name
     bool m_padMapping = false;           // mapping dialog open: presses do nothing
-    int m_padAxisDir[2] = {0, 0};        // last direction seen on axes 0 and 1
+    // Last direction seen on axes 0 and 1, and on an Xbox pad's D-pad (its
+    // axes 6 and 7), kept apart so a stick at rest never cancels the D-pad.
+    int m_padAxisDir[4] = {0, 0, 0, 0};
+    bool m_padXbox = false;              // pad style "xbox": the D-pad is axes 6 and 7
     char m_holdAxis = 0;
     int m_holdDir = 0;
     bool m_holdJogging = false;

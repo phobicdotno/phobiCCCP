@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.3.58 (build 148) — 2026-11-14
+
+> Xbox 360 controller support, and the rest of the bug check: faster with big designs, a correct unsaved mark, and a handful of machine and import fixes.
+
+- **Xbox 360 controller:** pick XBOX in the gamepad dialog. It has its own drawing and icon, the D-pad and the left stick jog, the bumpers move Z, B stops and Start holds.
+- **Rotate 90°:** the turned stock size is now saved with the design.
+- **Unsaved mark:** undoing back to the design as saved clears the star.
+- **Big designs:** the drawing, the toolpath list and the job list are quicker.
+- **Machine:** the pad's Zero and Home buttons are ignored while a question is on screen, and Run or Hover is refused if the design changed while it was asking.
+- **Tool change:** an alarm during the tool measurement no longer sends a stale tool length afterwards.
+- **Tabs:** a tab that lands in a narrow curved slit is moved or flagged as thin.
+- **Engraving:** very shallow passes can no longer add up to thousands of passes.
+- **Align and centre:** shapes with no width or height are placed correctly.
+- **DXF:** two-point lines are no longer exported as closed; block names match whatever their case.
+- **Files from the pad:** two files with the same name no longer overwrite each other.
+
 ## v1.3.57 (build 147) — 2026-11-12
 
 > Bug check pass: safer Hover 5 cm, a few import and save fixes, smoother zoom.

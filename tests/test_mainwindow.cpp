@@ -9,6 +9,7 @@
 #define private public      // the preview's state is private to the window
 #include "../src/jobrotate.h"
 #include "../src/mainwindow.h"
+#include "../src/modelpanel.h"
 #include "../src/canvas.h"
 #include "../src/simpanel.h"
 #include "../src/toolpathform.h"
@@ -36,6 +37,8 @@
 #include <QToolBar>
 #include <QPainter>
 #include <QMenu>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QToolButton>
 #include <QUndoStack>
 
@@ -462,6 +465,310 @@ int main(int argc, char *argv[])
         w.m_canvas->undoStack()->redo();
         check(d.elementById(r.id)->raw.value("width").toDouble() == 30, "rotate: and Ctrl+Y turns it again");
         w.m_canvas->undoStack()->undo();
+    }
+
+    // The edited mark follows undo: a design undone (or redone) back to how
+    // it was saved is not edited any more - Save, an edit and Ctrl+Z left the
+    // * in the title and closing asked about changes that were gone. It may
+    // only ever go when what is in memory is what is in the file.
+    {
+        QTemporaryDir dir;
+        QString err;
+        const QString path = dir.filePath("mark.c2d"), other = dir.filePath("other.c2d");
+        check(c2d::Document::createBlank(path, 300, 200, 19, &err), "mark: a blank file");
+        QString rid, cid, tid;
+        {
+            c2d::Document seed;
+            check(seed.load(path, &err), "mark: the blank loads");
+            const c2d::Element sr = c2d::Element::makeRectangle({80, 80}, 40, 30, seed.defaultLayer());
+            const c2d::Element sc = c2d::Element::makeCircle({200, 100}, 15, seed.defaultLayer());
+            seed.addElement(sr);
+            seed.addElement(sc);
+            c2d::Toolpath st = c2d::makeToolpath(seed, "contour", {sc.id});
+            st.json.insert("name", "Ring");
+            seed.insertToolpath(0, st);
+            check(seed.save(path, &err), "mark: the design is written");
+            rid = sr.id;
+            cid = sc.id;
+            tid = st.uuid;
+        }
+        check(QFile::copy(path, other), "mark: a second design");
+        w.m_dirty = false;                    // the design of the checks above is let go
+        w.openPath(path, false);
+        QApplication::processEvents();
+        QUndoStack *undo = w.m_canvas->undoStack();
+        check(QFileInfo(d.filePath()) == QFileInfo(path) && d.elementById(rid) && d.elementById(cid)
+                  && d.toolpathByUuid(tid),
+              "mark: the design is open");
+        auto starred = [&] { return w.windowTitle().contains(QStringLiteral(" *")); };
+        auto xOf = [&](const QString &id) { return d.elementById(id)->painterPath.boundingRect().center().x(); };
+        // What a fresh load of the file holds against what is in the window:
+        // the one thing a design shown as saved must never differ in.
+        auto inFile = [&] {
+            c2d::Document f;
+            QString e;
+            if (!f.load(d.filePath(), &e) || f.elements().size() != d.elements().size()
+                || f.toolpaths().size() != d.toolpaths().size())
+                return false;
+            for (int i = 0; i < d.elements().size(); ++i)
+                if (f.elements().at(i).raw != d.elements().at(i).raw)
+                    return false;
+            for (int i = 0; i < d.toolpaths().size(); ++i)
+                if (f.toolpaths().at(i).json != d.toolpaths().at(i).json)
+                    return false;
+            return f.boardWidth() == d.boardWidth() && f.boardHeight() == d.boardHeight();
+        };
+        // One user action at a time: the event loop runs between them.
+        auto step = [] { QApplication::processEvents(); };
+        auto clean = [&] { return !w.m_dirty && !starred() && inFile(); };
+        auto edited = [&] { return w.m_dirty && starred(); };
+        const double x0 = xOf(rid);
+        check(clean() && undo->count() == 0, "mark: a design just opened is not edited");
+
+        // An edit and Ctrl+Z, Ctrl+Y and Ctrl+Z again.
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        step();
+        check(edited() && !inFile(), "mark: an edit marks the design");
+        undo->undo();
+        step();
+        check(clean() && xOf(rid) == x0, "mark: undone back to the design as opened, it is not edited");
+        check(w.confirmDiscard(QStringLiteral("unused")), "mark: and nothing is asked before it is let go");
+        undo->redo();
+        step();
+        check(edited(), "mark: redo is the edit again");
+        undo->undo();
+        step();
+        check(clean(), "mark: and undo takes it back once more");
+
+        // Edit, Save, edit: the saved point is the first edit now.
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        step();
+        w.onSave();
+        step();
+        check(clean() && xOf(rid) == x0 + 10, "mark: saved");
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        step();
+        check(edited(), "mark: an edit after the save");
+        undo->undo();
+        step();
+        check(clean() && xOf(rid) == x0 + 10, "mark: one undo is back at the save");
+        undo->undo();
+        step();
+        check(edited() && !inFile() && xOf(rid) == x0, "mark: a second undo goes behind the save: edited");
+        undo->redo();
+        step();
+        check(clean(), "mark: redo up to the save is clean again");
+        undo->redo();
+        step();
+        check(edited(), "mark: and past it edited");
+        undo->undo();
+        step();
+        check(clean(), "mark: back at the save");
+
+        // Undo behind the save, then a new edit: the saved state is gone from
+        // the stack, and no undo or redo is the file any more.
+        undo->undo();
+        step();
+        w.m_canvas->moveElementBy(cid, 0, 5);
+        step();
+        check(edited() && !undo->canRedo(), "mark: a new edit behind the save");
+        undo->undo();
+        step();
+        check(edited() && !inFile(), "mark: its undo is not the saved design");
+        undo->redo();
+        step();
+        check(edited() && !inFile(), "mark: nor its redo");
+        w.onSave();
+        step();
+        check(clean(), "mark: until it is saved");
+
+        // Every kind of undo step leads back: a toolpath edit, a step of
+        // several commands (construction), Rotate 90°.
+        {
+            QJsonObject j = d.toolpathByUuid(tid)->json;
+            j.insert("name", "Renamed");
+            w.m_canvas->editToolpath(tid, j);
+            step();
+            check(edited() && !inFile(), "mark: a toolpath edit marks");
+            undo->undo();
+            step();
+            check(clean(), "mark: and its undo is the saved design");
+            const int at = undo->index();
+            w.m_canvas->toggleConstruction({rid, cid});
+            step();
+            check(edited() && undo->index() == at + 1, "mark: two vectors made construction, one step");
+            undo->undo();
+            step();
+            check(clean(), "mark: undone, the saved design");
+            w.findChild<QAction *>(QStringLiteral("rotateJob"))->trigger();
+            step();
+            check(edited() && !inFile(), "mark: Rotate 90° marks");
+            undo->undo();
+            step();
+            check(clean(), "mark: undone, the saved design");
+            // Saved turned: now the turned design is the clean one.
+            undo->redo();
+            step();
+            w.onSave();
+            step();
+            check(clean(), "mark: the turned design saved");
+            undo->undo();
+            step();
+            check(edited() && !inFile(), "mark: turned back is an edit of it");
+            undo->redo();
+            step();
+            check(clean(), "mark: turned again is the file");
+        }
+
+        // A change no undo step made (here announced the way the Background
+        // menu announces its own) is not taken back by Ctrl+Z: the mark
+        // stays, whatever is undone and redone, until the next save.
+        emit w.m_canvas->documentChanged();
+        step();
+        check(edited(), "mark: a change past the undo stack marks");
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        step();
+        undo->undo();
+        step();
+        check(edited(), "mark: an undo after it does not unmark");
+        undo->undo();
+        step();
+        undo->redo();
+        step();
+        check(edited(), "mark: nor does coming back to where the save was");
+        w.onSave();
+        step();
+        check(clean(), "mark: the save does");
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        step();
+        undo->undo();
+        step();
+        check(clean(), "mark: and from then on undo leads back again");
+
+        // The background is saved with the design but moved past the undo
+        // stack. Moved and then, before the event loop is back, an edit and
+        // its undo: the stack is where it was saved, the background is not.
+        w.m_bg.x += 5;
+        emit w.m_canvas->documentChanged();
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        undo->undo();
+        step();
+        check(edited(), "mark: a moved background keeps the mark through an undo");
+        w.m_bg.x -= 5;
+        w.onSave();
+        step();
+        check(clean(), "mark: saved again");
+
+        // The 3D model is no undo step either.
+        emit w.m_model->modelChanged();
+        step();
+        check(edited(), "mark: a model change marks");
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        step();
+        undo->undo();
+        step();
+        check(edited(), "mark: and an undo after it does not unmark");
+        w.onSave();
+        step();
+        check(clean(), "mark: saved again");
+
+        // An undo stack emptied under an edited design says nothing about
+        // the file, though an empty stack counts as clean.
+        w.m_canvas->moveElementBy(rid, 10, 0);
+        step();
+        w.m_canvas->setDocument(&d);
+        step();
+        check(edited() && !inFile() && undo->count() == 0, "mark: an emptied undo stack leaves the mark");
+        w.m_canvas->moveElementBy(cid, 0, 5);
+        step();
+        undo->undo();
+        step();
+        check(edited() && !inFile(), "mark: and undoing back to its start is not the file");
+        w.onSave();
+        step();
+        check(clean(), "mark: saved again");
+
+        // A save in the middle of a step of several commands: the stack takes
+        // no clean mark there, so the one it has stands for an older file.
+        {
+            const double xs = xOf(rid);
+            undo->beginMacro(QStringLiteral("two moves"));
+            w.m_canvas->moveElementBy(rid, 10, 0);
+            w.onSave();
+            w.m_canvas->moveElementBy(rid, 10, 0);
+            undo->endMacro();
+            step();
+            check(edited(), "mark: a step saved half way is an edit");
+            undo->undo();
+            step();
+            check(xOf(rid) == xs && edited() && !inFile(),
+                  "mark: undone, it is not the file, which holds the first half");
+            w.onSave();
+            step();
+            check(clean(), "mark: saved again");
+        }
+
+        // Another design opened over unsaved edits (Discard): the new one
+        // starts clean, with a clean mark of its own.
+        {
+            w.m_canvas->moveElementBy(rid, 10, 0);
+            step();
+            check(edited(), "mark: edited before the open");
+            int asked = 0;
+            QTimer answer;
+            answer.setInterval(20);
+            QObject::connect(&answer, &QTimer::timeout, [&] {
+                if (auto *mb = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                    ++asked;
+                    mb->button(QMessageBox::Discard)->click();
+                }
+            });
+            answer.start();
+            w.openPath(other, false);
+            answer.stop();
+            step();
+            check(asked == 1 && QFileInfo(d.filePath()) == QFileInfo(other), "mark: the other design is open");
+            check(clean() && undo->count() == 0, "mark: and is not edited");
+            w.m_canvas->moveElementBy(rid, 10, 0);
+            step();
+            check(edited(), "mark: an edit of it marks");
+            undo->undo();
+            step();
+            check(clean() && xOf(rid) == x0, "mark: and its undo is the design as opened");
+        }
+
+        // Rotate 90° on a design with no stock size writes none: it added an
+        // empty width and height to the design on every turn and undo.
+        {
+            d.m_params.remove(QStringLiteral("width"));
+            d.m_params.remove(QStringLiteral("height"));
+            auto noStock = [&] {
+                return !d.params().contains(QStringLiteral("width")) && !d.params().contains(QStringLiteral("height"));
+            };
+            const int at = undo->index();
+            w.findChild<QAction *>(QStringLiteral("rotateJob"))->trigger();
+            check(undo->index() == at + 1 && noStock(), "rotate: no stock size, none written");
+            undo->undo();
+            check(noStock(), "rotate: nor by its undo");
+            undo->redo();
+            check(noStock(), "rotate: nor by its redo");
+            undo->undo();
+            step();
+        }
+
+        // An untitled design: the first step undone is the blank again.
+        w.m_dirty = false;
+        check(w.newUntitled(300, 200, 19), "mark: an untitled design");
+        step();
+        check(!w.m_dirty && !starred(), "mark: starts not edited");
+        const c2d::Element ue = c2d::Element::makeCircle({50, 50}, 10, d.defaultLayer());
+        w.m_canvas->insertGenerated({ue}, c2d::makeToolpath(d, "contour", {ue.id}));
+        step();
+        check(w.m_dirty && starred() && d.elements().size() == 1, "mark: its first step marks");
+        undo->undo();
+        step();
+        check(!w.m_dirty && !starred() && d.elements().isEmpty() && inFile(),
+              "mark: undone, it is the blank design again");
     }
 
     w.m_dirty = false;

@@ -1059,6 +1059,46 @@ int main(int argc, char *argv[])
         canvas->setDocument(&doc);
     }
 
+    // A vector whose drawn path has collapsed onto one point (its box is a
+    // point, the path is not empty) counts in the selection's box like any
+    // other. QRectF::isNull() and united() took that box for no box at all:
+    // Align and Mirror worked about the other shapes alone. (Built by hand:
+    // QPainterPath drops a zero-length line, so makePath cannot make one.)
+    {
+        Document zd;
+        Element dot = Element::makePath({{50, 50}, {60, 50}}, false, layer);
+        dot.painterPath.setElementPositionAt(1, 50, 50);
+        const Element rect = Element::makeRectangle({80, 60}, 4, 4, layer);   // 78..82 x 58..62
+        zd.addElement(dot);
+        zd.addElement(rect);
+        canvas->setDocument(&zd);
+        check(!dot.painterPath.isEmpty() && dot.painterPath.boundingRect() == QRectF(50, 50, 0, 0),
+              "zero size: the test vector has a path, and a box that is a point");
+        auto boxOf = [&](const Element &e) { return zd.elementById(e.id)->painterPath.boundingRect(); };
+        // Align is reached the way the user reaches it: Edit > Vectors > Align > Left.
+        QAction *left = nullptr;
+        for (QAction *v : edit->actions())
+            if (v->menu() && v->text() == QLatin1String("&Vectors"))
+                for (QAction *a : v->menu()->actions())
+                    if (a->menu() && a->text() == QLatin1String("&Align"))
+                        for (QAction *b : a->menu()->actions())
+                            if (b->text() == QLatin1String("&Left"))
+                                left = b;
+        canvas->selectIds({dot.id, rect.id});   // selection box x 50..82
+        check(left && left->isEnabled(), "zero size: Align Left is offered for the two");
+        left->trigger();
+        check(nearRect(boxOf(rect), QRectF(50, 58, 4, 4)),
+              "zero size: Align Left takes the shape to the point, the leftmost of the two");
+        undo->undo();
+        check(nearRect(boxOf(rect), QRectF(78, 58, 4, 4)), "zero size: and undo puts it back");
+        canvas->selectIds({dot.id, rect.id});   // middle of 50..82 is 66
+        va.mirror(vec::Axis::Horizontal);
+        check(nearRect(boxOf(rect), QRectF(50, 58, 4, 4)),
+              "zero size: Mirror flips the shape about the middle of the point and the shape together");
+        undo->undo();
+        canvas->setDocument(&doc);
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

@@ -32,8 +32,18 @@ struct Control {
     bool top;
 };
 
+QString knownStyle(const QString &s)
+{
+    return s == QLatin1String("nes") || s == QLatin1String("xbox") ? s : QStringLiteral("snes");
+}
+
 QList<Control> controls(const QString &style)
 {
+    if (style == QLatin1String("xbox"))
+        return {{"LB", "LB", true}, {"BACK", "BACK", true}, {"START", "START", true},
+                {"Y", "Y", true}, {"RB", "RB", true},
+                {"DPAD", "D-PAD", false}, {"GUIDE", "GUIDE", false}, {"X", "X", false},
+                {"A", "A", false}, {"B", "B", false}};
     if (style == QLatin1String("nes"))
         return {{"DPAD", "D-PAD", true}, {"SELECT", "SELECT", true}, {"START", "START", true},
                 {"B", "B", false}, {"A", "A", false}};
@@ -42,9 +52,16 @@ QList<Control> controls(const QString &style)
             {"DPAD", "D-PAD", false}, {"Y", "Y", false}, {"B", "B", false}, {"A", "A", false}};
 }
 
-// Pad numbering of the clones on the shop PC, learned with the mapper.
+// Pad numbering of the clones on the shop PC, learned with the mapper; an
+// Xbox 360 pad as the kernel's xpad driver numbers it.
 int defaultNumber(const QString &style, const QString &control)
 {
+    static const QHash<QString, int> xbox = {
+        {QStringLiteral("A"), 0}, {QStringLiteral("B"), 1}, {QStringLiteral("X"), 2},
+        {QStringLiteral("Y"), 3}, {QStringLiteral("LB"), 4}, {QStringLiteral("RB"), 5},
+        {QStringLiteral("BACK"), 6}, {QStringLiteral("START"), 7}, {QStringLiteral("GUIDE"), 8}};
+    if (style == QLatin1String("xbox"))
+        return xbox.value(control, -1);
     static const QHash<QString, int> nes = {
         {QStringLiteral("SELECT"), 8}, {QStringLiteral("START"), 9},
         {QStringLiteral("B"), 0}, {QStringLiteral("A"), 1}};
@@ -104,6 +121,15 @@ public:
         m_style = s;
         m_pressed.clear();
         m_dir[0] = m_dir[1] = 0;
+        m_stick[0] = m_stick[1] = 0;
+        update();
+    }
+    // The left stick of an Xbox pad, same convention as setAxis().
+    void setStick(int axis, int dir)
+    {
+        if (axis < 0 || axis > 1 || m_stick[axis] == dir)
+            return;
+        m_stick[axis] = dir;
         update();
     }
     void setCallouts(const QList<Callout> &c)
@@ -136,7 +162,11 @@ protected:
 
 private:
     bool nes() const { return m_style == QLatin1String("nes"); }
-    QSizeF design() const { return nes() ? QSizeF(420, 180) : QSizeF(440, 200); }
+    bool xbox() const { return m_style == QLatin1String("xbox"); }
+    QSizeF design() const
+    {
+        return nes() ? QSizeF(420, 180) : xbox() ? QSizeF(460, 250) : QSizeF(440, 200);
+    }
     QPointF designAnchor(const QString &c) const;
     QRectF padRect() const;
     QPointF anchor(const QString &c) const
@@ -148,6 +178,7 @@ private:
     void relayout();
     void paintNes(QPainter &p);
     void paintSnes(QPainter &p);
+    void paintXbox(QPainter &p);
     void paintDpad(QPainter &p, const QPointF &c, double armW, double armL, const QColor &col);
     void paintRoundButton(QPainter &p, const QString &name, const QPointF &c, double r,
                           const QColor &col, const QString &letter, const QColor &letterCol);
@@ -155,6 +186,7 @@ private:
     QString m_style = QStringLiteral("snes");
     QSet<QString> m_pressed;
     int m_dir[2] = {0, 0};
+    int m_stick[2] = {0, 0};
     QList<Callout> m_callouts;
 };
 
@@ -170,7 +202,13 @@ QPointF PadCanvas::designAnchor(const QString &c) const
         {QStringLiteral("Y"), {286, 108}}, {QStringLiteral("A"), {370, 108}},
         {QStringLiteral("B"), {328, 150}}, {QStringLiteral("L"), {95, 10}},
         {QStringLiteral("R"), {345, 10}}};
-    return (nes() ? n : s).value(c);
+    static const QHash<QString, QPointF> x = {
+        {QStringLiteral("LB"), {70, 10}}, {QStringLiteral("RB"), {400, 10}},
+        {QStringLiteral("BACK"), {195, 95}}, {QStringLiteral("START"), {265, 95}},
+        {QStringLiteral("GUIDE"), {230, 95}}, {QStringLiteral("DPAD"), {165, 165}},
+        {QStringLiteral("Y"), {362, 65}}, {QStringLiteral("X"), {332, 95}},
+        {QStringLiteral("B"), {392, 95}}, {QStringLiteral("A"), {362, 125}}};
+    return (nes() ? n : xbox() ? x : s).value(c);
 }
 
 QRectF PadCanvas::padRect() const
@@ -226,6 +264,8 @@ void PadCanvas::paintEvent(QPaintEvent *)
     p.scale(r.width() / design().width(), r.width() / design().width());
     if (nes())
         paintNes(p);
+    else if (xbox())
+        paintXbox(p);
     else
         paintSnes(p);
     p.restore();
@@ -235,10 +275,8 @@ void PadCanvas::paintEvent(QPaintEvent *)
     for (const Callout &c : m_callouts) {
         // From the button's edge on the callout's side, so the dot never
         // covers the letter printed on it.
-        const double edge = c.control == QLatin1String("DPAD") ? 0.0
-            : (c.control == QLatin1String("SELECT") || c.control == QLatin1String("START")) ? 0.0
-            : (c.control == QLatin1String("L") || c.control == QLatin1String("R")) ? 0.0
-            : nes() ? 20.0 : 19.0;
+        const bool face = c.control.size() == 1;      // A, B, X, Y
+        const double edge = !face ? 0.0 : nes() ? 20.0 : xbox() ? 16.0 : 19.0;
         const QPointF a = anchor(c.control) + QPointF(0, (c.top ? -edge : edge) * k);
         const QRect b = c.box->geometry();
         const QPointF end(b.center().x(), c.top ? b.bottom() + 1 : b.top() - 1);
@@ -429,6 +467,93 @@ void PadCanvas::paintSnes(QPainter &p)
                      QStringLiteral("B"), QColor(0x80, 0x60, 0x10));
 }
 
+void PadCanvas::paintXbox(QPainter &p)
+{
+    // bumpers behind the body
+    for (const auto &[name, x] : {std::pair{QStringLiteral("LB"), 28.0},
+                                  std::pair{QStringLiteral("RB"), 322.0}}) {
+        const bool on = m_pressed.contains(name);
+        if (on)
+            glow(p, QPointF(x + 55, 12), 26);
+        p.setPen(on ? QPen(kAmber, 2.5) : QPen(QColor(0x7e, 0x83, 0x8c), 1.2));
+        p.setBrush(on ? QColor(0xe8, 0xc8, 0x90) : QColor(0x9f, 0xa3, 0xab));
+        p.drawRoundedRect(QRectF(x, 0, 110, 44), 16, 16);
+    }
+    // the body: a wide middle with a grip hanging down on each side
+    QPainterPath l, r, mid;
+    l.addEllipse(QPointF(98, 125), 88, 115);
+    r.addEllipse(QPointF(362, 125), 88, 115);
+    mid.addRoundedRect(QRectF(98, 22, 264, 150), 30, 30);
+    const QPainterPath body = l.united(r).united(mid);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0, 0, 0, 110));
+    p.drawPath(body.translated(3, 7));
+    p.setPen(QPen(QColor(0x8b, 0x90, 0x9a), 1.5));
+    QLinearGradient g(0, 0, 0, 250);
+    g.setColorAt(0, QColor(0xee, 0xf0, 0xf3));
+    g.setColorAt(1, QColor(0xc6, 0xca, 0xd1));
+    p.setBrush(g);
+    p.drawPath(body);
+
+    QFont f = p.font();
+    f.setBold(true);
+    f.setPixelSize(10);
+    p.setFont(f);
+    p.setPen(QColor(0x8b, 0x90, 0x9a));
+    p.drawText(QRectF(180, 40, 100, 14), Qt::AlignCenter, QStringLiteral("XBOX 360"));
+
+    // the sticks: left one up, right one down. The left one leans (and
+    // lights) the way it is pushed.
+    auto stick = [&p](const QPointF &c, const QPointF &lean, bool lit) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0xa9, 0xad, 0xb5));
+        p.drawEllipse(c, 31, 31);
+        if (lit)
+            glow(p, c + lean, 16);
+        p.setPen(lit ? QPen(kAmber, 2.5) : QPen(QColor(0x1c, 0x1e, 0x22), 1.0));
+        p.setBrush(QColor(0x3a, 0x3d, 0x44));
+        p.drawEllipse(c + lean, 21, 21);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x2a, 0x2c, 0x32));
+        p.drawEllipse(c + lean, 13, 13);
+    };
+    stick(QPointF(98, 95), QPointF(m_stick[0] * 7.0, m_stick[1] * 7.0),
+          m_stick[0] || m_stick[1]);
+    stick(QPointF(295, 165), QPointF(), false);
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0xa9, 0xad, 0xb5));
+    p.drawEllipse(QPointF(165, 165), 36, 36);
+    paintDpad(p, QPointF(165, 165), 20, 62, QColor(0x2a, 0x2c, 0x32));
+
+    // back and start, the guide button between them
+    for (const auto &[name, x] : {std::pair{QStringLiteral("BACK"), 195.0},
+                                  std::pair{QStringLiteral("START"), 265.0}}) {
+        const bool on = m_pressed.contains(name);
+        if (on)
+            glow(p, QPointF(x, 95), 10);
+        p.setPen(on ? QPen(kAmber, 2.5) : QPen(QColor(0x8b, 0x90, 0x9a), 1.0));
+        p.setBrush(on ? QColor(0xe8, 0xc8, 0x90) : QColor(0xd6, 0xd9, 0xdf));
+        p.drawEllipse(QPointF(x, 95), 9, 7);
+    }
+    paintRoundButton(p, QStringLiteral("GUIDE"), QPointF(230, 95), 17, QColor(0xb4, 0xb8, 0xc0),
+                     QString(), QColor());
+    if (!m_pressed.contains(QStringLiteral("GUIDE"))) {
+        p.setPen(QPen(QColor(0x6c, 0xb8, 0x3a), 2.5));
+        p.setBrush(Qt::NoBrush);
+        p.drawEllipse(QPointF(230, 95), 11, 11);
+    }
+
+    paintRoundButton(p, QStringLiteral("Y"), QPointF(362, 65), 15, QColor(0xe8, 0xb8, 0x20),
+                     QStringLiteral("Y"), QColor(0x70, 0x54, 0x08));
+    paintRoundButton(p, QStringLiteral("X"), QPointF(332, 95), 15, QColor(0x3b, 0x6f, 0xd8),
+                     QStringLiteral("X"), QColor(0x1d, 0x3c, 0x80));
+    paintRoundButton(p, QStringLiteral("B"), QPointF(392, 95), 15, QColor(0xd8, 0x3a, 0x3a),
+                     QStringLiteral("B"), QColor(0x7a, 0x15, 0x15));
+    paintRoundButton(p, QStringLiteral("A"), QPointF(362, 125), 15, QColor(0x4f, 0xa8, 0x3a),
+                     QStringLiteral("A"), QColor(0x1f, 0x55, 0x12));
+}
+
 // ---- the dialog -------------------------------------------------------------
 
 GamepadMapDialog::GamepadMapDialog(const GamepadMap &map, Gamepad *pad, QWidget *parent)
@@ -485,7 +610,8 @@ GamepadMapDialog::GamepadMapDialog(const GamepadMap &map, Gamepad *pad, QWidget 
     segLay->setSpacing(4);
     m_nesBtn = new QPushButton(QStringLiteral("NES"), seg);
     m_snesBtn = new QPushButton(QStringLiteral("SNES"), seg);
-    for (QPushButton *b : {m_nesBtn, m_snesBtn}) {
+    m_xboxBtn = new QPushButton(QStringLiteral("XBOX"), seg);
+    for (QPushButton *b : {m_nesBtn, m_snesBtn, m_xboxBtn}) {
         b->setObjectName(QStringLiteral("styleBtn"));
         b->setCheckable(true);
         b->setAutoExclusive(true);
@@ -509,7 +635,8 @@ GamepadMapDialog::GamepadMapDialog(const GamepadMap &map, Gamepad *pad, QWidget 
 
     auto *foot = new QHBoxLayout;
     auto *note = new QLabel(QStringLiteral(
-        "The D-pad always jogs X and Y. Starting a program is never on the pad."), this);
+        "The D-pad always jogs X and Y (on an Xbox pad the left stick does too). "
+        "Starting a program is never on the pad."), this);
     note->setObjectName(QStringLiteral("note"));
     note->setWordWrap(true);
     foot->addWidget(note, 1);
@@ -523,7 +650,8 @@ GamepadMapDialog::GamepadMapDialog(const GamepadMap &map, Gamepad *pad, QWidget 
     foot->addWidget(cancel);
     foot->addWidget(save);
     lay->addLayout(foot);
-    connect(reset, &QPushButton::clicked, this, [this] { build(gamepadmap::defaults()); });
+    connect(reset, &QPushButton::clicked, this,
+            [this] { build(gamepadmap::defaults(m_style)); });
     connect(cancel, &QPushButton::clicked, this, &QDialog::reject);
     connect(save, &QPushButton::clicked, this, &QDialog::accept);
 
@@ -548,15 +676,22 @@ GamepadMapDialog::GamepadMapDialog(const GamepadMap &map, Gamepad *pad, QWidget 
         });
     }
 
-    m_style = QSettings().value(QStringLiteral("ui/padStyle")).toString() == QLatin1String("nes")
-        ? QStringLiteral("nes") : QStringLiteral("snes");
-    (m_style == QLatin1String("nes") ? m_nesBtn : m_snesBtn)->setChecked(true);
-    for (QPushButton *b : {m_nesBtn, m_snesBtn})
+    m_style = knownStyle(QSettings().value(QStringLiteral("ui/padStyle")).toString());
+    (m_style == QLatin1String("nes") ? m_nesBtn
+     : m_style == QLatin1String("xbox") ? m_xboxBtn : m_snesBtn)->setChecked(true);
+    for (QPushButton *b : {m_nesBtn, m_snesBtn, m_xboxBtn})
         connect(b, &QPushButton::toggled, this, [this, b](bool on) {
             if (!on)
                 return;
-            const GamepadMap keep = mapping();
-            m_style = b == m_nesBtn ? QStringLiteral("nes") : QStringLiteral("snes");
+            // A mapping nobody has touched follows the pad: an Xbox pad
+            // numbers its buttons differently, so the other pads' defaults
+            // would put Hold on a stick click. A changed mapping is kept.
+            GamepadMap keep = mapping();
+            const QString to = b == m_nesBtn ? QStringLiteral("nes")
+                             : b == m_xboxBtn ? QStringLiteral("xbox") : QStringLiteral("snes");
+            if (keep == gamepadmap::defaults(m_style))
+                keep = gamepadmap::defaults(to);
+            m_style = to;
             build(keep);
         });
     build(map);
@@ -649,8 +784,22 @@ void GamepadMapDialog::build(const GamepadMap &map)
     m_others->setVisible(!extra.isEmpty());
 }
 
+void GamepadMapDialog::setPadStyle(const QString &style)
+{
+    const QString to = knownStyle(style);
+    (to == QLatin1String("nes") ? m_nesBtn
+     : to == QLatin1String("xbox") ? m_xboxBtn : m_snesBtn)->setChecked(true);
+}
+
 void GamepadMapDialog::showAxis(int axis, int dir)
 {
+    if (m_style == QLatin1String("xbox")) {
+        if (axis == 0 || axis == 1) {
+            m_canvas->setStick(axis, dir);   // the left stick jogs too
+            return;
+        }
+        axis -= 6;                           // its D-pad is axes 6 and 7
+    }
     if (axis < 0 || axis > 1)
         return;
     m_canvas->setAxis(axis, dir);

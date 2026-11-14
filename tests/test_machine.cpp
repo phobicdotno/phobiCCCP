@@ -63,12 +63,14 @@ static void check(bool cond, const char *what)
 // on is held back until release(). A line starting with `alarmOn` answers
 // ALARM:1 (an end stop) and locks the controller up like GRBL does: no line
 // is read until ctrl-X, after which it boots into Alarm until $H or $X.
-// G38.2 touches at machine Z `probeZ`. Everything it receives goes into
+// G38.2 touches at machine Z `probeZ`. A feed hold reports Hold:1 (still
+// slowing down) while `holdSettles` is off. Everything it receives goes into
 // `events`, realtime bytes as "!", "~", "^X" and "JOGCANCEL".
 struct FakeGrbl {
     int fd = -1;
     QByteArray line;
     bool held = false;
+    bool holdSettles = true;
     bool hangDwell = false;
     bool ackJogs = true;
     bool holdAcks = false;
@@ -111,7 +113,7 @@ struct FakeGrbl {
                                   && (homeClock.elapsed() < 300 || homeReports > 0);
                 if (home && homeReports > 0)
                     --homeReports;
-                send("<" + QByteArray(locked || alarm ? "Alarm" : held ? "Hold:0" : home ? "Home" : jogging() ? "Jog" : "Idle")
+                send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdSettles ? "Hold:0" : "Hold:1") : home ? "Home" : jogging() ? "Jog" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
                      + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ) + ">\r\n");   // XY zero inside the travel
             } else if (c == '!') {
@@ -411,6 +413,7 @@ int main(int argc, char **argv)
                          QVariantList{grbl.mx, grbl.my, grbl.mz});
     QSettings().setValue(QStringLiteral("machine/port"), QString::fromLatin1(name));
     QSettings().setValue(QStringLiteral("gamepad/6"), QStringLiteral("home"));
+    QSettings().setValue(QStringLiteral("ui/padStyle"), QStringLiteral("xbox"));
 
     c2d::MachinePanel panel;
     g_panel = &panel;
@@ -579,6 +582,136 @@ int main(int argc, char **argv)
         emit pad->axisChanged(1, 0);
         wait(1500);
         check(grbl.count("$J=") == 1, "gamepad: a press after a dropped link jogs");
+
+        // An Xbox 360 pad has its D-pad on axes 6 and 7. A tap there is one
+        // jog step in X, and the left stick twitching at rest meanwhile does
+        // not cancel it. The triggers (axes 2 and 5) do nothing.
+        wait(800);
+        grbl.events.clear();
+        emit pad->axisChanged(6, 32767);
+        emit pad->axisChanged(0, 300);
+        wait(100);
+        emit pad->axisChanged(6, 0);
+        wait(1500);
+        check(grbl.count("$J=") == 1 && lastJog().contains('X'),
+              "gamepad: the D-pad of an Xbox pad jogs X");
+        grbl.events.clear();
+        emit pad->axisChanged(5, 32767);
+        emit pad->axisChanged(2, 32767);
+        wait(600);
+        emit pad->axisChanged(5, -32767);
+        emit pad->axisChanged(2, -32767);
+        wait(600);
+        check(grbl.count("$J=") == 0, "gamepad: the triggers of an Xbox pad do nothing");
+    }
+
+    // A pad's Zero X/Y or Zero Z bumped while a question of this page is
+    // open (here Run's): what the question says was worked out from the zero
+    // as it was, so the press is ignored and logged. With nothing open the
+    // same button zeroes.
+    {
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0
+                                && panel.statusJson().value("state").toString() == "Idle"; });
+        wait(800);
+        auto logText = [&] {
+            QString text;
+            for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
+                text += t->toPlainText();
+            return text;
+        };
+        const int ignoredBefore = int(logText().count(QLatin1String("ignored while a question is open")));
+        grbl.events.clear();
+        seen.clear();
+        bool asked = false;
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("RUN PROGRAM")) {
+                asked = true;
+                padPress(0);                 // zeroxy
+                padPress(3);                 // zeroz
+                return QStringLiteral("Cancel");
+            }
+            return QStringLiteral("OK");
+        };
+        runBtn->click();
+        spin(5000, [&] { return asked && !QApplication::activeModalWidget(); });
+        wait(400);
+        check(asked && !s->isStreaming(), "pad zero under a question: Run asked, and was cancelled");
+        check(grbl.count("G10") == 0, "pad zero under a question: nothing zeroed");
+        check(logText().count(QLatin1String("ignored while a question is open")) == ignoredBefore + 2,
+              "pad zero under a question: both presses logged as ignored");
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+        padPress(0);
+        spin(1500, [&] { return grbl.count("G10") > 0; });
+        wait(300);
+        check(grbl.count("G10 L20 P1 X0 Y0") == 1, "pad zero with no question open: zeroes X/Y");
+
+        // Run's question answered Start after the open design was reloaded
+        // under it (same file, same object: the load count could not tell):
+        // refused, nothing streamed.
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0; });
+        wait(400);
+        seen.clear();
+        grbl.events.clear();
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("RUN PROGRAM")) {
+                panel.setDocument(&doc);
+                return QStringLiteral("▶ Start");
+            }
+            return QStringLiteral("OK");
+        };
+        runBtn->click();
+        spin(3000, [&] { return seen.size() >= 2 && !QApplication::activeModalWidget(); });
+        wait(400);
+        bool refused = false;
+        for (const Seen &v : seen)
+            refused = refused || (v.headline + v.body).contains(QLatin1String("Another design was opened meanwhile"));
+        check(refused && !s->isStreaming() && grbl.count("G0") == 0 && grbl.count("G1") == 0,
+              "run: a design reloaded under its question is not streamed");
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+    }
+
+    // Hover 5 cm: the outline it asks about is the design's at the time it
+    // asked. A design swapped in while the question is open (a pad sent a new
+    // version) is not traced with the old outline; the user is told instead.
+    {
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0
+                                && panel.statusJson().value("state").toString() == "Idle"; });
+        wait(800);
+        QPushButton *hover = button(QStringLiteral("Hover 5 cm"));
+        check(hover != nullptr, "hover: button found");
+        const double wcoWas = grbl.wcoZ;
+        grbl.wcoZ = -70;                     // work Z0 low enough for 5 cm above it to be in the travel
+        wait(600);
+        grbl.events.clear();
+        seen.clear();
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith(QLatin1String("Trace the job outline"))) {
+                panel.setDocument(&doc);     // the same object, reloaded under the question
+                return QStringLiteral("▶ Trace");
+            }
+            return QStringLiteral("OK");
+        };
+        hover->click();
+        spin(3000, [&] { return seen.size() >= 2 && !QApplication::activeModalWidget(); });
+        wait(400);
+        check(seen.size() == 2 && seen.at(1).headline == QLatin1String("The design changed meanwhile."),
+              "hover: a design swapped in under the question is reported");
+        check(grbl.count("G1") == 0 && !s->isMacroRunning(), "hover: and nothing is traced");
+        // The same without a swap traces.
+        seen.clear();
+        answer = [&](const Seen &v) {
+            return v.headline.startsWith(QLatin1String("Trace the job outline")) ? QStringLiteral("▶ Trace")
+                                                                                  : QStringLiteral("OK");
+        };
+        bool traced = false;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::macroFinished, [&](bool) { traced = true; });
+        hover->click();
+        spin(5000, [&] { return traced; });
+        QObject::disconnect(c);
+        check(seen.size() == 1 && grbl.count("G1 F") == 1, "hover: with the design as asked, it traces");
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+        grbl.wcoZ = wcoWas;
+        wait(800);
     }
 
     // Tool changes: the second pause, same number, names the second bit.
@@ -1103,6 +1236,136 @@ int main(int argc, char **argv)
         wait(800);
     };
 
+    // A probe that found nothing says ALARM:5 and then the ok of the probe's
+    // own line. A tool length offset waiting for the macro to end (Clear
+    // reference pressed while it ran) must not be written in between: GRBL
+    // refuses G-code in Alarm, that ok passed for the G43.1's, and a zero
+    // offset was then never sent again. It goes out after the unlock.
+    {
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0
+                                && panel.statusJson().value("state").toString() == "Idle"; });
+        const double tloWas = s->toolLengthOffset();
+        QList<QPair<QString, bool>> answers;
+        int macroEnds = 0;
+        bool macroOk = true;
+        auto c1 = QObject::connect(s, &c2d::GrblStreamer::commandAnswered,
+                                   [&](const QString &l, bool ok) { answers.append({l, ok}); });
+        auto c2 = QObject::connect(s, &c2d::GrblStreamer::macroFinished, [&](bool ok) {
+            ++macroEnds;
+            macroOk = ok;
+        });
+        s->applyToolLengthOffset(1.5);       // an offset on the controller, so zero is a change
+        spin(1500, [&] { return answers.size() == 1; });
+        check(answers.size() == 1 && answers.at(0).first == QLatin1String("G43.1") && answers.at(0).second,
+              "probe miss: an offset is on the controller first");
+        grbl.hangDwell = true;               // the dwell stands in for the probe: in flight, unanswered
+        grbl.events.clear();
+        s->startMacro({QStringLiteral("G4P0.01"), QStringLiteral("G0X1")});
+        spin(1500, [&] { return grbl.count("G4P0.01") == 1; });
+        grbl.hangDwell = false;              // (it would hang the G43.1 as well)
+        s->applyToolLengthOffset(0);
+        check(s->isMacroRunning() && grbl.count("G43.1") == 0, "probe miss: the offset waits for the macro");
+        grbl.alarm = true;                   // Alarm until $X: G-code is answered error:9
+        grbl.send("ALARM:5\r\nok\r\n");
+        spin(1500, [&] { return macroEnds > 0; });
+        check(macroEnds == 1 && !macroOk && !s->isMacroRunning() && !s->needsReset(),
+              "probe miss: the macro ends once, failed, and no reset is needed");
+        // The panel unlocks by itself after a probe miss.
+        spin(3000, [&] { return answers.size() >= 3 && s->pendingCommands() == 0; });
+        wait(300);
+        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G43.1");
+        check(unlock >= 0 && tlo > unlock && grbl.count("G43.1") == 1
+                  && grbl.events.at(tlo) == "G43.1 Z0.000",
+              "probe miss: the offset is written once, after the unlock, not into the alarm");
+        check(grbl.count("G0X1") == 0, "probe miss: the rest of the macro is not sent");
+        check(answers.size() == 3 && answers.at(1).first == QLatin1String("$X") && answers.at(1).second
+                  && answers.at(2).first == QLatin1String("G43.1") && answers.at(2).second,
+              "probe miss: the probe's own ok is not taken for the offset's");
+
+        // The same macro line in flight and an end stop (ALARM:1): the macro
+        // ends at once, and nothing is written into the locked controller.
+        spin(1500, [&] { return panel.statusJson().value("state").toString() == "Idle"; });
+        macroEnds = 0;
+        macroOk = true;
+        grbl.hangDwell = true;
+        s->startMacro({QStringLiteral("G4P0.01"), QStringLiteral("G0X1")});
+        spin(1500, [&] { return grbl.count("G4P0.01") == 2; });
+        grbl.hangDwell = false;
+        s->applyToolLengthOffset(1.5);       // waits for the macro again
+        grbl.locked = true;
+        grbl.events.clear();
+        grbl.send("ALARM:1\r\n[MSG:Reset to continue]\r\n");
+        spin(1500, [&] { return macroEnds > 0; });
+        wait(300);
+        QObject::disconnect(c1);
+        QObject::disconnect(c2);
+        check(macroEnds == 1 && !macroOk && !s->isMacroRunning() && s->needsReset(),
+              "limit in a macro: the macro ends once, failed, and a reset is needed");
+        bool wrote = false;
+        for (const QByteArray &e : grbl.events)
+            wrote = wrote || (!e.isEmpty() && e != "^X" && e != "!" && e != "~" && e != "JOGCANCEL");
+        check(!wrote, "limit in a macro: neither the next line nor the offset is written");
+        spin(1500, [&] { return panel.statusJson().value("state").toString() == "Alarm"; });
+        initialize();
+        check(!s->needsReset() && panel.statusJson().value("homed").toBool(), "limit in a macro: recovered");
+        answers.clear();
+        auto c3 = QObject::connect(s, &c2d::GrblStreamer::commandAnswered,
+                                   [&](const QString &l, bool ok) { answers.append({l, ok}); });
+        s->applyToolLengthOffset(tloWas);    // as it was for the tests after this
+        spin(1500, [&] { return !answers.isEmpty() && s->pendingCommands() == 0; });
+        QObject::disconnect(c3);
+        wait(300);
+    }
+
+    // The same with lines sent on their own: $X, and straight behind it a
+    // line that ends in an alarm and then its own ok (a $H that fails says
+    // ALARM:9, then ok). The ok of $X asks for the offset again; it must not
+    // go out on the back of that alarm, where the trailing ok passed for its
+    // answer. It goes out with the next unlock.
+    {
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0
+                                && panel.statusJson().value("state").toString() == "Idle"; });
+        const double tloWas = s->toolLengthOffset();
+        QList<QPair<QString, bool>> answers;
+        auto c = QObject::connect(s, &c2d::GrblStreamer::commandAnswered,
+                                  [&](const QString &l, bool ok) { answers.append({l, ok}); });
+        s->applyToolLengthOffset(2.5);
+        spin(1500, [&] { return answers.size() == 1 && s->pendingCommands() == 0; });
+        check(answers.size() == 1 && answers.at(0).first == QLatin1String("G43.1") && answers.at(0).second,
+              "alarm after unlock: an offset is on the controller first");
+        answers.clear();
+        grbl.events.clear();
+        grbl.hangDwell = true;               // the dwell stands in for the $H: in flight, unanswered
+        check(s->sendCommand(QStringLiteral("$X")) && s->sendCommand(QStringLiteral("G4P0.01")),
+              "alarm after unlock: both lines sent");
+        spin(1500, [&] { return answers.size() == 1; });
+        grbl.hangDwell = false;
+        check(answers.size() == 1 && answers.at(0).first == QLatin1String("$X") && s->pendingCommands() == 1
+                  && grbl.count("G43.1") == 0,
+              "alarm after unlock: the offset waits for the line still out");
+        grbl.alarm = true;                   // Alarm until $X: G-code is answered error:9
+        grbl.send("ALARM:9\r\nok\r\n");
+        spin(1500, [&] { return answers.size() >= 2 && s->pendingCommands() == 0; });
+        wait(400);
+        check(answers.size() == 2 && answers.at(1).first == QLatin1String("G4P0.01") && !answers.at(1).second,
+              "alarm after unlock: the alarm is that line's answer");
+        check(grbl.count("G43.1") == 0, "alarm after unlock: no offset written into the alarm");
+        grbl.events.clear();
+        check(s->sendCommand(QStringLiteral("$X")), "alarm after unlock: unlocked again");
+        spin(1500, [&] { return answers.size() >= 4 && s->pendingCommands() == 0; });
+        wait(300);
+        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G43.1");
+        check(unlock >= 0 && tlo > unlock && grbl.count("G43.1") == 1 && grbl.events.at(tlo) == "G43.1 Z2.500",
+              "alarm after unlock: the offset is written once, after the unlock");
+        check(answers.size() == 4 && answers.at(3).first == QLatin1String("G43.1") && answers.at(3).second,
+              "alarm after unlock: and answered for itself");
+        answers.clear();
+        s->applyToolLengthOffset(tloWas);    // as it was for the tests after this
+        spin(1500, [&] { return !answers.isEmpty() && s->pendingCommands() == 0; });
+        QObject::disconnect(c);
+        wait(300);
+    }
+
     // A command still unanswered (a jog the planner has not taken), Park
     // queued behind it, then an end stop: ALARM:1 is that command's answer.
     // The macro ends; nothing is written into the locked controller.
@@ -1236,6 +1499,38 @@ int main(int argc, char **argv)
         wait(800);
     }
 
+    // A second direction pressed while the first is still held (a pad stick
+    // flipped from - to +): the held jog ends the way a release ends it, with
+    // the second cancel for a $J= GRBL has not read yet, before anything goes
+    // the other way. One cancel alone let that jog run on.
+    {
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0
+                                && panel.statusJson().value("state").toString() == "Idle"; });
+        // Homed jogs name a machine position, others a distance.
+        auto dirOf = [&](const QByteArray &jog) {
+            const double x = jog.mid(jog.indexOf('X') + 1).split(' ').first().toDouble();
+            return jog.contains("G91") ? (x > 0 ? 1 : -1) : (x > grbl.mx ? 1 : -1);
+        };
+        grbl.events.clear();
+        key(Qt::Key_Left, true);             // hold X-: nothing moves before the hold delay
+        spin(3000, [&] { return grbl.count("$J=") > 0; });
+        check(grbl.count("$J=") > 0 && dirOf(lastJog()) < 0, "flip: X- runs while held");
+        key(Qt::Key_Right, true);            // X+, with X- never let go
+        spin(3000, [&] { return dirOf(lastJog()) > 0; });
+        key(Qt::Key_Right, false);
+        key(Qt::Key_Left, false);
+        int cancels = 0, plus = -1;
+        for (int i = 0; i < grbl.events.size() && plus < 0; ++i) {
+            if (grbl.events.at(i) == "JOGCANCEL")
+                ++cancels;
+            else if (grbl.events.at(i).startsWith("$J=") && dirOf(grbl.events.at(i)) > 0)
+                plus = i;
+        }
+        check(plus >= 0, "flip: X+ runs after the flip");
+        check(cancels == 2, "flip: the held jog is cancelled twice before the first jog the other way");
+        wait(800);
+    }
+
     // Stop during the homing of Initialize also calls off the park after it.
     {
         spin(1500, [&] { return !panel.isBusy() && !s->isMacroRunning()
@@ -1287,6 +1582,38 @@ int main(int argc, char **argv)
               "disconnect: asked first");
         check(grbl.events.indexOf("!") >= 0 && grbl.events.indexOf("^X") > grbl.events.indexOf("!"),
               "disconnect: hold, then reset, before closing");
+    }
+
+    // Cancel job, and Disconnect confirmed while the cancel still waits for
+    // the hold to settle: one wait and one reset for both, then the port is
+    // closed. (Each had its own wait: the second reset the controller again,
+    // into whatever the first had gone on to do.)
+    {
+        check(s->connectPort(QString::fromLatin1(name)), "cancel then disconnect: connects");
+        spin(1500, [&] { return panel.statusJson().value("state").toString() == "Idle"; });
+        wait(800);   // $$ answered
+        grbl.hangDwell = true;
+        grbl.holdSettles = false;            // Hold:1 until told otherwise
+        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G4P3.00"), QStringLiteral("G0X1")});
+        wait(400);
+        grbl.events.clear();
+        seen.clear();
+        answer = [&](const Seen &v) {
+            return v.headline.contains(QLatin1String("Disconnect")) ? QStringLiteral("Stop and disconnect")
+                                                                    : QStringLiteral("Cancel job");
+        };
+        button(QStringLiteral("✕ Cancel job"))->click();
+        button(QStringLiteral("Disconnect"))->click();
+        wait(600);
+        check(seen.size() == 2 && s->isConnected() && grbl.count("^X") == 0,
+              "cancel then disconnect: both asked, and both wait for the hold to settle");
+        grbl.holdSettles = true;
+        spin(4000, [&] { return !s->isConnected(); });
+        wait(1200);  // past the rise the cancel would start, were the port still open
+        grbl.hangDwell = false;
+        check(!s->isConnected(), "cancel then disconnect: the port is closed in the end");
+        check(grbl.count("^X") == 1, "cancel then disconnect: one reset, not one each");
+        check(grbl.count("G53 G0 Z") == 0, "cancel then disconnect: nothing rises on the way out");
     }
 
     // Reconnected to a controller still locked by an end stop from before

@@ -93,6 +93,33 @@ int main()
               && back.x1 == 200 && back.y1 == 100, "JSON round trip");
     check(!SurfaceMap::fromJson(QStringLiteral("{nonsense")).isValid(), "broken JSON gives no map");
     check(!SurfaceMap::fromJson(QString()).isValid(), "empty setting gives no map");
+    // 3 x 1431655766 is 2^32 + 2: as an int product that is 2, and matched
+    // the two heights of a corrupt map, which then read far past them.
+    check(!SurfaceMap::fromJson(QStringLiteral(
+              R"({"x0":0,"y0":0,"x1":10,"y1":10,"cols":3,"rows":1431655766,"z":[0,1]})")).isValid(),
+          "a grid size that overflows an int is not a map");
+    {
+        SurfaceMap wrap;
+        wrap.x1 = 10; wrap.y1 = 10;
+        wrap.cols = 65537; wrap.rows = 65537;        // 2^32 + 131073
+        wrap.z.fill(0.0, 131073);
+        check(!wrap.isValid(), "nor one that wraps round to the number of heights given");
+        // No probed grid is near a million points: more is refused, that many is not.
+        SurfaceMap huge;
+        huge.x1 = 10; huge.y1 = 10;
+        huge.cols = 1000; huge.rows = 1000;
+        huge.z.fill(0.0, 1000 * 1000);
+        check(huge.isValid(), "a million points is still a map");
+        huge.rows = 1001;
+        huge.z.fill(0.0, 1000 * 1001);
+        check(!huge.isValid(), "more than a million points is refused");
+        // The small ones are as they were.
+        SurfaceMap two;
+        two.x1 = 10;
+        two.cols = 2; two.rows = 1;
+        two.z = {0.0, 1.0};
+        check(two.isValid(), "two points in a row are still a map");
+    }
     check(!SurfaceMap::fromJson(QStringLiteral(
               R"({"x0":0,"y0":0,"x1":10,"y1":10,"cols":2,"rows":2,"z":[0,1,"2",3]})")).isValid(),
           "a string height is rejected");

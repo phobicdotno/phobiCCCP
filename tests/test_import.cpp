@@ -558,6 +558,31 @@ int main(int argc, char **argv)
                       && std::abs(m.bounds.height() - 50.0) < 0.1, "dxf: a rotated MINSERT array turns with it");
         }
         {
+            // DXF names ignore case: a block defined as Part is the one an
+            // INSERT of PART or part asks for. (They were told apart, and
+            // such inserts skipped as unknown blocks.)
+            const QByteArray block =
+                "0\nSECTION\n2\nBLOCKS\n0\nBLOCK\n2\nPart\n10\n0\n20\n0\n"
+                "0\nLWPOLYLINE\n90\n4\n70\n1\n10\n0\n20\n0\n10\n10\n20\n0\n10\n10\n20\n10\n10\n0\n20\n10\n"
+                "0\nENDBLK\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n";
+            const QByteArray dxf = block +
+                "0\nINSERT\n2\nPART\n10\n0\n20\n0\n"
+                "0\nINSERT\n2\npart\n10\n30\n20\n0\n"
+                "0\nINSERT\n2\nPart\n10\n60\n20\n0\n"
+                "0\nENDSEC\n0\nEOF\n";
+            const c2d::ImportResult c = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("blockcase"));
+            check(c.ok && c.elements.size() == 3 && c.skipped == 0, "dxf: a block is found whatever the case of its name");
+            check(std::abs(c.bounds.width() - 70.0) < 0.1 && std::abs(c.bounds.height() - 10.0) < 0.1,
+                  "dxf: each such insert stands where it was put");
+            // A block that really is not there is still named as the file spells it.
+            const c2d::ImportResult u = c2d::importDxfData(
+                block + "0\nINSERT\n2\nPart\n10\n0\n20\n0\n0\nINSERT\n2\nPlate\n10\n30\n20\n0\n0\nENDSEC\n0\nEOF\n",
+                opts(0, 0), QStringLiteral("blockmissing"));
+            check(u.ok && u.elements.size() == 1 && u.skipped == 1
+                      && u.notes.join(QLatin1Char(' ')).contains(QLatin1String("unknown block Plate")),
+                  "dxf: an unknown block is skipped and named as written");
+        }
+        {
             const QByteArray dxf = QByteArray("\xEF\xBB\xBF") +
                 "0\nSECTION\n2\nENTITIES\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\n10\n21\n0\n0\nENDSEC\n0\nEOF\n";
             const c2d::ImportResult b = c2d::importDxfData(dxf, opts(0, 0), QStringLiteral("bom"));

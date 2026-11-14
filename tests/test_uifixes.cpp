@@ -19,12 +19,15 @@
 
 #include <QApplication>
 #include <QDialog>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QListWidget>
+#include <QMouseEvent>
 #include <QPushButton>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QToolButton>
 
 #include <cmath>
 #include <cstdio>
@@ -42,6 +45,37 @@ static void check(bool cond, const char *what)
 }
 
 static double num(const QJsonValue &v) { return v.isString() ? v.toString().toDouble() : v.toDouble(); }
+
+// The painted 3D area of a preview: its largest child widget.
+static QWidget *isoArea(c2d::IsoPreview &iso)
+{
+    QWidget *best = nullptr;
+    for (QWidget *w : iso.findChildren<QWidget *>(Qt::FindDirectChildrenOnly))
+        if (!best || w->width() * w->height() > best->width() * best->height())
+            best = w;
+    return best;
+}
+
+static QImage isoShot(c2d::IsoPreview &iso)
+{
+    QApplication::processEvents();
+    return isoArea(iso)->grab().toImage();
+}
+
+// A drag across the 3D area: an orbit, as a finger or the mouse makes it.
+static void isoOrbit(c2d::IsoPreview &iso, QPoint from, QPoint to)
+{
+    QWidget *v = isoArea(iso);
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(from), QPointF(v->mapToGlobal(from)), Qt::LeftButton,
+                      Qt::LeftButton, Qt::NoModifier);
+    QApplication::sendEvent(v, &press);
+    QMouseEvent move(QEvent::MouseMove, QPointF(to), QPointF(v->mapToGlobal(to)), Qt::NoButton, Qt::LeftButton,
+                     Qt::NoModifier);
+    QApplication::sendEvent(v, &move);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(to), QPointF(v->mapToGlobal(to)), Qt::LeftButton,
+                        Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(v, &release);
+}
 
 int main(int argc, char *argv[])
 {
@@ -111,6 +145,109 @@ int main(int argc, char *argv[])
         check(iso.progress() < 1e-9 && list->currentRow() == 0, "strip: back to the first bit");
         iso.setProgress(0.99);
         check(list->currentRow() == 1, "strip: a seek by progress moves the highlight too");
+
+        // The 3D preview keeps the route projected for the view between
+        // paints (it projected every point on every playback tick). What it
+        // paints is what a fresh preview paints, after playback, a resize,
+        // an orbit, a zoom and a new job.
+        QVector<c2d::Op> mirrored = g.ops;     // the same job turned over in x
+        for (c2d::Op &o : mirrored)
+            if (o.kind == c2d::Op::Rapid || o.kind == c2d::Op::Feed || o.kind == c2d::Op::Arc) {
+                o.x = 200 - o.x;
+                o.ci = -o.ci;
+                o.cw = !o.cw;
+            }
+        c2d::IsoPreview p, q;
+        for (c2d::IsoPreview *v : {&p, &q}) {
+            v->resize(640, 420);
+            v->show();
+        }
+        p.setJob(g.ops, 200, 200, 19);
+        q.setJob(g.ops, 200, 200, 19);
+        p.setProgress(0.3);
+        q.setProgress(0.3);
+        const QImage at3 = isoShot(p);
+        check(!at3.isNull() && at3 == isoShot(q), "3D preview: two previews of one job paint alike");
+        p.setProgress(0.7);
+        const QImage at7 = isoShot(p);
+        p.setProgress(0.3);
+        check(at7 != at3 && isoShot(p) == at3, "3D preview: played on and back, the same picture");
+        p.resize(500, 360);
+        const QImage small = isoShot(p);
+        p.resize(640, 420);
+        check(small.size() != at3.size() && isoShot(p) == at3, "3D preview: resized and back, the same picture");
+        p.setJob(mirrored, 200, 200, 19);
+        q.setJob(mirrored, 200, 200, 19);
+        p.setProgress(0.3);
+        q.setProgress(0.3);
+        const QImage turned = isoShot(p);
+        check(turned != at3 && turned == isoShot(q), "3D preview: a new job is drawn, not the one before");
+        isoOrbit(p, {300, 200}, {340, 180});
+        isoOrbit(q, {300, 200}, {340, 180});
+        const QImage orbited = isoShot(p);
+        check(orbited != turned && orbited == isoShot(q), "3D preview: an orbit turns the route with the stock");
+        for (c2d::IsoPreview *v : {&p, &q})
+            isoArea(*v)->findChild<QToolButton *>(QStringLiteral("zoomIn"))->click();
+        const QImage zoomed = isoShot(p);
+        check(zoomed != orbited && zoomed == isoShot(q), "3D preview: and a zoom scales it");
+        p.resetView();
+        q.resetView();
+        check(isoShot(p) == isoShot(q) && isoShot(p) == turned, "3D preview: and the view reset puts it back");
+    }
+
+    // A route of more than 200 000 moves is drawn a few moves to a line.
+    // Such a line never runs from a cut into a rapid: it drew a cut line
+    // straight across the stock, from the end of one cut to the start of
+    // the next one far away.
+    {
+        QVector<c2d::Op> ops{c2d::Op::tool(1), c2d::Op::rapid(10, 10, 5), c2d::Op::feedTo(10, 10, -1, 1000)};
+        // Moves 1..100000 zig-zag in a 10 mm patch at (10, 10); move 100000
+        // starts a line of two, and the move after it is the rapid across.
+        const int n = 100000;
+        for (int k = 1; k <= n; ++k)
+            ops << c2d::Op::feedTo(k % 2 ? 20 : 10, 10 + 10.0 * k / n, -1, 1000);
+        ops << c2d::Op::rapid(190, 190, 5) << c2d::Op::feedTo(190, 190, -1, 1000);
+        for (int k = 1; k <= n; ++k)
+            ops << c2d::Op::feedTo(k % 2 ? 180 : 190, 190 - 10.0 * k / n, -1, 1000);
+        ops << c2d::Op::rapid(180, 180, 5);
+        c2d::IsoPreview iso;
+        iso.resize(640, 420);
+        iso.show();
+        iso.setJob(ops, 200, 200, 19);
+        iso.setProgress(1);
+        QImage img = isoShot(iso);
+        // The two patches lie at the two ends of the stock's diagonal, left
+        // and right in this view; the rapid between them crosses the middle.
+        auto cutPixels = [&](int x0, int x1) {
+            int k = 0;
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = x0; x < x1; ++x) {
+                    const QColor c = img.pixelColor(x, y);
+                    k += c.red() > 150 && c.blue() < 100 && c.red() - c.blue() > 100;
+                }
+            return k;
+        };
+        auto drawnPixels = [&](int x0, int x1) {
+            int k = 0;
+            const QRgb bg = img.pixel(2, img.height() / 2);
+            for (int y = img.height() / 4; y < img.height() * 3 / 4; ++y)
+                for (int x = x0; x < x1; ++x)
+                    k += img.pixel(x, y) != bg;
+            return k;
+        };
+        const int w = img.width();
+        check(cutPixels(0, w / 3) > 50 && cutPixels(w * 2 / 3, w) > 50, "long route: both patches are drawn");
+        check(drawnPixels(w * 2 / 5, w * 3 / 5) > 0, "long route: the stock and the rapid are in the middle");
+        check(cutPixels(w * 2 / 5, w * 3 / 5) == 0, "long route: no cut line runs across to the other patch");
+        // Where a cut does run across, the same look sees it.
+        iso.setJob({c2d::Op::tool(1), c2d::Op::rapid(10, 10, 5), c2d::Op::feedTo(10, 10, -1, 1000),
+                    c2d::Op::feedTo(20, 20, -1, 1000), c2d::Op::feedTo(10, 20, -1, 1000),
+                    c2d::Op::feedTo(190, 190, -1, 1000), c2d::Op::feedTo(180, 180, -1, 1000),
+                    c2d::Op::feedTo(190, 180, -1, 1000), c2d::Op::rapid(190, 180, 5)},
+                   200, 200, 19);
+        iso.setProgress(1);
+        img = isoShot(iso);
+        check(img.width() == w && cutPixels(w * 2 / 5, w * 3 / 5) > 20, "long route: a real cut across is seen there");
     }
 
     // The setup sheet describes what Export writes: a 3D finish over a model

@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 
 using namespace c2d;
 
@@ -251,6 +252,24 @@ int main(int argc, char **argv)
         check(approx(d[0].x(), 38) && approx(d[0].y(), 0), "center on stock H only");
         d = vec::centerDeltas(boxes, vec::Center::Vertical, QRectF(0, 0, 100, 50));
         check(approx(d[0].x(), 0) && approx(d[0].y(), 7), "center on stock V only");
+
+        // A box of no size (a zero-length line) is still a box and counts in
+        // the group's: QRectF::isNull() and united() both took it for none,
+        // and the rest was centered without it. Group 10..30 -> shift 30.
+        const QRectF dot(10, 10, 0, 0), square(20, 20, 10, 10), stock(0, 0, 100, 100);
+        d = vec::centerDeltas({dot, square}, vec::Center::Both, stock);
+        check(d.size() == 2 && approx(d[0].x(), 30) && approx(d[0].y(), 30) && d[1] == d[0],
+              "center on stock: a box of no size counts (first)");
+        d = vec::centerDeltas({square, dot}, vec::Center::Both, stock);
+        check(d.size() == 2 && approx(d[0].x(), 30) && approx(d[0].y(), 30) && d[1] == d[0],
+              "center on stock: a box of no size counts (last)");
+        d = vec::centerDeltas({dot}, vec::Center::Both, stock);
+        check(d.size() == 1 && approx(d[0].x(), 40) && approx(d[0].y(), 40),
+              "center on stock: a box of no size alone is centered");
+        // Only an empty path's box, QRectF(), is no box.
+        d = vec::centerDeltas({QRectF(), square}, vec::Center::Both, stock);
+        check(d.size() == 2 && approx(d[1].x(), 25) && approx(d[1].y(), 25),
+              "center on stock: an empty path's box does not count");
 
         // Distribute horizontally: centers 5, 22, 8 -> outer stay (5, 22),
         // the middle one (index 2, center 8) moves to 13.5.
@@ -702,6 +721,23 @@ int main(int argc, char **argv)
         for (const Element &e : vec::offsetElements({open}, 1.0))
             all.addPath(e.painterPath);
         check(all.contains(QPointF(2.5, 4.0)), "offset: an open path ending on its start strokes its last side");
+    }
+
+    {
+        // A coordinate that overflowed to infinity is clamped by its sign to
+        // the far end of what the integer maths holds. It became 0 like a
+        // NaN, and the line ended at the origin instead of far away.
+        const double inf = std::numeric_limits<double>::infinity();
+        Element far = Element::makePath({{5, 5}, {10, 5}}, false, layer);
+        far.painterPath.setElementPositionAt(1, inf, 5);
+        QRectF bb = bounds(vec::offsetElements({far}, 1.0));
+        check(bb.right() > 1e9 && approx(bb.left(), 4, 1e-2), "offset: +infinity clamps to the far right, not to 0");
+        far.painterPath.setElementPositionAt(1, -inf, 5);
+        bb = bounds(vec::offsetElements({far}, 1.0));
+        check(bb.left() < -1e9 && approx(bb.right(), 6, 1e-2), "offset: -infinity clamps to the far left, not to 0");
+        far.painterPath.setElementPositionAt(1, std::numeric_limits<double>::quiet_NaN(), 5);
+        bb = bounds(vec::offsetElements({far}, 1.0));
+        check(approx(bb.left(), -1, 1e-2) && approx(bb.right(), 6, 1e-2), "offset: NaN still becomes 0");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

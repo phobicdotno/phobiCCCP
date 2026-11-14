@@ -5,7 +5,15 @@
 #include "../src/canvas.h"
 #include "../src/element.h"
 #include "../src/toolpathfactory.h"
+#include <QHash>
+#include <QIcon>
+#include <QPainterPath>
+#include <QSet>
+#include <QWidget>
+#include <functional>
+#define private public      // which cards are open is the panel's own
 #include "../src/toolpathpanel.h"
+#undef private
 #include <QApplication>
 #include <QJsonArray>
 #include <QTemporaryDir>
@@ -108,5 +116,67 @@ int main(int argc, char **argv)
     QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, QPoint(again.center().x(), stripY));
     QTest::qWait(50);
     check(rowOf(1).height() == closed.height(), "v closes it again");
+
+    // Open cards are remembered by toolpath, and only while the toolpath is
+    // there: the ids of deleted toolpaths stayed in the panel for good.
+    QObject::connect(&canvas, &c2d::Canvas::documentChanged, &panel, &c2d::ToolpathPanel::refresh);
+    auto pick = [&](int i) {
+        QTest::mouseClick(list->viewport(), Qt::LeftButton, {},
+                          QPoint(rowOf(i).center().x(), rowOf(i).top() + closed.height() / 2 - 10));
+        QTest::qWait(50);
+    };
+    {
+        const QRect r = rowOf(1);
+        QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, QPoint(r.center().x(), r.bottom() - 10));
+        QTest::qWait(50);
+    }
+    check(rowOf(1).height() > closed.height() + 50 && panel.m_expanded == QSet<QString>{b.uuid},
+          "the lower card is open again");
+    pick(0);
+    check(panel.currentUuid() == a.uuid, "the upper toolpath is picked");
+    panel.deleteCurrent();
+    QTest::qWait(50);
+    check(d.toolpaths().size() == 1 && rowOf(0).height() > closed.height() + 50
+              && panel.m_expanded == QSet<QString>{b.uuid},
+          "another toolpath deleted: the open card stays open");
+    canvas.undoStack()->undo();
+    QTest::qWait(50);
+    check(d.toolpaths().size() == 2 && rowOf(1).height() > closed.height() + 50,
+          "and stays open when it comes back");
+    pick(1);
+    check(panel.currentUuid() == b.uuid, "the open toolpath is picked");
+    panel.deleteCurrent();
+    QTest::qWait(50);
+    check(d.toolpaths().size() == 1 && !d.toolpathByUuid(b.uuid), "the open toolpath is deleted");
+    canvas.undoStack()->undo();
+    QTest::qWait(50);
+    check(d.toolpaths().size() == 2 && panel.m_expanded == QSet<QString>{b.uuid},
+          "the delete is undone, and the card comes back open");
+
+    // Each row's tooltip sums up the shapes it cuts, looked up by id, and
+    // counts the ids no shape has any more as missing.
+    auto cutsOf = [&](int row) {
+        const QString tip = list->topLevelItem(row)->toolTip(0);
+        const int at = tip.indexOf(QStringLiteral("Cuts: "));
+        return at < 0 ? QString() : tip.mid(at).section(QLatin1Char('\n'), 0, 0);
+    };
+    const QString kind = big.geometryType.isEmpty() ? QStringLiteral("shape") : big.geometryType;
+    check(d.toolpaths().at(1).uuid == b.uuid && idsOf(d, b.uuid).size() == 3
+              && cutsOf(1) == QStringLiteral("Cuts: 3 x %1").arg(kind)
+              && cutsOf(0) == QStringLiteral("Cuts: %1").arg(kind),
+          "the tooltips count the shapes each toolpath cuts");
+    d.removeElementById(far.id);
+    panel.refresh();
+    check(cutsOf(1) == QStringLiteral("Cuts: 2 x %1, 1 missing").arg(kind) && cutsOf(0) == QStringLiteral("Cuts: %1").arg(kind),
+          "a shape gone from the drawing is counted as missing");
+    d.removeElementById(small.id);
+    panel.refresh();
+    check(cutsOf(1) == QStringLiteral("Cuts: %1, 2 missing").arg(kind) && cutsOf(0) == QStringLiteral("Cuts: 1 missing"),
+          "in every toolpath that cuts it");
+    d.addElement(far);
+    d.addElement(small);
+    panel.refresh();
+    check(cutsOf(1) == QStringLiteral("Cuts: 3 x %1").arg(kind) && cutsOf(0) == QStringLiteral("Cuts: %1").arg(kind),
+          "and found again once it is back");
     return failures ? 1 : 0;
 }

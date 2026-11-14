@@ -128,6 +128,40 @@ static void mappingTests(const QTemporaryDir &dir, c2d::Gamepad &pad, int writer
     setDialogAction(dlg, 0, QStringLiteral("none"));
     check(!dlg.mapping().contains(0), "choosing nothing unmaps a button");
 
+    // An Xbox 360 pad numbers its buttons differently and has its own defaults.
+    const GamepadMap xbox = gamepadmap::defaults(QStringLiteral("xbox"));
+    for (const QString &a : xbox)
+        check(gamepadmap::actions().contains(a), "Xbox default actions are real actions");
+    check(xbox.value(7) == QLatin1String("hold") && xbox.value(1) == QLatin1String("stop")
+              && !xbox.contains(9) && !xbox.contains(10),
+          "Xbox: Start holds, B stops, the stick clicks do nothing");
+    check(gamepadmap::defaults(QStringLiteral("nes")) == gamepadmap::defaults()
+              && gamepadmap::defaults(QStringLiteral("snes")) == gamepadmap::defaults(),
+          "NES and SNES share the defaults");
+    {
+        // Switching the pad in the dialog: an untouched mapping follows the
+        // pad, a changed one is kept as it is.
+        GamepadMapDialog fresh(gamepadmap::defaults(), nullptr);
+        fresh.setPadStyle(QStringLiteral("snes"));
+        fresh.setPadStyle(QStringLiteral("xbox"));
+        check(fresh.padStyle() == QLatin1String("xbox"), "the dialog switches to the Xbox pad");
+        check(fresh.mapping() == xbox, "an untouched mapping moves to the Xbox defaults");
+        check(dialogAction(fresh, 7) == QLatin1String("hold"), "Start is drawn with its action");
+        fresh.setPadStyle(QStringLiteral("nes"));
+        check(fresh.mapping() == gamepadmap::defaults(), "and back again for a NES pad");
+        setDialogAction(fresh, 1, QStringLiteral("unlock"));
+        const GamepadMap changed = fresh.mapping();
+        fresh.setPadStyle(QStringLiteral("xbox"));
+        check(fresh.mapping() == changed, "a changed mapping is kept when the pad is switched");
+        // The D-pad of an Xbox pad is axes 6 and 7; none of this may crash.
+        fresh.showAxis(6, 1);
+        fresh.showAxis(7, -1);
+        fresh.showAxis(0, 1);
+        fresh.showAxis(6, 0);
+        fresh.showAxis(7, 0);
+        fresh.showAxis(0, 0);
+    }
+
     // A hand-edited setting that is not an action is shown, not rewritten.
     GamepadMap odd;
     odd.insert(7, QStringLiteral("launch"));

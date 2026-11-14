@@ -1044,6 +1044,17 @@ void ToolpathPanel::setDocument(Document *doc)
     m_form->setDocument(doc);
     m_uuid.clear();
     m_hint->hide();
+    // Open cards of toolpaths the new design does not have are forgotten.
+    // Only here: within one design an undo brings a deleted toolpath back,
+    // and its card should come back open.
+    if (!m_expanded.isEmpty()) {
+        QSet<QString> open;
+        if (doc)
+            for (const Toolpath &t : doc->toolpaths())
+                if (m_expanded.contains(t.uuid))
+                    open.insert(t.uuid);
+        m_expanded = open;
+    }
     refresh();
 }
 
@@ -1064,14 +1075,6 @@ void ToolpathPanel::refresh()
             for (const Element &e : els)
                 if (!byId.contains(e.id))
                     byId.insert(e.id, &e);
-        }
-        // Open cards of toolpaths that are gone are forgotten.
-        if (!m_expanded.isEmpty()) {
-            QSet<QString> open;
-            for (const Toolpath &t : m_doc->toolpaths())
-                if (m_expanded.contains(t.uuid))
-                    open.insert(t.uuid);
-            m_expanded = open;
         }
         for (const Toolpath &t : m_doc->toolpaths()) {
             auto *it = new QTreeWidgetItem(m_list);

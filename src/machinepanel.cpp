@@ -49,6 +49,8 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QTimer>
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <utility>
 #include <QToolButton>
@@ -140,11 +142,54 @@ static QIcon nesIcon()
     return QIcon(pm);
 }
 
-// The pad style the mapper last set up ("nes" or "snes").
+// An Xbox 360 pad: white body with two grips, left stick up and D-pad down on
+// the left, the coloured buttons up and the right stick down on the right,
+// the green guide button in the middle.
+static QIcon xboxIcon()
+{
+    QPixmap pm(QSize(40, 24) * 4);
+    pm.setDevicePixelRatio(4);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    QPainterPath left, right, mid;
+    left.addEllipse(QPointF(9.5, 12.5), 8.5, 10.5);
+    right.addEllipse(QPointF(30.5, 12.5), 8.5, 10.5);
+    mid.addRoundedRect(QRectF(9.5, 3.5, 21, 13), 3, 3);
+    p.setPen(QPen(QColor(0x8b, 0x90, 0x9a), 1.0));
+    p.setBrush(QColor(0xe2, 0xe4, 0xe9));
+    p.drawPath(left.united(right).united(mid));
+    p.setPen(Qt::NoPen);
+    // sticks
+    p.setBrush(QColor(0x3a, 0x3d, 0x44));
+    p.drawEllipse(QPointF(9.5, 9.0), 2.7, 2.7);
+    p.drawEllipse(QPointF(25.0, 14.6), 2.7, 2.7);
+    // d-pad
+    p.setBrush(QColor(0x2a, 0x2d, 0x33));
+    p.drawRoundedRect(QRectF(14.1, 11.6, 1.8, 6.0), 0.5, 0.5);
+    p.drawRoundedRect(QRectF(12.0, 13.7, 6.0, 1.8), 0.5, 0.5);
+    // guide
+    p.setBrush(QColor(0x6c, 0xb8, 0x3a));
+    p.drawEllipse(QPointF(20, 8.6), 1.9, 1.9);
+    // buttons
+    struct B { QPointF at; QColor col; };
+    const B bs[4] = {{QPointF(30.5, 5.9), QColor(0xe8, 0xb8, 0x20)},   // Y
+                     {QPointF(27.6, 8.8), QColor(0x3b, 0x6f, 0xd8)},   // X
+                     {QPointF(33.4, 8.8), QColor(0xd8, 0x3a, 0x3a)},   // B
+                     {QPointF(30.5, 11.7), QColor(0x4f, 0xa8, 0x3a)}}; // A
+    for (const B &b : bs) {
+        p.setBrush(b.col);
+        p.drawEllipse(b.at, 1.7, 1.7);
+    }
+    return QIcon(pm);
+}
+
+// The pad style the mapper last set up ("nes", "snes" or "xbox").
 static QIcon padIcon()
 {
-    return QSettings().value(QStringLiteral("ui/padStyle")).toString() == QLatin1String("nes")
-        ? nesIcon() : snesIcon();
+    const QString style = QSettings().value(QStringLiteral("ui/padStyle")).toString();
+    return style == QLatin1String("nes") ? nesIcon()
+         : style == QLatin1String("xbox") ? xboxIcon() : snesIcon();
 }
 
 // A stacked widget normally reserves the size of its largest page, so a small
@@ -1377,7 +1422,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         // stops it (with the second cancel for a $J= still in GRBL's buffer);
         // a press not yet held is dropped, not taken as a tap.
         if (m_holdJogging) endHoldJog(); else stopHoldJog();
-        m_padAxisDir[0] = m_padAxisDir[1] = 0;
+        std::fill(std::begin(m_padAxisDir), std::end(m_padAxisDir), 0);
         log(QStringLiteral("gamepad disconnected"));
     });
     connect(m_pad, &Gamepad::buttonChanged, this, &MachinePanel::gamepadButton);
@@ -2608,6 +2653,7 @@ void MachinePanel::loadGamepadMapping()
 {
     QSettings s;
     m_padMap = gamepadmap::load(s);
+    m_padXbox = s.value(QStringLiteral("ui/padStyle")).toString() == QLatin1String("xbox");
 }
 
 void MachinePanel::editGamepadMapping()
@@ -2615,7 +2661,7 @@ void MachinePanel::editGamepadMapping()
     // Pressing a button to find it in the table must not also jog, zero or
     // stop the machine, so the pad is ignored here while the dialog is open.
     stopHoldJog();
-    m_padAxisDir[0] = m_padAxisDir[1] = 0;
+    std::fill(std::begin(m_padAxisDir), std::end(m_padAxisDir), 0);
     m_padMapping = true;
     GamepadMapDialog dlg(m_padMap, m_pad, this);
     const bool save = dlg.exec() == QDialog::Accepted;
@@ -2636,21 +2682,29 @@ void MachinePanel::gamepadAxis(int number, int value)
 {
     if (m_padMapping)
         return;
-    if (number > 1)
+    // An Xbox 360 pad has its D-pad on axes 6 and 7; 0 and 1 are its left
+    // stick, which jogs as well. The triggers and the right stick (2 to 5)
+    // do nothing.
+    int slot = number;
+    if (m_padXbox && (number == 6 || number == 7)) {
+        slot = number - 4;
+        number -= 6;
+    }
+    if (number < 0 || number > 1)
         return;
     // A D-pad reports its rest position as 0 and a direction as full scale;
     // an analogue stick needs the same treatment with a dead zone, so both are
     // reduced to -1, 0 or +1 here. A stick held about half way wobbles round
     // the threshold: it lets go only well below it, or each wobble was a tap
     // and a full jog step.
-    const int was = m_padAxisDir[number];
+    const int was = m_padAxisDir[slot];
     const int dir = value > 16000 ? 1 : (value < -16000 ? -1
                   : (was != 0 && value * was > 8000 ? was : 0));
     if (dir == was)
         return;
     // Kept while not connected too: a direction held across a dropped link
     // and let go there, then pressed again, was taken for no change.
-    m_padAxisDir[number] = dir;
+    m_padAxisDir[slot] = dir;
     if (!m_grbl->isConnected())
         return;
     if (dir == 0) {
@@ -4085,6 +4139,10 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("Open a .c2d file first."));
     const QString docAtStart = m_doc->filePath();
     const quint64 loadAtStart = m_doc->loadCount();
+    // The window opens a file into a fresh document and moves it in, so the
+    // load count reads 1 after every open: the same path reloaded (a pad's
+    // edit rebuilt it) shows only here.
+    const quint64 seqAtStart = m_docSeq;
     // Re-exported at the moment Run is pressed, so it is the current document
     // that gets streamed - and a 3D finish is minutes of work, which used to
     // freeze the window with the machine sitting idle.
@@ -4354,7 +4412,7 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("The machine is still moving (%1).").arg(stillMovingWhy()));
     // Only now: a refusal above leaves a hold (and its Resume button) as it was.
     setHeld(false);
-    if (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart)
+    if (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart || m_docSeq != seqAtStart)
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
     m_progress->setFormat(QStringLiteral("%p%"));

@@ -364,6 +364,53 @@ bool Document::save(const QString &destPath, QString *error)
             }
         }
 
+        // 3c2) The other params as they are in memory. One changed since the
+        //     file was read (Rotate 90° swaps the stock's width and height)
+        //     is written; without this the turned design came back on the
+        //     unturned stock. A row that already says the same is left alone,
+        //     and so is every row for a key that is not in memory.
+        //     site_order is the application's cut-order setting, put on the
+        //     document for the exporter at every open: no part of the file.
+        if (ok) {
+            QHash<QString, QString> inFile;      // read as load() reads them
+            {
+                QSqlQuery rq(db);
+                rq.exec(QStringLiteral("SELECT key, value FROM params"));
+                while (rq.next())
+                    inFile.insert(rq.value(0).toString(), rq.value(1).toString());
+                if (rq.lastError().isValid()) {
+                    if (error)
+                        *error = QStringLiteral("Could not read the settings back: %1")
+                                     .arg(rq.lastError().text());
+                    ok = false;
+                }
+            }
+            QSqlQuery pq(db);
+            for (auto it = m_params.cbegin(); ok && it != m_params.cend(); ++it) {
+                // background_* rows belong to BackgroundImage::saveTo, which
+                // writes them after this; the copies here are from load time.
+                if (it.key() == QLatin1String("site_order") || it.key() == Parametric::paramKey()
+                    || it.key().startsWith(QLatin1String("background_")))
+                    continue;
+                const auto have = inFile.constFind(it.key());
+                if (have != inFile.cend() && have.value() == it.value())
+                    continue;
+                // Delete-then-insert, as below: the key need not be unique.
+                pq.prepare(QStringLiteral("DELETE FROM params WHERE key=?"));
+                pq.addBindValue(it.key());
+                ok = pq.exec();
+                if (ok) {
+                    pq.prepare(QStringLiteral("INSERT INTO params(key,value) VALUES(?,?)"));
+                    pq.addBindValue(it.key());
+                    pq.addBindValue(it.value());
+                    ok = pq.exec();
+                }
+                if (!ok && error)
+                    *error = QStringLiteral("Could not save the setting %1: %2")
+                                 .arg(it.key(), pq.lastError().text());
+            }
+        }
+
         // 3d) Parameters and constraints: one params row, gone when there are
         //     none. Delete-then-insert: a CC file's params.key need not be unique.
         if (ok) {
