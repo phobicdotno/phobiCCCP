@@ -12,6 +12,7 @@
 #include "../src/gcodeexport.h"
 #include "../src/isopreview.h"
 #include "../src/parametric.h"
+#include "../src/popuplook.h"
 #include "../src/setupsheet.h"
 #include "../src/toolpathfactory.h"
 #include "../src/toolpathpanel.h"
@@ -22,7 +23,10 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QInputDialog>
+#include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -356,6 +360,50 @@ int main(int argc, char *argv[])
         d.parametricRef().params[0].expr = QStringLiteral("4");
         c2d::param::applyToolpathBindings(d, nullptr);
         check(depths(3.5, 4.0), "a parameter edit moves the male with the gap");
+    }
+
+    // Every popup gets the shop look: no title bar, the title as a caption
+    // inside, and still its own buttons to close it with. A popup with
+    // nothing to press gets a big X.
+    {
+        c2d::installPopupLook(app);
+        QMessageBox box(QMessageBox::Warning, QStringLiteral("Save failed"),
+                        QStringLiteral("The file could not be written."),
+                        QMessageBox::Save | QMessageBox::Cancel);
+        box.show();
+        QApplication::processEvents();
+        check(box.windowFlags() & Qt::FramelessWindowHint, "popup look: a message box has no title bar");
+        auto *cap = box.findChild<QLabel *>(QStringLiteral("popupCaption"));
+        check(cap && cap->text() == QLatin1String("SAVE FAILED"), "popup look: the title is the caption");
+        check(box.button(QMessageBox::Cancel) && box.button(QMessageBox::Cancel)->isVisible(),
+              "popup look: the buttons are still there to close it");
+        if (!qEnvironmentVariableIsEmpty("POPUP_SHOT"))
+            box.grab().save(QString::fromLocal8Bit(qgetenv("POPUP_SHOT")) + QStringLiteral("-box.png"));
+        box.close();
+
+        QInputDialog in;
+        in.setWindowTitle(QStringLiteral("New design"));
+        in.setLabelText(QStringLiteral("Stock width (mm)"));
+        in.setInputMode(QInputDialog::DoubleInput);
+        in.show();
+        QApplication::processEvents();
+        check(in.windowFlags() & Qt::FramelessWindowHint, "popup look: an input box has no title bar");
+        if (!qEnvironmentVariableIsEmpty("POPUP_SHOT"))
+            in.grab().save(QString::fromLocal8Bit(qgetenv("POPUP_SHOT")) + QStringLiteral("-input.png"));
+        in.close();
+
+        QDialog bare;
+        bare.setWindowTitle(QStringLiteral("Nothing to press"));
+        bare.show();
+        QApplication::processEvents();
+        auto *x = bare.findChild<QToolButton *>(QStringLiteral("popupClose"));
+        check((bare.windowFlags() & Qt::FramelessWindowHint) && x && x->isVisible()
+                  && x->geometry().right() <= bare.width() && x->x() > bare.width() / 2,
+              "popup look: a popup without a button gets an X in its top right corner");
+        if (x)
+            x->click();
+        QApplication::processEvents();
+        check(!bare.isVisible(), "popup look: and the X closes it");
     }
 
     std::printf("test_uifixes: %d checks OK\n", g_checks);

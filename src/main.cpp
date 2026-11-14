@@ -3,6 +3,7 @@
 #include "phobiversion.h"
 #include "cccpfile.h"
 #include "shopdialog.h"
+#include "popuplook.h"
 #include "gamepadmapdialog.h"
 #include "toollibrary.h"
 #include "toollibrarydialog.h"
@@ -714,6 +715,7 @@ int main(int argc, char *argv[])
             }
     app.installEventFilter(new FileDialogIcons(&app));
     app.installEventFilter(new TouchHold(&app));
+    c2d::installPopupLook(app);
     QObject::connect(&app, &QApplication::focusChanged, &app,
                      [](QWidget *, QWidget *now) { keepUnitOutOfSelection(now); });
 #ifdef Q_OS_ANDROID

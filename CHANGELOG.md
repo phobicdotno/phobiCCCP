@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.59 (build 149) — 2026-11-14
+
+> Every popup now looks like the "Start running program" question.
+
+- **Popups:** messages, questions, input boxes and the app's own dialogs have no title bar or X any more: a dark card with an amber edge, the title as a small caption, and big buttons. Close them with their own OK, Cancel or Close button (or Esc); a popup with no button gets a big X in the top right corner. File open and save windows keep their title bar.
+
 ## v1.3.58 (build 148) — 2026-11-14
 
 > Xbox 360 controller support, and the rest of the bug check: faster with big designs, a correct unsaved mark, and a handful of machine and import fixes.
