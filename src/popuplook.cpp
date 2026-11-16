@@ -53,7 +53,14 @@ void applyPopupLook(QDialog *dlg)
     // Nothing to press: it gets a big X of its own in the top right corner.
     const bool needsX = dlg->findChildren<QAbstractButton *>().isEmpty();
 
-    dlg->setWindowFlag(Qt::FramelessWindowHint, true);
+    // Not setWindowFlag(): that re-parents the dialog in the middle of show(),
+    // and on Qt 6.4 (the CNC PC) the dialog then never hides again, so its
+    // buttons and the X did nothing. Before the window exists, the flags can
+    // simply be set; it is created with them.
+    if (dlg->testAttribute(Qt::WA_WState_Created))
+        dlg->setWindowFlag(Qt::FramelessWindowHint, true);
+    else
+        dlg->overrideWindowFlags(dlg->windowFlags() | Qt::FramelessWindowHint);
     dlg->setAttribute(Qt::WA_StyledBackground);
     if (auto *box = qobject_cast<QMessageBox *>(dlg))
         box->setIcon(QMessageBox::NoIcon);

@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.60 (build 150) — 2026-11-16
+
+- **Popups:** the buttons and the big X close the popup again on the CNC PC.
+
 ## v1.3.59 (build 149) — 2026-11-14
 
 > Every popup now looks like the "Start running program" question.

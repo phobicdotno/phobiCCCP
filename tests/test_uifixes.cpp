@@ -32,6 +32,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QWindow>
 
 #include <cmath>
 #include <cstdio>
@@ -404,6 +405,18 @@ int main(int argc, char *argv[])
             x->click();
         QApplication::processEvents();
         check(!bare.isVisible(), "popup look: and the X closes it");
+
+        // The window itself is made without a frame, and a box closes from
+        // its buttons the first time it is shown (Qt 6.4 kept it open).
+        QMessageBox again(QMessageBox::Question, QStringLiteral("Close?"), QStringLiteral("Really?"),
+                          QMessageBox::Yes | QMessageBox::No);
+        again.show();
+        QApplication::processEvents();
+        check(again.windowHandle() && (again.windowHandle()->flags() & Qt::FramelessWindowHint),
+              "popup look: the window is made without a title bar");
+        again.button(QMessageBox::No)->click();
+        QApplication::processEvents();
+        check(!again.isVisible(), "popup look: a button closes the box the first time");
     }
 
     std::printf("test_uifixes: %d checks OK\n", g_checks);
