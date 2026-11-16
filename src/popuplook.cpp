@@ -9,6 +9,7 @@
 #include <QLayout>
 #include <QMessageBox>
 #include <QToolButton>
+#include <QWindow>
 
 namespace c2d {
 
@@ -55,12 +56,11 @@ void applyPopupLook(QDialog *dlg)
 
     // Not setWindowFlag(): that re-parents the dialog in the middle of show(),
     // and on Qt 6.4 (the CNC PC) the dialog then never hides again, so its
-    // buttons and the X did nothing. Before the window exists, the flags can
-    // simply be set; it is created with them.
-    if (dlg->testAttribute(Qt::WA_WState_Created))
-        dlg->setWindowFlag(Qt::FramelessWindowHint, true);
-    else
-        dlg->overrideWindowFlags(dlg->windowFlags() | Qt::FramelessWindowHint);
+    // buttons and the X did nothing. Set the flags directly, and on the
+    // native window too when Qt has already made it.
+    dlg->overrideWindowFlags(dlg->windowFlags() | Qt::FramelessWindowHint);
+    if (QWindow *w = dlg->windowHandle())
+        w->setFlags(dlg->windowFlags());
     dlg->setAttribute(Qt::WA_StyledBackground);
     if (auto *box = qobject_cast<QMessageBox *>(dlg))
         box->setIcon(QMessageBox::NoIcon);

@@ -2,6 +2,8 @@
 
 ## v1.3.60 (build 150) — 2026-11-16
 
+> Popups close again on the CNC PC.
+
 - **Popups:** the buttons and the big X close the popup again on the CNC PC.
 
 ## v1.3.59 (build 149) — 2026-11-14
