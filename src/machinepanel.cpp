@@ -19,6 +19,8 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QDialog>
+#include <QDialogButtonBox>
+#include <QPoint>
 #include <QFileInfo>
 #include <QFile>
 #include <QDir>
@@ -815,6 +817,12 @@ MachinePanel::MachinePanel(QWidget *parent)
         "Raise to safe Z and rapid to the front-right corner, where bits are "
         "changed. Initialize does this after homing."));
     connect(parkBtn, &QPushButton::clicked, this, [this] { park(); });
+    auto *quickBtn = bigBtn(new QPushButton(QStringLiteral("Quick move…"), body), 44);
+    quickBtn->setToolTip(QStringLiteral(
+        "Pick one of 25 spots over the table: the head goes all the way up "
+        "(if it is not already), then straight there. The outer spots are the "
+        "ends of the travel."));
+    connect(quickBtn, &QPushButton::clicked, this, [this] { openQuickMove(); });
     auto *unlockBtn = bigBtn(new QPushButton(QStringLiteral("Unlock"), body), 44);
     unlockBtn->setToolTip(QStringLiteral("Clear alarm lock ($X)"));
     connect(unlockBtn, &QPushButton::clicked, this, [this] { unlock(); });
@@ -826,9 +834,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         "Dry run before cutting: the spindle (off) traces the outer rectangle of "
         "the job 50 mm above the work zero, so you can check the stock and the zero."));
     connect(hoverBtn, &QPushButton::clicked, this, [this] { hoverDryRun(); });
-    m_idleOnly << homeBtn << parkBtn << unlockBtn << bsBtn << hoverBtn;
+    m_idleOnly << homeBtn << parkBtn << quickBtn << unlockBtn << bsBtn << hoverBtn;
     foot->addWidget(homeBtn);
     foot->addWidget(parkBtn);
+    foot->addWidget(quickBtn);
     foot->addWidget(hoverBtn);
     foot->addWidget(unlockBtn);
     foot->addWidget(bsBtn);
@@ -3745,6 +3754,116 @@ void MachinePanel::goToXY0()
     m_grbl->startMacro({QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
                         QStringLiteral("G0 X0 Y0")});
+}
+
+// ---- Quick move -------------------------------------------------------------
+
+// Machine X0 is the RIGHT end and Y0 the BACK (homed towards + on all axes).
+// The outer ring sits where the jog limits stop: just off the switches, and
+// 1 mm short of the far end stops. The travel is the smaller of the
+// controller's ($130/$131) and the machine picked in Settings, as for Park.
+void MachinePanel::quickMoveSpot(int col, int row, double &x, double &y) const
+{
+    QSettings st;
+    const auto machine = appsettings::machine(st);
+    const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
+    const double ty = qMin(machine.height, m_grbl->setting(131, machine.height));
+    constexpr double kEdge = 1.0;
+    const double clear = switchClearance();
+    const double right = -clear, left = -(tx - kEdge);
+    const double back = -clear, front = -(ty - kEdge);
+    col = qBound(0, col, 4);
+    row = qBound(0, row, 4);
+    x = left + (right - left) * col / 4.0;
+    y = back + (front - back) * row / 4.0;
+}
+
+void MachinePanel::openQuickMove()
+{
+    if (jobWindingDown(QStringLiteral("Quick move")))
+        return;
+    if (needsInit())
+        return;
+    if (!requireHomed(QStringLiteral("Quick move")))
+        return;
+
+    // A plain dialog: the app-wide popup look gives it the amber card, the
+    // caption and the big X like every other popup.
+    QDialog dlg(this);
+    dlg.setObjectName(QStringLiteral("quickMove"));
+    dlg.setWindowTitle(QStringLiteral("Quick move"));
+    auto *lay = new QVBoxLayout(&dlg);
+    auto *hint = new QLabel(QStringLiteral("Back of the machine at the top. The head goes "
+                                           "all the way up first, then straight to the spot."),
+                            &dlg);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color: #c5cad3; font-size: 15px;"));
+    lay->addWidget(hint);
+    QPoint pick(-1, -1);
+    auto *grid = new QGridLayout;
+    grid->setSpacing(8);
+    static const char *const rows[] = {"Back", "", "Middle", "", "Front"};
+    static const char *const cols[] = {"left", "", "centre", "", "right"};
+    for (int r = 0; r < 5; ++r)
+        for (int c = 0; c < 5; ++c) {
+            QString name;
+            if (r == 2 && c == 2)
+                name = QStringLiteral("Centre");
+            else if (*rows[r] && *cols[c])
+                name = QStringLiteral("%1 %2").arg(QLatin1String(rows[r]), QLatin1String(cols[c]));
+            double x = 0, y = 0;
+            quickMoveSpot(c, r, x, y);
+            auto *b = new QPushButton(name.isEmpty() ? QStringLiteral("·") : name, &dlg);
+            b->setObjectName(QStringLiteral("quickSpot"));
+            b->setProperty("col", c);
+            b->setProperty("row", r);
+            b->setToolTip(QStringLiteral("X%1 Y%2 (machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
+            b->setMinimumSize(150, 80);
+            b->setFocusPolicy(Qt::NoFocus);
+            const bool outer = r == 0 || r == 4 || c == 0 || c == 4;
+            b->setStyleSheet(QStringLiteral(
+                "QPushButton { font-size: 16px; border-radius: 12px; color: #e6e9ef; "
+                "  background: %1; border: 1px solid #3a404b; }"
+                "QPushButton:pressed { background: #f2a536; color: #1a1a1a; }")
+                                 .arg(outer ? QStringLiteral("#2a2e36") : QStringLiteral("#232730")));
+            connect(b, &QPushButton::clicked, &dlg, [&dlg, &pick, c, r] {
+                pick = QPoint(c, r);
+                dlg.accept();
+            });
+            grid->addWidget(b, r, c);
+        }
+    lay->addLayout(grid);
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Cancel, &dlg);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(bb);
+    if (dlg.exec() == QDialog::Accepted && pick.x() >= 0)
+        quickMoveTo(pick.x(), pick.y());
+}
+
+void MachinePanel::quickMoveTo(int col, int row)
+{
+    if (jobWindingDown(QStringLiteral("Quick move")))
+        return;
+    if (!m_grbl->canSendCommand()) {
+        log(QStringLiteral("!! busy — cannot move now"));
+        return;
+    }
+    if (needsInit())
+        return;
+    if (!requireHomed(QStringLiteral("Quick move")))
+        return;
+    if (movingStill(QStringLiteral("Quick move")))
+        return;
+    double x = 0, y = 0;
+    quickMoveSpot(col, row, x, y);
+    // Up means the top of Z: just under the switch, out of its trigger zone.
+    const double top = -switchClearance();
+    QStringList macro{QStringLiteral("G90")};
+    if (m_grbl->status().mz < top - 0.05)
+        macro << QStringLiteral("G53 G0 Z%1").arg(top, 0, 'f', 3);
+    macro << QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3);
+    log(QStringLiteral("quick move to X%1 Y%2 (machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
+    m_grbl->startMacro(macro);
 }
 
 // ---- BitSetter / tool change -------------------------------------------------

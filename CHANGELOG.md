@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.61 (build 151) — 2026-11-18
+
+> Quick move: one tap sends the head to any of 25 spots over the table.
+
+- **Quick move:** a new button beside Park opens a popup with 25 spots in a 5 × 5 grid, back of the machine at the top. Tap one and the head goes all the way up (if it isn't already), then straight there. The outer spots are the very ends of the travel.
+
 ## v1.3.60 (build 150) — 2026-11-16
 
 > Popups close again on the CNC PC.

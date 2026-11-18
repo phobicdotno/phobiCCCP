@@ -655,6 +655,39 @@ int main(int argc, char **argv)
         check(moves == 3, "safez: park, tool park and X0 Y0 each rise");
     }
 
+    if (mode == "quickmove") {
+        // The 5 x 5 grid: the outer ring at the jog limits, the centre in the
+        // middle; the head goes all the way up first, and only when it is not.
+        double x0 = 0, y0 = 0, x4 = 0, y4 = 0, xc = 0, yc = 0;
+        panel.quickMoveSpot(0, 0, x0, y0);
+        panel.quickMoveSpot(4, 4, x4, y4);
+        panel.quickMoveSpot(2, 2, xc, yc);
+        const double top = -panel.switchClearance();
+        check(std::abs(x4 - top) < 1e-9 && std::abs(y0 - top) < 1e-9,
+              "quickmove: right and back are just off the switches");
+        check(x0 < x4 && y4 < y0, "quickmove: left and front are the far ends");
+        check(std::abs(xc - (x0 + x4) / 2) < 1e-9 && std::abs(yc - (y0 + y4) / 2) < 1e-9,
+              "quickmove: the centre is in the middle");
+        grbl.events.clear();
+        panel.quickMoveTo(0, 4);
+        wait(600);
+        const int iz = grbl.indexOf("G53 G0 Z", 0), ixy = grbl.indexOf("G53 G0 X", 0);
+        check(iz >= 0 && ixy > iz, "quickmove: up first, then across");
+        if (iz >= 0)
+            check(std::abs(grbl.events[iz].mid(8).toDouble() - top) < 1e-6, "quickmove: up is the top");
+        check(ixy >= 0 && grbl.events[ixy].contains(QByteArray::number(x0, 'f', 3))
+                  && grbl.events[ixy].contains(QByteArray::number(y4, 'f', 3)),
+              "quickmove: front left is the far corner");
+        // Already up: straight across, no Z move.
+        grbl.mz = top;
+        wait(800);
+        grbl.events.clear();
+        panel.quickMoveTo(2, 2);
+        wait(600);
+        check(grbl.count("G53 G0 Z") == 0, "quickmove: no Z move when already up");
+        check(grbl.count("G53 G0 X") == 1, "quickmove: the move goes out");
+    }
+
     if (mode == "descend") {
         // Safe Z set to machine Z -30; the machine stands higher, at -10
         // (a tall board: the job's retract height is above -30).

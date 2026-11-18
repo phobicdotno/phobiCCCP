@@ -273,6 +273,11 @@ private:
     void park(bool afterHoming = false);   // safe Z, then the tool-change XY
     void hoverDryRun();   // trace the job outline 50 mm up, spindle off
     void parkSpot(double &x, double &y) const;   // where Park goes (machine)
+    // Quick move: a 5 x 5 grid over the whole table, the outer ring at the
+    // ends of the travel. col 0 = left .. 4 = right, row 0 = back .. 4 = front.
+    void quickMoveSpot(int col, int row, double &x, double &y) const;
+    void openQuickMove();
+    void quickMoveTo(int col, int row);   // all the way up if not up, then there
     QStringList endOfJobMoves();          // a finished job: top, park spot, M5
     bool m_parkAfterHome = false;
     bool m_sawHoming = false;
