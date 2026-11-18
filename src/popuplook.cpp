@@ -4,10 +4,13 @@
 #include <QApplication>
 #include <QDialog>
 #include <QEvent>
+#include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QFontMetrics>
 #include <QLabel>
 #include <QLayout>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QToolButton>
 #include <QWindow>
 
@@ -16,6 +19,30 @@ namespace c2d {
 namespace {
 
 const char *kDone = "phobicPopupLook";
+
+// The default button is bold, but Qt sizes the buttons from the plain font,
+// so a long label ("Close without Saving") was cut off at both ends. Make
+// every button wide enough for its label in bold.
+void fitButtons(QDialog *dlg)
+{
+    if (!dlg->property(kDone).toBool())
+        return;
+    for (auto *box : dlg->findChildren<QDialogButtonBox *>()) {
+        for (QAbstractButton *b : box->buttons()) {
+            auto *btn = qobject_cast<QPushButton *>(b);
+            if (!btn)
+                continue;
+            btn->ensurePolished();
+            QFont f = btn->font();
+            f.setBold(true);
+            QString text = btn->text();
+            text.remove(QLatin1Char('&'));
+            const int need = QFontMetrics(f).horizontalAdvance(text) + 2 * 20 + 16;
+            if (btn->minimumWidth() < need)
+                btn->setMinimumWidth(need);
+        }
+    }
+}
 
 class PopupLook : public QObject
 {
@@ -28,6 +55,9 @@ public:
         if (e->type() == QEvent::Polish) {
             if (auto *dlg = qobject_cast<QDialog *>(o))
                 applyPopupLook(dlg);
+        } else if (e->type() == QEvent::Show) {
+            if (auto *dlg = qobject_cast<QDialog *>(o))
+                fitButtons(dlg);
         } else if (e->type() == QEvent::Resize) {
             // The X stays in the corner.
             if (auto *dlg = qobject_cast<QDialog *>(o))
@@ -119,6 +149,8 @@ void applyPopupLook(QDialog *dlg)
             cap->show();
         }
     }
+    // Polish comes before Qt sizes the dialog, so the wider buttons count.
+    fitButtons(dlg);
 }
 
 void installPopupLook(QApplication &app)

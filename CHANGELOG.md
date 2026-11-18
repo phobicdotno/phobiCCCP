@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.3.62 (build 152) — 2026-11-18
+
+> Popup buttons no longer cut off their text.
+
+- **Popups:** long button labels like "Close without Saving" fit their button again instead of being cut off at both ends.
+
 ## v1.3.61 (build 151) — 2026-11-18
 
 > Quick move: one tap sends the head to any of 25 spots over the table.

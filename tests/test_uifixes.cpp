@@ -27,6 +27,8 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
+#include <QAbstractButton>
+#include <QFontMetrics>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -417,6 +419,29 @@ int main(int argc, char *argv[])
         again.button(QMessageBox::No)->click();
         QApplication::processEvents();
         check(!again.isVisible(), "popup look: a button closes the box the first time");
+
+        // The bold default button was sized from the plain font, so a long
+        // label ("Close without Saving") was cut off at both ends.
+        QMessageBox unsaved(QMessageBox::Warning, QStringLiteral("Unsaved changes"),
+                            QStringLiteral("a.c2d has unsaved changes.\n\nSave before opening another file?"),
+                            QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+        unsaved.setDefaultButton(QMessageBox::Discard);
+        unsaved.button(QMessageBox::Discard)->setText(QStringLiteral("Close without Saving")); // GNOME's label
+        unsaved.show();
+        QApplication::processEvents();
+        bool fits = true;
+        for (QAbstractButton *b : unsaved.buttons()) {
+            QFont f = b->font();
+            f.setBold(true);
+            QString t = b->text();
+            t.remove(QLatin1Char('&'));
+            if (b->width() < QFontMetrics(f).horizontalAdvance(t) + 40)
+                fits = false;
+        }
+        check(fits, "popup look: every button label fits in bold");
+        if (!qEnvironmentVariableIsEmpty("POPUP_SHOT"))
+            unsaved.grab().save(QString::fromLocal8Bit(qgetenv("POPUP_SHOT")) + QStringLiteral("-unsaved.png"));
+        unsaved.close();
     }
 
     std::printf("test_uifixes: %d checks OK\n", g_checks);
