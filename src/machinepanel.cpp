@@ -1268,7 +1268,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         // the port opens and was still booting when the first $$ went out.
         // Ask again, or the jog limits, park spot and $21 fall back to
         // defaults for the whole session.
-        if (l.startsWith(QLatin1String("Grbl "))) {
+        if (l.startsWith(QLatin1String("Grbl ")) || l.startsWith(QLatin1String("GrblHAL "))) {
             // Nothing from before the reset moves the machine after it.
             ++m_resets;
             m_onIdle = nullptr;

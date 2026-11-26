@@ -53,6 +53,9 @@ struct FakeGrbl {
     bool positional = false;
     bool noBanner = false;    // a reset answered without its "Grbl" banner
     bool door = false;        // the door is open: Door:0, cycle start ignored
+    // The next `~` is ignored (GRBL still slowing into the hold) and a Run
+    // report made before the `!` arrives just after it.
+    bool staleOnResume = false;
     // While set, oks are held back (counted) until releaseAcks().
     bool deferAcks = false;
     int deferred = 0;
@@ -105,6 +108,9 @@ struct FakeGrbl {
                           : "<Run|MPos:0.000,0.000,0.000|FS:500,18000|Ov:120,100,90>\r\n");
             } else if (c == '!') {
                 held = true;
+            } else if (c == '~' && staleOnResume) {
+                staleOnResume = false;
+                send("<Run|MPos:0.000,0.000,0.000|FS:500,18000>\r\n");
             } else if (c == '~') {
                 if (!door)
                     held = false;            // cycle start: out of the hold
@@ -646,6 +652,28 @@ int main(int argc, char **argv)
         spin(2000, [&] { return parks.size() == 1; });
         check(parks.size() == 1 && parks.at(0) == 6 && !s.isFeedHeld(),
               "door: once it reports running, the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
+
+        // A `~` sent while GRBL is still slowing into the hold is ignored,
+        // and a report made before the `!` (Run) arrives after it: that
+        // report must not end the hold.
+        parks.clear();
+        grbl.deferAcks = true;
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T7"),
+                       QStringLiteral("G0Z5")});
+        grbl.staleOnResume = true;
+        s.pauseStream();
+        check(s.resumeStream(), "stale report: the resume goes out");
+        spin(100, [] { return false; });
+        grbl.releaseAcks();
+        spin(1200, [] { return false; });
+        check(parks.isEmpty() && s.isFeedHeld(),
+              "stale report: a Run report made before the ~ does not cross the tool marker");
+        grbl.held = false;                   // a second Resume, taken
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 7 && !s.isFeedHeld(),
+              "stale report: once it reports running again, the tool change follows");
         s.stopStream();
         spin(300, [] { return false; });
 

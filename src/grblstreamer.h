@@ -275,6 +275,7 @@ private:
     bool m_feedHeldSeen = false;                // a report showed Hold since the `!`
     bool m_feedHeldNoted = false;               // "tool change waits" logged once
     bool m_feedResumeSent = false;              // `~` written since the hold began
+    int m_feedResumeSkip = 0;                   // reports made before the `~` to ignore
     QElapsedTimer m_feedHeldClock;
     int m_holdAt = 0;                           // queue index of its first line
     int m_toolChanges = 0;                      // markers parked at in this program

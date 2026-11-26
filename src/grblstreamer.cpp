@@ -242,8 +242,12 @@ void GrblStreamer::sendRealtime(char c)
 // (a `!` and `~` within one poll), without waiting out the 2 s rule.
 void GrblStreamer::noteCycleStart()
 {
-    if (m_feedHeld)
+    if (m_feedHeld) {
         m_feedResumeSent = true;
+        // A report already on its way was made before the `~` (maybe even
+        // before the `!` took): it must not end the hold. Trust the next.
+        m_feedResumeSkip = 1;
+    }
 }
 
 // A feed hold only stops motion: GRBL keeps answering the lines it is
@@ -262,6 +266,7 @@ void GrblStreamer::noteFeedHold(bool held)
         m_feedHeldSeen = false;
         m_feedHeldNoted = false;
         m_feedResumeSent = false;
+        m_feedResumeSkip = 0;
         m_feedHeldClock.start();
         return;
     }
@@ -1094,10 +1099,14 @@ void GrblStreamer::handleLine(const QByteArray &line)
         const bool holdState = st.state.startsWith(QLatin1String("Hold"))
                                || st.state.startsWith(QLatin1String("Door"));
         if (m_feedHeld) {
+            const bool stale = m_feedResumeSkip > 0;
+            if (m_feedResumeSkip > 0 && !st.state.isEmpty())
+                --m_feedResumeSkip;
             if (holdState)
                 m_feedHeldSeen = true;
             else if (!st.state.isEmpty()
-                     && (m_feedHeldSeen || m_feedResumeSent || m_feedHeldClock.elapsed() > 2000))
+                     && (m_feedHeldSeen || (m_feedResumeSent && !stale)
+                         || m_feedHeldClock.elapsed() > 2000))
                 noteFeedHold(false);
         } else if (m_streaming && holdState) {
             // Held by something other than our `!`: the machine's hold

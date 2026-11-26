@@ -1241,7 +1241,8 @@ int main(int argc, char *argv[])
                 travelX = l.mid(5).toDouble();
             else if (l.startsWith(QLatin1String("$131=")))
                 travelY = l.mid(5).toDouble();
-            else if (l.startsWith(QLatin1String("Grbl ")) && phase >= 3) {
+            else if ((l.startsWith(QLatin1String("Grbl ")) || l.startsWith(QLatin1String("GrblHAL ")))
+                     && phase >= 3) {
                 qWarning().noquote() << "controller RESET mid-program — aborting";
                 grbl.stopStream();
                 grbl.disconnectPort();
