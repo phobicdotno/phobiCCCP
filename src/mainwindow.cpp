@@ -36,6 +36,7 @@
 #include "importui.h"
 #include "setupsheet.h"
 #include "dxfexport.h"
+#include "boxdialog.h"
 #include <QDesktopServices>
 #include <QUrl>
 
@@ -860,6 +861,17 @@ MainWindow::MainWindow(QWidget *parent)
         m_canvas->deleteSelected();
     });
     delAct->setToolTip(QStringLiteral("Delete the selected vectors  (Delete)"));
+
+    // Create: generators that draw ready-made parts as plain vectors.
+    auto *createMenu = m_menuBar->addMenu(QStringLiteral("&Create"));
+    QAction *boxAct = createMenu->addAction(QStringLiteral("&Box with Finger Joints…"), this, [this] {
+        if (!hasDocument())
+            return;
+        runBoxDialog(this, m_canvas, m_doc.params().value("thickness").toDouble(),
+                     m_doc.params().value("width").toDouble());
+    });
+    boxAct->setToolTip(QStringLiteral(
+        "Draw the flat parts of a finger-jointed box on the stock: bottom, sides, ends and a lid"));
 
     // View > Full Screen: the window covers the whole display, panel and all.
     // Remembered, so the shop PC comes back up the way it was left.

@@ -1042,6 +1042,19 @@ void Canvas::insertGenerated(const QVector<Element> &els, const Toolpath &tp)
     m_undo->push(new InsertGeneratedCmd(this, m_doc, els, tp));
 }
 
+void Canvas::addElements(const QVector<Element> &els, const QString &what)
+{
+    if (!m_doc || els.isEmpty())
+        return;
+    auto *cmd = new AddManyCmd(this, m_doc, els);
+    cmd->setText(what);
+    QStringList ids;
+    for (const Element &e : els)
+        ids << e.id;
+    pushEdit(cmd, ids);
+    selectElements(ids);
+}
+
 // Exactly one selected, parametrically resizable element? Handle sits at the
 // east point (circle/polygon) or the top-right corner (rectangle; of the
 // rectangle as turned by its rotation).

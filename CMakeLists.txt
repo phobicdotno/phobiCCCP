@@ -127,6 +127,7 @@ add_library(phobicccp_ui STATIC
     src/projectreceiver.cpp
     src/sendtopaddialog.cpp
     src/sendtodialog.cpp
+    src/boxgen.cpp src/boxdialog.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -374,6 +375,9 @@ if(Qt6Test_FOUND)
     add_executable(test_chipload tests/test_chipload.cpp)
     target_link_libraries(test_chipload PRIVATE phobicccp_ui)
     add_test(NAME chipload COMMAND test_chipload)
+    add_executable(test_boxgen tests/test_boxgen.cpp)
+    target_link_libraries(test_boxgen PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME boxgen COMMAND test_boxgen)
     add_executable(test_padmachinemodal tests/test_padmachinemodal.cpp)
     target_link_libraries(test_padmachinemodal PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padmachinemodal COMMAND test_padmachinemodal)

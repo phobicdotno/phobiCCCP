@@ -96,6 +96,9 @@ public:
     // Insert generated elements plus a new toolpath in one shot (inlay male
     // generator), as one undo step.
     void insertGenerated(const QVector<Element> &els, const Toolpath &tp);
+    // Add new elements (a generator's parts) as one undo step named `what`,
+    // and select them.
+    void addElements(const QVector<Element> &els, const QString &what);
     QStringList selectedElementIds() const;
     Document *document() const { return m_doc; }
     void selectIds(const QStringList &ids);   // replace the selection (vector ops)
