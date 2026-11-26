@@ -4185,11 +4185,15 @@ void MachinePanel::updateSpindleButtons()
 {
     if (!m_rpmSpin)
         return;
-    if (!m_rpmRangeSet && m_grbl->haveSettings()) {
+    // Again whenever $30 / $31 change (Controller settings), keeping a
+    // speed that is still inside.
+    const int hi = m_grbl->haveSettings() ? int(spindleMaxRpm()) : 0;
+    const int lo = qBound(0, int(m_grbl->setting(31, 0)), hi);
+    if (m_grbl->haveSettings()
+        && (!m_rpmRangeSet || m_rpmSpin->minimum() != lo || m_rpmSpin->maximum() != hi)) {
+        const bool first = !m_rpmRangeSet;
         m_rpmRangeSet = true;
-        const int hi = int(spindleMaxRpm());
-        const int lo = qBound(0, int(m_grbl->setting(31, 0)), hi);
-        const bool atDefault = m_rpmSpin->value() == 10000
+        const bool atDefault = (first && m_rpmSpin->value() == 10000)
                                || m_rpmSpin->value() > hi || m_rpmSpin->value() < lo;
         m_rpmSpin->setRange(lo, hi);
         if (atDefault)
@@ -4372,6 +4376,17 @@ void MachinePanel::openControllerSettings()
         if (!no.isEmpty()) {
             shopTell(&dlg, QStringLiteral("Controller settings"), QStringLiteral("Not sent"), no);
             return;
+        }
+        // Hard limits are kept on: a $21=0 would be set back to 1 at the
+        // next listing, so it is not sent at all.
+        for (const QString &l : lines) {
+            const QString t = QString(l).remove(QLatin1Char(' '));
+            if (t.startsWith(QLatin1String("$21=")) && t.mid(4).toDouble() == 0) {
+                shopTell(&dlg, QStringLiteral("Controller settings"), QStringLiteral("Not sent"),
+                         QStringLiteral("Hard limits ($21) stay on in this program: an end stop must "
+                                        "stop the machine. Leave $21 at 1 and send again."));
+                return;
+            }
         }
         for (const QString &l : lines)
             log(QStringLiteral("setting %1").arg(l));

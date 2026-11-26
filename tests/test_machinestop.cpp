@@ -1940,6 +1940,23 @@ int main(int argc, char **argv)
               "holecentre: the pin ends over the centre");
     }
 
+    if (mode == "rpmrange") {
+        // $30 raised in Controller settings: the next listing widens the
+        // manual speed box without a reconnect, the speed picked stays.
+        grbl.travel += "$30=12000.000\r\n$31=0.000\r\n";
+        panel.sendTyped(QStringLiteral("$$"));
+        spin(3000, [&] { return panel.m_rpmSpin->maximum() == 12000; });
+        panel.m_rpmSpin->setValue(9000);
+        grbl.travel.replace("$30=12000.000", "$30=24000.000");
+        panel.sendTyped(QStringLiteral("$$"));
+        spin(3000, [&] { return panel.m_rpmSpin->maximum() == 24000; });
+        wait(300);
+        std::printf("rpm range %d..%d, value %d\n", panel.m_rpmSpin->minimum(),
+                    panel.m_rpmSpin->maximum(), panel.m_rpmSpin->value());
+        check(panel.m_rpmSpin->maximum() == 24000, "rpmrange: the new $30 is the top");
+        check(panel.m_rpmSpin->value() == 9000, "rpmrange: the speed picked stays");
+    }
+
     if (mode == "holetight") {
         // A 3 mm pin in a 4 mm hole has 1 mm to move: the 2 mm back-off
         // would rapid it into the far wall. Refused before any motion.
