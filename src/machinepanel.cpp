@@ -5996,19 +5996,31 @@ void MachinePanel::saveResumePoint(int acked)
 {
     if (m_runPath.isEmpty() || !m_jobView || !m_grbl->isStreaming())
         return;
-    const int sec = m_jobView->running();
-    if (sec < 0 || sec >= m_jobView->plan().sections.size()
-        || m_jobView->plan().sections.at(sec).kind != JobSection::Toolpath)
+    // An answered line is only planned, not cut: the controller's planner
+    // still holds up to 16 moves (GRBL 1.1), 35 by default on grblHAL. Save
+    // the step of the line that far behind, so a resume repeats a little
+    // rather than skips a cut.
+    constexpr int kNotYetCut = 35;
+    const int q = acked - kNotYetCut;
+    const QVector<JobSection> &secs = m_jobView->plan().sections;
+    int sec = -1, pass = -1;
+    for (int i = 0; i < secs.size() && sec < 0; ++i)
+        if (q >= secs.at(i).qStart && q < secs.at(i).qEnd)
+            sec = i;
+    if (sec < 0 || secs.at(sec).kind != JobSection::Toolpath)
         return;
+    for (int k = 0; k < secs.at(sec).passes.size() && pass < 0; ++k)
+        if (q >= secs.at(sec).passes.at(k).qStart && q < secs.at(sec).passes.at(k).qEnd)
+            pass = k;
     // On each new step, else at most every 2 s: every answered line would
     // be a disk write.
-    const bool moved = sec != m_resumeSavedSec || m_jobView->runningPass() != m_resumeSavedPass;
+    const bool moved = sec != m_resumeSavedSec || pass != m_resumeSavedPass;
     if (!moved && m_resumeSaveClock.isValid() && m_resumeSaveClock.elapsed() < 2000)
         return;
     m_resumeSaveClock.start();
     m_resumeSavedSec = sec;
-    m_resumeSavedPass = m_jobView->runningPass();
-    const StartFrom f = rowOf(sec, m_jobView->runningPass());
+    m_resumeSavedPass = pass;
+    const StartFrom f = rowOf(sec, pass);
     QSettings set;
     set.setValue(QStringLiteral("resume/path"), m_runPath);
     set.setValue(QStringLiteral("resume/hash"), m_runHash);

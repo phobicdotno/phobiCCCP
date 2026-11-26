@@ -1049,6 +1049,16 @@ int main(int argc, char **argv)
                   && set.value(QStringLiteral("resume/path")).toString() == file
                   && !set.value(QStringLiteral("resume/hash")).toString().isEmpty(),
               "continue: the step it stopped in is saved with the design and its hash");
+        // Saved only once the planner's worth of answered lines past its
+        // start: an answered line is planned, not yet cut.
+        int smallStart = -1;
+        for (const c2d::JobSection &sec : panel.m_jobView->plan().sections)
+            if (sec.kind == c2d::JobSection::Toolpath && sec.title() == QLatin1String("small"))
+                smallStart = sec.qStart;
+        std::printf("continue: small starts at %d, saved at %d answered\n", smallStart,
+                    set.value(QStringLiteral("resume/acked")).toInt());
+        check(smallStart >= 0 && set.value(QStringLiteral("resume/acked")).toInt() >= smallStart + 35,
+              "continue: the step is saved from lines the machine has cut, not just answered");
         // Opened again later, homed again.
         panel.setDocument(&doc);
         panel.m_homed = true;
