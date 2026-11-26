@@ -1938,6 +1938,9 @@ int main(int argc, char **argv)
               "holecentre: diameter is the hole's, pin added back");
         check(std::abs(grbl.mx - grbl.hcx) < 0.01 && std::abs(grbl.my - grbl.hcy) < 0.01,
               "holecentre: the pin ends over the centre");
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Boss)->click();
+        check(panel.m_bzPanel->m_centreResult->text().isEmpty(),
+              "holecentre: the hole's result is not shown as the boss's");
     }
 
     if (mode == "rpmrange") {
@@ -1964,6 +1967,12 @@ int main(int argc, char **argv)
         panel.m_bzPanel->m_holeDia->setValue(4.0);
         panel.m_bzPanel->m_tipDia->setValue(3.0);
         panel.m_bzPanel->m_retract->setValue(2.0);
+        // The tip is the pin in the collet: changing plates leaves it alone.
+        panel.m_bzPanel->m_plates->button(1)->click();
+        panel.m_bzPanel->m_plates->button(0)->click();
+        check(std::abs(panel.m_bzPanel->m_tipDia->value() - 3.0) < 1e-9
+                  && std::abs(panel.m_bzPanel->config().toolDiameter - 3.0) < 1e-9,
+              "holetight: the tip stays 3 mm across a plate change");
         wait(600);
         grbl.events.clear();
         panel.bitZeroBegin();
