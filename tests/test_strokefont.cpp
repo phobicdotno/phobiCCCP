@@ -59,7 +59,7 @@ int main(int argc, char **argv)
                 glyphsOk = false;
             }
         }
-    const QString extra = QString::fromUtf8("ÆØÅæøåÄÖÜäöüéèß");
+    const QString extra = QString::fromUtf8("ÆØÅæøåÄÖÜäöüéèÉÈß");
     for (const QChar c : extra)
         for (const QString &fam : strokefont::families()) {
             double adv = 0;
