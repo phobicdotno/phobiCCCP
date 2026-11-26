@@ -16,6 +16,8 @@
 #include "post_grbl.h"
 #include "tiling.h"
 #include "ncprogram.h"
+#include "jobhistory.h"
+#include "machineprofiles.h"
 
 #include <QApplication>
 #include <QButtonGroup>
@@ -729,8 +731,12 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_backToDesignBtn->setVisible(false);
         connect(m_openNcBtn, &QPushButton::clicked, this, [this] { openProgramFile(); });
         connect(m_backToDesignBtn, &QPushButton::clicked, this, [this] { backToDesign(); });
+        auto *historyBtn = bigBtn(new QPushButton(QStringLiteral("History"), jobCard), 52);
+        historyBtn->setToolTip(QStringLiteral("The last jobs: when, how long, how they ended"));
+        connect(historyBtn, &QPushButton::clicked, this, [this] { jobhistory::showDialog(this); });
         fileRow->addWidget(m_openNcBtn);
         fileRow->addWidget(m_backToDesignBtn);
+        fileRow->addWidget(historyBtn);
         bv->addLayout(fileRow);
     }
     auto *runRow = new QHBoxLayout;
@@ -1424,6 +1430,14 @@ MachinePanel::MachinePanel(QWidget *parent)
         // own summary.
         const int stopCode = m_stopCode;
         m_stopCode = 0;
+        if (!rehearsal) {
+            recordJobEnd(ok ? QStringLiteral("finished")
+                         : m_hist.cancelled ? QStringLiteral("cancelled")
+                         : stopCode > 0 ? QStringLiteral("alarm")
+                         : stopCode < 0 ? QStringLiteral("error") : QStringLiteral("stopped"),
+                         stopCode > 0 ? stopCode : -stopCode);
+            jobhistory::chime(this);
+        }
         // It does not wait for OK: the machine still needs Initialize or
         // Unlock, and the serial line keeps being read.
         if (!ok && stopCode != 0 && !rehearsal) {
@@ -2683,6 +2697,7 @@ void MachinePanel::cancelJob()
         return;
     }
     m_endOfJobPending = false;   // cancelled: no end-of-job moves behind the hold
+    m_hist.cancelled = true;
     holdResetThen([this] {
         clearJob();
         log(QStringLiteral("job cancelled: spindle off, Z up to the top"));
@@ -2699,6 +2714,10 @@ void MachinePanel::cancelJob()
 
 void MachinePanel::clearJob()
 {
+    // A job that ends without its stream ending (cancelled from a hold
+    // after the last line went out) still gets its history line.
+    if (m_hist.active)
+        recordJobEnd(m_hist.cancelled ? QStringLiteral("cancelled") : QStringLiteral("stopped"), 0);
     m_endOfJobPending = false;
     m_jobTools.clear();
     m_progress->setRange(0, 1);
@@ -4061,6 +4080,9 @@ void MachinePanel::onToolChange(int tool, int ordinal)
     if (m_jobView)
         m_jobView->setParked(true);
     setJobRunning(false);
+    if (!m_rehearsal && m_hist.active)
+        ++m_hist.toolChanges;
+    jobhistory::chime(this);
     // Remember where the program stands: the resume returns here before
     // the program moves again (see continueAfterToolChange()).
     const MachineStatus st = m_grbl->status();
@@ -4713,6 +4735,20 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     m_progress->setFormat(QStringLiteral("%p%"));
     m_jobTools = toolChanges(ops);
     m_jobFromFile = fromFile;
+    {
+        QSettings ps;
+        m_hist = HistoryJob();
+        m_hist.active = true;
+        m_hist.job = fromFile ? QFileInfo(m_ncPath).fileName()
+                     : m_doc->filePath().isEmpty() ? QStringLiteral("Untitled")
+                                                   : QFileInfo(m_doc->filePath()).fileName();
+        if (air)
+            m_hist.job += QStringLiteral(" (air cut)");
+        m_hist.machine = machineprofiles::nameOf(ps, machineprofiles::activeId(ps));
+        m_hist.start = QDateTime::currentDateTime();
+        m_hist.estSec = computeStats(ops).timeSec;
+        m_hist.toolpaths = fromFile ? 0 : int(r.done.size());
+    }
     if (m_jobView) {
         const QString jobName = fromFile ? QStringLiteral("File: %1").arg(QFileInfo(m_ncPath).fileName())
                                 : m_doc->filePath().isEmpty()
@@ -4729,6 +4765,33 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     m_grbl->sendRealtime(char(0x99));   // spindle
     m_grbl->startStream(lines);
     return true;
+}
+
+// One line in the job history for the job that just ended; once per job.
+void MachinePanel::recordJobEnd(const QString &how, int code)
+{
+    if (!m_hist.active)
+        return;
+    m_hist.active = false;
+    const QDateTime end = QDateTime::currentDateTime();
+    const int max = m_progress->maximum();
+    const int pct = how == QLatin1String("finished") ? 100
+                    : max > 0 ? int(100.0 * m_progress->value() / max) : 0;
+    QJsonObject o;
+    o.insert(QStringLiteral("job"), m_hist.job);
+    o.insert(QStringLiteral("machine"), m_hist.machine);
+    o.insert(QStringLiteral("start"), m_hist.start.toString(Qt::ISODate));
+    o.insert(QStringLiteral("end"), how);
+    o.insert(QStringLiteral("finish"), end.toString(Qt::ISODate));
+    o.insert(QStringLiteral("estSec"), qRound(m_hist.estSec));
+    o.insert(QStringLiteral("realSec"), qRound(m_hist.start.msecsTo(end) / 1000.0));
+    o.insert(QStringLiteral("percent"), pct);
+    if (code != 0)
+        o.insert(QStringLiteral("code"), code);
+    o.insert(QStringLiteral("toolpaths"), m_hist.toolpaths);
+    o.insert(QStringLiteral("toolChanges"), m_hist.toolChanges);
+    if (!jobhistory::append(o))
+        log(QStringLiteral("!! could not write the job history (%1)").arg(jobhistory::filePath()));
 }
 
 bool MachinePanel::startFromRemote(QString *why)

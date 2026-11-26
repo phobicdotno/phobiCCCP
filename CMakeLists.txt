@@ -109,7 +109,7 @@ add_library(phobicccp_ui STATIC
     src/tooldiagram.cpp
     src/toolstrip.cpp
     src/machinepanel.cpp src/ncprogram.cpp
-    src/jobview.cpp
+    src/jobview.cpp src/jobhistory.cpp
     src/shopdialog.cpp
     src/grblcodes.cpp
     src/popuplook.cpp

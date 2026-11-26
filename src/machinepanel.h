@@ -6,6 +6,7 @@
 #include <QVector>
 #include <QHash>
 #include <QJsonObject>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QWidget>
@@ -168,6 +169,18 @@ private:
     QStringList m_ncLines;
     QVector<Op> m_ncOps;
     bool m_jobFromFile = false;          // the running job is a file: no design to name its bits
+    // The job history line written when the running job ends (jobhistory.h).
+    struct HistoryJob {
+        bool active = false;
+        bool cancelled = false;
+        QString job;
+        QString machine;
+        QDateTime start;
+        double estSec = 0;
+        int toolpaths = 0;
+        int toolChanges = 0;
+    } m_hist;
+    void recordJobEnd(const QString &how, int code);
     QPushButton *m_openNcBtn = nullptr, *m_backToDesignBtn = nullptr;
     void openProgramFile();               // the file dialog
     void refreshJobInfo();

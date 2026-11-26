@@ -13,6 +13,7 @@
 #include <QButtonGroup>
 #include <QAbstractButton>
 #include <QDialog>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -36,6 +37,7 @@
 #include "../src/element.h"
 #include "../src/gamepad.h"
 #include "../src/gcodeexport.h"
+#include "../src/jobhistory.h"
 #include "../src/toollibrary.h"
 #include "../src/toolstrip.h"
 #include "../src/surfacemap.h"
@@ -51,6 +53,7 @@
 #include <QButtonGroup>
 #include <QAbstractButton>
 #include <QDialog>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -331,6 +334,7 @@ int main(int argc, char **argv)
     QApplication::setOrganizationName(QStringLiteral("phobicccp-test"));
     QApplication::setApplicationName(QStringLiteral("test_machinestop_") + QString::fromLatin1(qgetenv("R4MODE")));
     QSettings().clear();
+    c2d::jobhistory::clear();
 
     // ---- which bit a tool change wants (no machine needed) ----------------
     c2d::Document doc;
@@ -1720,6 +1724,13 @@ int main(int argc, char **argv)
         }
         check(running == 0, "job ended early: no step of it still says running");
         check(!panel.m_jobView->m_tick->isActive(), "job ended early: the job clock stopped");
+        {
+            const QVector<QJsonObject> h = c2d::jobhistory::read();
+            const QString end = h.value(0).value("end").toString();
+            check(h.size() == 1, "job ended early: one line in the job history");
+            check(mode == "jobcancel" ? end == QLatin1String("cancelled") : end == QLatin1String("stopped"),
+                  qPrintable(QStringLiteral("job ended early: history says how it ended: %1").arg(end)));
+        }
         if (mode == "jobcancel") {
             // Cancel job resets the whole job: no list, no progress, the
             // card back on the toolpaths ticked now.
@@ -1859,6 +1870,23 @@ int main(int argc, char **argv)
         check(panel.m_progress->format() == QStringLiteral("✓ Finished"), "endpark: the job card says Finished");
         check(panel.statusJson().value("jobEnd").toString() == QLatin1String("finished"),
               "endpark: the pad is told the job finished");
+        {
+            // One history line, with what ran and how it ended.
+            const QVector<QJsonObject> h = c2d::jobhistory::read();
+            check(h.size() == 1, "endpark: one line in the job history");
+            const QJsonObject r = h.value(0);
+            check(r.value("end").toString() == QLatin1String("finished") && r.value("percent").toInt() == 100,
+                  "endpark: history says finished");
+            check(r.value("toolpaths").toInt() == 2 && r.value("toolChanges").toInt() == 2,
+                  qPrintable(QStringLiteral("endpark: history counts 2 toolpaths, 2 tool changes: %1 %2")
+                                 .arg(r.value("toolpaths").toInt()).arg(r.value("toolChanges").toInt())));
+            check(!r.value("machine").toString().isEmpty() && r.value("job").toString() == QLatin1String("Untitled")
+                      && r.value("estSec").toDouble() > 0 && r.value("realSec").toDouble() >= 0,
+                  "endpark: history has machine, job name and times");
+            check(QDateTime::fromString(r.value("start").toString(), Qt::ISODate).isValid()
+                      && QDateTime::fromString(r.value("finish").toString(), Qt::ISODate).isValid(),
+                  "endpark: history has start and end time");
+        }
         // Cancel job afterwards clears it back to a plain card.
         button(QStringLiteral("✕ Cancel job"))->click();
         wait(500);
