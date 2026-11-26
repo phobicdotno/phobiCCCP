@@ -3305,7 +3305,11 @@ void MachinePanel::cancelJob()
     }
     m_endOfJobPending = false;   // cancelled: no end-of-job moves behind the hold
     m_hist.cancelled = true;
-    clearResumePoint();
+    // Only this run's own point: a G-code file, an air cut or a macro has
+    // none, and cancelling it must not drop a stopped design's point.
+    if (!m_runPath.isEmpty()
+        && QSettings().value(QStringLiteral("resume/path")).toString() == m_runPath)
+        clearResumePoint();
     m_runPath.clear();
     holdResetThen([this] {
         clearJob();
@@ -4778,7 +4782,7 @@ QStringList MachinePanel::endOfJobMoves()
     if (!m_homed) {
         log(QStringLiteral("job done: not homed, so up to safe Z and spindle off, no park"));
         QStringList up{QStringLiteral("G90"), QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3)};
-        if (coolantWithJob())
+        if (m_jobCoolant)
             up << QStringLiteral("M9");
         up << QStringLiteral("M5");
         return up;
@@ -4794,7 +4798,7 @@ QStringList MachinePanel::endOfJobMoves()
     } else {
         log(QStringLiteral("job done: up to the top, then spindle off (the park spot is off the machine)"));
     }
-    if (coolantWithJob())
+    if (m_jobCoolant)
         moves << QStringLiteral("M9");
     moves << QStringLiteral("M5");
     return moves;
@@ -5825,12 +5829,15 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     // those off so the ending is ours: up to the top first, then spindle off
     // (see streamFinished). Only the trailing lines go; a tool-change M05
     // in the middle stays.
+    // The end-of-job M9 follows what this program was made with, not the
+    // box as it is when the job ends (it can be cleared while it runs).
+    m_jobCoolant = coolantWithJob();
     while (!lines.isEmpty()) {
         const QString last = lines.last().trimmed().toUpper();
         if (last == QLatin1String("M05") || last == QLatin1String("M5")
             || last == QLatin1String("M02") || last == QLatin1String("M2")
             || last == QLatin1String("M30")
-            || (coolantWithJob() && (last == QLatin1String("M9") || last == QLatin1String("M09"))))
+            || (m_jobCoolant && (last == QLatin1String("M9") || last == QLatin1String("M09"))))
             lines.removeLast();
         else
             break;
@@ -5838,7 +5845,7 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     // Dust collector / coolant with the spindle: on after each start, off
     // before each tool change; the last off is in the end-of-job moves,
     // just before the spindle stops at the park spot.
-    if (coolantWithJob()) {
+    if (m_jobCoolant) {
         lines = coolantTransform(lines, coolantMist());
         log(QStringLiteral("dust/coolant: %1 after the spindle starts, M9 before it stops")
                 .arg(coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8")));
@@ -5874,7 +5881,7 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
             return refuse(QStringLiteral("There is no BitSetter reference yet."),
                           QStringLiteral("Zero Z with the BitSetter on (or press Measure tool "
                                          "with the bit Z was zeroed with), then start again."));
-        const QString coolant = coolantWithJob() ? (coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8"))
+        const QString coolant = m_jobCoolant ? (coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8"))
                                                  : QString();
         QString why;
         const QStringList cut = GrblStreamer::startFromLines(lines, fromQ, riseToTop(), change ? lastTool : -1,

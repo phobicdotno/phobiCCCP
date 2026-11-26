@@ -503,6 +503,7 @@ private:
     void setHeld(bool held);             // m_held and the pause button
     bool m_endRisePending = false;       // the end-of-job rise waits for Idle
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
+    bool m_jobCoolant = false;           // the streamed job switches dust/coolant: M9 at its end
     QProgressBar *m_progress;
     QPlainTextEdit *m_console;
 
