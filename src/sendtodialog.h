@@ -1,14 +1,18 @@
 #pragma once
 #include <QDialog>
+#include <QHostAddress>
 #include <QJsonObject>
 #include <QList>
 #include <functional>
+
+#include "projectreceiver.h"   // MulticastHold
 
 class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QNetworkAddressEntry;
 class QPushButton;
 class QUdpSocket;
 
@@ -45,11 +49,26 @@ public:
         bool pad = false;
     };
     // Send the discovery datagram from `udp` to every broadcast address.
-    static void discover(QUdpSocket *udp);
+    // `sweep`: also to every address of this device's own /24 networks, one
+    // by one (sweepTargets), for networks that drop broadcasts or their
+    // answers (some Wi-Fi access points, Android without a multicast lock).
+    // Callers sweep only when broadcasting has found nothing. Android only:
+    // on a desktop `sweep` is ignored.
+    static void discover(QUdpSocket *udp, bool sweep = false);
+    // The addresses a sweep goes to for these address entries (this
+    // device's own): x.y.z.1 to x.y.z.254 of every IPv4 /24 they are on,
+    // without the device's own address, loopback and link-local (169.254)
+    // ones; at most kMaxSweepNets networks.
+    static constexpr int kMaxSweepNets = 4;
+    static QList<QHostAddress> sweepTargets(const QList<QNetworkAddressEntry> &own);
+    // The same for the interfaces that are up now.
+    static QList<QHostAddress> sweepTargets();
     // The phobiCCCPs among the answers waiting on `udp`.
     static QList<Computer> answers(QUdpSocket *udp);
     // One request on its own connection, owned by `owner`; `done` gets the
     // reply, or {"ok": false, "error": …}, unless `owner` is gone by then.
+    // When the request went out but no answer came (timed out, cut off), the
+    // reply also has "unanswered": true: the other side may still be doing it.
     static void call(QObject *owner, const QString &address, quint16 port, const QJsonObject &req,
                      int timeoutMs, std::function<void(const QJsonObject &)> done);
 
@@ -73,6 +92,8 @@ private:
     QPushButton *m_send = nullptr;
     int m_infoSerial = 0;   // only the newest "info" answer is shown
     bool m_busy = false;
+    bool m_heard = false;   // a discovery answer came (else the next round sweeps)
+    MulticastHold m_multicast;
 };
 
 } // namespace c2d

@@ -182,8 +182,9 @@ void SendToPadDialog::tick()
 {
     // Pads running this program are asked again now and then: one may be
     // switched on meanwhile.
+    // While none has answered, also one by one (broadcasts may be dropped).
     if (++m_ticks % 6 == 0)
-        SendToDialog::discover(m_udp);
+        SendToDialog::discover(m_udp, m_found.isEmpty());
     refresh();
     if (m_seq == 0)
         return;

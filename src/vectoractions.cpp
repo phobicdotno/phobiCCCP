@@ -1,6 +1,7 @@
 #include "vectoractions.h"
 #include "canvas.h"
 #include "model3d.h"
+#include "touchprofile.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -506,7 +507,7 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     auto *tb = window->addToolBar(QStringLiteral("Vectors"));
     tb->setMovable(false);
     tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    tb->setIconSize(QSize(20, 20));
+    tb->setIconSize(touch::iconSize(20));
     for (QAction *a : {unionAct, subAct, interAct, offsetAct, centerAct})
         tb->addAction(a);
     tb->addSeparator();

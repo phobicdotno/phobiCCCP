@@ -28,6 +28,7 @@ class IsoPreview;
 class ProjectReceiver;
 struct ReceivedProject;
 class MachinePanel;
+class RemoteMachinePanel;
 class ModelPanel;
 class ParametersPanel;
 class PropertiesPanel;
@@ -107,6 +108,9 @@ private:
     void offerRecovery();
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
     void setReceiving(bool on);
+    // Back in front: listen again where the sockets are gone, or afresh
+    // (`away`: after being in the background) when no one is connected.
+    void relisten(bool away);
     void onProjectReceived(int id, const ReceivedProject &project);
     // The PhobiCCCP pad app on the same port (projectreceiver.h): status,
     // tool library, design sync, machine switch, and designs sent to be
@@ -126,7 +130,9 @@ private:
     // File > Send to pad…: the open file to a pad, to edit it there.
     void onSendToPad();
     // The design as it is now, saved or not, as a .c2d in the cache (to send whole).
-    QString sendCopy(const QString &opened, QString *error);
+    // `folder`: where the copy goes; empty, cache/send (a send removes it once read).
+    QString sendCopy(const QString &opened, QString *error, const QString &folder = QString());
+    static QString shareDir();   // cache/share: copies for the share sheet and Save to…
     bool sameDesign(const QString &opened, QString *error) const;
     qint64 sendToPad(const QString &padId, QString *note, QString *error);
     padlink::Pads m_pads;   // pads in touch lately, and designs waiting for them
@@ -139,6 +145,17 @@ private:
     QMenu *m_machineMenu = nullptr;
     // Ask before throwing edits away. False = the user cancelled.
     bool confirmDiscard(const QString &what);
+
+    // On the pad (androidfiles.h): a file picked in Android's picker, opened
+    // with phobiCCCP or shared to it from another app, as a copy in the cache.
+    // `purpose`: androidfiles::Purpose.
+    void onFileArrived(const QString &cachedPath, const QString &displayName, int purpose);
+    // The designs the PhobiCCCP pad app before this one left on the tablet,
+    // as .c2d files: offered once at start-up, and any time from the File
+    // menu (`asked`).
+    void offerOldPadDesigns(bool asked);
+    // Share the design as it is now, or save a copy of it, out of the app.
+    void onShareDesign();
 
     // File > Open Recent: the last five documents opened, most recent first,
     // kept in QSettings so the list survives a restart.
@@ -160,6 +177,8 @@ private:
     ParametersPanel *m_parameters; // user parameters, dimensions, constraints (Design tab)
     ToolpathPanel *m_tp;         // toolpath list + parameter editor
     MachinePanel *m_machine;     // GRBL serial control + streaming (Machine page)
+    // On a pad, the Machine page instead: a phobiCCCP's machine on the network.
+    RemoteMachinePanel *m_remoteMachine = nullptr;
     IsoPreview *m_iso;           // isometric animated route preview (Simulate page)
     QSplitter *m_simPage;        // 3D route | material removal
     SimPanel *m_sim;             // material-removal simulation (Simulate page)
@@ -185,6 +204,12 @@ private:
     QAction *m_modeActs[4] = {};
     ModelPanel *m_model;         // 3D modelling components + composited relief
     ProjectReceiver *m_receiver = nullptr;   // listens while receiving is on
+    bool m_wasAway = false;   // the app was in the background (Android) since it last listened
+    // Listening again when the sockets did not come back at once (relisten):
+    // a few more tries, each further apart.
+    QTimer *m_relistenTimer = nullptr;
+    int m_relistenTries = 0;
+    static constexpr int kRelistenTries = 6;   // 1, 2, 4, 8, 16, 32 s
     // A received project or a pad's send is being answered: its questions and
     // the program export run the event loop, and another one must not open a
     // design (or start the machine) in the middle of it.

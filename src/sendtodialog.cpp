@@ -77,7 +77,7 @@ SendToDialog::SendToDialog(const QString &name, const QString &ownId,
     // Asked again now and then: a computer may be switched on meanwhile.
     auto *again = new QTimer(this);
     again->setInterval(3000);
-    connect(again, &QTimer::timeout, this, [this] { discover(m_udp); });
+    connect(again, &QTimer::timeout, this, [this] { discover(m_udp, !m_heard); });
     again->start();
     discover(m_udp);
     // The last one used, in case discovery does not reach it (Tailscale).
@@ -90,7 +90,7 @@ SendToDialog::SendToDialog(const QString &name, const QString &ownId,
     m_status->setText(QStringLiteral("Looking for phobiCCCP on the network…"));
 }
 
-void SendToDialog::discover(QUdpSocket *udp)
+void SendToDialog::discover(QUdpSocket *udp, bool sweep)
 {
     const QByteArray ask = QByteArrayLiteral("PHOBICCCP-DISCOVER 1");
     udp->writeDatagram(ask, QHostAddress::Broadcast, ProjectReceiver::kPort);
@@ -101,6 +101,44 @@ void SendToDialog::discover(QUdpSocket *udp)
             if (!e.broadcast().isNull())
                 udp->writeDatagram(ask, e.broadcast(), ProjectReceiver::kPort);
     }
+    // Only on a pad: phones and tablets are on Wi-Fi that may drop
+    // broadcasts, while a desktop asks its networks as it always has.
+#ifdef Q_OS_ANDROID
+    if (sweep)
+        for (const QHostAddress &a : sweepTargets())
+            udp->writeDatagram(ask, a, ProjectReceiver::kPort);
+#else
+    Q_UNUSED(sweep);
+#endif
+}
+
+QList<QHostAddress> SendToDialog::sweepTargets(const QList<QNetworkAddressEntry> &own)
+{
+    QList<quint32> nets, mine;
+    for (const QNetworkAddressEntry &e : own) {
+        const QHostAddress a = e.ip();
+        if (a.protocol() != QAbstractSocket::IPv4Protocol || a.isLoopback() || a.isLinkLocal())
+            continue;
+        const quint32 ip = a.toIPv4Address();
+        mine.append(ip);
+        if (!nets.contains(ip & 0xFFFFFF00u) && nets.size() < kMaxSweepNets)
+            nets.append(ip & 0xFFFFFF00u);
+    }
+    QList<QHostAddress> out;
+    for (quint32 net : nets)
+        for (quint32 host = 1; host < 255; ++host)
+            if (!mine.contains(net | host))
+                out.append(QHostAddress(net | host));
+    return out;
+}
+
+QList<QHostAddress> SendToDialog::sweepTargets()
+{
+    QList<QNetworkAddressEntry> own;
+    for (const QNetworkInterface &i : QNetworkInterface::allInterfaces())
+        if ((i.flags() & QNetworkInterface::IsUp) && !(i.flags() & QNetworkInterface::IsLoopBack))
+            own += i.addressEntries();
+    return sweepTargets(own);
 }
 
 QList<SendToDialog::Computer> SendToDialog::answers(QUdpSocket *udp)
@@ -132,9 +170,14 @@ QList<SendToDialog::Computer> SendToDialog::answers(QUdpSocket *udp)
 
 void SendToDialog::onDatagrams()
 {
-    for (const Computer &c : answers(m_udp))
-        if (c.id.isEmpty() || c.id != m_ownId)
+    for (const Computer &c : answers(m_udp)) {
+        // This install's own answer is not a computer found: it must not
+        // stop the sweep that may find the others.
+        if (c.id.isEmpty() || c.id != m_ownId) {
+            m_heard = true;
             addComputer(c);
+        }
+    }
 }
 
 void SendToDialog::addComputer(const Computer &c)
@@ -304,12 +347,19 @@ void SendToDialog::call(QObject *owner, const QString &address, quint16 port, co
         s->abort();
         s->deleteLater();
     };
-    auto fail = [finish](const QString &why) {
-        finish(QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), why}});
+    // Once connected, the request is on its way: a failure after that leaves
+    // it unknown whether the other side acted on it.
+    auto sentOff = std::make_shared<bool>(false);
+    auto fail = [finish, sentOff](const QString &why) {
+        QJsonObject r{{QStringLiteral("ok"), false}, {QStringLiteral("error"), why}};
+        if (*sentOff)
+            r.insert(QStringLiteral("unanswered"), true);
+        finish(r);
     };
     timer->setSingleShot(true);
     connect(timer, &QTimer::timeout, s, [fail] { fail(QStringLiteral("no answer")); });
-    connect(s, &QTcpSocket::connected, s, [s, req] {
+    connect(s, &QTcpSocket::connected, s, [s, req, sentOff] {
+        *sentOff = true;
         s->write(QByteArrayLiteral("PHOBICCCP-API 1\n"));
         s->write(QJsonDocument(req).toJson(QJsonDocument::Compact) + '\n');
     });

@@ -29,16 +29,58 @@
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupOnly="false">
+        <!-- Qt's activity plus Android's file handling: the file picker,
+             Open with, Share, the share sheet and the save dialog
+             (src/no/phobic/phobicccp/PhobicActivity.java). singleTask: a
+             file opened from the Files app or a browser goes to the running
+             program (onNewIntent) instead of starting a second copy of it
+             inside that app's task, which Qt cannot run. -->
         <activity
-            android:name="org.qtproject.qt.android.bindings.QtActivity"
+            android:name="no.phobic.phobicccp.PhobicActivity"
             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:screenOrientation="sensorLandscape"
             android:windowSoftInputMode="adjustResize"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Open with phobiCCCP: designs (.c2d, .cccp), SVG and DXF.
+                 Android knows no type for .c2d and calls it, and often a DXF,
+                 a plain binary file; the program looks at what it got and
+                 says so when it cannot use it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-sqlite3" />
+                <data android:mimeType="application/vnd.sqlite3" />
+                <data android:mimeType="application/x-carbide-create" />
+                <data android:mimeType="image/svg+xml" />
+                <data android:mimeType="image/vnd.dxf" />
+                <data android:mimeType="image/x-dxf" />
+                <data android:mimeType="application/dxf" />
+                <data android:mimeType="application/x-dxf" />
+                <data android:mimeType="application/vnd.hp-hpgl" />
+            </intent-filter>
+            <!-- A file shared to phobiCCCP from another app (Drive, mail, a chat). -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/x-sqlite3" />
+                <data android:mimeType="application/vnd.sqlite3" />
+                <data android:mimeType="application/x-carbide-create" />
+                <data android:mimeType="image/svg+xml" />
+                <data android:mimeType="image/vnd.dxf" />
+                <data android:mimeType="image/x-dxf" />
+                <data android:mimeType="application/dxf" />
+                <data android:mimeType="application/x-dxf" />
+                <data android:mimeType="application/vnd.hp-hpgl" />
             </intent-filter>
 
           <meta-data

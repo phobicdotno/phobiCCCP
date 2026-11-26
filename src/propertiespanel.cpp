@@ -1,4 +1,5 @@
 #include "propertiespanel.h"
+#include "touchprofile.h"
 #include "canvas.h"
 #include "c2ddocument.h"
 
@@ -86,7 +87,10 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     m_x = spin(10000);
     m_y = spin(10000);
     auto *posRow = new QWidget(this);
-    auto *posLay = new QHBoxLayout(posRow);
+    // Side by side, or one above the other with finger-sized spin buttons,
+    // which need the panel's whole width.
+    const QBoxLayout::Direction pairs = touch::enabled() ? QBoxLayout::TopToBottom : QBoxLayout::LeftToRight;
+    auto *posLay = new QBoxLayout(pairs, posRow);
     posLay->setContentsMargins(0, 0, 0, 0);
     posLay->addWidget(m_x);
     posLay->addWidget(m_y);
@@ -106,7 +110,7 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     m_width->setMinimum(kMinSize);
     m_height->setMinimum(kMinSize);
     m_sizeRow = new QWidget(this);
-    auto *sizeLay = new QHBoxLayout(m_sizeRow);
+    auto *sizeLay = new QBoxLayout(pairs, m_sizeRow);
     sizeLay->setContentsMargins(0, 0, 0, 0);
     sizeLay->addWidget(m_width);
     sizeLay->addWidget(m_height);

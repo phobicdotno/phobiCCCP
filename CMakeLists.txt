@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.62 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.63 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -70,6 +70,7 @@ add_library(phobicccp_core STATIC
     src/recovery.cpp
     src/machineprofiles.cpp
     src/padlink.cpp
+    src/incomingfiles.cpp
 )
 # The binary should be able to say which build it is (--version, --help);
 # PROJECT_VERSION is the single source of truth in this file. It reaches the
@@ -108,6 +109,8 @@ add_library(phobicccp_ui STATIC
     src/jobview.cpp
     src/shopdialog.cpp
     src/popuplook.cpp
+    src/touchprofile.cpp
+    src/apptheme.cpp
     src/isopreview.cpp
     src/simpanel.cpp
     src/vectoractions.cpp
@@ -124,6 +127,8 @@ add_library(phobicccp_ui STATIC
     src/projectreceiver.cpp
     src/sendtopaddialog.cpp
     src/sendtodialog.cpp
+    src/remotemachine.cpp
+    src/androidfiles.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -132,7 +137,12 @@ if(ANDROID)
     # The same program on a pad: Qt builds it as the app's library, and
     # qt-android/ holds the manifest (network access, landscape, the icon).
     qt_add_executable(phobicccp ${PHOBICCCP_APP_SOURCES})
-    # Always rising, and above the Flutter pad app's build numbers.
+    # Always rising, and above the Flutter pad app's build numbers. Minor or
+    # patch 100 would give another version's code (1.3.100 is 1.4.0's).
+    if(PROJECT_VERSION_MINOR GREATER_EQUAL 100 OR PROJECT_VERSION_PATCH GREATER_EQUAL 100)
+        message(FATAL_ERROR "Version ${PROJECT_VERSION}: minor and patch must be below 100 "
+                            "(the Android version code is major*10000 + minor*100 + patch)")
+    endif()
     math(EXPR PHOBICCCP_VERSION_CODE
          "${PROJECT_VERSION_MAJOR} * 10000 + ${PROJECT_VERSION_MINOR} * 100 + ${PROJECT_VERSION_PATCH}")
     set_target_properties(phobicccp PROPERTIES
@@ -152,7 +162,21 @@ endif()
 
 # True medial-axis v-carve needs the (header-only) Boost.Polygon Voronoi
 # builder; without it the exporter falls back to depth-graded inset rings.
-find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
+# Header-only, so a cross build (the pad) may take the build machine's copy:
+# the find root of an NDK build would otherwise look only inside the NDK.
+if(ANDROID)
+    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp NO_CMAKE_FIND_ROOT_PATH)
+else()
+    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
+endif()
+if(BOOST_VORONOI_INC AND ANDROID)
+    # /usr/include is an implicit directory that CMake drops from -I, and
+    # putting it on the NDK's path would shadow the sysroot: link only boost/.
+    set(_boost_link ${CMAKE_BINARY_DIR}/boost-inc)
+    file(MAKE_DIRECTORY ${_boost_link})
+    file(CREATE_LINK ${BOOST_VORONOI_INC}/boost ${_boost_link}/boost SYMBOLIC)
+    set(BOOST_VORONOI_INC ${_boost_link})
+endif()
 if(BOOST_VORONOI_INC)
     target_include_directories(phobicccp_core PRIVATE ${BOOST_VORONOI_INC})
     target_compile_definitions(phobicccp_core PUBLIC HAVE_BOOST_VORONOI)
@@ -301,6 +325,13 @@ if(Qt6Test_FOUND)
     add_executable(test_sendtopad tests/test_sendtopad.cpp)
     target_link_libraries(test_sendtopad PRIVATE phobicccp_ui)
     add_test(NAME sendtopad COMMAND test_sendtopad)
+    # The pad's Machine page (remotemachine.h) against a real main window's
+    # pad link on loopback: status polling, machine switch, send, and a start
+    # refused while pads may not start; and discovery's sweep addresses.
+    add_executable(test_remotemachine tests/test_remotemachine.cpp)
+    target_link_libraries(test_remotemachine PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME remotemachine COMMAND test_remotemachine)
+    set_tests_properties(remotemachine PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_canvasparametric tests/test_canvasparametric.cpp)
     target_link_libraries(test_canvasparametric PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME canvasparametric COMMAND test_canvasparametric)
@@ -346,6 +377,12 @@ if(Qt6Test_FOUND)
     add_executable(test_padenter tests/test_padenter.cpp)
     target_link_libraries(test_padenter PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padenter COMMAND test_padenter)
+    # Files from other apps on the pad (picker, Open with, Share): what they
+    # are, where they go, and the old pad app's designs made into .c2d files.
+    add_executable(test_incomingfiles tests/test_incomingfiles.cpp)
+    target_link_libraries(test_incomingfiles PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME incomingfiles COMMAND test_incomingfiles)
+    set_tests_properties(incomingfiles PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_tpflush tests/test_tpflush.cpp)
     target_link_libraries(test_tpflush PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpflush COMMAND test_tpflush)
@@ -386,6 +423,13 @@ if(Qt6Test_FOUND)
     add_executable(test_dragscroll tests/test_dragscroll.cpp)
     target_link_libraries(test_dragscroll PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME dragscroll COMMAND test_dragscroll)
+    # The touch profile: finger-sized controls, and the window and dialogs
+    # fitting a 1280x800 landscape pad (an offscreen screen of that size).
+    add_executable(test_touchsize tests/test_touchsize.cpp)
+    target_link_libraries(test_touchsize PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME touchsize COMMAND test_touchsize)
+    set_tests_properties(touchsize PROPERTIES ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen:configfile=${CMAKE_SOURCE_DIR}/tests/data/screen-1280x800.json")
     # Mirror / arrays through the real Edit → Vectors actions and undo stack.
     add_executable(test_vectoractions tests/test_vectoractions.cpp)
     target_link_libraries(test_vectoractions PRIVATE phobicccp_ui)
