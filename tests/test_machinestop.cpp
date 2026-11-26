@@ -1109,6 +1109,18 @@ int main(int argc, char **argv)
         check(set.value(QStringLiteral("resume/path")).toString().isEmpty(),
               "continue: an unsaved design's run keeps no continue point");
         panel.setUnsavedCheck({});
+        // A new run of the design drops the last run's point at once: a
+        // stop before its first point would otherwise offer the old one,
+        // past the new run's uncut first toolpath.
+        set.setValue(QStringLiteral("resume/path"), file);
+        set.setValue(QStringLiteral("resume/row"), QStringLiteral("small"));
+        panel.m_homed = true;
+        wait(600);
+        check(panel.runProgram(), "continue: the design runs again");
+        check(set.value(QStringLiteral("resume/path")).toString().isEmpty(),
+              "continue: a new run clears the last run's point at its start");
+        s->stopStream();
+        wait(1500);
         QFile::remove(file);
     }
 

@@ -6050,6 +6050,12 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
         m_docHash = m_runHash; // saved since it was opened
     m_resumeSaveClock.invalidate();
     m_resumeSavedSec = m_resumeSavedPass = -1;
+    // A new run of this design: the last run's continue point no longer
+    // says where this one is (it can be past what this run has cut yet).
+    // The first new one is written only some lines in.
+    if (!m_runPath.isEmpty()
+        && QSettings().value(QStringLiteral("resume/path")).toString() == m_runPath)
+        clearResumePoint();
     m_jobFromFile = fromFile;
     {
         QSettings ps;
@@ -6138,8 +6144,12 @@ void MachinePanel::saveResumePoint(int acked)
     // still holds up to 16 moves (GRBL 1.1), 35 by default on grblHAL. Save
     // the step of the line that far behind, so a resume repeats a little
     // rather than skips a cut.
+    // The answered count also holds lines sent on the way that are not in
+    // the plan (tool-change rise and return, hold and resume): take them
+    // off, all of them, sent or still to be answered, so the step found is
+    // never one that has not run yet.
     constexpr int kNotYetCut = 35;
-    const int q = acked - kNotYetCut;
+    const int q = acked - m_jobView->inserted() - kNotYetCut;
     const QVector<JobSection> &secs = m_jobView->plan().sections;
     int sec = -1, pass = -1;
     for (int i = 0; i < secs.size() && sec < 0; ++i)
