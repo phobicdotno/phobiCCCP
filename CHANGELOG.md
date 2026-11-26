@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.3.67 (build 157) — 2026-11-26
+
+> On the Machine page: Hold, Resume and Stop from the pad, a job history with an end-of-job chime, the spindle by hand with a warm-up, and a dust/coolant switch.
+
+- **Hold, Resume and Stop from the pad:** while a job runs, the pad's Machine page has big Hold (amber), Resume and Stop (red, tap twice) buttons. Hold and Stop always work from a linked pad, Resume only when Machine › Pads may start cutting is on, and each is written in the machine log with the pad's name. Stop is the same instant stop as the Stop button on the computer.
+- **Job history and end chime:** each job that finishes, stops, alarms or is cancelled adds a line to the job history: design or file, machine, start and end, estimated and real time, how far it got, toolpaths and tool changes. The History button on the Machine page lists the last 200 jobs, newest first. The computer beeps and flashes its window when a job ends or waits for a tool change (switch it off in the History list). The pad shows a banner with a sound when the computer's job finishes or stops.
+- **Spindle by hand and warm-up:** under Machine › More there is a spindle row: a speed field (kept within the controller's $31–$30), On (M3) and Off (M5), and Warm-up, which runs 2 min at half speed, 2 min at three quarters and 1 min at full speed, then stops the spindle. These work only when the machine is homed, standing still and no job runs. If Z is not at the top it first asks whether the bit is clear of the work.
+- **Dust/Coolant switch:** a Dust/Coolant button on the Machine page turns the dust collector or coolant on (M8) and off (M9) when the machine is idle, and shows what the controller reports. "Dust/coolant on with the job" (per machine, M8 flood or M7 mist) switches it on after the spindle starts and off before each tool change and at the end. A gamepad button can toggle it; the pad shows an icon when it is on.
+
 ## v1.3.66 (build 156) — 2026-11-26
 
 > Cutting time on every toolpath card, text on any path, fluting, a finger-joint box generator, toolpath templates, 3D rest roughing, running any G-code file, and layers with groups.
