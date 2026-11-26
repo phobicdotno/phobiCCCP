@@ -1290,6 +1290,53 @@ int main(int argc, char **argv)
             spin(3000, [&] { return !panel.isBusy() && !s->isMacroRunning(); });
             wait(500);
         }
+        // An alarm (an end stop) in those last moves: the record says so,
+        // not nothing, and never "finished". The Stop above left an alarm.
+        grbl.alarm = false;
+        wait(500);
+        c2d::jobhistory::clear();
+        panel.m_hist = {};
+        panel.m_hist.active = true;
+        panel.m_hist.job = QStringLiteral("tail");
+        panel.m_hist.start = QDateTime::currentDateTime();
+        panel.m_endOfJobPending = true;
+        grbl.running = true;
+        s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+        spin(2000, [&] { return !s->isStreaming(); });
+        wait(400);
+        check(panel.m_endRisePending, "histtail: the finish waits for Idle");
+        grbl.running = false;
+        grbl.locked = true;
+        grbl.send("ALARM:1\r\n[MSG:Reset to continue]\r\n");
+        wait(1500);
+        const QVector<QJsonObject> h = c2d::jobhistory::read();
+        check(h.size() == 1 && h.value(0).value("end").toString() == QLatin1String("alarm")
+                  && h.value(0).value("code").toInt() == 1,
+              qPrintable(QStringLiteral("histtail: an alarm in the tail is recorded: %1 entries, %2")
+                             .arg(h.size()).arg(h.value(0).value("end").toString())));
+        check(!panel.m_hist.active && !panel.m_endRisePending, "histtail: no unfinished record is left");
+    }
+
+    if (mode == "warmjob") {
+        // A job started while the warm-up runs takes the spindle: no later
+        // warm-up stage may start (or stop) it under the job or after it.
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("Insert tool")) return QStringLiteral("Same length: continue");
+            return QStringLiteral("OK");
+        };
+        panel.m_warmSecs = {1000, 1000, 1000};
+        panel.m_warmStep = 0;
+        panel.m_warmLeft = 1000;
+        panel.m_warmTimer->start();
+        QString why;
+        check(panel.startFromRemote(&why), qPrintable(QStringLiteral("warmjob: the job starts: %1").arg(why)));
+        check(panel.m_warmStep < 0 && !panel.m_warmTimer->isActive(), "warmjob: the job ends the warm-up at once");
+        spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+        wait(1500);
+        check(panel.m_warmStep < 0, "warmjob: no warm-up stage after the job");
     }
 
     if (mode == "rehearsetc") {

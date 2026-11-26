@@ -101,6 +101,13 @@ int main()
         check(!g53.ok() && g53.errorLine == 5, "nc: no circle end after a G53 move left X unknown");
         const NcProgram g28 = readNcProgram(QStringLiteral("G90 G21\nG0 X0 Y0 Z1\nG28\nG1 Z-1 F300\nG2 I5 J0 F800\n"));
         check(!g28.ok() && g28.errorLine == 5, "nc: no circle end after G28");
+        const NcProgram g28z = readNcProgram(
+            QStringLiteral("G90 G21\nG0 X2 Y3 Z1\nG28 Z5\nG0 Z1\nG1 Z-1 F300\nG2 I5 J0 F800\n"));
+        check(g28z.ok() && g28z.lines.last() == QLatin1String("G2 I5 J0 F800 X2.0000 Y3.0000"),
+              "nc: a Z-only G28 leaves X and Y known");
+        const NcProgram g28x = readNcProgram(
+            QStringLiteral("G90 G21\nG0 X2 Y3 Z1\nG28 X2\nG1 Z-1 F300\nG2 I5 J0 F800\n"));
+        check(!g28x.ok() && g28x.errorLine == 5, "nc: a G28 naming X leaves X unknown");
         const NcProgram none = readNcProgram(QStringLiteral("G90 G21\nG0 Z1\nG1 Z-1 F300\nG2 I5 J0 F800\n"));
         check(!none.ok() && none.errorLine == 4, "nc: no circle end before any X and Y");
         const NcProgram again = readNcProgram(

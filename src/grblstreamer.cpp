@@ -289,13 +289,15 @@ QString GrblStreamer::crossToFirstCut(const QStringList &lines, int from)
 
 GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
 {
-    static const QRegularExpression gWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*([0-9]+)(?![0-9.])"));
+    // A word starts after anything but a letter: "G90G1" is G90 and G1
+    // (a look-behind, so one match does not eat the next one's boundary).
+    static const QRegularExpression gWord(QStringLiteral("(?<![A-Z])G0*([0-9]+)(?![0-9.])"));
     static const QRegularExpression fWord(QStringLiteral("(?:^|[^A-Z])F(-?[0-9.]+)"));
     static const QRegularExpression sWord(QStringLiteral("(?:^|[^A-Z])S(-?[0-9.]+)"));
     static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z(-?[0-9.]+)"));
     static const QRegularExpression xWord(QStringLiteral("(?:^|[^A-Z])X(-?[0-9.]+)"));
     static const QRegularExpression yWord(QStringLiteral("(?:^|[^A-Z])Y(-?[0-9.]+)"));
-    static const QRegularExpression mWord(QStringLiteral("(?:^|[^A-Z0-9.])M0*([345])(?![0-9.])"));
+    static const QRegularExpression mWord(QStringLiteral("(?<![A-Z])M0*([345])(?![0-9.])"));
     static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
     Modal m;
     bool hx = false, hy = false;
@@ -328,20 +330,19 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
         if (sm.hasMatch()) { m.speed = sm.captured(1).toDouble(); m.haveSpeed = true; }
         for (auto it = mWord.globalMatch(l); it.hasNext();)
             m.spindle = it.next().captured(1).at(0);
-        auto zm = zWord.match(l);
-        if (zm.hasMatch() && !machine) {
-            m.z = zm.captured(1).toDouble();
-            m.haveZ = true;
-        }
-        const auto xm = xWord.match(l), ym = yWord.match(l);
+        const auto xm = xWord.match(l), ym = yWord.match(l), zm = zWord.match(l);
         if (!machine && !home) {
             if (xm.hasMatch()) { m.x = xm.captured(1).toDouble(); hx = true; }
             if (ym.hasMatch()) { m.y = ym.captured(1).toDouble(); hy = true; }
+            if (zm.hasMatch()) { m.z = zm.captured(1).toDouble(); m.haveZ = true; }
         } else {
             // A machine-coordinate move or a trip to a stored spot leaves the
-            // work X/Y it names (G28/G30 alone: both) unknown until set again.
-            if (xm.hasMatch() || (home && !xm.hasMatch() && !ym.hasMatch())) hx = false;
-            if (ym.hasMatch() || (home && !xm.hasMatch() && !ym.hasMatch())) hy = false;
+            // work axis it names (G28/G30 alone: all three) unknown until
+            // set again: a descent from a stale Z would plunge.
+            const bool all = home && !xm.hasMatch() && !ym.hasMatch() && !zm.hasMatch();
+            if (xm.hasMatch() || all) hx = false;
+            if (ym.hasMatch() || all) hy = false;
+            if (zm.hasMatch() || all) m.haveZ = false;
         }
     }
     m.haveXY = hx && hy;
@@ -359,7 +360,7 @@ static bool queuedLine(const QString &l)
 // move that does not choose its own motion mode.
 static void armNextMove(QStringList &lines, int from, int motion)
 {
-    static const QRegularExpression motionWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*[0-3](?![0-9.])"));
+    static const QRegularExpression motionWord(QStringLiteral("(?<![A-Z])G0*[0-3](?![0-9.])"));
     static const QRegularExpression axisWord(QStringLiteral("(?:^|[^A-Z])[XYZ]-?[0-9.]"));
     static const QRegularExpression axisCommand(QStringLiteral("G(?:53|28|30|92|10)(?![0-9.])"));
     static const QRegularExpression pause(QStringLiteral("^M0*[01](?![0-9])"));
@@ -488,6 +489,25 @@ QStringList GrblStreamer::startFromLines(const QStringList &lines, int fromQ, co
     return r + rest;
 }
 
+// Down to the program's work Z after a lift: a rapid to 2.5 mm above the
+// stock, then into it at the program's feed, at most 600 mm/min. Always in
+// millimetres (the caller puts G21 before and an inch program's G20 after):
+// read in G20 the same numbers were 2.5 in and 600 in/min, a 15 m/min plunge.
+static QStringList approachZ(const GrblStreamer::Modal &m, const QString &sep)
+{
+    const double k = m.inches ? 25.4 : 1.0;
+    const double z = m.z * k;
+    QStringList r;
+    if (z >= 2.5) {
+        r << QStringLiteral("G0%1Z%2").arg(sep).arg(z, 0, 'f', 3);
+    } else {
+        r << QStringLiteral("G0%1Z2.500").arg(sep)
+          << QStringLiteral("G1%1Z%2%1F%3").arg(sep).arg(z, 0, 'f', 3)
+                 .arg(qMin(m.haveFeed ? m.feed * k : 600.0, 600.0), 0, 'f', 0);
+    }
+    return r;
+}
+
 bool GrblStreamer::canLiftHold() const
 {
     if (!m_streaming || m_waitingTool >= 0 || m_waitingHold || m_holdQueued
@@ -526,8 +546,9 @@ QStringList GrblStreamer::resumeLinesAfterHold() const
 {
     const Modal m = scanModal(m_queue, m_holdAt);
     QStringList r;
-    // The rise was in mm (G21): an inch program gets its units back first.
-    r << (m.inches ? QStringLiteral("G20") : QStringLiteral("G21")) << QStringLiteral("G90");
+    // The rise was in mm (G21), and the way down stays in mm: an inch
+    // program gets its units back after it, before its own next line.
+    r << QStringLiteral("G21") << QStringLiteral("G90");
     if ((m.spindle == QChar('3') || m.spindle == QChar('4')) && m.haveSpeed) {
         r << QStringLiteral("M0%1S%2").arg(m.spindle).arg(m.speed, 0, 'f', 0)
           << QStringLiteral("G4P3.00");                // the post's own spin-up wait
@@ -536,14 +557,10 @@ QStringList GrblStreamer::resumeLinesAfterHold() const
         // Down to where the program was: a rapid to just above the stock, then
         // slowly into the cut. The work Z is the program's own (G43.1 and the
         // zero stand), XY did not change.
-        if (m.z >= 2.5) {
-            r << QStringLiteral("G0Z%1").arg(m.z, 0, 'f', 3);
-        } else {
-            r << QStringLiteral("G0Z2.500")
-              << QStringLiteral("G1Z%1F%2").arg(m.z, 0, 'f', 3)
-                     .arg(qMin(m.haveFeed ? m.feed : 600.0, 600.0), 0, 'f', 0);
-        }
+        r += approachZ(m, QString());
     }
+    if (m.inches)
+        r << QStringLiteral("G20");
     // The program's modal state: its feed and motion mode, as it left them.
     if (m.haveFeed)
         r << QStringLiteral("G1F%1").arg(m.feed, 0, 'f', 1);
@@ -584,7 +601,7 @@ void GrblStreamer::continueAfterHold(const QStringList &lines)
 // finds its own way down.
 static int cutAfterStop(const QStringList &lines, int from, int motion)
 {
-    static const QRegularExpression motionWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*([0-3])(?![0-9.])"));
+    static const QRegularExpression motionWord(QStringLiteral("(?<![A-Z])G0*([0-3])(?![0-9.])"));
     static const QRegularExpression xyWord(QStringLiteral("(?:^|[^A-Z])[XY]-?[0-9.]"));
     static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z-?[0-9.]"));
     static const QRegularExpression axisCommand(QStringLiteral("G(?:53|28|30|92|10)(?![0-9.])"));
@@ -687,13 +704,14 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
         // slowly in; then the program's feed again.
         const int cut = cutAt + added;
         int c = cut;
-        if (before.z >= 2.5) {
-            m_queue.insert(c++, QStringLiteral("G0 Z%1").arg(before.z, 0, 'f', 3));
-        } else {
-            m_queue.insert(c++, QStringLiteral("G0 Z2.500"));
-            m_queue.insert(c++, QStringLiteral("G1 Z%1 F%2").arg(before.z, 0, 'f', 3)
-                                    .arg(qMin(before.haveFeed ? before.feed : 600.0, 600.0), 0, 'f', 0));
-        }
+        // In mm (an inch program's G20 is back by now): G21 for the way
+        // down, G20 again right before the program's cut.
+        if (before.inches)
+            m_queue.insert(c++, QStringLiteral("G21"));
+        for (const QString &l : approachZ(before, QStringLiteral(" ")))
+            m_queue.insert(c++, l);
+        if (before.inches)
+            m_queue.insert(c++, QStringLiteral("G20"));
         if (before.haveFeed)
             m_queue.insert(c++, QStringLiteral("G1 F%1").arg(before.feed, 0, 'f', 1));
         added += c - cut;
