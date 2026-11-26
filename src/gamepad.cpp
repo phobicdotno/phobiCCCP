@@ -27,7 +27,9 @@ QStringList actions()
             QStringLiteral("step+"), QStringLiteral("step-"), QStringLiteral("hold"), QStringLiteral("stop"),
             QStringLiteral("zeroxy"), QStringLiteral("zeroz"), QStringLiteral("unlock"),
             QStringLiteral("home"), QStringLiteral("spindle+"), QStringLiteral("spindle-"),
-            QStringLiteral("rapid"), QStringLiteral("coolant")};
+            QStringLiteral("rapid"), QStringLiteral("coolant"),
+            QStringLiteral("macro1"), QStringLiteral("macro2"), QStringLiteral("macro3"),
+            QStringLiteral("macro4")};
 }
 
 QString label(const QString &action)
@@ -51,6 +53,10 @@ QString label(const QString &action)
         {QStringLiteral("spindle-"), QStringLiteral("Spindle −10 %")},
         {QStringLiteral("rapid"), QStringLiteral("Rapid 100 / 50 / 25 %")},
         {QStringLiteral("coolant"), QStringLiteral("Dust/coolant on / off")},
+        {QStringLiteral("macro1"), QStringLiteral("Macro 1")},
+        {QStringLiteral("macro2"), QStringLiteral("Macro 2")},
+        {QStringLiteral("macro3"), QStringLiteral("Macro 3")},
+        {QStringLiteral("macro4"), QStringLiteral("Macro 4")},
     };
     return names.value(action, action);
 }

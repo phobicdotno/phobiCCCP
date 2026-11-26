@@ -109,7 +109,7 @@ add_library(phobicccp_ui STATIC
     src/stocksync.cpp
     src/tooldiagram.cpp
     src/toolstrip.cpp
-    src/machinepanel.cpp src/ncprogram.cpp
+    src/machinepanel.cpp src/ncprogram.cpp src/machinemacros.cpp
     src/jobview.cpp src/jobhistory.cpp
     src/shopdialog.cpp
     src/grblcodes.cpp
@@ -484,6 +484,12 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     add_executable(test_machinestop tests/test_machinestop.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_ui)
     foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2 jobstop jobcancel jobreset jobtcstop jobcount jobclear endalarm endpark quickmove)
+        add_test(NAME machinestop_${mode} COMMAND test_machinestop)
+        set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
+                             ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")
+    endforeach()
+    # The command line under the log and the operator's macro buttons.
+    foreach(mode mdi mdihome macro mdistream)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

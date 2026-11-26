@@ -19,6 +19,7 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
@@ -43,6 +44,7 @@
 #include "../src/surfacemap.h"
 #define private public
 #define protected public
+#include "../src/machinemacros.h"
 #include "../src/bitzeropanel.h"
 #include "../src/jobview.h"
 #include "../src/machinepanel.h"
@@ -657,6 +659,128 @@ int main(int argc, char **argv)
                 check(z <= -panel.switchClearance() + 1e-9, "safez: below the switch clearance");
             }
         check(moves == 3, "safez: park, tool park and X0 Y0 each rise");
+    }
+
+    if (mode == "mdi") {
+        // The command line: a typed line goes out as typed; Up brings it back
+        // (and does not jog); ? goes out as the realtime byte, not a line.
+        using c2d::machinemacros::Typed;
+        check(c2d::machinemacros::classify(QStringLiteral(" $h ")) == Typed::Home
+                  && c2d::machinemacros::classify(QStringLiteral("$X")) == Typed::Unlock
+                  && c2d::machinemacros::classify(QStringLiteral("!")) == Typed::Realtime
+                  && c2d::machinemacros::classify(QStringLiteral("$$")) == Typed::Line
+                  && c2d::machinemacros::classify(QStringLiteral("  ")) == Typed::Empty,
+              "mdi: typed lines are told apart");
+        QStringList h;
+        for (int i = 0; i < 40; ++i)
+            h = c2d::machinemacros::pushHistory(h, QStringLiteral("G0 X%1").arg(i));
+        h = c2d::machinemacros::pushHistory(h, QStringLiteral("G0 X39"));
+        check(h.size() == 30 && h.last() == QLatin1String("G0 X39") && h.first() == QLatin1String("G0 X10"),
+              "mdi: history keeps the last 30, no repeats");
+        grbl.events.clear();
+        panel.m_mdi->setText(QStringLiteral("G0 X10"));
+        emit panel.m_mdi->returnPressed();
+        wait(500);
+        check(grbl.count("G0 X10") == 1, "mdi: G0 X10 is sent");
+        check(panel.m_mdi->text().isEmpty(), "mdi: the line clears once sent");
+        check(QSettings().value(QStringLiteral("ui/mdiHistory")).toStringList().contains(QStringLiteral("G0 X10")),
+              "mdi: the history is kept in the settings");
+        {
+            QKeyEvent up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+            QApplication::sendEvent(panel.m_mdi, &up);
+        }
+        wait(300);
+        check(panel.m_mdi->text() == QLatin1String("G0 X10"), "mdi: Up brings the last line back");
+        check(grbl.count("$J=") == 0, "mdi: Up in the command line does not jog");
+        check(panel.sendTyped(QStringLiteral("$$")), "mdi: $ commands go out");
+        wait(300);
+        check(grbl.count("$$") >= 1, "mdi: $$ sent as a line");
+    }
+
+    if (mode == "mdihome") {
+        // $H typed goes through Initialize: homing, then the park after it.
+        grbl.events.clear();
+        check(panel.sendTyped(QStringLiteral("$H")), "mdihome: taken");
+        check(panel.m_parkAfterHome, "mdihome: the page's homing path (park after) is armed");
+        wait(2500);
+        const int ih = grbl.indexOf("$H"), ip = grbl.indexOf("G53 G0 X");
+        check(ih >= 0 && ip > ih, "mdihome: homed, then parked like Initialize");
+    }
+
+    if (mode == "macro") {
+        // A two-line macro sends both lines in order; the note is not sent.
+        // From its button, and from the gamepad.
+        QSettings set;
+        c2d::machinemacros::save(set, {{QStringLiteral("Corner"),
+                                        {QStringLiteral("G0 X5"), QStringLiteral("; a note"),
+                                         QStringLiteral("G0 Y7")}}});
+        set.sync();
+        panel.refreshMacroButtons();
+        check(panel.m_macroBtns.at(0)->text() == QLatin1String("Corner")
+                  && !panel.m_macroBtns.at(0)->isHidden() && panel.m_macroBtns.at(1)->isHidden(),
+              "macro: one button, named");
+        grbl.events.clear();
+        panel.m_macroBtns.at(0)->click();
+        wait(800);
+        const int ix = grbl.indexOf("G0 X5"), iy = grbl.indexOf("G0 Y7");
+        check(ix >= 0 && iy > ix, "macro: both lines, in order");
+        check(grbl.count("; a note") == 0, "macro: notes are not sent");
+        check(c2d::gamepadmap::actions().contains(QStringLiteral("macro1"))
+                  && c2d::gamepadmap::label(QStringLiteral("macro4")) == QLatin1String("Macro 4"),
+              "macro: gamepad actions Macro 1..4");
+        panel.m_padMap.insert(11, QStringLiteral("macro1"));
+        grbl.events.clear();
+        padPress(11);
+        wait(800);
+        check(grbl.count("G0 X5") == 1 && grbl.count("G0 Y7") == 1, "macro: the gamepad runs it too");
+        {
+            // The editor: add one, name it, give it a line, move it up, save.
+            c2d::MacroEditDialog dlg(c2d::machinemacros::load(set));
+            auto dbtn = [&](const QString &t) {
+                for (QPushButton *b : dlg.findChildren<QPushButton *>())
+                    if (b->text() == t)
+                        return b;
+                std::fprintf(stderr, "no editor button '%s'\n", qPrintable(t));
+                std::exit(1);
+            };
+            dbtn(QStringLiteral("+ Add"))->click();
+            dlg.m_name->setText(QStringLiteral("Up"));
+            dlg.m_lines->setPlainText(QStringLiteral("G53 G0 Z-5"));
+            dbtn(QStringLiteral("▲ Up"))->click();
+            dbtn(QStringLiteral("+ Add"))->click();   // left empty: dropped on Save
+            dbtn(QStringLiteral("Save"))->click();
+            const QVector<c2d::MachineMacro> got = dlg.macros();
+            check(got.size() == 2 && got.at(0).name == QLatin1String("Up")
+                      && got.at(0).lines == QStringList{QStringLiteral("G53 G0 Z-5")}
+                      && got.at(1).name == QLatin1String("Corner") && got.at(1).lines.size() == 3,
+                  "macro: the editor adds, reorders and drops an empty one");
+        }
+        grbl.events.clear();
+        check(!panel.runMacro(3), "macro: no macro 4, nothing runs");
+        wait(300);
+        check(grbl.events.isEmpty() || grbl.count("G0") == 0, "macro: and nothing is sent");
+    }
+
+    if (mode == "mdistream") {
+        // While a job streams: typed lines and macros are refused, Hold typed
+        // as ! still works.
+        QSettings set;
+        c2d::machinemacros::save(set, {{QStringLiteral("Corner"),
+                                        {QStringLiteral("G0 X5"), QStringLiteral("G0 Y7")}}});
+        panel.refreshMacroButtons();
+        grbl.hangDwell = true;
+        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G4P30.00"), QStringLiteral("G0X1")});
+        wait(400);
+        grbl.events.clear();
+        check(!panel.sendTyped(QStringLiteral("G0 X10")), "mdistream: refused while streaming");
+        check(!panel.runMacro(0), "mdistream: a macro is refused while streaming");
+        wait(400);
+        check(grbl.count("G0 X10") == 0 && grbl.count("G0 X5") == 0, "mdistream: nothing sent");
+        check(panel.m_console->toPlainText().contains(QStringLiteral("a job is running")),
+              "mdistream: the log says why");
+        check(panel.sendTyped(QStringLiteral("!")), "mdistream: ! is taken");
+        wait(300);
+        check(grbl.count("!") >= 1 && panel.m_held, "mdistream: ! holds through the page's Hold");
     }
 
     if (mode == "quickmove") {

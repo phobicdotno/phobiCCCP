@@ -1,4 +1,5 @@
 #include "machinepanel.h"
+#include "machinemacros.h"
 #include "jobview.h"
 #include "shopdialog.h"
 #include "grblcodes.h"
@@ -967,6 +968,30 @@ MachinePanel::MachinePanel(QWidget *parent)
     foot->addStretch(1);
     lay->addLayout(foot);
 
+    // ---- The operator's macros (machinemacros.h): one button each, and
+    // the editor. Hidden with the other idle-only buttons while cutting.
+    m_macroRow = new QWidget(body);
+    auto *macroLay = new QHBoxLayout(m_macroRow);
+    macroLay->setContentsMargins(0, 0, 0, 0);
+    macroLay->setSpacing(8);
+    for (int i = 0; i < machinemacros::kMax; ++i) {
+        auto *b = bigBtn(new QPushButton(m_macroRow), 44);
+        b->setObjectName(QStringLiteral("macro"));
+        b->hide();
+        connect(b, &QPushButton::clicked, this, [this, i] { runMacro(i); });
+        macroLay->addWidget(b);
+        m_macroBtns << b;
+    }
+    auto *macroEdit = bigBtn(new QPushButton(QStringLiteral("Macros…"), m_macroRow), 44);
+    macroEdit->setToolTip(QStringLiteral(
+        "Your own buttons for this machine: a name and a few lines of G-code "
+        "each. Add, change, delete and reorder them here."));
+    connect(macroEdit, &QPushButton::clicked, this, [this] { editMacros(); });
+    macroLay->addWidget(macroEdit);
+    macroLay->addStretch(1);
+    m_idleOnly << m_macroRow;
+    lay->addWidget(m_macroRow);
+
     // ---- BitSetter + tool change (a page of the right-hand card) -----------
     auto *bsPage = new QWidget(m_rightStack);
     m_bsPage = bsPage;
@@ -1294,6 +1319,35 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_console->setMaximumBlockCount(800);
     m_console->setFixedHeight(m_console->fontMetrics().lineSpacing() * 8 + 12);
     connLay->addWidget(m_console, 0);
+    // Command line: one line to the controller, under the log. On the shop
+    // PC the on-screen keyboard comes up by itself when it gets focus (see
+    // main.cpp, accessibility on).
+    auto *mdiRow = new QHBoxLayout;
+    mdiRow->setSpacing(6);
+    m_mdi = new QLineEdit(this);
+    m_mdi->setObjectName(QStringLiteral("mdi"));
+    m_mdi->setPlaceholderText(QStringLiteral("Type G-code or a $ command, then Send"));
+    m_mdi->setMinimumHeight(40);
+    m_mdi->setFont(QFont(QStringLiteral("monospace")));
+    m_mdi->setToolTip(QStringLiteral(
+        "One line to the controller (G0 X10, $$, $#...). Up and Down bring back "
+        "earlier lines. Not while a job runs. $H homes like Initialize, $X unlocks "
+        "like Unlock; ?, ! and ~ alone are status, hold and resume."));
+    m_mdi->installEventFilter(this);
+    auto *mdiSend = new QPushButton(QStringLiteral("Send"), this);
+    mdiSend->setObjectName(QStringLiteral("big"));
+    mdiSend->setMinimumSize(90, 40);
+    mdiSend->setAutoDefault(false);
+    mdiRow->addWidget(m_mdi, 1);
+    mdiRow->addWidget(mdiSend);
+    connLay->addLayout(mdiRow);
+    m_mdiHistory = QSettings().value(QStringLiteral("ui/mdiHistory")).toStringList();
+    auto sendMdi = [this] {
+        if (sendTyped(m_mdi->text()))
+            m_mdi->clear();
+    };
+    connect(m_mdi, &QLineEdit::returnPressed, this, sendMdi);
+    connect(mdiSend, &QPushButton::clicked, this, sendMdi);
     auto showLog = [this](bool on) {
         m_console->setVisible(on);
         m_logToggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
@@ -3009,7 +3063,8 @@ void MachinePanel::gamepadButton(int number, bool pressed)
     } else if (action == QLatin1String("stop")) {
         m_stopBtn->click();
     } else if ((action == QLatin1String("zeroxy") || action == QLatin1String("zeroz")
-                || action == QLatin1String("home")) && questionOpen(this)) {
+                || action == QLatin1String("home") || action.startsWith(QLatin1String("macro")))
+               && questionOpen(this)) {
         // What a question on this page says was worked out before it opened
         // (Run and Hover check the travel from the work zero as it was): a
         // pad button bumped meanwhile must not move the zero or home the
@@ -3029,6 +3084,8 @@ void MachinePanel::gamepadButton(int number, bool pressed)
         m_grbl->sendRealtime(char(action == QLatin1String("spindle+") ? 0x9A : 0x9B));
     } else if (action == QLatin1String("coolant")) {
         toggleCoolant();
+    } else if (action.startsWith(QLatin1String("macro"))) {
+        runMacro(action.mid(5).toInt() - 1);
     } else if (action == QLatin1String("rapid")) {
         // 100 → 50 → 25 → 100, from what the controller last reported.
         const int now = m_grbl->status().ovRapid;
@@ -3038,6 +3095,164 @@ void MachinePanel::gamepadButton(int number, bool pressed)
         log(QStringLiteral("gamepad: button %1 is mapped to \"%2\", which is not "
                            "an action").arg(number).arg(action));
     }
+}
+
+// ---- command line and macros --------------------------------------------------
+
+bool MachinePanel::eventFilter(QObject *watched, QEvent *event)
+{
+    // Up and Down in the command line walk its history; they must not reach
+    // the page, where they jog Y.
+    if (watched == m_mdi && event->type() == QEvent::KeyPress) {
+        const int k = static_cast<QKeyEvent *>(event)->key();
+        if (k == Qt::Key_Up || k == Qt::Key_Down) {
+            if (m_mdiHistory.isEmpty())
+                return true;
+            if (m_mdiBrowse < 0) {
+                if (k == Qt::Key_Down)
+                    return true;
+                m_mdiDraft = m_mdi->text();
+                m_mdiBrowse = m_mdiHistory.size();
+            }
+            m_mdiBrowse += k == Qt::Key_Up ? -1 : 1;
+            if (m_mdiBrowse < 0)
+                m_mdiBrowse = 0;
+            if (m_mdiBrowse >= m_mdiHistory.size()) {
+                m_mdiBrowse = -1;
+                m_mdi->setText(m_mdiDraft);
+            } else {
+                m_mdi->setText(m_mdiHistory.at(m_mdiBrowse));
+            }
+            return true;
+        }
+        if (k == Qt::Key_PageUp || k == Qt::Key_PageDown)
+            return true;   // nor jog Z
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+bool MachinePanel::sendTyped(const QString &typed)
+{
+    using machinemacros::Typed;
+    const QString line = typed.trimmed();
+    const Typed kind = machinemacros::classify(line);
+    if (kind == Typed::Empty)
+        return false;
+    if (!m_grbl->isConnected()) {
+        log(QStringLiteral("!! not connected — %1 not sent").arg(line));
+        return false;
+    }
+    m_mdiBrowse = -1;
+    m_mdiHistory = machinemacros::pushHistory(m_mdiHistory, line);
+    QSettings().setValue(QStringLiteral("ui/mdiHistory"), m_mdiHistory);
+    switch (kind) {
+    case Typed::Realtime:
+        // Through the page's own Hold / Resume, so its button stays right.
+        if (line == QLatin1String("?")) {
+            m_grbl->requestStatus();
+        } else if (line == QLatin1String("!")) {
+            if (!m_held && !m_liftHold)
+                m_pauseBtn->click();
+        } else if (m_held || m_liftHold) {
+            m_pauseBtn->click();
+        } else {
+            m_grbl->sendRealtime('~');
+        }
+        return true;
+    case Typed::Home:
+        initializeMachine();
+        return true;
+    case Typed::Unlock:
+        if (m_grbl->isStreaming()) {
+            log(QStringLiteral("!! $X not sent: a job is running"));
+            return false;
+        }
+        unlock();
+        return true;
+    default:
+        break;
+    }
+    if (m_grbl->isStreaming()) {
+        log(QStringLiteral("!! %1 not sent: a job is running — the command line waits "
+                           "until it has ended").arg(line));
+        return false;
+    }
+    if (!m_grbl->canSendCommand()) {
+        log(QStringLiteral("!! %1 not sent: busy (a macro or probe is running) — try again "
+                           "when it is done").arg(line));
+        return false;
+    }
+    if (!line.startsWith(QChar('$')) && jobWindingDown(line))
+        return false;
+    // A typed move: the next absolute jog starts from a fresh report.
+    forgetJogPlan();
+    return m_grbl->sendCommand(line);
+}
+
+void MachinePanel::refreshMacroButtons()
+{
+    if (!m_macroRow)
+        return;
+    QSettings s;
+    const QVector<MachineMacro> macros = machinemacros::load(s);
+    for (int i = 0; i < m_macroBtns.size(); ++i) {
+        QPushButton *b = m_macroBtns.at(i);
+        const bool have = i < macros.size();
+        b->setVisible(have);
+        if (!have)
+            continue;
+        b->setText(macros.at(i).name);
+        const QStringList lines = machinemacros::cleanLines(macros.at(i).lines.join(QChar('\n')));
+        b->setToolTip(QStringLiteral("Macro %1 — sends:\n%2").arg(i + 1).arg(lines.join(QChar('\n'))));
+    }
+}
+
+void MachinePanel::editMacros()
+{
+    QSettings s;
+    MacroEditDialog dlg(machinemacros::load(s), this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    QSettings w;
+    machinemacros::save(w, dlg.macros());
+    refreshMacroButtons();
+    log(QStringLiteral("macros saved (%1)").arg(dlg.macros().size()));
+}
+
+bool MachinePanel::runMacro(int index)
+{
+    QSettings s;
+    const QVector<MachineMacro> macros = machinemacros::load(s);
+    if (index < 0 || index >= macros.size()) {
+        log(QStringLiteral("!! there is no macro %1 — add it with Macros…").arg(index + 1));
+        return false;
+    }
+    const MachineMacro &m = macros.at(index);
+    const QStringList lines = machinemacros::cleanLines(m.lines.join(QChar('\n')));
+    const QString what = QStringLiteral("Macro \"%1\"").arg(m.name);
+    if (lines.isEmpty())
+        return false;
+    if (!m_grbl->isConnected()) {
+        log(QStringLiteral("!! not connected"));
+        return false;
+    }
+    if (m_grbl->isStreaming()) {
+        log(QStringLiteral("!! %1 refused: a job is running").arg(what));
+        return false;
+    }
+    if (jobWindingDown(what))
+        return false;
+    if (!m_grbl->canSendCommand()) {
+        log(QStringLiteral("!! busy — cannot run %1 now").arg(what));
+        return false;
+    }
+    if (needsInit())
+        return false;
+    if (movingStill(what))
+        return false;
+    log(QStringLiteral("%1: %2 line(s)").arg(what).arg(lines.size()));
+    m_grbl->startMacro(lines);
+    return true;
 }
 
 void MachinePanel::refreshPorts()
@@ -3115,6 +3330,7 @@ BitSetterConfig MachinePanel::bitSetter() const
 
 void MachinePanel::loadSettings()
 {
+    refreshMacroButtons();                // this machine's own
     m_loading = true;                     // widget setters must not save back
     QSettings s;
     s.beginGroup(QStringLiteral("machine"));

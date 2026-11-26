@@ -20,6 +20,7 @@ class QDoubleSpinBox;
 class QSpinBox;
 class QGroupBox;
 class QLabel;
+class QLineEdit;
 class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
@@ -444,6 +445,23 @@ private:
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
     QProgressBar *m_progress;
     QPlainTextEdit *m_console;
+
+    // Command line under the log: one line of G-code or a $ command, sent
+    // like a jog or a zero (never while a job streams). $H goes through
+    // Initialize and $X through Unlock, so the page keeps track of homing;
+    // ?, ! and ~ alone go out as realtime bytes. Up/Down walk the history.
+    QLineEdit *m_mdi = nullptr;
+    QStringList m_mdiHistory;            // newest last, kept in ui/mdiHistory
+    int m_mdiBrowse = -1;                // index into the history while walking it
+    QString m_mdiDraft;                  // what was typed before walking began
+    bool sendTyped(const QString &typed);
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    // The operator's macro buttons (machinemacros.h), per machine profile.
+    QWidget *m_macroRow = nullptr;
+    QList<QPushButton *> m_macroBtns;
+    void refreshMacroButtons();
+    void editMacros();
+    bool runMacro(int index);            // 0-based; false (and logged) when refused
 };
 
 } // namespace c2d
