@@ -20,6 +20,8 @@
 #include "machineprofiles.h"
 #include "padlink.h"
 #include "sendtopaddialog.h"
+#include "androidfiles.h"
+#include "incomingfiles.h"
 #include <QActionGroup>
 #include <QJsonDocument>
 #include <QUuid>
@@ -120,6 +122,46 @@
 #include <QPointer>
 
 namespace c2d {
+
+// Where designs are kept on the pad, and where files opened from elsewhere
+// go: Documents/phobiCCCP (on Android the app's own Documents folder).
+static QString designsDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+           + QStringLiteral("/phobiCCCP");
+}
+
+#ifdef Q_OS_ANDROID
+// Exports on the pad: no save dialog, since nothing outside the app can see
+// its folders. The file is written here and then shared or saved out.
+static QString exportsDir()
+{
+    return designsDir() + QStringLiteral("/Exports");
+}
+
+// After an export on the pad: send it on (the share sheet) or save it where
+// other apps can see it (Android's save dialog: Downloads, Drive, a stick).
+static void offerOut(QWidget *parent, const QStringList &paths, const QString &what,
+                     const QString &mimeType)
+{
+    if (paths.isEmpty())
+        return;
+    QMessageBox box(QMessageBox::Information, what,
+                    paths.size() == 1
+                        ? QStringLiteral("%1 is ready: %2").arg(what, QFileInfo(paths.first()).fileName())
+                        : QStringLiteral("%1 is ready: %2 files").arg(what).arg(paths.size()),
+                    QMessageBox::NoButton, parent);
+    QPushButton *shareBtn = box.addButton(QStringLiteral("Share…"), QMessageBox::ActionRole);
+    QPushButton *saveBtn = paths.size() == 1
+        ? box.addButton(QStringLiteral("Save to…"), QMessageBox::ActionRole) : nullptr;
+    box.addButton(QStringLiteral("Done"), QMessageBox::RejectRole);
+    box.exec();
+    if (box.clickedButton() == shareBtn)
+        androidfiles::share(paths, mimeType, what);
+    else if (saveBtn && box.clickedButton() == saveBtn)
+        androidfiles::saveCopy(paths.first(), mimeType, QFileInfo(paths.first()).fileName());
+}
+#endif
 
 // Simple flat tool icons drawn at runtime — no resource files needed.
 // The sketch-tool variants (Circle > 2-Point, ...): the shape in the normal
@@ -780,6 +822,15 @@ MainWindow::MainWindow(QWidget *parent)
             ->setShortcut(QKeySequence::New);
     fileMenu->addAction(QStringLiteral("&Open…"), this, &MainWindow::onOpen)
             ->setShortcut(QKeySequence::Open);
+    if (androidfiles::available()) {
+        // Open above shows the designs kept in the app; this reaches the rest.
+        fileMenu->addAction(QStringLiteral("Open from &tablet, Drive or USB…"), this,
+                            [] { androidfiles::pick(androidfiles::Open); })
+                ->setToolTip(QStringLiteral("Android's file picker: a design or drawing from "
+                                            "Downloads, Drive, a USB stick or another app"));
+        fileMenu->addAction(QStringLiteral("Bring in designs from the old pad app…"), this,
+                            [this] { offerOldPadDesigns(true); });
+    }
     m_recentMenu = fileMenu->addMenu(QStringLiteral("Open &Recent"));
     m_recentMenu->setToolTipsVisible(true);   // full path, since names repeat
     rebuildRecentMenu();
@@ -789,7 +840,12 @@ MainWindow::MainWindow(QWidget *parent)
             ->setShortcut(QKeySequence::SaveAs);
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral("&Import vectors…"), this, [this] {
-        importVectorFile(this, m_canvas, &m_doc, {}, {}); })
+        // On the pad the drawing is somewhere outside the app (Downloads,
+        // Drive): Android's picker, and the copy arrives in onFileArrived.
+        if (androidfiles::available() && !m_doc.filePath().isEmpty())
+            androidfiles::pick(androidfiles::Import);
+        else
+            importVectorFile(this, m_canvas, &m_doc, {}, {}); })
             ->setToolTip(QStringLiteral("SVG, DXF, HPGL (.plt), PDF, Illustrator (.ai), EPS, PostScript"));
     installImportDropHandler(this, m_canvas, &m_doc, [this](const QString &p) { openFile(p); });
     fileMenu->addSeparator();
@@ -799,6 +855,10 @@ MainWindow::MainWindow(QWidget *parent)
     fileMenu->addAction(QStringLiteral("Send to &pad…"), this, &MainWindow::onSendToPad)
             ->setToolTip(QStringLiteral("Open this design on a PhobiCCCP pad to edit it there; "
                                         "the edits come back to this file"));
+    if (androidfiles::available())
+        fileMenu->addAction(QStringLiteral("S&hare or save a copy…"), this, &MainWindow::onShareDesign)
+                ->setToolTip(QStringLiteral("The design as it is now, as a .c2d: send it with "
+                                            "another app or save it to Downloads, Drive or a USB stick"));
     fileMenu->addAction(QStringLiteral("Export &G-code…"), this,
                         &MainWindow::onExportGcode)
             ->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_G));
@@ -819,11 +879,18 @@ MainWindow::MainWindow(QWidget *parent)
         const auto hold = qScopeGuard([this] { --m_holdDoc; });
         const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
         const QString title = fi.fileName().isEmpty() ? QStringLiteral("Untitled") : fi.completeBaseName();
+#ifdef Q_OS_ANDROID
+        // Opened in the browser below, which can print or share it.
+        QDir().mkpath(exportsDir());
+        const QString dest = exportsDir() + QLatin1Char('/') + incoming::cleanName(title)
+                             + QStringLiteral(" setup sheet.html");
+#else
         const QString dest = QFileDialog::getSaveFileName(
             this, QStringLiteral("Save setup sheet"),
             (fi.fileName().isEmpty() ? QDir::homePath() : fi.absolutePath())
                 + QLatin1Char('/') + title + QStringLiteral(" setup sheet.html"),
             QStringLiteral("HTML (*.html)"));
+#endif
         if (dest.isEmpty())
             return;
         QFile f(dest);
@@ -1887,12 +1954,19 @@ void MainWindow::onExportGcode()
             return;
         }
     }
+#ifdef Q_OS_ANDROID
+    // Into the app's Exports folder under the design's name (the last export
+    // of a design replaces the one before), then shared or saved out.
+    const QString path = gcodeSuggestion();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+#else
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export G-code"),
         gcodeSuggestion(),
         QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
     if (path.isEmpty())
         return;
+#endif
     // Written beside the target and moved over it only when complete: a full
     // disk or a stick pulled mid-write must not leave a program ending in the
     // middle of a block (no retract, no spindle stop) in place of the good one.
@@ -1916,6 +1990,9 @@ void MainWindow::onExportGcode()
     if (!r.notes.isEmpty())
         msg += QStringLiteral("  (%1)").arg(r.notes.join(QStringLiteral("; ")));
     statusBar()->showMessage(msg, 8000);
+#ifdef Q_OS_ANDROID
+    offerOut(this, {path}, QStringLiteral("G-code"), QStringLiteral("text/plain"));
+#endif
 }
 
 void MainWindow::onExportDxf()
@@ -1934,11 +2011,16 @@ void MainWindow::onExportDxf()
     }
     QString suggestion = gcodeSuggestion();
     suggestion.chop(3);   // ".nc"
+#ifdef Q_OS_ANDROID
+    const QString path = suggestion + QStringLiteral(".dxf");
+    QDir().mkpath(QFileInfo(path).absolutePath());
+#else
     const QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export DXF"), suggestion + QStringLiteral(".dxf"),
         QStringLiteral("DXF (*.dxf);;All files (*)"));
     if (path.isEmpty())
         return;
+#endif
     QSaveFile f(path);
     f.setDirectWriteFallback(true);
     if (!f.open(QIODevice::WriteOnly) || f.write(r.data) != r.data.size()
@@ -1953,6 +2035,9 @@ void MainWindow::onExportDxf()
     if (r.skipped > 0)
         msg += QStringLiteral("  (%1 construction left out)").arg(r.skipped);
     statusBar()->showMessage(msg, 8000);
+#ifdef Q_OS_ANDROID
+    offerOut(this, {path}, QStringLiteral("DXF"), QStringLiteral("application/octet-stream"));
+#endif
 }
 
 void MainWindow::onExportGcodeTiled()
@@ -1975,12 +2060,17 @@ void MainWindow::onExportGcodeTiled()
         docTile > 0 ? docTile : 508.0, 10.0, 10000.0, 1, &ok);
     if (!ok)
         return;
+#ifdef Q_OS_ANDROID
+    QString path = gcodeSuggestion();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+#else
     QString path = QFileDialog::getSaveFileName(
         this, QStringLiteral("Export tiled G-code — base name (_tile1.nc, _tile2.nc, … are added)"),
         gcodeSuggestion(),
         QStringLiteral("G-code (*.nc *.gcode);;All files (*)"));
     if (path.isEmpty())
         return;
+#endif
     for (const char *suffix : {".nc", ".gcode"})
         if (path.endsWith(QLatin1String(suffix), Qt::CaseInsensitive))
             path.chop(int(qstrlen(suffix)));
@@ -2003,6 +2093,14 @@ void MainWindow::onExportGcodeTiled()
     if (!r.notes.isEmpty())
         msg += QStringLiteral("  (%1)").arg(r.notes.join(QStringLiteral("; ")));
     statusBar()->showMessage(msg, 10000);
+#ifdef Q_OS_ANDROID
+    // Only this export's tiles are shared, and nobody else sees the
+    // Exports folder: older tiles of a longer export are just removed.
+    for (const QString &old : r.stale)
+        QFile::remove(old);
+    offerOut(this, r.files, QStringLiteral("Tiled G-code"), QStringLiteral("text/plain"));
+    return;
+#endif
     // A previous export under this base name may have needed more tiles. Those
     // files are still there, still look like part of this job, and still say
     // "(tile 4/5)" inside. The save dialog only asked about <base>.nc, which is
@@ -2322,8 +2420,10 @@ void MainWindow::onOpen()
             break;
         }
 #ifdef Q_OS_ANDROID
-    if (dir.isEmpty())
-        dir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/phobiCCCP");
+    // A drawing opened from another app is a copy in the cache: not a folder
+    // to browse. The pad's designs are all under designsDir().
+    if (!dir.startsWith(designsDir()))
+        dir = designsDir();
 #endif
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Open"), dir,
@@ -2415,7 +2515,7 @@ void MainWindow::onSaveAs()
 #ifdef Q_OS_ANDROID
     // Never into the app's cache, where an untitled design lives.
     if (m_untitled || startAt.isEmpty())
-        startAt = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/phobiCCCP/")
+        startAt = designsDir() + QLatin1Char('/')
                   + (from.fileName().isEmpty() ? QStringLiteral("Design") : from.completeBaseName())
                   + QStringLiteral(".c2d");
 #endif
@@ -2689,6 +2789,128 @@ void MainWindow::openPath(const QString &path, bool untitled)
         markIsoStale();
 }
 
+// ---- files from and to other apps on the pad -------------------------------
+//
+// androidfiles.h: Android's picker, Open with and Share hand over a copy in
+// the cache; incomingfiles.h says what it is and keeps a design among the
+// others in Documents/phobiCCCP. Only the pad calls these.
+void MainWindow::onFileArrived(const QString &cachedPath, const QString &displayName, int purpose)
+{
+    // Not under a box or a dialog (a save question, an export running): it
+    // waits until that is closed, as the recovery offer does.
+    if (QApplication::activeModalWidget()) {
+        QTimer::singleShot(300, this, [this, cachedPath, displayName, purpose] {
+            onFileArrived(cachedPath, displayName, purpose);
+        });
+        return;
+    }
+    const QString title = purpose == androidfiles::Import ? QStringLiteral("Import")
+                                                          : QStringLiteral("Open");
+    QString err;
+    const QString path = incoming::settle(cachedPath, displayName, designsDir(), &err);
+    if (path.isEmpty()) {
+        QMessageBox::warning(this, title, err);
+        return;
+    }
+    const incoming::Kind kind = incoming::kindOf(path);
+    if (kind == incoming::Kind::Unsupported) {
+        QFile::remove(path);
+        QMessageBox::information(
+            this, title,
+            QStringLiteral("phobiCCCP cannot open %1.\n\nIt opens designs (.c2d), Syntexophobic "
+                           "projects (.cccp) and SVG, DXF and HPGL drawings.")
+                .arg(QFileInfo(path).fileName()));
+        return;
+    }
+    if (purpose == androidfiles::Import) {
+        if (kind != incoming::Kind::Vectors) {
+            QMessageBox::information(
+                this, title,
+                QStringLiteral("%1 is not a drawing to import (SVG, DXF or HPGL). "
+                               "File > Open from tablet, Drive or USB opens it as a design.")
+                    .arg(QFileInfo(path).fileName()));
+            return;
+        }
+        importVectorFile(this, m_canvas, &m_doc, path);
+        return;
+    }
+    openFile(path);
+    if (kind == incoming::Kind::Design && QFileInfo(m_doc.filePath()) == QFileInfo(path))
+        statusBar()->showMessage(QStringLiteral("Opened %1, kept with your designs in %2")
+                                     .arg(QFileInfo(path).fileName(), designsDir()), 8000);
+}
+
+void MainWindow::offerOldPadDesigns(bool asked)
+{
+    const QString from = androidfiles::oldPadDesignsDir();
+    if (from.isEmpty())
+        return;
+    if (!asked && QApplication::activeModalWidget()) {
+        QTimer::singleShot(500, this, [this] { offerOldPadDesigns(false); });
+        return;
+    }
+    QSettings st;
+    const QStringList doneList = st.value(QStringLiteral("pad/oldAppAdopted")).toStringList();
+    const QSet<QString> done(doneList.begin(), doneList.end());
+    const int waiting = incoming::padDesignsWaiting(from, done);
+    const QString title = QStringLiteral("Designs from the old pad app");
+    if (waiting == 0) {
+        if (asked)
+            QMessageBox::information(this, title,
+                                     QStringLiteral("There are no designs from the old pad app "
+                                                    "left to bring in."));
+        return;
+    }
+    // Asked once by itself; after that only from the File menu.
+    if (!asked) {
+        if (st.value(QStringLiteral("pad/oldAppOffered"), false).toBool())
+            return;
+        st.setValue(QStringLiteral("pad/oldAppOffered"), true);
+    }
+    if (QMessageBox::question(
+            this, title,
+            QStringLiteral("The PhobiCCCP pad app that this one replaced left %1 design(s) on "
+                           "this tablet.\n\nBring them in as designs in %2? The old app's copies "
+                           "stay as they are.%3")
+                .arg(waiting)
+                .arg(designsDir())
+                .arg(asked ? QString()
+                           : QStringLiteral("\n\n(Later: File > Bring in designs from the old pad app.)")),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes)
+        != QMessageBox::Yes)
+        return;
+    const incoming::Adopted r = incoming::adoptPadDesigns(from, designsDir(), done);
+    st.setValue(QStringLiteral("pad/oldAppAdopted"), doneList + r.ids);
+    for (const QString &p : r.made)
+        rememberRecent(p);
+    QString text = QStringLiteral("%1 design(s) brought in to %2. File > Open shows them.")
+                       .arg(r.made.size()).arg(designsDir());
+    if (!r.failed.isEmpty())
+        text += QStringLiteral("\n\nThese could not be made into designs:\n%1")
+                    .arg(r.failed.join(QLatin1Char('\n')));
+    if (r.failed.isEmpty())
+        QMessageBox::information(this, title, text);
+    else
+        QMessageBox::warning(this, title, text);
+}
+
+void MainWindow::onShareDesign()
+{
+    commitEdits();
+    if (m_doc.filePath().isEmpty())
+        return;
+    // A copy as the design is now, saved or not; the file itself is left alone.
+    QString err;
+    const QString copy = sendCopy(m_doc.filePath(), &err);
+    if (copy.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Share or save a copy"), err);
+        return;
+    }
+#ifdef Q_OS_ANDROID
+    offerOut(this, {copy}, QStringLiteral("A copy of the design"), QStringLiteral("application/octet-stream"));
+#endif
+}
+
 // ---- untitled design and settings ----------------------------------------
 //
 // With no file on the command line the window starts on a blank design the
@@ -2733,6 +2955,20 @@ void MainWindow::showStartupWindow()
     connect(autosaveTimer, &QTimer::timeout, this, &MainWindow::autosave);
     autosaveTimer->start();
     QTimer::singleShot(0, this, &MainWindow::offerRecovery);
+    if (androidfiles::available()) {
+        // The pad: files from Android's picker, Open with and Share, and what
+        // Android says back about a share or a save.
+        connect(androidfiles::Hub::instance(), &androidfiles::Hub::arrived, this, &MainWindow::onFileArrived);
+        connect(androidfiles::Hub::instance(), &androidfiles::Hub::message, this,
+                [this](const QString &text, bool error) {
+                    if (error)
+                        QMessageBox::warning(this, QStringLiteral("Files"), text);
+                    else
+                        statusBar()->showMessage(text, 8000);
+                });
+        androidfiles::start();
+        QTimer::singleShot(1000, this, [this] { offerOldPadDesigns(false); });
+    }
 }
 
 void MainWindow::autosave()
@@ -3151,6 +3387,14 @@ QString MainWindow::gcodeSuggestion() const
     // An untitled design's file is a scratch copy in the cache
     // ("untitled-6829"): name the export after where it came from.
     const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
+#ifdef Q_OS_ANDROID
+    // The pad's home and cache folders are hidden, and a file opened from
+    // elsewhere is a copy in the cache: always the Exports folder.
+    return exportsDir() + QLatin1Char('/')
+           + (fi.fileName().isEmpty() ? QStringLiteral("Untitled")
+                                      : incoming::cleanName(fi.completeBaseName()))
+           + QStringLiteral(".nc");
+#endif
     if (fi.fileName().isEmpty())
         return QDir::homePath() + QStringLiteral("/Untitled.nc");
     return fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".nc");

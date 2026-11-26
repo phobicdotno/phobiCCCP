@@ -70,6 +70,7 @@ add_library(phobicccp_core STATIC
     src/recovery.cpp
     src/machineprofiles.cpp
     src/padlink.cpp
+    src/incomingfiles.cpp
 )
 # The binary should be able to say which build it is (--version, --help);
 # PROJECT_VERSION is the single source of truth in this file. It reaches the
@@ -125,6 +126,7 @@ add_library(phobicccp_ui STATIC
     src/sendtopaddialog.cpp
     src/sendtodialog.cpp
     src/remotemachine.cpp
+    src/androidfiles.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -368,6 +370,12 @@ if(Qt6Test_FOUND)
     add_executable(test_padenter tests/test_padenter.cpp)
     target_link_libraries(test_padenter PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padenter COMMAND test_padenter)
+    # Files from other apps on the pad (picker, Open with, Share): what they
+    # are, where they go, and the old pad app's designs made into .c2d files.
+    add_executable(test_incomingfiles tests/test_incomingfiles.cpp)
+    target_link_libraries(test_incomingfiles PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME incomingfiles COMMAND test_incomingfiles)
+    set_tests_properties(incomingfiles PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_tpflush tests/test_tpflush.cpp)
     target_link_libraries(test_tpflush PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpflush COMMAND test_tpflush)

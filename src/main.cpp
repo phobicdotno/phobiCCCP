@@ -719,9 +719,11 @@ int main(int argc, char *argv[])
     QObject::connect(&app, &QApplication::focusChanged, &app,
                      [](QWidget *, QWidget *now) { keepUnitOutOfSelection(now); });
 #ifdef Q_OS_ANDROID
-    // Qt's own file dialog, as on the desktop: Android's picker hands back
-    // content:// links, which a design (an SQLite file) cannot be opened
-    // or saved through. Designs live in the app's Documents folder.
+    // Qt's own file dialog for the designs in the app's Documents folder:
+    // Android's picker hands back content:// links, which a design (an
+    // SQLite file) cannot be opened or saved through. Files from anywhere
+    // else come through Android's picker, Open with and Share as a copy
+    // (androidfiles.h), and exports go out through the share sheet.
     app.setAttribute(Qt::AA_DontUseNativeDialogs);
     QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
                   + QStringLiteral("/phobiCCCP"));

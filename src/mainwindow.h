@@ -141,6 +141,17 @@ private:
     // Ask before throwing edits away. False = the user cancelled.
     bool confirmDiscard(const QString &what);
 
+    // On the pad (androidfiles.h): a file picked in Android's picker, opened
+    // with phobiCCCP or shared to it from another app, as a copy in the cache.
+    // `purpose`: androidfiles::Purpose.
+    void onFileArrived(const QString &cachedPath, const QString &displayName, int purpose);
+    // The designs the PhobiCCCP pad app before this one left on the tablet,
+    // as .c2d files: offered once at start-up, and any time from the File
+    // menu (`asked`).
+    void offerOldPadDesigns(bool asked);
+    // Share the design as it is now, or save a copy of it, out of the app.
+    void onShareDesign();
+
     // File > Open Recent: the last five documents opened, most recent first,
     // kept in QSettings so the list survives a restart.
     void rememberRecent(const QString &path);

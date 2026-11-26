@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- What the app may hand to other apps (share sheet, opening a setup sheet
+     in the browser): its own files, its Documents (designs and exports,
+     QStandardPaths::DocumentsLocation is the app's external files folder)
+     and the cache (a copy of a design to share). -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <files-path name="files_path" path="/"/>
+    <external-files-path name="external_files" path="."/>
+    <cache-path name="cache" path="."/>
 </paths>
