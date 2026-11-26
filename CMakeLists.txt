@@ -50,6 +50,7 @@ add_library(phobicccp_core STATIC
     src/surfacemap.cpp
     src/simulation.cpp
     src/vectorops.cpp
+    src/dogbone.cpp
     src/sketch.cpp
     src/parametric.cpp
     src/adaptive.cpp
@@ -205,6 +206,9 @@ add_test(NAME parametric COMMAND test_parametric)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
+add_executable(test_dogbone tests/test_dogbone.cpp)
+target_link_libraries(test_dogbone PRIVATE phobicccp_core)
+add_test(NAME dogbone COMMAND test_dogbone)
 # Projects sent from Syntexophobic: the protocol reader and a loopback transfer.
 add_executable(test_receiver tests/test_receiver.cpp)
 target_link_libraries(test_receiver PRIVATE phobicccp_ui)

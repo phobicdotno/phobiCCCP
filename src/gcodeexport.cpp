@@ -2,6 +2,7 @@
 #include "adaptive.h"
 #include "c2ddocument.h"
 #include "cam3d.h"
+#include "dogbone.h"
 #include "heightmodel.h"
 #include "post_grbl.h"
 #include "vcarve.h"
@@ -4172,9 +4173,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 res.notes << QStringLiteral("%1: %2 open vector(s) cut without tabs (tabs go on closed vectors only)")
                                  .arg(name).arg(openTabless);
         } else if (contour || cutout) {
-            const QPainterPath region = regionOf(elems);
             const bool inside = contour ? j.value("ofset_dir").toInt(0) < 0
                                         : j.value("flip_inside_outside").toBool(false);
+            // Corner relief (phobiCCCP key "corners"): bites into the part's
+            // inside corners before the offset, the size of this bit.
+            const QPainterPath region = withCornerRelief(regionOf(elems), !inside, 2 * toolR,
+                                                         cornerStyleOf(j.value("corners")));
             // stock_to_leave keeps the cut that much further from the vector
             // on the material side (cutouts never leave stock).
             const double leave = contour ? qMax(0.0, numOr(j.value("stock_to_leave"), 0)) : 0.0;
@@ -4300,7 +4304,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             const double helixAngle = numOr(j.value("helix_angle"), 2);
             bool capped = false;
             pocketStep = stepover;
-            for (const QPainterPath &comp : components(regionOf(elems))) {
+            const QPainterPath pocketRegion = withCornerRelief(regionOf(elems), false, 2 * toolR,
+                                                               cornerStyleOf(j.value("corners")));
+            for (const QPainterPath &comp : components(pocketRegion)) {
                 if (useRest) {
                     for (const QPainterPath &rc : restRegions(comp, toolR, prevR, leave)) {
                         capped |= !ringFillJob(rc, 0.0, stepover, jobs, toolR);
