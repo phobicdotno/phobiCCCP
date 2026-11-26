@@ -137,6 +137,11 @@ int main(int argc, char **argv)
     const QrCode tooLong = qrEncode(QByteArray(qrMaxBytes(QrEcc::L) + 1, 'x'), QrEcc::L);
     check(tooLong.version == 0 && !tooLong.error.isEmpty(), "too long: error, nothing drawn");
     check(qrEncode(QByteArray(), QrEcc::M).version == 0, "empty text: nothing");
+    // UTF-8 text carries a 12-bit ECI header: 14 bytes fit v1-M as ASCII, not as UTF-8.
+    check(qrEncode(QByteArray(14, 'e'), QrEcc::M).version == 1, "14 ASCII bytes in v1-M");
+    check(qrEncode(QString(7, QChar(0xe9)).toUtf8(), QrEcc::M).version == 2, "UTF-8 adds the ECI header");
+    check(qrEncode(QByteArray(qrMaxBytes(QrEcc::L), char(0xc3)), QrEcc::L).error.contains(QLatin1String("bytes")),
+          "UTF-8 too long: limit told in bytes");
 
     // Vectors: 50 mm with 2 quiet modules, centred at (100, 80).
     for (const QrCode *c : {&hello, &url, &big}) {

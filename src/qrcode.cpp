@@ -356,16 +356,21 @@ QrCode qrEncode(const QByteArray &data, QrEcc ecc)
         out.error = QStringLiteral("Type the text or web address to put in the code.");
         return out;
     }
+    // Non-ASCII text is UTF-8: say so with an ECI header (designator 26), or
+    // readers that keep to the ISO-8859-1 default show it garbled.
+    const bool utf8 = std::any_of(data.begin(), data.end(), [](char c) { return uint8_t(c) >= 0x80; });
+    const int eciBits = utf8 ? 12 : 0;
     int ver = 0;
     for (int v = 1; v <= kMaxVersion && !ver; ++v) {
         const int ccBits = v <= 9 ? 8 : 16;
-        if (4 + ccBits + 8 * data.size() <= dataCodewords(v, ecc) * 8)
+        if (eciBits + 4 + ccBits + 8 * data.size() <= dataCodewords(v, ecc) * 8)
             ver = v;
     }
     if (!ver) {
         out.error = QStringLiteral("Too long: at this error correction the code holds up to %1 "
-                                   "characters (you have %2). Use a shorter text or level L.")
-                        .arg(qrMaxBytes(ecc)).arg(data.size());
+                                   "bytes (you have %2; letters like \u00e9 take more than one). "
+                                   "Use a shorter text or level L.")
+                        .arg(qrMaxBytes(ecc) - (eciBits + 7) / 8).arg(data.size());
         return out;
     }
 
@@ -375,6 +380,10 @@ QrCode qrEncode(const QByteArray &data, QrEcc ecc)
         for (int i = len - 1; i >= 0; --i)
             bits.push_back(((val >> i) & 1) != 0);
     };
+    if (utf8) {
+        append(0x7, 4);
+        append(26, 8);
+    }
     append(0x4, 4);
     append(unsigned(data.size()), ver <= 9 ? 8 : 16);
     for (char c : data)
