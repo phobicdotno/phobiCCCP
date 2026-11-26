@@ -33,6 +33,7 @@
 #include <QDoubleSpinBox>
 #include <QProgressBar>
 #include <QStackedWidget>
+#include <QTemporaryDir>
 #include <functional>
 #include <memory>
 #include "../src/c2ddocument.h"
@@ -1026,8 +1027,9 @@ int main(int argc, char **argv)
         grbl.wcoX = -200;
         grbl.wcoY = -200;
         grbl.wcoZ = -60;
-        const QString file = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-                             + QStringLiteral("/continue_test.c2d");
+        const QTemporaryDir tmp;           // its own folder: no other run's file touched
+        check(tmp.isValid(), "continue: temporary folder made");
+        const QString file = tmp.filePath(QStringLiteral("continue_test.c2d"));
         {
             // The design's file as on disk: only its bytes count (the hash).
             QFile f(file);
@@ -1092,7 +1094,6 @@ int main(int argc, char **argv)
         panel.setDocument(&doc);
         wait(800);
         check(!panel.m_continueBtn->isVisible(), "continue: not offered for a changed file");
-        QFile::remove(file);
     }
 
     if (mode == "tcspin") {
