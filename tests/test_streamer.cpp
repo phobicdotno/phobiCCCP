@@ -448,6 +448,31 @@ int main(int argc, char **argv)
         QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
     }
 
+    // Units change between the change and the cut: the cut keeps its own.
+    // An inch section that turns G21 before its next cut gets no G20 put
+    // back in front of that (mm) cut, and its feed in mm/min.
+    {
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        grbl.seen.clear();
+        int parked = -1;
+        bool finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream({QStringLiteral("G90G20"), QStringLiteral("G0Z0.2"), QStringLiteral("G0X0Y0"),
+                       QStringLiteral("G1Z-0.04F12"), QStringLiteral("G1X0.2F35"), QStringLiteral("M0 ;T2"),
+                       QStringLiteral("G21"), QStringLiteral("X20Y3")});
+        spin(2000, [&] { return parked >= 0; });
+        s.continueAfterToolChange({QStringLiteral("G21"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(3000, [&] { return finished; });
+        const int cut = grbl.seen.indexOf("X20Y3");
+        check(finished && cut > 4 && grbl.seen.value(cut - 4) == "G21" && grbl.seen.value(cut - 3) == "G0 Z2.500"
+                  && grbl.seen.value(cut - 2) == "G1 Z-1.016 F600" && grbl.seen.value(cut - 1) == "G1 F889.0",
+              qPrintable(QStringLiteral("tool change (inch, then G21): the mm cut stays in mm: %1")
+                             .arg(QString::fromLatin1(grbl.seen.mid(qMax(0, cut - 5), 6).join(" | ")))));
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
     // An inch program cutting on across the change: the way down is in mm
     // (2.5 mm above, at most 600 mm/min), G20 back right before the cut.
     {
@@ -582,6 +607,18 @@ int main(int argc, char **argv)
         check(GrblStreamer::scanModal({"S12000M3"}, 1).spindle == QChar('3'), "modal: S12000M3 is spindle on");
         // A Z move in machine coordinates or to a stored spot: work Z unknown.
         check(!GrblStreamer::scanModal({"G0Z5", "G1Z-1F300", "G53G0Z-5"}, 3).haveZ, "modal: G53 Z leaves work Z unknown");
+        {
+            // G20/G21 change how numbers read, not where the machine stands.
+            const GrblStreamer::Modal a = GrblStreamer::scanModal({"G20", "G0X1Y2", "G1Z-0.04F10", "G21"}, 4);
+            check(!a.inches && qAbs(a.z + 1.016) < 1e-9 && qAbs(a.x - 25.4) < 1e-9 && qAbs(a.feed - 254) < 1e-9,
+                  "modal: G21 after inch moves keeps the same spot, in mm");
+            // A hold's way down (G21 .. G20) in an inch contour with no Z word after
+            // it: the next hold reads the same physical depth.
+            const GrblStreamer::Modal b = GrblStreamer::scanModal(
+                {"G20", "G1Z-0.04F24", "X1", "G21", "G90", "G0Z2.500", "G1Z-1.016F600", "G20", "G1F24.0", "X2"}, 10);
+            check(b.inches && qAbs(b.z + 0.04) < 1e-9 && qAbs(b.feed - 24) < 1e-9,
+                  "modal: a second hold in an inch program goes back to the same depth");
+        }
         check(!GrblStreamer::scanModal({"G0Z5", "G28G91Z0"}, 2).haveZ, "modal: G28 Z leaves work Z unknown");
         check(!GrblStreamer::scanModal({"G0Z5", "G30"}, 2).haveZ, "modal: bare G30 leaves work Z unknown");
         check(GrblStreamer::scanModal({"G0Z5", "G53G0Z-5", "G0Z3"}, 3).haveZ, "modal: work Z named again is known");

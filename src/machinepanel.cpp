@@ -4156,6 +4156,11 @@ void MachinePanel::onStatus(const MachineStatus &st)
                 fresh += a;
         if (!homing && moving && !fresh.isEmpty()) {
             ++m_stopSeq;
+            // The end-of-job rise dies with this reset: record the job now,
+            // while its history record is still active.
+            if (m_endRisePending && m_onIdle && m_hist.active)
+                recordJobEnd(m_hist.cancelled ? QStringLiteral("cancelled") : QStringLiteral("stopped"), 0);
+            m_endRisePending = false;
             m_onIdle = nullptr;
             m_grbl->stopStream();
             m_homed = false;

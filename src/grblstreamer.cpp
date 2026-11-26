@@ -319,10 +319,16 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
                 m.valid = false;             // relative moves: Z cannot be followed
             else if (g == 53)
                 machine = true;
-            else if (g == 20)
-                m.inches = true;
-            else if (g == 21)
-                m.inches = false;
+            else if (g == 20 || g == 21) {
+                // G20/G21 change how later numbers read, not where the
+                // machine stands: keep what is known in the new units.
+                const bool in = g == 20;
+                if (in != m.inches) {
+                    const double k = in ? 1.0 / 25.4 : 25.4;
+                    m.x *= k; m.y *= k; m.z *= k; m.feed *= k;
+                    m.inches = in;
+                }
+            }
         }
         auto fm = fWord.match(l);
         if (fm.hasMatch()) { m.feed = fm.captured(1).toDouble(); m.haveFeed = true; }
@@ -704,16 +710,20 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
         // slowly in; then the program's feed again.
         const int cut = cutAt + added;
         int c = cut;
-        // In mm (an inch program's G20 is back by now): G21 for the way
-        // down, G20 again right before the program's cut.
-        if (before.inches)
+        // The program may change units between the change and the cut: the
+        // cut reads its numbers in the units active right before it.
+        const bool cutInches = scanModal(m_queue, cut).inches;
+        // The way down always in mm (G21), then the cut's own units again.
+        if (cutInches)
             m_queue.insert(c++, QStringLiteral("G21"));
         for (const QString &l : approachZ(before, QStringLiteral(" ")))
             m_queue.insert(c++, l);
-        if (before.inches)
+        if (cutInches)
             m_queue.insert(c++, QStringLiteral("G20"));
-        if (before.haveFeed)
-            m_queue.insert(c++, QStringLiteral("G1 F%1").arg(before.feed, 0, 'f', 1));
+        if (before.haveFeed) {
+            const double feed = before.feed * (before.inches ? 25.4 : 1.0) / (cutInches ? 25.4 : 1.0);
+            m_queue.insert(c++, QStringLiteral("G1 F%1").arg(feed, 0, 'f', 1));
+        }
         added += c - cut;
         armFrom = c;
     }
