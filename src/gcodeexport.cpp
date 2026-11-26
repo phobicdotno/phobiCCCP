@@ -396,13 +396,18 @@ static QPainterPath intersectRegion(const QPainterPath &a, const QPainterPath &b
 // With `overlap` > 0 (the 3D rest rough) the rest also takes the centres
 // within `overlap` of it, so a level's cut runs that much onto the floor the
 // big tool left; a cleared wall with nothing left on it stays out.
+//
+// `prevComp`, when given, is the part of `comp` the previous tool worked in
+// (inside its own boundary), and `prevLeave` its stock to leave.
 static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
-                                       double prevR, double leave, double overlap = 0)
+                                       double prevR, double leave, double overlap = 0,
+                                       const QPainterPath *prevComp = nullptr, double prevLeave = -1)
 {
     const QPainterPath mine = regionFromRings(insetRings(comp, toolR + leave));
     if (mine.isEmpty())
         return {};
-    const QPainterPath prevCentres = regionFromRings(insetRings(comp, prevR + leave));
+    const QPainterPath prevCentres = regionFromRings(
+        insetRings(prevComp ? *prevComp : comp, prevR + (prevLeave >= 0 ? prevLeave : leave)));
     if (prevCentres.isEmpty())
         return components(mine);          // the big tool never fitted: all rest
     const QPainterPath cleared = regionFromRings(outsetRings(prevCentres, prevR));
@@ -3124,6 +3129,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 // nearest 3D Rough above (rest_auto), else rest_diameter.
                 double restR = 0;
                 double prevFloor = -1e9;   // below it the previous rough cut nothing
+                // Where the previous rough worked (its own boundary) and the
+                // stock it left; unset for a typed rest diameter.
+                bool havePrevArea = false;
+                QPainterPath prevArea;
+                double prevLeave = -1;
                 if (j.value("enable_rest").toBool(false)) {
                     if (j.value("rest_auto").toBool(true)) {
                         const QVector<Toolpath> &all = doc.toolpaths();
@@ -3133,8 +3143,22 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         for (--k; k >= 0; --k)
                             if (all.at(k).type == QLatin1String("3d_rough_toolpath")
                                 && all.at(k).json.value("enabled").toBool(true)) {
-                                restR = toolGeomOf(all.at(k).json.value("tool").toObject()).radius();
-                                prevFloor = cam3dParams(all.at(k).json, safeZ).maxDepth;
+                                const QJsonObject &pj = all.at(k).json;
+                                const Cam3dParams pp = cam3dParams(pj, safeZ);
+                                QVector<const Element *> pb;
+                                const QVector<const Element *> prefd = referenced(doc, pj);
+                                for (const Element *e : prefd)
+                                    if (vec::isClosed(*e))
+                                        pb.append(e);
+                                // Only open vectors: that rough was skipped and cleared nothing.
+                                if (!prefd.isEmpty() && pb.isEmpty())
+                                    break;
+                                restR = toolGeomOf(pj.value("tool").toObject()).radius();
+                                prevFloor = pp.maxDepth;
+                                prevArea = cam3dBoundary(*hm, pb.isEmpty() ? QPainterPath() : regionOf(pb),
+                                                         pp.boundaryOffset);
+                                prevLeave = pp.stockToLeave;
+                                havePrevArea = true;
                                 break;
                             }
                     }
@@ -3153,7 +3177,9 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     QList<QPainterPath> restCentres;
                     for (const QPainterPath &comp : components(lv.region)) {
                         if (prevR > 0) {
-                            for (const QPainterPath &rc : restRegions(comp, r, prevR, p3.stockToLeave, 0.2)) {
+                            const QPainterPath prevComp = havePrevArea ? intersectRegion(comp, prevArea) : comp;
+                            for (const QPainterPath &rc : restRegions(comp, r, prevR, p3.stockToLeave, 0.2,
+                                                                      &prevComp, prevLeave)) {
                                 capped |= !ringFillJob(rc, 0.0, p3.stepover, jobs, r);
                                 restCentres << rc;
                             }
