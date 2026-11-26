@@ -768,7 +768,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         connect(historyBtn, &QPushButton::clicked, this, [this] {
             // The dialog is modal: open, it would cover Hold and Stop.
             if (isBusy()) {
-                shopTell(this, QStringLiteral("Job history"), QStringLiteral("Not while the machine works"),
+                shopShow(this, QStringLiteral("Job history"), QStringLiteral("Not while the machine works"),
                          QStringLiteral("Hold and Stop stay in reach: look at the history once the machine is idle."));
                 return;
             }
@@ -6372,7 +6372,7 @@ void MachinePanel::openCounters()
 {
     // The dialog is modal: open, it would cover Hold and Stop.
     if (isBusy()) {
-        shopTell(this, QStringLiteral("Counters"), QStringLiteral("Not while the machine works"),
+        shopShow(this, QStringLiteral("Counters"), QStringLiteral("Not while the machine works"),
                  QStringLiteral("Hold and Stop stay in reach: look at the counters once the machine is idle."));
         return;
     }
