@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.69 (build 159) — 2026-11-26
+
+> Start a job again from any toolpath or pass (and continue after a crash), the controller's $ settings with backup, run-time counters, hole and boss centre probing, preview and every toolpath setting on the pad, and nesting.
+
+- **Preview from the pad:** Preview on <computer> under the pad's Toolpaths list has the computer draw the design's toolpaths from above, as it would cut them, with the time for the whole job and each toolpath and any warnings; pinch to zoom. Nothing is opened or saved on the computer.
+- **Controller settings:** a Controller settings… button under the Machine page's Overrides fold lists every $ setting the controller reports, with its name, unit and what it does. Tap one to change it; Save sends only the changed values, reads them back, and asks first before changing limits, homing, steps/mm or travel. Save to file and Restore… keep and bring back a copy, and a copy for each machine is kept automatically on the first read of each day.
+- **Counters and service reminders:** the Machine page counts spindle hours, moving hours and cutting time per bit for each machine. Reminders for router brushes (every 50 spindle hours), V-wheels / belts (every 100 moving hours) and lead screws (every 40 moving hours) show as an amber "Due: …" line that never stops a job. Counters… shows the totals and the most-used bits, and lets you press Done or change each interval.
+- **Nest on stock:** Edit > Vectors > Nest on stock… packs the selected parts close together on the sheet to save material. Holes and text inside a part move with it. Set the spacing (twice the cutout bit by default), the edge margin, whether parts may be turned, and how many copies of each part; copies are cut by the same toolpaths. Parts that do not fit stay where they were and are listed. One Undo puts everything back.
+- **Start here:** after a broken bit, a stall or a Stop, tap a toolpath or pass in the job list and press Start here. The machine goes up, does a tool change first if that step needs another bit, moves over the start, spins up, goes down and carries on from there. Nothing before that step is cut again.
+- **Continue where it stopped:** if the computer crashed or the power went off during a job, open the same design again and home the machine. The job card then offers "Continue from <step>", which starts that toolpath or pass again from its beginning.
+- **Hole centre, boss centre and any touch plate:** the BitZero page can find the middle of a round hole (from inside) or a boss (from outside): it touches X, Y and X again, sets X0 Y0 at the centre and shows the measured diameter. Touch plate (any) sets Z0 with any plate of known thickness, no BitZero needed.
+- **All toolpath settings on the pad:** every toolpath type made on the computer (Adaptive, V-Carve, Cutout, Face and the rest) now goes to the pad, and each has an "All settings" section with the same fields, units and limits as the computer's form. Settings changed on the computer are kept instead of being reported as lost.
+
 ## v1.3.68 (build 158) — 2026-11-26
 
 > Single-line fonts, QR codes, a pencil finish, a leftover view in Simulate, job zero at the centre or any corner, realistic job times, surfacing, and a command line with macros.
