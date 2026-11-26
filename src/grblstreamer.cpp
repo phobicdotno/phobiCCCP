@@ -446,6 +446,8 @@ QStringList GrblStreamer::startFromLines(const QStringList &lines, int fromQ, co
     r << QStringLiteral("G1 F%1").arg(m.feed, 0, 'f', 1);
     if (m.motion == 0)
         r << QStringLiteral("G0");
+    else if (m.motion == 2 || m.motion == 3)
+        r << QStringLiteral("G%1").arg(m.motion);   // an arc continued from the line before
     return r + lines.mid(first);
 }
 
@@ -551,6 +553,11 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
     // Lines to run before the program resumes (the rise to the top) go into
     // the program itself, so they are sent and acknowledged like any other
     // program line instead of as commands on the side.
+    // The rise, the crossing and the park or probe macro all leave GRBL in
+    // G0 (and a probe at its own feed): a program line after the change that
+    // names no motion word would run as a rapid. The program's own motion
+    // mode and feed go back in after the way in.
+    const Modal before = scanModal(m_queue, m_nextIndex);
     int at = m_nextIndex;
     for (const QString &l : first) {
         const QString t = l.trimmed();
@@ -565,6 +572,8 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
         if (!across.isEmpty())
             m_queue.insert(at++, across);
     }
+    if (before.valid && before.haveFeed && before.motion >= 1)
+        m_queue.insert(at++, QStringLiteral("G%1 F%2").arg(before.motion).arg(before.feed, 0, 'f', 1));
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
