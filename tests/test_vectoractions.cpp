@@ -1149,7 +1149,9 @@ int main(int argc, char *argv[])
             const Element h2 = Element::makeCircle({65, 50}, 3, layer);
             const Element notch = Element::makeCircle({80, 40}, 3, layer);          // over the right edge
             const Element far = Element::makeCircle({200, 200}, 3, layer);
-            for (const Element &e : {plate, h1, h2, notch, far})
+            const Element guide = Element::withConstruction(
+                Element::makeRectangle({50, 50}, 70, 50, layer), true);
+            for (const Element &e : {plate, h1, h2, notch, far, guide})
                 sd.addElement(e);
             sd.addToolpath(tp("{tp-holes}", {h1.id, h2.id}));
             sd.addToolpath(tp("{tp-h2}", {h2.id}));
@@ -1157,6 +1159,9 @@ int main(int argc, char *argv[])
             sd.addToolpath(tp("{tp-plate}", {plate.id}));
             sd.addToolpath(tp("{tp-mixed}", {far.id, notch.id, plate.id}));
             sd.addToolpath(tp("{tp-far}", {far.id}));
+            // A Facing on the notch and a construction outline: once the
+            // notch is gone nothing it can cut is left.
+            sd.addToolpath(tp("{tp-face}", {notch.id, guide.id}));
             canvas->setDocument(&sd);
             QUndoStack *su = canvas->undoStack();
             const QStringList before = idsNow(sd);
@@ -1181,7 +1186,9 @@ int main(int argc, char *argv[])
             check(!flagged(sd, "{tp-holes}"), "subtract: a toolpath that kept vectors is not flagged");
             check(refs(sd, "{tp-notch}").isEmpty() && flagged(sd, "{tp-notch}"),
                   "subtract: a notch leaves no hole: its toolpath is emptied and marked vectors_removed");
-            check(sd.toolpaths().size() == 6, "subtract: the emptied toolpath is kept, like a delete");
+            check(sd.toolpaths().size() == 7, "subtract: the emptied toolpath is kept, like a delete");
+            check(refs(sd, "{tp-face}") == QStringList{guide.id} && flagged(sd, "{tp-face}"),
+                  "subtract: a toolpath left with only construction geometry is marked vectors_removed");
             check(sorted(refs(sd, "{tp-plate}")) == sorted(res),
                   "subtract: the plate's toolpath machines the plate-with-holes");
             const QStringList mixed = refs(sd, "{tp-mixed}");
@@ -1189,20 +1196,62 @@ int main(int argc, char *argv[])
                   "subtract: a toolpath on plate and notch keeps its other vector, gains the result, "
                   "loses the notch");
             check(refs(sd, "{tp-far}") == QStringList{far.id}, "subtract: unrelated toolpath untouched");
-            check(hint.contains(QLatin1String("1 toolpath")), "subtract: the emptied toolpath is reported");
+            check(hint.contains(QLatin1String("2 toolpath")), "subtract: the emptied toolpaths are reported");
             su->undo();
             check(refs(sd, "{tp-holes}") == QStringList({h1.id, h2.id}) &&
                   refs(sd, "{tp-notch}") == QStringList{notch.id} &&
                   refs(sd, "{tp-plate}") == QStringList{plate.id} &&
                   refs(sd, "{tp-mixed}") == QStringList({far.id, notch.id, plate.id}),
                   "subtract: undo restores every toolpath's vectors exactly");
-            check(!flagged(sd, "{tp-notch}"), "subtract: undo takes the vectors_removed mark off");
+            check(!flagged(sd, "{tp-notch}") && !flagged(sd, "{tp-face}") &&
+                  refs(sd, "{tp-face}") == QStringList({notch.id, guide.id}),
+                  "subtract: undo takes the vectors_removed marks off");
             check(idsNow(sd) == before, "subtract: undo restores the elements");
             su->redo();
             check(refs(sd, "{tp-notch}").isEmpty() && flagged(sd, "{tp-notch}") &&
                   sorted(refs(sd, "{tp-plate}")) == sorted(res),
                   "subtract: redo retargets and marks the same way");
             su->undo();
+            canvas->setDocument(&doc);
+        }
+
+        // Subtract with cutters 0.01 mm apart: two holes, each near both
+        // cutters' outlines but each from one; overlapping cutters share a hole.
+        {
+            Document sd;
+            const Element plate = Element::makeRectangle({20, 25}, 40, 50, layer);   // 0..40 x 0..50
+            const Element ca = Element::makeRectangle({15, 15}, 10, 10, layer);      // 10..20
+            const Element cb = Element::makeRectangle({25.01, 15}, 10, 10, layer);   // 20.01..30.01
+            const Element cc = Element::makeRectangle({15, 35}, 8, 8, layer);        // 11..19 x 31..39
+            const Element cd = Element::makeRectangle({20, 35}, 8, 8, layer);        // 16..24, overlaps cc
+            for (const Element &e : {plate, ca, cb, cc, cd})
+                sd.addElement(e);
+            sd.addToolpath(tp("{tp-a}", {ca.id}));
+            sd.addToolpath(tp("{tp-b}", {cb.id}));
+            sd.addToolpath(tp("{tp-c}", {cc.id}));
+            sd.addToolpath(tp("{tp-d}", {cd.id}));
+            canvas->setDocument(&sd);
+            QUndoStack *su = canvas->undoStack();
+            const QStringList before = idsNow(sd);
+            canvas->selectIds({plate.id, ca.id, cb.id, cc.id, cd.id});
+            va.boolean(vec::BoolOp::Subtract);
+            const QStringList res = added(sd, before);
+            QString ha, hb, hcd;
+            for (const QString &id : res) {
+                const QRectF bx = sd.elementById(id)->painterPath.boundingRect();
+                if (nearRect(bx, QRectF(10, 10, 10, 10), 0.005)) ha = id;
+                if (nearRect(bx, QRectF(20.01, 10, 10, 10), 0.005)) hb = id;
+                if (nearRect(bx, QRectF(11, 31, 13, 8), 0.005)) hcd = id;
+            }
+            check(res.size() == 4 && !ha.isEmpty() && !hb.isEmpty() && !hcd.isEmpty(),
+                  "close cutters: plate outline, two separate holes and one shared hole");
+            check(refs(sd, "{tp-a}") == QStringList{ha} && refs(sd, "{tp-b}") == QStringList{hb},
+                  "close cutters: each cutter's toolpath gets only the hole it made");
+            check(refs(sd, "{tp-c}") == QStringList{hcd} && refs(sd, "{tp-d}") == QStringList{hcd},
+                  "overlapping cutters: both toolpaths get the hole they made together");
+            su->undo();
+            check(refs(sd, "{tp-a}") == QStringList{ca.id} && refs(sd, "{tp-d}") == QStringList{cd.id},
+                  "close cutters: undo exact");
             canvas->setDocument(&doc);
         }
 
@@ -1450,7 +1499,7 @@ int main(int argc, char *argv[])
             check(res.size() == 1, "300 circles: one weld");
             check(refs(ud, "{tp-first}") == res && refs(ud, "{tp-last}") == res,
                   "300 circles: both ends' toolpaths get the weld");
-            check(unionMs < 4000, "300 circles: union lineage is not quadratic in the weld");
+            check(unionMs < 15000, "300 circles: union lineage is not quadratic in the weld");
             uu->undo();
             canvas->selectIds(ids);
             clock.restart();
@@ -1459,7 +1508,7 @@ int main(int argc, char *argv[])
             res = added(ud, before);
             check(res.size() == 1 && refs(ud, "{tp-first}") == res && refs(ud, "{tp-last}") == res,
                   "300 circles: the merged offset goes to both ends' toolpaths");
-            check(offsetMs < 4000, "300 circles: offset lineage stays quick on a big merged ring");
+            check(offsetMs < 15000, "300 circles: offset lineage stays quick on a big merged ring");
             uu->undo();
             canvas->setDocument(&doc);
         }

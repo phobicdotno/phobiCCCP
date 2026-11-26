@@ -2866,6 +2866,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // skipped rather than run over the whole model.
             QVector<const Element *> belems;
             const QVector<const Element *> refd = referenced(doc, j);
+            // Its boundary vectors were deleted or used up by Subtract or
+            // Offset: skipped, not run over the whole model.
+            if (refd.isEmpty() && j.value("vectors_removed").toBool(false)) {
+                res.skipped << QStringLiteral("%1 (its vectors were removed; pick vectors again)").arg(name);
+                continue;
+            }
             for (const Element *e : refd)
                 if (vec::isClosed(*e))
                     belems.append(e);

@@ -28,7 +28,10 @@ public:
     bool add(const QString &name);                       // false: empty or taken
     bool rename(const QString &from, const QString &to); // false: missing or taken
     void remove(const QString &name);
-    void addTool(const QString &name, int number);       // no-op if already in
+    // Bits one collection holds at most: a file or a peer on the network
+    // adds no more (far more than any tool library has).
+    static constexpr int kMaxTools = 2000;
+    void addTool(const QString &name, int number);       // no-op if already in, or full
     void removeTool(const QString &name, int number);
 
     // Collections from `other` replace those with the same name; the rest

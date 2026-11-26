@@ -251,6 +251,8 @@ private:
     double m_wcoX = 0, m_wcoY = 0, m_wcoZ = 0;
     bool m_haveWco = false;
     bool m_wcoStale = false;                    // an offset line went out after the last WCO
+    bool m_wcoAwaitBanner = false;              // reset sent: a WCO counts only after its banner
+    QElapsedTimer m_wcoAwaitClock;              // ...or 3 s after the reset
     double m_tloAtWco = 0.0;
     double reportScale() const;   // 25.4 when $13=1 (reports in inches)
 

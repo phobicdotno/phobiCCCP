@@ -113,6 +113,7 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     m_wcoX = m_wcoY = m_wcoZ = 0;
     m_haveWco = false;
     m_wcoStale = false;
+    m_wcoAwaitBanner = false;
     m_statusTimer->start();
     emit connected(portName);
     return true;
@@ -685,7 +686,13 @@ void GrblStreamer::stopStream()
     m_afterReset.clear();                       // a reset of its own: no $H after it
     const char reset = 0x18;                    // ctrl-X: GRBL soft reset
     m_port->write(&reset, 1);
-    m_wcoStale = m_haveWco;                     // G92 is gone after a reset: wait for a report
+    // G92 is gone after a reset: wait for a report - one made after the
+    // reset, so not before its "Grbl" banner (a report GRBL wrote just
+    // before the ctrl-X can still be on its way, with the old WCO). No
+    // banner within 3 s: the next WCO counts anyway.
+    m_wcoStale = m_haveWco;
+    m_wcoAwaitBanner = true;
+    m_wcoAwaitClock.start();
     m_errorResetTimer->stop();                  // this is the reset it waited for
     const bool wasProgram = m_streaming;
     m_streaming = false;
@@ -991,8 +998,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     // Fresh once every line is answered: a report read after
                     // the offset line's ok was made after GRBL applied it
                     // (and GRBL sends WCO on the first report after a change).
-                    if (m_wcoStale && m_adhocPending == 0 && !m_macroInflight
-                        && m_inflightSizes.isEmpty())
+                    if (m_wcoAwaitBanner && m_wcoAwaitClock.elapsed() > 3000)
+                        m_wcoAwaitBanner = false;
+                    if (m_wcoStale && !m_wcoAwaitBanner && m_adhocPending == 0
+                        && !m_macroInflight && m_inflightSizes.isEmpty())
                         m_wcoStale = false;
                 }
             } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
@@ -1110,6 +1119,10 @@ void GrblStreamer::handleLine(const QByteArray &line)
     // if it boots into Alarm the $X / $H ack re-tries it.
     if (line.startsWith("Grbl ")) {
         m_heard = true;
+        // A reset or reboot (ours or not): the offset held is from before it
+        // (G92 is gone); reports from now on are from after it.
+        m_wcoStale = m_haveWco;
+        m_wcoAwaitBanner = false;
         m_adhocPending = 0;
         m_adhocLines.clear();
         m_macroSkipAck = false;             // nothing from before is answered now

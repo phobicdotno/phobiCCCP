@@ -34,6 +34,9 @@
 - **Resume after Hold** also restores an arc's mode past setup lines (G10, G92, tool length) and leaves those lines as they were.
 - **BitZero:** stopping or leaving the "Remove the magnet" box after a Z zero forgets the old tool length, so the next job measures it again.
 - **Machine hold button or door:** a hold from the machine itself also keeps a tool change from starting until it is released.
+- **3D toolpaths** whose boundary shapes were deleted or used up are skipped instead of running over the whole model. A facing left with only construction lines counts as having lost its shapes.
+- **Subtract:** two holes cut side by side each keep their own toolpath.
+- **BitZero:** a new Z zero always makes the BitSetter measure the tool again, even if a Stop or alarm interrupts the "Remove the magnet" wait.
 - **Recovery:** with two windows open, answering No no longer deletes the recovery copy the other window just opened.
 - **Collections sync:** an old announcement repeated on the network can no longer bring back a bit removed since, and a copy takes at most 500 collections from the network.
 - **Received projects:** a long file name keeps its extension, so it still imports. With more than 400 shapes, picking in the shape strip keeps the selected shapes it has no tile for.

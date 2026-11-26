@@ -522,6 +522,124 @@ int main(int argc, char **argv)
         check(has(got, QStringLiteral("Mine"), {201, 102}), "a name we had still takes the newer edit");
     }
 
+    // 10. A full receiver (kMaxCollections collections) takes a newer whole
+    //     set from an older copy that replaces them: deletions make room first.
+    {
+        const QString f10 = tmp.path() + QStringLiteral("/f10.ini");
+        QJsonArray list;
+        for (int i = 0; i < c2d::StockSync::kMaxCollections; ++i)
+            list.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("A%1").arg(i)}, {QStringLiteral("tools"), QJsonArray()}});
+        putIni(f10, QJsonDocument(QJsonObject{{QStringLiteral("collections"), list}}).toJson(QJsonDocument::Compact), 1000);
+        c2d::StockSync F10(f10, 0);
+        const QJsonObject coll{{QStringLiteral("ts"), 2000.0},
+                               {QStringLiteral("json"), QStringLiteral("{\"collections\":[{\"name\":\"B\",\"tools\":[201]}]}")}};
+        const QByteArray legacy = QJsonDocument(QJsonObject{{QStringLiteral("app"), QStringLiteral("phobiCCCP-stock")},
+                                                            {QStringLiteral("v"), 1},
+                                                            {QStringLiteral("coll"), coll}})
+                                      .toJson(QJsonDocument::Compact);
+        check(F10.merge(legacy), "a full receiver merges a newer whole set");
+        const c2d::ToolCollections got = collectionsIn(f10);
+        check(got.all().size() == 1 && has(got, QStringLiteral("B"), {201}),
+              "and ends with exactly that set, not an empty one");
+    }
+
+    // 11. One collection holds at most ToolCollections::kMaxTools bits, from
+    //     a file or a peer; a peer's bits that would go past it are not pooled.
+    {
+        const QString m11 = tmp.path() + QStringLiteral("/m11.ini");
+        QJsonArray mine, more, big;
+        for (int i = 1; i <= 1990; ++i)
+            mine.append(i);
+        for (int i = 3001; i <= 3020; ++i)
+            more.append(i);
+        for (int i = 10001; i <= 12500; ++i)
+            big.append(i);
+        putIni(m11, QJsonDocument(QJsonObject{{QStringLiteral("collections"),
+                                               QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("My Tools")},
+                                                                      {QStringLiteral("tools"), mine}}}}})
+                        .toJson(QJsonDocument::Compact),
+               1000, "{\"ts\":{\"My Tools\":1000},\"gone\":{}}");
+        c2d::StockSync M(m11, 0);
+        const auto packet = [](const QJsonArray &cols, const QJsonObject &extra) {
+            QJsonObject coll = extra;
+            coll.insert(QStringLiteral("json"), QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("collections"), cols}})
+                                                                       .toJson(QJsonDocument::Compact)));
+            return QJsonDocument(QJsonObject{{QStringLiteral("app"), QStringLiteral("phobiCCCP-stock")},
+                                             {QStringLiteral("v"), 1},
+                                             {QStringLiteral("coll"), coll}})
+                .toJson(QJsonDocument::Compact);
+        };
+        // A fresh peer adds 20 bits to My Tools, edited after ours: 2010 > 2000.
+        M.merge(packet(QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("My Tools")}, {QStringLiteral("tools"), more}}},
+                       QJsonObject{{QStringLiteral("fresh"), true},
+                                   {QStringLiteral("items"), QJsonObject{{QStringLiteral("My Tools"), 5000.0}}}}));
+        const c2d::ToolCollections after1 = collectionsIn(m11);
+        const c2d::ToolCollection *mt = after1.byName(QStringLiteral("My Tools"));
+        check(mt && mt->tools.size() == 1990 && !mt->tools.contains(3001),
+              "a peer's bits that would take a collection past the cap are not pooled");
+        // A peer's collection of 2500 bits arrives cut to the cap.
+        M.merge(packet(QJsonArray{QJsonObject{{QStringLiteral("name"), QStringLiteral("Big")}, {QStringLiteral("tools"), big}}},
+                       QJsonObject{{QStringLiteral("ts"), 6000.0},
+                                   {QStringLiteral("items"), QJsonObject{{QStringLiteral("Big"), 6000.0}}},
+                                   {QStringLiteral("gone"), QJsonObject()}}));
+        const c2d::ToolCollections after2 = collectionsIn(m11);
+        const c2d::ToolCollection *bg = after2.byName(QStringLiteral("Big"));
+        check(bg && bg->tools.size() == c2d::ToolCollections::kMaxTools, "a peer's collection holds no more than the cap");
+        c2d::ToolCollections local;
+        local.add(QStringLiteral("x"));
+        for (int i = 0; i < 2100; ++i)
+            local.addTool(QStringLiteral("x"), i);
+        check(local.byName(QStringLiteral("x"))->tools.size() == c2d::ToolCollections::kMaxTools,
+              "addTool stops at the cap");
+    }
+
+    // 12. A fresh copy that only hears a peer whose Collections come in
+    //     parts: a collection not in a part is not touched (not stamped
+    //     again), and the copy is fresh no more once all parts of one
+    //     announce are in; a second round changes nothing.
+    {
+        const QString p12 = tmp.path() + QStringLiteral("/p12.ini"), f12 = tmp.path() + QStringLiteral("/f12.ini");
+        const QString q(6000, QLatin1Char('"')), pad(13000, QLatin1Char('P'));
+        const QJsonArray plist{QJsonObject{{QStringLiteral("name"), q}, {QStringLiteral("tools"), QJsonArray{201}}},
+                               QJsonObject{{QStringLiteral("name"), pad}, {QStringLiteral("tools"), QJsonArray{102}}},
+                               QJsonObject{{QStringLiteral("name"), QStringLiteral("My Tools")}, {QStringLiteral("tools"), QJsonArray{112}}}};
+        const QJsonObject pst{{QStringLiteral("ts"), QJsonObject{{q, 1000.0}, {pad, 1000.0}, {QStringLiteral("My Tools"), 1000.0}}},
+                              {QStringLiteral("gone"), QJsonObject()}};
+        putIni(p12, QJsonDocument(QJsonObject{{QStringLiteral("collections"), plist}}).toJson(QJsonDocument::Compact),
+               1000, QJsonDocument(pst).toJson(QJsonDocument::Compact));
+        putFresh(f12, "{\"collections\":[{\"name\":\"My Tools\",\"tools\":[301]},{\"name\":\"Mine\",\"tools\":[251]}]}",
+                 2000, "{\"ts\":{\"My Tools\":2000,\"Mine\":2000},\"gone\":{}}");
+        c2d::StockSync P12(p12, 0), F12(f12, 0);
+        QList<QByteArray> parts;
+        for (const QByteArray &pk : P12.payloads())
+            if (QJsonDocument::fromJson(pk).object().value(QStringLiteral("coll")).toObject()
+                    .value(QStringLiteral("partial")).toBool())
+                parts.append(pk);
+        check(parts.size() >= 2, "the peer's Collections go in parts");
+        const auto mineStamp = [&f12] {
+            return QJsonDocument::fromJson(QSettings(f12, QSettings::IniFormat).value(QStringLiteral("tools/collectionsStamps")).toByteArray())
+                .object().value(QStringLiteral("ts")).toObject().value(QStringLiteral("Mine")).toDouble();
+        };
+        const auto fresh = [&f12] {
+            return QSettings(f12, QSettings::IniFormat).value(QStringLiteral("tools/collectionsFresh")).toBool();
+        };
+        F12.merge(parts.first());
+        check(fresh(), "one part of several: still fresh");
+        check(mineStamp() == 2000, "a collection not in the part is not stamped again");
+        for (int i = 1; i < parts.size(); ++i)
+            F12.merge(parts[i]);
+        check(!fresh(), "all parts of one announce pooled: fresh no more");
+        check(mineStamp() == 2000, "and still not stamped again");
+        const c2d::ToolCollections f = collectionsIn(f12);
+        check(has(f, q, {201}) && has(f, pad, {102}) && has(f, QStringLiteral("My Tools"), {301, 112})
+                  && has(f, QStringLiteral("Mine"), {251}),
+              "the peer's collections pooled with ours");
+        bool again = false;
+        for (const QByteArray &pk : parts)
+            again = F12.merge(pk) || again;
+        check(!again && mineStamp() == 2000, "the same parts again change nothing");
+    }
+
     QSettings().clear();
     return g_fail ? 1 : 0;
 }

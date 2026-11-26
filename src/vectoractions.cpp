@@ -26,6 +26,7 @@
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace c2d {
 
@@ -48,10 +49,11 @@ using Lineage = QHash<QString, QStringList>;
 // results *that input became* (`from`) instead - so a pocket on two circles
 // becomes a pocket on their weld, but a drill on the cut-outs of a Subtract
 // does not become a drill on the plate. A toolpath left with no vectors
-// stays, empty, the way deleting its shapes leaves it, and is marked
+// stays, empty, the way deleting its shapes leaves it. One left with no
+// vectors that can be cut (none, or construction geometry only) is marked
 // "vectors_removed" so the export can tell it from one that never had any
 // (an empty Facing would otherwise face the whole stock); `emptied` counts
-// those. Returns (before, after) pairs for the toolpaths that change; undo
+// those, and the mark comes off a toolpath that has cuttable vectors again. Returns (before, after) pairs for the toolpaths that change; undo
 // puts the before (unmarked) copy back.
 QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QString> &removed,
                                                      const QVector<Element> &added,
@@ -62,7 +64,7 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
         return out;
     for (const Toolpath &t : d->toolpaths()) {
         const QJsonArray refs = t.json.value("elements").toArray();
-        bool hit = false;
+        bool hit = false, machinable = false;
         QJsonArray kept;
         QSet<QString> seen, wanted;
         for (const QJsonValue &v : refs) {
@@ -75,6 +77,11 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
             }
             kept.append(v);
             seen.insert(id);
+            // Construction geometry is never cut; a shape this build could
+            // not read might be, so it counts.
+            const Element *ke = d->elementById(id);
+            if (!ke || !Element::isConstruction(*ke))
+                machinable = true;
         }
         if (!hit)
             continue;
@@ -82,10 +89,11 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
             if (wanted.contains(e.id) && !seen.contains(e.id)) {
                 kept.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
                 seen.insert(e.id);
+                machinable = true;
             }
         Toolpath after = t;
         after.json.insert(QStringLiteral("elements"), kept);
-        if (kept.isEmpty()) {
+        if (!machinable) {
             after.json.insert(QStringLiteral("vectors_removed"), true);
             if (emptied)
                 ++*emptied;
@@ -199,11 +207,12 @@ QVector<QPointF> samplePoints(const QVector<QPolygonF> &polys, int n)
 }
 
 // How the result rings nest: whether each is a hole, and for a hole the
-// outline it is a hole in (-1 for an outline). Clipper winds holes against
-// their outlines, so a hole is a ring wound against the largest ring (always
-// an outline) - not a point test, which a hole touching its outline at the
-// tested vertex got wrong. A hole's outline is the smallest outline box
-// around it, tested with a few of its vertices when there is a choice.
+// outline it is a hole in (-1 for an outline). With Clipper a hole is told
+// by its winding - not a point test, which a hole touching its outline at the
+// tested vertex got wrong; without it, by depth tested off the outline. A
+// hole's outline is the smallest outline box around it (within the simplify
+// tolerance), tested with a few of its vertices when there is a choice, or
+// failing any box the outline nearest it.
 struct Nesting {
     QVector<int> parent;
     QVector<bool> hole;
@@ -215,14 +224,34 @@ Nesting nestRings(const QVector<Element> &rings)
     const int k = rings.size();
     n.parent.fill(-1, k);
     n.hole.fill(false, k);
+    constexpr double tol = 0.01;          // past Clipper's 0.005 mm simplify
     QVector<QRectF> box;
+    QVector<QVector<QPolygonF>> polys;
+    QVector<QVector<QPointF>> samples;
+    for (const Element &r : rings) {
+        box.append(r.painterPath.boundingRect());
+        polys.append(r.painterPath.toSubpathPolygons());
+        samples.append(samplePoints(polys.last(), 8));
+    }
+    auto boxAround = [&](int j, int i) {
+        return box.at(j).adjusted(-tol, -tol, tol, tol).contains(box.at(i));
+    };
+    // Whether ring i lies inside ring j, judged at a vertex of i that is not
+    // on j's outline (where a hole touches it, contains() can go either way).
+    auto inside = [&](int i, int j) {
+        for (const QPointF &v : samples.at(i))
+            if (outlineDist2(v, polys.at(j), true, 1e-12) >= 1e-12)
+                return rings.at(j).painterPath.contains(v);
+        return false;
+    };
+#ifdef HAVE_CLIPPER2
+    // Clipper winds holes against their outlines, so a hole is a ring wound
+    // against the largest ring (always an outline).
     QVector<double> area;
     int largest = -1;
     for (int i = 0; i < k; ++i) {
-        const QPainterPath &p = rings.at(i).painterPath;
-        box.append(p.boundingRect());
         double a = 0;
-        for (const QPolygonF &poly : p.toSubpathPolygons())
+        for (const QPolygonF &poly : polys.at(i))
             a += vec::ringArea(poly);
         area.append(a);
         if (largest < 0 || std::fabs(a) > std::fabs(area.at(largest)))
@@ -233,28 +262,47 @@ Nesting nestRings(const QVector<Element> &rings)
     const double outerSign = area.at(largest) < 0 ? -1.0 : 1.0;
     for (int i = 0; i < k; ++i)
         n.hole[i] = area.at(i) * outerSign < 0;
+#else
+    // The QPainterPath fallback winds its rings any way: a hole is a ring
+    // inside an odd number of others.
+    for (int i = 0; i < k; ++i) {
+        int depth = 0;
+        for (int j = 0; j < k; ++j)
+            if (j != i && boxAround(j, i) && inside(i, j))
+                ++depth;
+        n.hole[i] = depth % 2 == 1;
+    }
+#endif
     for (int i = 0; i < k; ++i) {
         if (!n.hole.at(i))
             continue;
         QVector<int> around;
         for (int j = 0; j < k; ++j)
-            if (!n.hole.at(j) && box.at(j).adjusted(-1e-6, -1e-6, 1e-6, 1e-6).contains(box.at(i)))
+            if (!n.hole.at(j) && boxAround(j, i))
                 around.append(j);
         std::sort(around.begin(), around.end(), [&](int a, int b) {
             return box.at(a).width() * box.at(a).height() < box.at(b).width() * box.at(b).height();
         });
-        if (around.size() > 1) {
-            const QVector<QPointF> pts =
-                samplePoints(rings.at(i).painterPath.toSubpathPolygons(), 8);
-            for (int j : around) {
-                bool in = false;
-                for (const QPointF &v : pts)
-                    if (rings.at(j).painterPath.contains(v)) { in = true; break; }
-                if (in) { n.parent[i] = j; break; }
-            }
-        }
+        if (around.size() > 1)
+            for (int j : around)
+                if (inside(i, j)) { n.parent[i] = j; break; }
         if (n.parent.at(i) < 0 && !around.isEmpty())
             n.parent[i] = around.first();
+        if (n.parent.at(i) >= 0)
+            continue;
+        // No outline box around it: the outline nearest it.
+        double best = std::numeric_limits<double>::max();
+        for (int j = 0; j < k; ++j) {
+            if (n.hole.at(j))
+                continue;
+            for (const QPointF &v : samples.at(i)) {
+                const double d = outlineDist2(v, polys.at(j), true, best);
+                if (d < best) {
+                    best = d;
+                    n.parent[i] = j;
+                }
+            }
+        }
     }
     return n;
 }
@@ -365,21 +413,57 @@ Lineage subtractLineage(const QVector<Element> &inputs, const QVector<Element> &
     if (inputs.isEmpty())
         return from;
     from = everyResult({inputs.first()}, results);
-    const Nesting nest = nestRings(results);
+    // Each hole vertex is credited to the cut-away outline nearest it (within
+    // 0.02 mm; ties within 0.1 µm all count): two cutters 0.01 mm apart make
+    // two holes, each near both outlines but nearest its own, while
+    // overlapping cutters that make one hole each own part of its outline.
+    constexpr double reach = 0.02;
+    const double cap = reach * reach * 1.0000001;
+    QVector<QVector<QPolygonF>> outlines;
+    QVector<QRectF> zones;
+    QVector<bool> closed;
+    QVector<QStringList> mine(inputs.size());
     for (int i = 1; i < inputs.size(); ++i) {
         const Element &c = inputs.at(i);
-        const QVector<QPolygonF> outline = fineOutline(c.painterPath);
-        const QRectF zone = c.painterPath.boundingRect().adjusted(-0.02, -0.02, 0.02, 0.02);
-        QStringList mine;
-        for (int j = 0; j < results.size(); ++j) {
-            if (!nest.hole.at(j) || !zone.intersects(results.at(j).painterPath.boundingRect()))
-                continue;
-            if (ringNear(results.at(j).painterPath.toSubpathPolygons(), outline,
-                         vec::isClosed(c), 0.02))
-                mine << results.at(j).id;
-        }
-        from.insert(c.id, mine);
+        outlines.append(fineOutline(c.painterPath));
+        zones.append(c.painterPath.boundingRect().adjusted(-reach, -reach, reach, reach));
+        closed.append(vec::isClosed(c));
     }
+    const Nesting nest = nestRings(results);
+    QVector<double> d2(outlines.size());
+    QVector<char> credited(outlines.size());
+    for (int j = 0; j < results.size(); ++j) {
+        if (!nest.hole.at(j))
+            continue;
+        const QRectF hbox = results.at(j).painterPath.boundingRect();
+        QVector<int> cand;
+        for (int k = 0; k < zones.size(); ++k)
+            if (zones.at(k).intersects(hbox) || zones.at(k).contains(hbox))
+                cand.append(k);
+        if (cand.isEmpty())
+            continue;
+        std::fill(credited.begin(), credited.end(), 0);
+        for (const QPolygonF &rp : results.at(j).painterPath.toSubpathPolygons())
+            for (const QPointF &v : rp) {
+                double best = cap;
+                for (int k : cand) {
+                    d2[k] = zones.at(k).contains(v) ? outlineDist2(v, outlines.at(k), closed.at(k), cap)
+                                                    : cap;
+                    best = qMin(best, d2.at(k));
+                }
+                if (best > reach * reach)
+                    continue;
+                const double tie = std::pow(std::sqrt(best) + 1e-4, 2);
+                for (int k : cand)
+                    if (d2.at(k) <= tie)
+                        credited[k] = 1;
+            }
+        for (int k : cand)
+            if (credited.at(k))
+                mine[k + 1] << results.at(j).id;
+    }
+    for (int i = 1; i < inputs.size(); ++i)
+        from.insert(inputs.at(i).id, mine.at(i));
     return from;
 }
 

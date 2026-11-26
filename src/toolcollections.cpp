@@ -63,7 +63,7 @@ void ToolCollections::remove(const QString &name)
 void ToolCollections::addTool(const QString &name, int number)
 {
     const int i = indexOf(name);
-    if (i >= 0 && !m_list[i].tools.contains(number))
+    if (i >= 0 && m_list[i].tools.size() < kMaxTools && !m_list[i].tools.contains(number))
         m_list[i].tools.append(number);
 }
 

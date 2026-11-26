@@ -51,6 +51,7 @@ struct FakeGrbl {
     // offset 10, 20, 0), follow absolute G0 X/Y moves, answer each G38.2 with
     // a touch at Z -7 where the head stands.
     bool positional = false;
+    bool noBanner = false;    // a reset answered without its "Grbl" banner
     // While set, oks are held back (counted) until releaseAcks().
     bool deferAcks = false;
     int deferred = 0;
@@ -109,7 +110,8 @@ struct FakeGrbl {
                 resetWhileHeld = held;
                 held = false;
                 line.clear();
-                send("\r\nGrbl 1.1h ['$' for help]\r\n");
+                if (!noBanner)
+                    send("\r\nGrbl 1.1h ['$' for help]\r\n");
             } else if (c == '\n') {
                 if (reset)
                     ++linesAfterReset;
@@ -668,6 +670,19 @@ int main(int argc, char **argv)
         check(!s.workOffsetFresh(), "wco: stale after a reset");
         spin(2000, [&] { return s.workOffsetFresh(); });
         check(s.workOffsetFresh(), "wco: fresh after the reset's next report");
+        // A report written before the reset but read after it carries the
+        // old WCO: only reports after the banner count.
+        grbl.noBanner = true;
+        s.stopStream();
+        spin(1200, [] { return false; });    // reports with WCO, no banner yet
+        check(!s.workOffsetFresh(), "wco: a report before the reset's banner does not make it fresh");
+        grbl.send("\r\nGrbl 1.1h ['$' for help]\r\n");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: fresh from the first report after the banner");
+        s.stopStream();                      // and no banner ever: fresh after a few seconds
+        spin(6000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: no banner, the wait ends after a few seconds");
+        grbl.noBanner = false;
         grbl.positional = false;
     }
 

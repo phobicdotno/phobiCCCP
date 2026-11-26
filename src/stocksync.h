@@ -1,4 +1,5 @@
 #pragma once
+#include <QHash>
 #include <QHostAddress>
 #include <QList>
 #include <QObject>
@@ -64,6 +65,8 @@ private:
     QString m_self;
     qint64 m_lastReply = 0;
     bool m_tellPeers = false;              // the last merge saw the sender is behind us
+    // Collection parts heard per announce ("sender|whole-set stamp|parts").
+    QHash<QString, QSet<int>> m_partsSeen;
     mutable QSet<int> m_known;             // tool numbers of the library
     mutable bool m_knownLoaded = false;
     mutable QString m_knownIndex;          // the synced index.json it was read with (time, size)

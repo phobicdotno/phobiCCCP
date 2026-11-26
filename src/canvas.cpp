@@ -266,7 +266,17 @@ public:
             // Left with no vectors by this delete (not made without any):
             // export skips it rather than, say, facing the whole stock.
             // Undo puts the toolpath back whole, flag and all.
-            if (kept.isEmpty())
+            // (Construction lines left on it count for nothing: export
+            // ignores them.)
+            bool machinable = false;
+            for (const QJsonValue &v : kept) {
+                const Element *e = d->elementById(v.toObject().value("uuid").toString());
+                if (e && !Element::isConstruction(*e)) {
+                    machinable = true;
+                    break;
+                }
+            }
+            if (!machinable)
                 after.json.insert(QStringLiteral("vectors_removed"), true);
             m_tps.append({t, after});
         }
@@ -1521,6 +1531,8 @@ void Canvas::setBackgroundImage(const BackgroundImage *bg)
 
 void Canvas::setDocument(Document *doc)
 {
+    m_dragDim.clear();   // a label drag on the old design ends here, before the
+                         // stack's clear tells the drag watcher anything
     m_doc = doc;
     m_fitted = false;
     m_undo->clear();
@@ -3090,7 +3102,10 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         m_touchPress.emptyPending = false;
         // A tap (no band drawn): it lets go of the shapes too, as a mouse
         // press there does. A band drawn picks its own selection.
-        if (QLineF(m_bandStart, m_bandEnd).length() < pxToMm(4))
+        // (The same "no band" test as applyBand, in viewport pixels, to
+        // where the finger came up.)
+        const QRect vr = QRect(m_bandStart, bandPoint(event->pos())).normalized();
+        if (vr.width() < 3 && vr.height() < 3)
             m_scene->clearSelection();
         emit emptyPressed();
     }

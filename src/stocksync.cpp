@@ -161,10 +161,12 @@ static QJsonObject collectionsPayload(QSettings &s, bool small = false)
 // deleted (deletions travel as stamps, in a part of their own). The
 // whole-set stamp goes as "wts", not "ts": an older copy reads "ts" and would
 // take one part as the whole set. A collection too big for any part alone is
-// not sent.
+// not sent. Each part says which it is of how many ("pi" of "parts"), so a
+// receiver knows when it has heard the whole set of one announce.
 static QList<QJsonObject> collectionParts(QSettings &s, int budget)
 {
     QList<QJsonObject> parts;
+    budget -= 32;                           // room for "pi" and "parts"
     const qint64 cts = s.value(QLatin1String(kCollTs), 0).toLongLong();
     ToolCollections all;
     if (cts <= 0 || !ToolCollections::fromJson(s.value(QLatin1String(kCollKey)).toByteArray(), &all))
@@ -223,6 +225,10 @@ static QList<QJsonObject> collectionParts(QSettings &s, int budget)
     }
     if (!list.isEmpty())
         add(part(list, items, QJsonObject()));
+    for (int i = 0; i < parts.size(); ++i) {
+        parts[i].insert(QStringLiteral("pi"), i);
+        parts[i].insert(QStringLiteral("parts"), int(parts.size()));
+    }
     return parts;
 }
 
@@ -364,8 +370,10 @@ static bool sameSet(const ToolCollections &a, const ToolCollections &b)
 // A peer's Collections into ours (settings `s`). True when ours changed.
 // *tell when the peer is behind: it would take something of ours (by the
 // rules it merges with), so it is worth answering.
+// `lastPart`: `coll` is a part that completes, with the parts heard before,
+// one announce's whole set of parts.
 static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, qint64 limit,
-                             bool *tell)
+                             bool lastPart, bool *tell)
 {
     const qint64 lts = s.value(QLatin1String(kCollTs), 0).toLongLong();
     const bool lfresh = lts > 0 && s.value(QLatin1String(kFresh), false).toBool();
@@ -465,9 +473,18 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
                 // into collections it has not changed since the peer did:
                 // a fresh announce heard again later (a late or replayed
                 // packet) does not bring back a bit removed here since.
-                if (lfresh || theirs.ts.value(p.name, 0) > mine.ts.value(p.name, 0))
+                if (lfresh || theirs.ts.value(p.name, 0) > mine.ts.value(p.name, 0)) {
+                    // All of the peer's new bits or none: never a collection
+                    // cut off part way at ToolCollections::kMaxTools.
+                    const ToolCollection *have = result.byName(p.name);
+                    int fresh = 0;
                     for (int n : p.tools)
-                        result.addTool(p.name, n);
+                        if (!have->tools.contains(n))
+                            ++fresh;
+                    if (have->tools.size() + fresh <= ToolCollections::kMaxTools)
+                        for (int n : p.tools)
+                            result.addTool(p.name, n);
+                }
             } else if (p.tools.isEmpty() && theirs.ts.value(p.name, 0) == 0) {
                 continue;                  // an untouched built-in default adds nothing
             } else if (result.all().size() >= StockSync::kMaxCollections) {
@@ -498,6 +515,10 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
             const ToolCollection *was = local.byName(c.name);
             const ToolCollection *their = peer.byName(c.name);
             const bool here = !was || was->tools != c.tools;
+            // Not in this part: nothing to say about it (stamped now on every
+            // part, it beat removals made elsewhere since).
+            if (partial && !their && !here)
+                continue;
             const bool there = !their || !sameBits(their->tools, c.tools);
             const bool untouchedDefault = c.tools.isEmpty() && out.ts.value(c.name, 0) == 0;
             changed = changed || here;
@@ -520,11 +541,25 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
         for (auto it = theirs.gone.constBegin(); it != theirs.gone.constEnd(); ++it)
             if (!result.byName(it.key()) && it.value() > out.gone.value(it.key(), 0))
                 out.gone.insert(it.key(), it.value());
-        // (A part is not all of the peer's set: still fresh until a whole
-        // one has been pooled.)
-        if (lfresh && !partial)
+        // A part is not all of the peer's set: still fresh until all parts
+        // of one announce have been pooled.
+        if (lfresh && (!partial || lastPart))
             s.setValue(QLatin1String(kFresh), false);
     } else {
+        // Deletions first: room they make counts for the additions below
+        // (a newer whole set replacing a full one of 500 left nothing).
+        for (auto it = theirs.gone.constBegin(); it != theirs.gone.constEnd(); ++it) {
+            if (result.byName(it.key())) {
+                if (out.ts.value(it.key(), 0) < it.value()) {
+                    result.remove(it.key());
+                    out.ts.remove(it.key());
+                    out.gone.insert(it.key(), it.value());
+                    changed = true;
+                }
+            } else if (it.value() > out.gone.value(it.key(), 0)) {
+                out.gone.insert(it.key(), it.value());
+            }
+        }
         for (const ToolCollection &p : peer.all()) {
             const qint64 t = theirs.ts.value(p.name, 0);
             if (const ToolCollection *c = result.byName(p.name)) {
@@ -542,18 +577,6 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
                     out.ts.insert(p.name, t);
                 out.gone.remove(p.name);
                 changed = true;
-            }
-        }
-        for (auto it = theirs.gone.constBegin(); it != theirs.gone.constEnd(); ++it) {
-            if (result.byName(it.key())) {
-                if (out.ts.value(it.key(), 0) < it.value()) {
-                    result.remove(it.key());
-                    out.ts.remove(it.key());
-                    out.gone.insert(it.key(), it.value());
-                    changed = true;
-                }
-            } else if (it.value() > out.gone.value(it.key(), 0)) {
-                out.gone.insert(it.key(), it.value());
             }
         }
     }
@@ -648,8 +671,29 @@ bool StockSync::merge(const QByteArray &data)
     // announce: its library may not have that bit, and answering for it
     // answered every packet of that copy.
     const bool whole = !split || root.value(QStringLiteral("part")).toInt(-1) == 0;
+    // Collections in parts: which parts of which announce (sender and its
+    // whole-set stamp) have been heard, to know when one whole set is in.
+    const QJsonObject coll = root.value(QStringLiteral("coll")).toObject();
+    bool lastPart = false;
+    if (coll.value(QStringLiteral("partial")).toBool()) {
+        const int pi = coll.value(QStringLiteral("pi")).toInt(-1);
+        const int parts = coll.value(QStringLiteral("parts")).toInt(0);
+        if (pi >= 0 && pi < parts && parts <= 1000) {
+            const QString key = root.value(QStringLiteral("from")).toString().left(64) + QLatin1Char('|')
+                + QString::number(coll.value(QStringLiteral("wts")).toDouble(), 'f', 0)
+                + QLatin1Char('|') + QString::number(parts);
+            if (!m_partsSeen.contains(key) && m_partsSeen.size() >= 32)
+                m_partsSeen.clear();          // bounded: a few senders at a time
+            QSet<int> &seen = m_partsSeen[key];
+            seen.insert(pi);
+            if (seen.size() >= parts) {
+                lastPart = true;
+                m_partsSeen.remove(key);
+            }
+        }
+    }
     bool collTell = false;
-    if (mergeCollections(*s, root.value(QStringLiteral("coll")).toObject(), whole, limit, &collTell))
+    if (mergeCollections(*s, coll, whole, limit, lastPart, &collTell))
         changed = true;
     // Collections too big for a datagram are not sent: answering for them
     // would only repeat a packet without them, every 2 s for ever.

@@ -2030,7 +2030,7 @@ int main(int argc, char **argv)
         panel.m_bzWantZ = false;
         panel.m_bzCx = -50; panel.m_bzCy = -60;
         int boxes = 0;
-        bool busyInBox = false, refusedInBox = false, startJob = false;
+        bool busyInBox = false, refusedInBox = false, startJob = false, refInBox = true;
         QString why;
         QTimer boxer;
         boxer.setInterval(30);
@@ -2041,6 +2041,7 @@ int main(int argc, char **argv)
             mb->setProperty("seen", true);
             ++boxes;
             busyInBox = panel.isBusy();
+            refInBox = panel.m_haveRef;
             why.clear();
             refusedInBox = !panel.startFromRemote(&why);
             if (startJob) {                // something else took the machine meanwhile
@@ -2085,6 +2086,8 @@ int main(int argc, char **argv)
         wait(800);
         check(boxes == 3 && grbl.indexOf("G10 L20") >= 0 && grbl.indexOf("G38.2") < 0,
               "bzwait: Z zero set, nothing measured into the job started meanwhile");
+        check(!refInBox, "bzwait: the stale BitSetter reference is dropped as the Z zero goes out, "
+                         "before the wait (a reset or Stop in it cannot keep it)");
         check(!panel.m_haveRef, "bzwait: the stale BitSetter reference is dropped");
         boxer.stop();
         s->stopStream();

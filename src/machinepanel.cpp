@@ -2384,6 +2384,12 @@ void MachinePanel::bitZeroApply()
                 m_grbl->sendCommand(c);
             if (m_bzWantZ && m_manualZero)
                 m_awaitToolZero = true;
+            // The Z zero is sent now: the BitSetter reference from before it
+            // is stale whatever happens to the wait below (a reset, Stop, a
+            // tool change continuing all drop it). A measurement after OK
+            // sets a new one.
+            if (m_bzWantZ)
+                forgetReference();
             log(QStringLiteral("BitZero: %1set — waiting for OK before moving").arg(what));
             const quint64 resets = m_resets;
             whenIdle([this, moveOn, resets, flow = m_flowSeq] {
@@ -2395,17 +2401,8 @@ void MachinePanel::bitZeroApply()
                 m_bzAwaitRemove = true;
                 box.exec();
                 m_bzAwaitRemove = false;
-                // The Z zero (G10 L20 Z) is already set: whatever happens
-                // next, the BitSetter reference from before it is stale, as
-                // moveOn() would say. Each way out below clears it too.
-                auto zeroSet = [this] {
-                    if (m_bzWantZ)
-                        forgetReference();
-                };
-                if (resets != m_resets || flow != m_flowSeq || !m_homed) {
-                    zeroSet();
+                if (resets != m_resets || flow != m_flowSeq || !m_homed)
                     return;                  // a reset / Stop while waiting: the position is gone
-                }
                 // Something else took the machine while the box was open: the
                 // rise and the move to the wait spot would go into it.
                 // (Parked at a tool change is fine: that is where a new bit is zeroed.)
@@ -2413,7 +2410,6 @@ void MachinePanel::bitZeroApply()
                     || m_grbl->isMacroRunning() || !m_grbl->canSendCommand()) {
                     log(QStringLiteral("!! BitZero: the machine is busy (a job or a move started while "
                                        "waiting for OK) - not moving to the wait spot"));
-                    zeroSet();
                     return;
                 }
                 // A jog (the pad) still running or just sent: GRBL refuses the
@@ -2422,7 +2418,6 @@ void MachinePanel::bitZeroApply()
                     log(QStringLiteral("!! BitZero: not moving to the wait spot: %1 - the head stays "
                                        "where it is; jog it up clear of the plate yourself")
                             .arg(stillMovingWhy()));
-                    zeroSet();
                     return;
                 }
                 moveOn({});
