@@ -359,9 +359,13 @@ void SimPanel::refreshImage()
 {
     m_left = LeftoverResult();
     m_image = m_baseImage;
-    if (m_leftBtn->isChecked() && !m_result.map.isNull()) {
+    if (m_leftBtn->isChecked() && !m_result.map.isNull() && m_stale) {
+        // The floors are the new program's, the map the old one's.
+        m_leftLabel->setText(QStringLiteral("Simulate again to check for leftovers"));
+        m_leftLabel->show();
+    } else if (m_leftBtn->isChecked() && !m_result.map.isNull()) {
         m_left = findLeftovers(m_result.map, m_floors);
-        paintLeftovers(m_image, m_left.mask);
+        paintLeftovers(m_image, m_left.mask, m_result.gougeMask);
         m_leftLabel->setText(m_floors.isEmpty()
                                  ? QStringLiteral("No pockets or V-carve flat areas to check")
                                  : leftoverSummary(m_left));
@@ -369,8 +373,7 @@ void SimPanel::refreshImage()
     } else {
         m_leftLabel->hide();
     }
-    if (!m_image.isNull())
-        m_view->setImage(m_image, m_w, m_h, m_t);
+    m_view->setImage(m_image, m_w, m_h, m_t);
 }
 
 SimSettings SimPanel::settings() const

@@ -541,18 +541,19 @@ QColor simColorThrough() { return kThrough; }
 QColor simColorGouge()   { return kGouge; }
 QColor simColorLeftover() { return kLeftover; }
 
-void paintLeftovers(QImage &img, const QVector<quint8> &mask)
+void paintLeftovers(QImage &img, const QVector<quint8> &mask, const QVector<quint8> &gouges)
 {
     const int w = img.width(), h = img.height();
     if (img.isNull() || mask.size() != qsizetype(w) * h)
         return;
+    const bool haveGouges = gouges.size() == mask.size();
     if (img.format() != QImage::Format_RGB32 && img.format() != QImage::Format_ARGB32)
         img = img.convertToFormat(QImage::Format_RGB32);
     for (int iy = 0; iy < h; ++iy) {
         QRgb *out = reinterpret_cast<QRgb *>(img.scanLine(h - 1 - iy));
         const quint8 *m = mask.constData() + qsizetype(iy) * w;
         for (int ix = 0; ix < w; ++ix) {
-            if (!m[ix])
+            if (!m[ix] || (haveGouges && gouges.at(qsizetype(iy) * w + ix)))
                 continue;
             // Mostly orange, a little of the shading kept so the shape reads.
             const QRgb c = out[ix];
