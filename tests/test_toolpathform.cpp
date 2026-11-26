@@ -12,6 +12,8 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QLabel>
+#include <QPushButton>
 #include <QLineEdit>
 #include <QSpinBox>
 #include <QTemporaryDir>
@@ -353,6 +355,31 @@ int main(int argc, char *argv[])
         app.processEvents();
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         check(editorFor<QDoubleSpinBox>(&form, "raster_angle") != nullptr, "pocket: raster angle shown for Raster");
+    }
+
+    // Chipload line under the spindle speed, and Suggest fills the feed.
+    {
+        QJsonObject slow{{"feedrate", 200.0}, {"plungerate", 100.0}, {"rpm", 16000.0}};
+        QJsonObject jc{{"type", "pocket_toolpath"}, {"uuid", "{cl}"}, {"name", "Chips"},
+                       {"enabled", true}, {"start_depth", "-0.000"}, {"end_depth", "-5.000"},
+                       {"speeds", slow}, {"tool", tool}};
+        QJsonObject got;
+        auto conn = QObject::connect(&form, &c2d::ToolpathForm::edited, [&](const QJsonObject &o) { got = o; });
+        form.setToolpath("{cl}", "pocket_toolpath", jc);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *chip = form.findChild<QLabel *>("tpChipload");
+        check(chip && chip->text().startsWith("Chipload 0.006 mm/tooth: too low"),
+              "200 mm/min at 16000 rpm on 2 flutes is too low");
+        auto *suggest = form.findChild<QPushButton *>("tpChipSuggest");
+        check(suggest != nullptr, "a Suggest button beside it");
+        suggest->click();
+        const double f = got.value("speeds").toObject().value("feedrate").toDouble();
+        check(f >= 1000 && f <= 10000, "Suggest writes a sane feed for a 10 mm bit");
+        form.setToolpath("{cl}", "pocket_toolpath", got);
+        app.processEvents();
+        check(chip->text().endsWith(": OK"), "after Suggest the chipload is OK");
+        QObject::disconnect(conn);
     }
 
     std::printf("test_toolpathform: %d checks OK\n", g_checks);

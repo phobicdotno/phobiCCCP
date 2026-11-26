@@ -1,5 +1,6 @@
 #include "toolpathform.h"
 #include "c2ddocument.h"
+#include "chipload.h"
 #include "gcodeexport.h"
 #include "tooldiagram.h"
 #include "toollibrary.h"
@@ -307,6 +308,14 @@ LibraryTool toolOf(const QJsonObject &tool)
             : (type == 2 || lt.angle > 0) ? QStringLiteral("vbit")
                                           : QStringLiteral("endmill");
     return lt;
+}
+
+// The tool library for the chipload range, read once.
+const ToolLibrary *chiploadLibrary()
+{
+    static ToolLibrary lib;
+    static const bool ok = lib.loadDefault();
+    return ok ? &lib : nullptr;
 }
 
 // A number field with a finger-sized ▼ on the left and ▲ on the right
@@ -825,7 +834,7 @@ void ToolpathForm::rebuild()
     }
     m_editors.clear();
     m_enabledBy.clear();
-    m_toolIcon = m_toolText = nullptr;
+    m_toolIcon = m_toolText = m_chipText = nullptr;
     m_name = nullptr;
     if (m_uuid.isEmpty()) {
         m_loading = false;
@@ -915,6 +924,23 @@ void ToolpathForm::rebuild()
             row->addWidget(stepper(ed, this), isSwitch ? 0 : 1, isSwitch ? Qt::AlignRight : Qt::Alignment());
             body->addLayout(row);
             m_editors.insert(kf.first, ed);
+            if (kf.first == QLatin1String("speeds.rpm") && m_json.value(QStringLiteral("tool")).isObject()
+                && !flatGet(m_json, QStringLiteral("speeds.feedrate")).isUndefined()) {
+                // Chipload from feed, rpm and flutes, with a one-tap fix.
+                auto *cr = new QHBoxLayout;
+                cr->setSpacing(8);
+                m_chipText = new QLabel(this);
+                m_chipText->setObjectName(QStringLiteral("tpChipload"));
+                m_chipText->setWordWrap(true);
+                auto *suggest = new QPushButton(QStringLiteral("Suggest"), this);
+                suggest->setObjectName(QStringLiteral("tpChipSuggest"));
+                suggest->setMinimumHeight(40);
+                suggest->setToolTip(QStringLiteral("Set the feed for a good chipload at this spindle speed"));
+                connect(suggest, &QPushButton::clicked, this, &ToolpathForm::suggestFeed);
+                cr->addWidget(m_chipText, 1);
+                cr->addWidget(suggest);
+                body->addLayout(cr);
+            }
             if (!kf.second.enabledBy.isEmpty()) {
                 m_enabledBy.insert(kf.first, kf.second.enabledBy);
                 label->setProperty("forKey", kf.first);
@@ -999,6 +1025,26 @@ void ToolpathForm::updateValues()
                      .arg(w.toHtmlEscaped());
         m_toolText->setText(s);
     }
+    if (m_chipText) {
+        const ChiploadRange r = chiploadRangeNow();
+        const LibraryTool t = toolOf(m_json.value(QStringLiteral("tool")).toObject());
+        const double c = chiploadOf(numberOf(flatGet(m_json, QStringLiteral("speeds.feedrate"))),
+                                    numberOf(flatGet(m_json, QStringLiteral("speeds.rpm"))), t.flutes);
+        const ChiploadVerdict v = classifyChipload(c, r);
+        QString text = chiploadText(c, r);
+        if (text.isEmpty())
+            text = QStringLiteral("Chipload: set feed and spindle");
+        m_chipText->setText(text);
+        m_chipText->setStyleSheet(v == ChiploadVerdict::Ok ? QStringLiteral("color: #8b93a1;")
+                                : v == ChiploadVerdict::Unknown ? QStringLiteral("color: #8b93a1;")
+                                                                : QStringLiteral("color: #f0b429;"));
+        if (r.valid())
+            m_chipText->setToolTip(QStringLiteral("Feed per tooth = feed / (rpm × flutes).\n"
+                                                  "Good range %1 – %2 mm/tooth (%3).")
+                                       .arg(r.low, 0, 'f', 3).arg(r.high, 0, 'f', 3)
+                                       .arg(r.fromLibrary ? QStringLiteral("from the tool library for this material")
+                                                          : QStringLiteral("built-in table by bit size")));
+    }
     for (auto it = m_editors.constBegin(); it != m_editors.constEnd(); ++it) {
         const QJsonValue v = flatGet(m_json, it.key());
         QWidget *w = it.value();
@@ -1063,6 +1109,30 @@ void ToolpathForm::refreshEnabled()
                 label->setEnabled(on);
         }
     }
+}
+
+ChiploadRange ToolpathForm::chiploadRangeNow() const
+{
+    const LibraryTool t = toolOf(m_json.value(QStringLiteral("tool")).toObject());
+    const ToolLibrary *lib = chiploadLibrary();
+    QString mat = lib && m_doc ? lib->materialIdForCC(m_doc->params().value(QStringLiteral("material"))) : QString();
+    if (mat.isEmpty())
+        mat = QStringLiteral("softwood");
+    return chiploadRangeFor(lib, t.number, t.diameter, t.flutes, mat);
+}
+
+void ToolpathForm::suggestFeed()
+{
+    const LibraryTool t = toolOf(m_json.value(QStringLiteral("tool")).toObject());
+    const double rpm = numberOf(flatGet(m_json, QStringLiteral("speeds.rpm")));
+    const double feed = suggestedFeed(chiploadRangeNow(), rpm, t.flutes);
+    if (feed <= 0)
+        return;
+    const QString key = QStringLiteral("speeds.feedrate");
+    const QJsonValue v = flatGet(m_json, key).isString() ? QJsonValue(QString::number(feed))
+                                                         : QJsonValue(feed);
+    commitBound(key, v, QJsonObject());   // a plain number: drops any expression
+    updateValues();
 }
 
 QString ToolpathForm::bindingOf(const QString &key) const

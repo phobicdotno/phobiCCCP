@@ -59,6 +59,7 @@ add_library(phobicccp_core STATIC
     src/importers.cpp
     src/dxfexport.cpp
     src/toollibrary.cpp
+    src/chipload.cpp
     src/toolcollections.cpp
     src/stockstamp.cpp
     src/toolpathfactory.cpp
@@ -359,6 +360,10 @@ if(Qt6Test_FOUND)
     add_executable(test_rasterpocket tests/test_rasterpocket.cpp)
     target_link_libraries(test_rasterpocket PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME rasterpocket COMMAND test_rasterpocket)
+
+    add_executable(test_chipload tests/test_chipload.cpp)
+    target_link_libraries(test_chipload PRIVATE phobicccp_ui)
+    add_test(NAME chipload COMMAND test_chipload)
     add_executable(test_padmachinemodal tests/test_padmachinemodal.cpp)
     target_link_libraries(test_padmachinemodal PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padmachinemodal COMMAND test_padmachinemodal)
