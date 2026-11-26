@@ -360,9 +360,10 @@ int main(int argc, char **argv)
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
 
-    // The same arc, but the program moved in machine coordinates before the
-    // change: where the arc starts in work X/Y is not known, so it is refused
-    // rather than sent from a guess.
+    // The same arc, but the program went to its stored spot (G28, which
+    // keeps the arc mode; a G53 move needs G0 or G1) before the change: where
+    // the arc starts in work X/Y is not known, so it is refused rather than
+    // sent from a guess.
     {
         grbl.seen.clear();
         int parked = -1;
@@ -371,7 +372,7 @@ int main(int argc, char **argv)
         QObject::connect(&s, &c2d::GrblStreamer::errorOccurred, [&](const QString &e) { err = e; });
         s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("G0X10Y0"),
                        QStringLiteral("G1Z-1F300"), QStringLiteral("G2X0Y10I-10J0F800"),
-                       QStringLiteral("G53G0X-50"), QStringLiteral("M0 ;T2"), QStringLiteral("X-10Y0I0J-10")});
+                       QStringLiteral("G28"), QStringLiteral("M0 ;T2"), QStringLiteral("X-10Y0I0J-10")});
         spin(2000, [&] { return parked >= 0; });
         const int before = grbl.seen.size();
         const int added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
@@ -422,6 +423,55 @@ int main(int argc, char **argv)
         spin(300, [] { return false; });
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
+    }
+
+    // A cut going on after the change, but a machine-coordinate Z move came
+    // before it: the work Z it would go down to is stale, so it is refused.
+    {
+        grbl.seen.clear();
+        int parked = -1;
+        QString err;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::errorOccurred, [&](const QString &e) { err = e; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("G0X0Y0"),
+                       QStringLiteral("G1Z-1F300"), QStringLiteral("G1X5F900"), QStringLiteral("G53G0Z-5"),
+                       QStringLiteral("G1X6"), QStringLiteral("M0 ;T2"), QStringLiteral("X20Y3")});
+        spin(2000, [&] { return parked >= 0; });
+        const int before = grbl.seen.size();
+        const int added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(500, [] { return false; });
+        check(added == 0 && err.contains(QLatin1String("deep")) && grbl.seen.size() == before,
+              "tool change: a cut after a G53 Z move (stale work Z) is refused, nothing sent");
+        s.stopStream();
+        spin(300, [] { return false; });
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
+    }
+
+    // An inch program cutting on across the change: the way down is in mm
+    // (2.5 mm above, at most 600 mm/min), G20 back right before the cut.
+    {
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        grbl.seen.clear();
+        int parked = -1;
+        bool finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream({QStringLiteral("G90G20"), QStringLiteral("G0Z0.2"), QStringLiteral("G0X0Y0"),
+                       QStringLiteral("G1Z-0.04F12"), QStringLiteral("G1X0.2F35"), QStringLiteral("M0 ;T2"),
+                       QStringLiteral("X0.8Y0.1")});
+        spin(2000, [&] { return parked >= 0; });
+        s.continueAfterToolChange({QStringLiteral("G21"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(3000, [&] { return finished; });
+        const int across = grbl.seen.indexOf("G90 G0 X0.200 Y0.000");
+        check(finished && across > 0 && grbl.seen.value(across - 1) == "G20"
+                  && grbl.seen.value(across + 1) == "G21" && grbl.seen.value(across + 2) == "G0 Z2.500"
+                  && grbl.seen.value(across + 3) == "G1 Z-1.016 F600" && grbl.seen.value(across + 4) == "G20"
+                  && grbl.seen.value(across + 5) == "G1 F35.0" && grbl.seen.value(across + 6) == "X0.8Y0.1",
+              qPrintable(QStringLiteral("tool change (inch): the way down in mm, G20 before the cut: %1")
+                             .arg(QString::fromLatin1(grbl.seen.mid(qMax(0, across - 1), 8).join(" | ")))));
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
 
     // The look-ahead that keeps a Z-only plunge off the BitSetter.
@@ -523,6 +573,23 @@ int main(int argc, char **argv)
         }
         check(GrblStreamer::scanModal({"G90G21", "G1Z0F600"}, 2).motion == 1,
               "modal: G21 is not a motion mode");
+        // Compact words read like spaced ones.
+        check(GrblStreamer::scanModal({"G0Z5", "G90G1X5F300"}, 2).motion == 1
+                  && GrblStreamer::scanModal({"G0Z5", "G90 G1 X5 F300"}, 2).motion == 1,
+              "modal: G90G1 is G1, as G90 G1 is");
+        check(GrblStreamer::scanModal({"G1Z-1F300", "G21G0X5"}, 2).motion == 0,
+              "modal: G21G0 is G0");
+        check(GrblStreamer::scanModal({"S12000M3"}, 1).spindle == QChar('3'), "modal: S12000M3 is spindle on");
+        // A Z move in machine coordinates or to a stored spot: work Z unknown.
+        check(!GrblStreamer::scanModal({"G0Z5", "G1Z-1F300", "G53G0Z-5"}, 3).haveZ, "modal: G53 Z leaves work Z unknown");
+        check(!GrblStreamer::scanModal({"G0Z5", "G28G91Z0"}, 2).haveZ, "modal: G28 Z leaves work Z unknown");
+        check(!GrblStreamer::scanModal({"G0Z5", "G30"}, 2).haveZ, "modal: bare G30 leaves work Z unknown");
+        check(GrblStreamer::scanModal({"G0Z5", "G53G0Z-5", "G0Z3"}, 3).haveZ, "modal: work Z named again is known");
+        {
+            const GrblStreamer::Modal h = GrblStreamer::scanModal({"G0X1Y2Z5", "G28Z5"}, 2);
+            check(h.haveXY && h.x == 1 && h.y == 2 && !h.haveZ, "modal: a Z-only G28 keeps X and Y");
+            check(!GrblStreamer::scanModal({"G0X1Y2Z5", "G28"}, 2).haveXY, "modal: bare G28 loses X and Y");
+        }
 
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
@@ -554,6 +621,34 @@ int main(int argc, char **argv)
         check(finished, "hold: the program carries on to its end");
         check(grbl.seen.lastIndexOf("M03S16000") > off, "hold: the spindle comes on again after the lift");
         // The flags above end with this block; the streamer lives on.
+        QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // The same in inches: the way down in mm (not 2.5 in at 600 in/min),
+    // G20 back before the program's next line.
+    {
+        QStringList prog = {QStringLiteral("G90G20"), QStringLiteral("G0Z0.1"), QStringLiteral("M03S16000"),
+                            QStringLiteral("G1Z0.000F40")};
+        for (int i = 0; i < 300; ++i)
+            prog << QStringLiteral("X%1Y%2Z-0.05").arg(i * 0.01).arg((i % 7) * 0.01);
+        grbl.seen.clear();
+        bool reached = false, finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::holdPointReached, [&] { reached = true; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream(prog);
+        check(s.queueHoldPoint({QStringLiteral("G21"), QStringLiteral("G53 G0 Z-5"), QStringLiteral("M5")}),
+              "hold (inch): the lines go in");
+        spin(3000, [&] { return reached; });
+        const QStringList down = s.resumeLinesAfterHold();
+        check(down == QStringList{QStringLiteral("G21"), QStringLiteral("G90"), QStringLiteral("M03S16000"),
+                                  QStringLiteral("G4P3.00"), QStringLiteral("G0Z2.500"),
+                                  QStringLiteral("G1Z-1.270F600"), QStringLiteral("G20"),
+                                  QStringLiteral("G1F40.0")},
+              qPrintable(QStringLiteral("hold (inch): the way down in mm, then G20: %1").arg(down.join(" | "))));
+        s.continueAfterHold(down);
+        spin(6000, [&] { return finished; });
+        check(finished, "hold (inch): the program carries on to its end");
         QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
