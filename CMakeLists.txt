@@ -351,7 +351,7 @@ if(Qt6Test_FOUND)
     set_tests_properties(toollib PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     # Toolpath templates: save, apply to another design, file round trip.
     add_executable(test_tptemplates tests/test_tptemplates.cpp)
-    target_link_libraries(test_tptemplates PRIVATE phobicccp_ui)
+    target_link_libraries(test_tptemplates PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tptemplates COMMAND test_tptemplates)
     set_tests_properties(tptemplates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_toolpathform tests/test_toolpathform.cpp)

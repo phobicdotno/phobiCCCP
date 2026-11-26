@@ -1701,6 +1701,7 @@ void ToolpathPanel::saveTemplateDialog()
                                  QStringLiteral("This design has no toolpaths to save."));
         return;
     }
+    bool boxToggled = false;   // the check box itself just flipped (tap or Space)
     QDialog dlg(this);
     dlg.setWindowTitle(QStringLiteral("Save as template"));
     auto *lay = new QVBoxLayout(&dlg);
@@ -1715,13 +1716,19 @@ void ToolpathPanel::saveTemplateDialog()
         auto *it = new QListWidgetItem(QStringLiteral("%1  (%2)").arg(
             t.json.value("name").toString(), toolpathLabel(t.type)), list);
         it->setData(Qt::UserRole, t.uuid);
-        // Not user-checkable: the row click below is the one toggle, so a tap
-        // on the box itself is not flipped twice.
-        it->setFlags(Qt::ItemIsEnabled);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
         const bool on = oneRow ? t.uuid == m_uuid : t.json.value("enabled").toBool(true);
         it->setCheckState(on ? Qt::Checked : Qt::Unchecked);
     }
-    connect(list, &QListWidget::itemClicked, &dlg, [](QListWidgetItem *it) {
+    // A tap anywhere on the row toggles it once: the box flips itself (as
+    // Space does) just before itemClicked, so the click leaves that one be.
+    connect(list, &QListWidget::itemChanged, &dlg, [&boxToggled, &dlg] {
+        boxToggled = true;
+        QTimer::singleShot(0, &dlg, [&boxToggled] { boxToggled = false; });
+    });
+    connect(list, &QListWidget::itemClicked, &dlg, [&boxToggled](QListWidgetItem *it) {
+        if (boxToggled)
+            return;
         it->setCheckState(it->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
     });
     lay->addWidget(list, 1);

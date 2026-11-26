@@ -370,7 +370,7 @@ QrCode qrEncode(const QByteArray &data, QrEcc ecc)
         out.error = QStringLiteral("Too long: at this error correction the code holds up to %1 "
                                    "bytes (you have %2; letters like \u00e9 take more than one). "
                                    "Use a shorter text or level L.")
-                        .arg(qrMaxBytes(ecc) - (eciBits + 7) / 8).arg(data.size());
+                        .arg((dataCodewords(kMaxVersion, ecc) * 8 - 4 - 16 - eciBits) / 8).arg(data.size());
         return out;
     }
 

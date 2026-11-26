@@ -12,7 +12,13 @@
 #include <cmath>
 
 #include <QApplication>
+#include <QDialog>
 #include <QDir>
+#include <QListWidget>
+#include <QStyle>
+#include <QStyleOptionViewItem>
+#include <QTest>
+#include <QTimer>
 #include <QFile>
 #include <QJsonArray>
 #include <QStandardPaths>
@@ -78,6 +84,49 @@ int main(int argc, char *argv[])
     ToolpathPanel panel(&canvas);
     canvas.setDocument(&a);
     panel.setDocument(&a);
+    // The save dialog's rows: one toggle per tap, on the row or on its box,
+    // and Space toggles the current row too.
+    {
+        int rowTap = -1, boxTap = -1, space = -1;
+        QTimer::singleShot(0, [&] {
+            auto *dlg = qobject_cast<QDialog *>(QApplication::activeModalWidget());
+            QListWidget *list = dlg ? dlg->findChild<QListWidget *>() : nullptr;
+            if (!list || list->count() < 1) {
+                if (dlg)
+                    dlg->reject();
+                return;
+            }
+            QListWidgetItem *it = list->item(0);
+            const QRect r = list->visualItemRect(it);
+            auto state = [it] { return it->checkState() == Qt::Checked ? 1 : 0; };
+            const int s0 = state();
+            QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, QPoint(r.right() - 10, r.center().y()));
+            QApplication::processEvents();
+            rowTap = state() != s0 ? 1 : 0;
+            QStyleOptionViewItem opt;
+            opt.initFrom(list);
+            opt.rect = r;
+            opt.features = QStyleOptionViewItem::HasCheckIndicator | QStyleOptionViewItem::HasDisplay;
+            opt.text = it->text();
+            const QRect box = list->style()->subElementRect(QStyle::SE_ItemViewItemCheckIndicator, &opt, list);
+            const int s1 = state();
+            QTest::mouseClick(list->viewport(), Qt::LeftButton, {}, box.center());
+            QApplication::processEvents();
+            boxTap = state() != s1 ? 1 : 0;
+            list->setFocus();
+            list->setCurrentItem(it);
+            const int s2 = state();
+            QTest::keyClick(list, Qt::Key_Space);
+            QApplication::processEvents();
+            space = state() != s2 ? 1 : 0;
+            dlg->reject();
+        });
+        panel.saveTemplateDialog();
+        check(rowTap == 1, "a tap on a template row ticks it once");
+        check(boxTap == 1, "a tap on the row's box ticks it once");
+        check(space == 1, "Space ticks the current row");
+    }
+
     check(panel.saveTemplate(QStringLiteral("Lid: pocket + chamfer"), {pocket.uuid, chamfer.uuid}, &err),
           "template saves");
     check(QFile::exists(tptemplates::fileFor(QStringLiteral("Lid: pocket + chamfer"))),
