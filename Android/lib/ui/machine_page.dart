@@ -28,8 +28,8 @@ class MachinePage extends StatefulWidget {
 class _MachinePageState extends State<MachinePage> {
   String? _computer;
   bool _busy = false;
-  // Stop takes two taps: the first arms it for a few seconds.
-  bool _stopArmed = false;
+  // Stop takes two taps: the first arms it, for that computer, for a few seconds.
+  String? _stopArmedFor;
   Timer? _stopDisarm;
   bool _controlBusy = false;
   AppState get app => widget.app;
@@ -38,7 +38,7 @@ class _MachinePageState extends State<MachinePage> {
   Future<void> _control(Computer c, String op) async {
     _stopDisarm?.cancel();
     setState(() {
-      _stopArmed = false;
+      _stopArmedFor = null;
       _controlBusy = true;
     });
     try {
@@ -56,15 +56,15 @@ class _MachinePageState extends State<MachinePage> {
   }
 
   void _stopTap(Computer c) {
-    if (_stopArmed) {
+    if (_stopArmedFor == c.desktop.id) {
       _control(c, 'stop');
       return;
     }
     _stopDisarm?.cancel();
     _stopDisarm = Timer(const Duration(seconds: 4), () {
-      if (mounted) setState(() => _stopArmed = false);
+      if (mounted) setState(() => _stopArmedFor = null);
     });
-    setState(() => _stopArmed = true);
+    setState(() => _stopArmedFor = c.desktop.id);
   }
 
   Widget _bigBtn(String label, IconData icon, Color color, VoidCallback? onTap, {Color text = C.base}) => SizedBox(
@@ -95,6 +95,7 @@ class _MachinePageState extends State<MachinePage> {
   Widget _runControls(Computer c, DesktopInfo info) {
     final held = info.status.onHold;
     final free = !_controlBusy;
+    final armed = _stopArmedFor == c.desktop.id;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Row(children: [
         Expanded(
@@ -105,8 +106,8 @@ class _MachinePageState extends State<MachinePage> {
         ),
         const SizedBox(width: 10),
         Expanded(
-          child: _bigBtn(_stopArmed ? 'Tap again to stop' : 'Stop', Icons.stop_rounded,
-              _stopArmed ? const Color(0xFFFF3B3B) : const Color(0xFFD03A3A), free ? () => _stopTap(c) : null,
+          child: _bigBtn(armed ? 'Tap again to stop' : 'Stop', Icons.stop_rounded,
+              armed ? const Color(0xFFFF3B3B) : const Color(0xFFD03A3A), free ? () => _stopTap(c) : null,
               text: Colors.white),
         ),
       ]),
@@ -116,7 +117,7 @@ class _MachinePageState extends State<MachinePage> {
           child: Text('Resume is off on ${c.name} (Machine › Pads may start cutting); resume it there.',
               style: const TextStyle(color: C.amber, fontSize: 13)),
         ),
-      if (_stopArmed)
+      if (armed)
         const Padding(
           padding: EdgeInsets.only(top: 8),
           child: Text('Stop resets the controller at once: the job ends and the machine needs Initialize after.',
