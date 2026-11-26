@@ -145,6 +145,24 @@ int main(int argc, char *argv[])
               "3D finish: choosing waterline writes strategy = waterline");
     }
 
+    // Corner relief: offered as Sharp (off) on a pocket that has no key,
+    // choosing T-bone writes corners = tbone.
+    {
+        QJsonObject p{{"type", "pocket_toolpath"}, {"uuid", "{cr}"}, {"name", "Pocket"},
+                      {"enabled", true}, {"stepdown", 1.0}, {"stepover", 2.0},
+                      {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{cr}", "pocket_toolpath", p);
+        app.processEvents();
+        auto *corners = editorFor<QComboBox>(&form, "corners");
+        check(corners && corners->currentText() == QStringLiteral("Sharp (off)"),
+              "pocket: corners offered, sharp when absent");
+        const int before = edits;
+        corners->setCurrentIndex(2);
+        emit corners->activated(2);
+        check(edits == before + 1 && last.value("corners").toString() == QLatin1String("tbone"),
+              "pocket: choosing T-bone writes corners = tbone");
+    }
+
     // Expressions: a field takes "depth" (a parameter) and binds to it; a
     // plain number afterwards unbinds it.
     {

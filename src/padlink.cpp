@@ -5,6 +5,7 @@
 #include "element.h"
 #include "toollibrary.h"
 #include "toolpathfactory.h"
+#include "dogbone.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -325,6 +326,10 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
             if (t.value(QStringLiteral("tabWidth")).isDouble())
                 j.insert(QStringLiteral("tab_width"), qBound(1.0, t.value(QStringLiteral("tabWidth")).toDouble(), 30.0));
         }
+        // Corner relief, set on the computer and carried untouched by the pad.
+        if ((ccType == QLatin1String("contour") || ccType == QLatin1String("pocket_toolpath"))
+            && cornerStyleOf(t.value(QStringLiteral("corners"))) != CornerStyle::Sharp)
+            j.insert(QStringLiteral("corners"), t.value(QStringLiteral("corners")).toString().trimmed().toLower());
         if (!name.isEmpty())
             j.insert(QStringLiteral("name"), name);
         j.insert(QStringLiteral("enabled"), t.value(QStringLiteral("enabled")).toBool(true));
@@ -673,6 +678,15 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             j.insert(QStringLiteral("ignore_tabs"), t.json.value(QStringLiteral("ignore_tabs")));
             toolpaths.replace(toolpaths.size() - 1, tp);
         }
+        // Corner relief goes along in the design (the pad keeps keys it does
+        // not know); off is the same as no key.
+        if ((kind == QLatin1String("profile") || kind == QLatin1String("pocket"))
+            && cornerStyleOf(t.json.value(QStringLiteral("corners"))) != CornerStyle::Sharp) {
+            QJsonObject tp = toolpaths.last().toObject();
+            tp.insert(QStringLiteral("corners"), t.json.value(QStringLiteral("corners")));
+            toolpaths.replace(toolpaths.size() - 1, tp);
+            j.insert(QStringLiteral("corners"), t.json.value(QStringLiteral("corners")));
+        }
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
         sizeToTool(j, *tool);
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
@@ -693,6 +707,8 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             have.remove(k);
             j.remove(k);
         }
+        if (cornerStyleOf(have.value(QStringLiteral("corners"))) == CornerStyle::Sharp)
+            have.remove(QStringLiteral("corners"));
         // Read only with rest on (a bit change here leaves it at the old bit).
         if (!have.value(QStringLiteral("enable_rest")).toBool() && !j.value(QStringLiteral("enable_rest")).toBool()) {
             have.remove(QStringLiteral("rest_diameter"));

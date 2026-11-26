@@ -256,6 +256,59 @@ static void testLayersAndGroupsLost(const QString &dir)
                       "and come back to the pad");
     }
 
+    // Corner relief: a key the pad keeps without editing it; it reaches the
+    // contour and pocket, comes back, and "off" set here loses nothing.
+    {
+        QJsonObject cd = d;
+        QJsonArray tps = cd.value("toolpaths").toArray();
+        for (int i = 0; i < tps.size(); ++i) {
+            QJsonObject tp = tps.at(i).toObject();
+            const QString ty = tp.value("type").toString();
+            if (ty == QLatin1String("profile") || ty == QLatin1String("pocket")) {
+                tp.insert("corners", ty == QLatin1String("pocket") ? "tbone" : "dogbone");
+                tps[i] = tp;
+            }
+        }
+        cd.insert("toolpaths", tps);
+        const QString cpath = QDir(dir).filePath("corners.c2d");
+        check(padlink::buildDocument(cd, cpath, nullptr, &err), "corners fixture builds");
+        Document cdoc;
+        cdoc.load(cpath, &err);
+        int seen = 0;
+        for (const Toolpath &t : cdoc.toolpaths())
+            if (t.type == QLatin1String("contour") || t.type == QLatin1String("pocket_toolpath")) {
+                ++seen;
+                check(t.json.value("corners").toString()
+                          == (t.type == QLatin1String("contour") ? QLatin1String("dogbone") : QLatin1String("tbone")),
+                      "pad corners reach the toolpath");
+            }
+        check(seen > 0, "the corners fixture has a contour or pocket");
+        lost.clear();
+        const QJsonObject cback = padlink::designFromDocument(cpath, cd, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("corners are not lost (%1)").arg(lost.join(", "))));
+        for (const QJsonValue &v : cback.value("toolpaths").toArray()) {
+            const QString ty = v.toObject().value("type").toString();
+            if (ty == QLatin1String("profile") || ty == QLatin1String("pocket"))
+                check(!v.toObject().value("corners").toString().isEmpty(), "and come back to the pad");
+        }
+        // "off", as the computer's form writes it, is no setting to lose.
+        const QString opath = QDir(dir).filePath("cornersoff.c2d");
+        check(padlink::buildDocument(d, opath, nullptr, &err), "corners-off fixture builds");
+        Document odoc;
+        odoc.load(opath, &err);
+        for (const Toolpath &t : odoc.toolpaths()) {
+            Toolpath u = t;
+            u.json.insert("corners", "off");
+            odoc.replaceToolpath(u);
+        }
+        odoc.save(opath, &err);
+        lost.clear();
+        const QJsonObject oback = padlink::designFromDocument(opath, d, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("corners off is not lost (%1)").arg(lost.join(", "))));
+        for (const QJsonValue &v : oback.value("toolpaths").toArray())
+            check(!v.toObject().contains("corners"), "off does not go to the pad");
+    }
+
     // r49: a named layer, a toolpath group row and an edited embedded bit
     // are lost on a rebuild too, and used to go unreported.
     {

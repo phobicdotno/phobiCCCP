@@ -433,6 +433,15 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
         add(QStringLiteral("side"), choice(QStringLiteral("cut"), QStringLiteral("Side"),
             {{QStringLiteral("outside"), QStringLiteral("Outside")}, {QStringLiteral("inside"), QStringLiteral("Inside")}}));
     add(QStringLiteral("flip_inside_outside"), sw(QStringLiteral("cut"), QStringLiteral("Cut inside the line")));
+    if (type == QLatin1String("contour") || type == QLatin1String("pocket_toolpath")
+        || type == QLatin1String("cutout")) {
+        F f = choice(QStringLiteral("cut"), QStringLiteral("Corners"),
+            {{QStringLiteral("off"), QStringLiteral("Sharp (off)")}, {QStringLiteral("dogbone"), QStringLiteral("Dogbone")},
+             {QStringLiteral("tbone"), QStringLiteral("T-bone")}});
+        f.tip = QStringLiteral("Cut a bit-sized bite into each inside corner so a square part fits. "
+                               "Dogbone goes diagonally, T-bone along the longer side.");
+        add(QStringLiteral("corners"), f);
+    }
     add(QStringLiteral("mode"), choice(QStringLiteral("cut"), QStringLiteral("Engrave"),
         {{QStringLiteral("outline"), QStringLiteral("Outline")}, {QStringLiteral("fill"), QStringLiteral("Hatch fill")},
          {QStringLiteral("both"), QStringLiteral("Outline + fill")}}));
@@ -609,6 +618,12 @@ void ToolpathForm::setToolpath(const QString &uuid, const QString &type, const Q
     QJsonObject json = json_;
     if (type == QLatin1String("3d_finish_toolpath") && !json.contains(QStringLiteral("strategy")))
         json.insert(QStringLiteral("strategy"), QStringLiteral("raster"));
+    // Corner relief is a phobiCCCP key: offered as off on the toolpaths
+    // that take it, written only when changed.
+    if ((type == QLatin1String("contour") || type == QLatin1String("pocket_toolpath")
+         || type == QLatin1String("cutout"))
+        && !json.contains(QStringLiteral("corners")))
+        json.insert(QStringLiteral("corners"), QStringLiteral("off"));
     const QStringList keys = flatKeys(json);
     const bool same = uuid == m_uuid && type == m_type && keys == m_keys;
     m_uuid = uuid;
