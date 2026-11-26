@@ -167,7 +167,8 @@ public slots:
     void startStream(const QStringList &lines); // run a whole program
     // Resume past a tool marker; `first` runs ahead of the rest of the
     // program, as part of it (byte-counted and acked like its own lines).
-    void continueAfterToolChange(const QStringList &first = {});
+    // Returns how many lines went into the program (0: not continued).
+    int continueAfterToolChange(const QStringList &first = {});
     void pauseStream();                         // '!' feed hold
     bool resumeStream();                        // '~' cycle start (false: refused)
     void stopStream();                          // abort: soft reset (ctrl-X)

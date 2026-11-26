@@ -712,8 +712,11 @@ int main(int argc, char **argv)
                   && c2d::machinemacros::classify(QStringLiteral("  ")) == Typed::Empty,
               "mdi: typed lines are told apart");
         check(c2d::machinemacros::cleanLines(QStringLiteral("(retract) G53 G0 Z-5 (up)\n(note)\n (a) (b) ;c\n; x\nG0 X1"))
-                  == QStringList({QStringLiteral("(retract) G53 G0 Z-5 (up)"), QStringLiteral("G0 X1")}),
+                  == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 X1")}),
               "macro: a move between notes in brackets is kept, notes alone are not");
+        check(c2d::machinemacros::cleanLines(QStringLiteral("(retract!) G53 G0 Z-5 ; now~\nG0 X2 (ok?"))
+                  == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 X2")}),
+              "macro: notes are not sent, so a '!' in one is no feed hold");
         QStringList h;
         for (int i = 0; i < 40; ++i)
             h = c2d::machinemacros::pushHistory(h, QStringLiteral("G0 X%1").arg(i));

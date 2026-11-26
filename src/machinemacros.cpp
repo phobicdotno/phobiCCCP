@@ -49,16 +49,16 @@ QStringList cleanLines(const QString &text)
     QStringList out;
     const QStringList raw = text.split(QChar('\n'));
     // A note in brackets ends at its ')': "(retract) G53 G0 Z-5 (up)" still
-    // has a move in it. Only a line that is nothing but notes is left out.
-    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)"));
+    // has a move in it. Only the move is sent: GRBL acts on a '!', '~' or '?'
+    // the moment it arrives, inside a note too ("(retract!)" was a feed hold).
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
     for (QString l : raw) {
+        const int semi = l.indexOf(QChar(';'));
+        if (semi >= 0)
+            l.truncate(semi);
+        l.remove(paren);
         l = l.trimmed();
-        if (l.isEmpty() || l.startsWith(QChar(';')))
-            continue;
-        QString bare = l;
-        bare.remove(paren);
-        bare = bare.trimmed();
-        if (bare.isEmpty() || bare.startsWith(QChar(';')))
+        if (l.isEmpty())
             continue;
         out << l;
     }

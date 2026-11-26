@@ -232,6 +232,11 @@ NcProgram readNcProgram(const QString &text)
                     } else if (!hasI && !hasJ) {
                         return fail(n + 1, QStringLiteral("An arc with neither I/J nor R."));
                     }
+                    // GRBL refuses an arc block without an axis word
+                    // (error:26): a full circle names its end, where it started.
+                    if (!hasX && !hasY)
+                        out << QStringLiteral("X") + QString::number(nx, 'f', 4)
+                            << QStringLiteral("Y") + QString::number(ny, 'f', 4);
                     p.ops << Op::arcTo(nx, ny, nz, ci, cj, motion == 2, feed);
                 }
             }

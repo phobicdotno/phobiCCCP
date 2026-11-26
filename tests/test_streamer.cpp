@@ -105,8 +105,13 @@ struct FakeGrbl {
                 seen << line;
                 if (positional)
                     follow(line);
+                // GRBL 1.1h: a G2/G3 block without X, Y or Z is error:26.
+                static const QRegularExpression arc(QStringLiteral("(?:^|[^A-Z0-9.])G0*[23](?![0-9.])"));
+                static const QRegularExpression axis(QStringLiteral("[XYZ]"));
+                const QString l = QString::fromLatin1(line).toUpper();
+                const bool noAxis = arc.match(l).hasMatch() && !axis.match(l).hasMatch();
                 if (!line.contains("HANG"))
-                    send(line.contains("BAD") ? "error:20\r\n" : "ok\r\n");
+                    send(noAxis ? "error:26\r\n" : line.contains("BAD") ? "error:20\r\n" : "ok\r\n");
                 line.clear();
             } else if (c != '\r') {
                 line += c;
@@ -241,6 +246,32 @@ int main(int argc, char **argv)
         check(finished && across > 0 && grbl.seen.value(across + 1) == "G1 F900.0"
                   && grbl.seen.value(across + 2) == "X20Y3",
               "tool change: the program's G1 and feed back in before its next line");
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // The same after an arc: GRBL refuses a bare "G2" (error:26), so the arc
+    // mode goes on the program's next move and the feed on a G1 line.
+    {
+        grbl.seen.clear();
+        int parked = -1, added = -1;
+        bool finished = false, finishedOk = false;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("G0X10Y0"),
+                       QStringLiteral("G1Z-1F300"), QStringLiteral("G2X0Y10I-10J0F800"), QStringLiteral("M0 ;T2"),
+                       QStringLiteral("(next)"), QStringLiteral("X-10Y0I0J-10")});
+        spin(2000, [&] { return parked >= 0; });
+        added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(3000, [&] { return finished; });
+        const int across = grbl.seen.indexOf("G90 G0 X-10 Y0");
+        check(finished && finishedOk && across > 0 && grbl.seen.value(across + 1) == "G1 F800.0"
+                  && grbl.seen.value(across + 2) == "G2 X-10Y0I0J-10" && !grbl.seen.contains("G2"),
+              "tool change: a modal arc goes back on its own block, not as a bare G2");
+        check(added == 4, "tool change: every line put in is counted (rise, crossing, feed)");
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
@@ -543,9 +574,14 @@ int main(int argc, char **argv)
             const QStringList arc = {"G90G21", "G0Z5", "M03S10000", "G0X10Y0", "G1Z-1F200",
                                      "G2X0Y10I-10J0F800", "X-10Y0I0J-10"};
             const QStringList a = GrblStreamer::startFromLines(arc, 6, rise, -1, QString(), &why);
-            check(a.size() > 2 && a.at(a.size() - 2) == "G2" && a.last() == "X-10Y0I0J-10"
+            check(a.size() > 2 && !a.contains("G2") && a.last() == "G2 X-10Y0I0J-10"
                       && a.contains("G90 G0 X0.000 Y10.000"),
-                  "start here: a modal arc keeps its G2");
+                  "start here: a modal arc keeps its G2, on the arc block itself");
+            const QStringList own = GrblStreamer::startFromLines(
+                {"G90G21", "G0Z5", "M03S10000", "G0X10Y0", "G1Z-1F200", "G2X0Y10I-10J0F800", "G1X-10Y0"},
+                6, rise, -1, QString(), &why);
+            check(own.last() == "G1X-10Y0" && !own.contains("G2"),
+                  "start here: a move with its own G word is left alone");
         }
         check(GrblStreamer::startFromLines({"G0Z5", "G91", "G1Z-1F300", "G1X1"}, 3, rise, -1, QString(), &why).isEmpty()
                   && why.contains(QLatin1String("G91")),
