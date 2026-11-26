@@ -38,6 +38,10 @@
 - **Subtract:** two holes cut side by side each keep their own toolpath.
 - **BitZero:** a new Z zero always makes the BitSetter measure the tool again, even if a Stop or alarm interrupts the "Remove the magnet" wait.
 - **Recovery:** with two windows open, answering No no longer deletes the recovery copy the other window just opened.
+- **Hold:** pressing Resume while the machine's door is still open no longer lets a tool change start; it waits until the hold really ends.
+- **Toolpaths left with only a sketch point** (other than drilling and keyhole) count as having lost their shapes, so a Facing or 3D toolpath is skipped instead of running over everything.
+- **grblHAL:** its start-up banner is recognised after a reset, so Go to X0 Y0 no longer waits a few seconds after Stop.
+- **Collections sync:** an empty copy receiving a large set in parts gets all of it, and a collection deleted on another copy stays deleted on a fresh one.
 - **Collections sync:** an old announcement repeated on the network can no longer bring back a bit removed since, and a copy takes at most 500 collections from the network.
 - **Received projects:** a long file name keeps its extension, so it still imports. With more than 400 shapes, picking in the shape strip keeps the selected shapes it has no tile for.
 

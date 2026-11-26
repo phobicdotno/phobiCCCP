@@ -229,7 +229,8 @@ private:
     void pump();                                // fill GRBL's RX window
     void pumpMacro();
     void abortAfterReset();                     // controller rebooted under us
-    void noteFeedHold(bool held);               // `!` / `~` (or a report out of Hold) while streaming
+    void noteFeedHold(bool held);               // `!` (or a Hold report) / a report out of Hold
+    void noteCycleStart();                      // `~` written: the next report out of Hold ends it
     // Stop the running program without pretending it finished. `holdMachine`
     // sends a feed hold first, which stops motion where it is and keeps the
     // position (unlike ctrl-X); pass false when the controller has already
@@ -268,10 +269,12 @@ private:
     bool m_holdQueued = false;                  // a lift-hold's lines are in the queue
     bool m_waitingHold = false;                 // standing at its marker
     // A feed hold (`!`) while streaming: no tool marker is crossed until it
-    // ends (Resume, or a report out of Hold / it never took within 2 s).
+    // ends: a report out of Hold/Door (after a `~`, or after one showed the
+    // hold), or none showed Hold within 2 s (it never took).
     bool m_feedHeld = false;
     bool m_feedHeldSeen = false;                // a report showed Hold since the `!`
     bool m_feedHeldNoted = false;               // "tool change waits" logged once
+    bool m_feedResumeSent = false;              // `~` written since the hold began
     QElapsedTimer m_feedHeldClock;
     int m_holdAt = 0;                           // queue index of its first line
     int m_toolChanges = 0;                      // markers parked at in this program

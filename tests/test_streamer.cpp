@@ -52,6 +52,7 @@ struct FakeGrbl {
     // a touch at Z -7 where the head stands.
     bool positional = false;
     bool noBanner = false;    // a reset answered without its "Grbl" banner
+    bool door = false;        // the door is open: Door:0, cycle start ignored
     // While set, oks are held back (counted) until releaseAcks().
     bool deferAcks = false;
     int deferred = 0;
@@ -99,12 +100,14 @@ struct FakeGrbl {
             if (c == '?' && positional) {
                 send("<Idle|MPos:" + pos() + "|WCO:10.000,20.000,0.000>\r\n");
             } else if (c == '?') {
-                send(held ? "<Hold:0|MPos:0.000,0.000,0.000|FS:0,18000>\r\n"
+                send(door ? "<Door:0|MPos:0.000,0.000,0.000|FS:0,18000>\r\n"
+                     : held ? "<Hold:0|MPos:0.000,0.000,0.000|FS:0,18000>\r\n"
                           : "<Run|MPos:0.000,0.000,0.000|FS:500,18000|Ov:120,100,90>\r\n");
             } else if (c == '!') {
                 held = true;
             } else if (c == '~') {
-                held = false;                // cycle start: out of the hold
+                if (!door)
+                    held = false;            // cycle start: out of the hold
             } else if (c == 0x18) {
                 reset = true;
                 resetWhileHeld = held;
@@ -621,6 +624,28 @@ int main(int argc, char **argv)
         spin(2000, [&] { return parks.size() == 1; });
         check(parks.size() == 1 && parks.at(0) == 4 && !s.isFeedHeld(),
               "feed hold: after Resume the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
+
+        // Resume while the door is still open: GRBL ignores the `~` and
+        // stays suspended; the marker waits until a report shows it running.
+        parks.clear();
+        grbl.door = true;
+        grbl.deferAcks = true;
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T6"),
+                       QStringLiteral("G0Z5")});
+        s.pauseStream();
+        spin(600, [] { return false; });
+        check(s.resumeStream(), "door: the resume goes out");
+        grbl.releaseAcks();
+        spin(1500, [] { return false; });
+        check(parks.isEmpty() && s.isFeedHeld(),
+              "door: a ~ while the door keeps it suspended does not cross the tool marker");
+        grbl.door = false;
+        grbl.held = false;                   // door shut, cycle start taken
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 6 && !s.isFeedHeld(),
+              "door: once it reports running, the tool change follows");
         s.stopStream();
         spin(300, [] { return false; });
 

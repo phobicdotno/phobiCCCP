@@ -2012,6 +2012,23 @@ int main(int argc, char *argv[])
         check(!vdoc.toolpathByUuid(one.uuid)->json.contains("vectors_removed")
                   && vdoc.toolpathByUuid(one.uuid)->json.value("elements").toArray().size() == 1,
               "delete undone: the toolpath is as it was");
+
+        // A sketch point left behind is not cut by a contour (export drops
+        // it), so the contour still counts as emptied; a drilling keeps it.
+        const c2d::Element c = c2d::Element::makeCircle({50, 10}, 3, vdoc.defaultLayer());
+        const c2d::Element pt = c2d::Element::makePoint({50, 30}, vdoc.defaultLayer());
+        vdoc.addElement(c);
+        vdoc.addElement(pt);
+        c2d::Toolpath three = c2d::makeToolpath(vdoc, "contour", {c.id, pt.id});
+        c2d::Toolpath drill = c2d::makeToolpath(vdoc, "drilling_toolpath", {c.id, pt.id});
+        vdoc.insertToolpath(2, three);
+        vdoc.insertToolpath(3, drill);
+        vc.rebuild();
+        vc.deleteElements({c.id});
+        check(vdoc.toolpathByUuid(three.uuid)->json.value("vectors_removed").toBool(),
+              "delete: a contour left with only a sketch point is marked");
+        check(!vdoc.toolpathByUuid(drill.uuid)->json.contains("vectors_removed"),
+              "delete: a drilling left with a sketch point is not");
     }
 
     // --- A dimension label dragged when Design is left goes back -------------------

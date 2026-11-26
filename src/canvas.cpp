@@ -266,12 +266,16 @@ public:
             // Left with no vectors by this delete (not made without any):
             // export skips it rather than, say, facing the whole stock.
             // Undo puts the toolpath back whole, flag and all.
-            // (Construction lines left on it count for nothing: export
-            // ignores them.)
+            // (Construction lines left on it count for nothing, and nor do
+            // sketch points unless it drills: export ignores them.)
+            const QString type = t.json.value("type").toString();
+            const bool takesPoints = type == QLatin1String("drilling_toolpath")
+                                     || type == QLatin1String("keyhole_toolpath");
             bool machinable = false;
             for (const QJsonValue &v : kept) {
                 const Element *e = d->elementById(v.toObject().value("uuid").toString());
-                if (e && !Element::isConstruction(*e)) {
+                if (e && !Element::isConstruction(*e)
+                    && (takesPoints || !Element::isPoint(*e))) {
                     machinable = true;
                     break;
                 }

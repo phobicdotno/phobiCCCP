@@ -367,6 +367,20 @@ static bool sameSet(const ToolCollections &a, const ToolCollections &b)
     return true;
 }
 
+// A part of a peer's Collections that mergeCollections() would take: a sane
+// whole-set stamp and JSON the Collections reader accepts. A part refused
+// there must not count towards a whole set heard.
+static bool partAcceptable(const QJsonObject &coll, qint64 limit)
+{
+    const bool pfresh = coll.value(QStringLiteral("fresh")).toBool();
+    const qint64 pts = coll.contains(QStringLiteral("wts")) ? jsonStamp(coll.value(QStringLiteral("wts"))) : 0;
+    const QByteArray pj = coll.value(QStringLiteral("json")).toString().toUtf8();
+    if (pj.size() >= 50000 || pts < 0 || pts > limit || (!pfresh && pts == 0))
+        return false;
+    ToolCollections peer;
+    return ToolCollections::fromJson(pj, &peer);
+}
+
 // A peer's Collections into ours (settings `s`). True when ours changed.
 // *tell when the peer is behind: it would take something of ours (by the
 // rules it merges with), so it is worth answering.
@@ -410,8 +424,11 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
 
     const QByteArray lj = s.value(QLatin1String(kCollKey)).toByteArray();
     ToolCollections local;
+    // Nothing stored: the built-in defaults, as the app shows. Not for a
+    // copy with no history taking a set in parts: there the two defaults
+    // took two of a full set's kMaxCollections places for good.
     if (lj.isEmpty() || !ToolCollections::fromJson(lj, &local))
-        local = ToolCollections::defaults();
+        local = (lts == 0 && partial) ? ToolCollections() : ToolCollections::defaults();
     const CollectionStamps mine = CollectionStamps::fromSettings(s);
 
     // The peer's stamps: per collection from a current copy; an older copy
@@ -467,6 +484,17 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
         // A fresh install meets another copy: neither side's lists replace
         // the other's, the bits and collections are pooled. Once, on this
         // side: from then on the newest edit wins and deletions stick.
+        // The peer's deletions of ours, later than we last touched them,
+        // first (from a part too: they come in one of their own), so
+        // nothing below stamps them back.
+        for (auto it = theirs.gone.constBegin(); it != theirs.gone.constEnd(); ++it) {
+            if (result.byName(it.key()) && it.value() > mine.ts.value(it.key(), 0)) {
+                result.remove(it.key());
+                out.ts.remove(it.key());
+                out.gone.insert(it.key(), it.value());
+                changed = true;
+            }
+        }
         for (const ToolCollection &p : peer.all()) {
             if (result.byName(p.name)) {
                 // A copy that has settled pools a fresh peer's bits only
@@ -493,24 +521,16 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
                 putCollection(result, p);
             }
         }
-        // Ours that the peer deleted after we last touched them go, and so do
-        // built-in defaults never touched here that it does not have: a fresh
-        // install's empty "Unused" does not come back everywhere.
+        // Built-in defaults never touched here that a whole set from the
+        // peer does not have go: a fresh install's empty "Unused" does not
+        // come back everywhere. (A part says nothing of what it lacks.)
         if (lfresh && !partial)
-            for (const ToolCollection &c : local.all()) {
-                if (peer.byName(c.name))
-                    continue;
-                const qint64 touched = mine.ts.value(c.name, 0);
-                if (theirs.gone.value(c.name, 0) > touched) {
-                    result.remove(c.name);
-                    out.ts.remove(c.name);
-                    out.gone.insert(c.name, theirs.gone.value(c.name));
-                    changed = true;
-                } else if (touched == 0 && c.tools.isEmpty()) {
+            for (const ToolCollection &c : local.all())
+                if (!peer.byName(c.name) && result.byName(c.name) && mine.ts.value(c.name, 0) == 0
+                    && c.tools.isEmpty()) {
                     result.remove(c.name);
                     changed = true;
                 }
-            }
         for (const ToolCollection &c : result.all()) {
             const ToolCollection *was = local.byName(c.name);
             const ToolCollection *their = peer.byName(c.name);
@@ -678,7 +698,7 @@ bool StockSync::merge(const QByteArray &data)
     if (coll.value(QStringLiteral("partial")).toBool()) {
         const int pi = coll.value(QStringLiteral("pi")).toInt(-1);
         const int parts = coll.value(QStringLiteral("parts")).toInt(0);
-        if (pi >= 0 && pi < parts && parts <= 1000) {
+        if (pi >= 0 && pi < parts && parts <= 1000 && partAcceptable(coll, limit)) {
             const QString key = root.value(QStringLiteral("from")).toString().left(64) + QLatin1Char('|')
                 + QString::number(coll.value(QStringLiteral("wts")).toDouble(), 'f', 0)
                 + QLatin1Char('|') + QString::number(parts);

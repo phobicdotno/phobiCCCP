@@ -640,6 +640,69 @@ int main(int argc, char **argv)
         check(!again && mineStamp() == 2000, "the same parts again change nothing");
     }
 
+    // 13. A copy with no history takes a full set of kMaxCollections that
+    //     comes in parts: all of it, the built-in defaults taking no places.
+    {
+        const QString s13 = tmp.path() + QStringLiteral("/s13.ini"), r13 = tmp.path() + QStringLiteral("/r13.ini");
+        QJsonArray list;
+        QStringList names;
+        for (int i = 0; i < c2d::StockSync::kMaxCollections; ++i) {
+            const QString n = QStringLiteral("collection %1 ").arg(i, 3, 10, QLatin1Char('0'))
+                + QString(45, QLatin1Char('x'));
+            names.append(n);
+            list.append(QJsonObject{{QStringLiteral("name"), n}, {QStringLiteral("tools"), QJsonArray{201}}});
+        }
+        putIni(s13, QJsonDocument(QJsonObject{{QStringLiteral("collections"), list}}).toJson(QJsonDocument::Compact), 1000);
+        c2d::StockSync S13(s13, 0);
+        const QList<QByteArray> ps = S13.payloads();
+        int partials = 0;
+        for (const QByteArray &pk : ps)
+            if (QJsonDocument::fromJson(pk).object().value(QStringLiteral("coll")).toObject()
+                    .value(QStringLiteral("partial")).toBool())
+                ++partials;
+        check(partials >= 2, "a full set too big for one packet goes in parts");
+        QSettings(r13, QSettings::IniFormat).clear();
+        c2d::StockSync R13(r13, 0);
+        for (const QByteArray &pk : ps)
+            R13.merge(pk);
+        const c2d::ToolCollections got = collectionsIn(r13);
+        bool all = got.all().size() == c2d::StockSync::kMaxCollections;
+        for (const QString &n : names)
+            all = all && got.byName(n);
+        check(all, "an empty copy takes all of them, and nothing else");
+    }
+
+    // 14. A fresh copy and a deletion that comes in a part: it is applied,
+    //     and the parts pooled after do not bring the collection back.
+    {
+        const QString f14 = tmp.path() + QStringLiteral("/f14.ini");
+        putFresh(f14, "{\"collections\":[{\"name\":\"X\",\"tools\":[201]},{\"name\":\"My Tools\",\"tools\":[301]}]}",
+                 1500, "{\"ts\":{\"X\":1000,\"My Tools\":1500},\"gone\":{}}");
+        c2d::StockSync F14(f14, 0);
+        const auto part = [](const QByteArray &json, const QJsonObject &items, const QJsonObject &gone, int pi) {
+            const QJsonObject coll{{QStringLiteral("partial"), true}, {QStringLiteral("wts"), 2000.0},
+                                   {QStringLiteral("json"), QString::fromUtf8(json)}, {QStringLiteral("items"), items},
+                                   {QStringLiteral("gone"), gone}, {QStringLiteral("pi"), pi}, {QStringLiteral("parts"), 2}};
+            return QJsonDocument(QJsonObject{{QStringLiteral("app"), QStringLiteral("phobiCCCP-stock")}, {QStringLiteral("v"), 1},
+                                             {QStringLiteral("from"), QStringLiteral("peer14")}, {QStringLiteral("coll"), coll}})
+                .toJson(QJsonDocument::Compact);
+        };
+        F14.merge(part("{\"collections\":[]}", QJsonObject(), QJsonObject{{QStringLiteral("X"), 2000.0}}, 0));
+        check(!collectionsIn(f14).byName(QStringLiteral("X")), "a deletion in a part, newer than ours, is applied");
+        F14.merge(part("{\"collections\":[{\"name\":\"My Tools\",\"tools\":[112]}]}",
+                       QJsonObject{{QStringLiteral("My Tools"), 1800.0}}, QJsonObject(), 1));
+        const c2d::ToolCollections f = collectionsIn(f14);
+        check(!f.byName(QStringLiteral("X")) && has(f, QStringLiteral("My Tools"), {301, 112}),
+              "pooling the next part does not bring it back");
+        const QJsonObject st = QJsonDocument::fromJson(QSettings(f14, QSettings::IniFormat)
+                                                           .value(QStringLiteral("tools/collectionsStamps")).toByteArray()).object();
+        check(st.value(QStringLiteral("gone")).toObject().value(QStringLiteral("X")).toDouble() >= 2000
+                  && !st.value(QStringLiteral("ts")).toObject().contains(QStringLiteral("X")),
+              "and the deletion is kept");
+        check(!QSettings(f14, QSettings::IniFormat).value(QStringLiteral("tools/collectionsFresh")).toBool(),
+              "both parts in: fresh no more");
+    }
+
     QSettings().clear();
     return g_fail ? 1 : 0;
 }

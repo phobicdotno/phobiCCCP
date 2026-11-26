@@ -2800,8 +2800,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // included) reaches the stock bottom. No tolerance: a cut that
             // stops short leaves a skin, and full-height tabs on it would
             // leave solid bridges standing under the skin.
-            const double reach = -qMin(floor, cp.zBot);
-            tabsThrough = thickOk && thick > 0 && reach >= thick - 1e-3;
+            // (As posted: Z goes out to 0.001 mm, so 2.9992 is a Z-2.999
+            // that stops short of 3 mm stock.)
+            const double reach = std::round(-qMin(floor, cp.zBot) * 1000.0) / 1000.0;
+            tabsThrough = thickOk && thick > 0 && reach >= std::round(thick * 1000.0) / 1000.0 - 1e-9;
             if (!tabsThrough && cp.tabTop >= cp.zTop - 1e-9) {
                 cp.tabTop = -1e9;
                 cp.tabWidth = 0;

@@ -230,8 +230,20 @@ void GrblStreamer::sendRealtime(char c)
         return;
     if (isConnected())
         m_port->write(&c, 1);
-    if (c == '!' || c == '~')
-        noteFeedHold(c == '!');
+    if (c == '!')
+        noteFeedHold(true);
+    else if (c == '~')
+        noteCycleStart();
+}
+
+// `~` written: it does not end the hold by itself (a door still open keeps
+// GRBL suspended, cycle start ignored). The hold ends on the first report
+// out of Hold/Door; with the `~` sent that may be one that never showed Hold
+// (a `!` and `~` within one poll), without waiting out the 2 s rule.
+void GrblStreamer::noteCycleStart()
+{
+    if (m_feedHeld)
+        m_feedResumeSent = true;
 }
 
 // A feed hold only stops motion: GRBL keeps answering the lines it is
@@ -239,7 +251,8 @@ void GrblStreamer::sendRealtime(char c)
 // prompt, the park move queued behind the held cut, the pre-park position
 // read mid-cut) with the machine still holding in the cut. The stream keeps
 // filling the buffer, but does not cross a tool marker until the hold ends:
-// a Resume, or a report out of Hold (it never took, or ended elsewhere).
+// a report out of Hold/Door (after a Resume, or ended elsewhere), or no
+// Hold seen within 2 s (it never took). Writing `~` alone is not enough.
 void GrblStreamer::noteFeedHold(bool held)
 {
     if (held) {
@@ -248,6 +261,7 @@ void GrblStreamer::noteFeedHold(bool held)
         m_feedHeld = true;
         m_feedHeldSeen = false;
         m_feedHeldNoted = false;
+        m_feedResumeSent = false;
         m_feedHeldClock.start();
         return;
     }
@@ -621,7 +635,7 @@ bool GrblStreamer::resumeStream()
     if (!isConnected())
         return false;
     m_port->write("~", 1);
-    noteFeedHold(false);
+    noteCycleStart();
     return true;
 }
 
@@ -1075,14 +1089,15 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
-        // The feed hold ended without our ~ (or never took, e.g. `!` in
-        // Alarm): the stream may go on to a tool marker again.
+        // The hold ended (our ~ took, or it ended elsewhere) or never took
+        // (`!` in Alarm): the stream may go on to a tool marker again.
         const bool holdState = st.state.startsWith(QLatin1String("Hold"))
                                || st.state.startsWith(QLatin1String("Door"));
         if (m_feedHeld) {
             if (holdState)
                 m_feedHeldSeen = true;
-            else if (!st.state.isEmpty() && (m_feedHeldSeen || m_feedHeldClock.elapsed() > 2000))
+            else if (!st.state.isEmpty()
+                     && (m_feedHeldSeen || m_feedResumeSent || m_feedHeldClock.elapsed() > 2000))
                 noteFeedHold(false);
         } else if (m_streaming && holdState) {
             // Held by something other than our `!`: the machine's hold
@@ -1117,7 +1132,8 @@ void GrblStreamer::handleLine(const QByteArray &line)
     // After a reset GRBL forgets G43.1 (and nothing sent before the reset
     // will be answered). Put the offset back once the controller is ready;
     // if it boots into Alarm the $X / $H ack re-tries it.
-    if (line.startsWith("Grbl ")) {
+    // grblHAL's banner is "GrblHAL 1.1f ...".
+    if (line.startsWith("Grbl ") || line.startsWith("GrblHAL ")) {
         m_heard = true;
         // A reset or reboot (ours or not): the offset held is from before it
         // (G92 is gone); reports from now on are from after it.

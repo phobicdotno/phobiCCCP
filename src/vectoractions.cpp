@@ -64,6 +64,9 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
         return out;
     for (const Toolpath &t : d->toolpaths()) {
         const QJsonArray refs = t.json.value("elements").toArray();
+        const QString type = t.json.value("type").toString();
+        const bool takesPoints = type == QLatin1String("drilling_toolpath")
+                                 || type == QLatin1String("keyhole_toolpath");
         bool hit = false, machinable = false;
         QJsonArray kept;
         QSet<QString> seen, wanted;
@@ -77,10 +80,11 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
             }
             kept.append(v);
             seen.insert(id);
-            // Construction geometry is never cut; a shape this build could
-            // not read might be, so it counts.
+            // Same test as export: construction geometry is never cut, and
+            // sketch points only by drilling and keyhole.
             const Element *ke = d->elementById(id);
-            if (!ke || !Element::isConstruction(*ke))
+            if (ke && !Element::isConstruction(*ke)
+                && (takesPoints || !Element::isPoint(*ke)))
                 machinable = true;
         }
         if (!hit)
