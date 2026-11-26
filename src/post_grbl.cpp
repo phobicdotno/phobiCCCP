@@ -389,14 +389,17 @@ QStringList airCutTransform(const QStringList &lines, double lift)
 QStringList coolantTransform(const QStringList &lines, bool mist)
 {
     // Word M followed by a number: "M3", "M03 S12000", "G90 M5".
-    static const QRegularExpression mWord(QStringLiteral("(?:^|[^A-Z])M0*([0-9]+)(?![0-9.])"));
+    // Not consuming the letter before it: "M3M8" is two words.
+    static const QRegularExpression mWord(QStringLiteral("(?<![A-Z])M0*([0-9]+)(?![0-9.])"));
+    // A note in brackets ends at its ')': "(start) M3 S12000" starts the
+    // spindle, "G0X1 (M8)" does not switch anything.
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
     auto codesOf = [](const QString &raw) {
         QString code = raw.trimmed().toUpper();
+        code.remove(paren);
         const int semi = code.indexOf(QChar(';'));
         if (semi >= 0)
             code = code.left(semi);
-        if (code.startsWith(QChar('(')))
-            code.clear();
         QVector<int> m;
         auto it = mWord.globalMatch(code);
         while (it.hasNext())
