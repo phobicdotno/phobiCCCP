@@ -80,6 +80,7 @@
 #include "sendtodialog.h"
 #include "remotemachine.h"
 #include "settingsdialog.h"
+#include "touchprofile.h"
 #include "toolbarorder.h"
 #include "jobrotate.h"
 #include <QUndoCommand>
@@ -283,7 +284,7 @@ public:
     int pixelMetric(PixelMetric m, const QStyleOption *opt, const QWidget *w) const override
     {
         if (m == PM_ToolBarExtensionExtent)
-            return 34;
+            return touch::minSide(34);
         return QProxyStyle::pixelMetric(m, opt, w);
     }
 };
@@ -294,7 +295,7 @@ static void showOverflowButton(QToolBar *bar)
     if (!ext)
         return;
     // The bar's layout asks the bar's style how wide the » is.
-    auto *style = new OverflowStyle(QStyleFactory::create(QApplication::style()->name()));
+    auto *style = new OverflowStyle(touch::wrap(QStyleFactory::create(QApplication::style()->name())));
     style->setParent(bar);
     bar->setStyle(style);
     QPixmap pm(60, 60);
@@ -307,7 +308,7 @@ static void showOverflowButton(QToolBar *bar)
         p.drawPolyline(QPolygonF() << QPointF(x, 5) << QPointF(x + 5, 10) << QPointF(x, 15));
     p.end();
     ext->setIcon(QIcon(pm));
-    ext->setIconSize(QSize(20, 20));
+    ext->setIconSize(touch::iconSize(20));
     ext->setToolTip(QStringLiteral("More: the buttons that do not fit on this bar"));
     ext->setStyleSheet(QStringLiteral(
         "QToolButton { padding: 2px; border: 1px solid #f2a536; border-radius: 6px; background: #2a2e36; }"
@@ -695,7 +696,13 @@ MainWindow::MainWindow(QWidget *parent)
     // Design: Properties over Document / Model tabs.
     m_docTabs = new QTabWidget(this);
     m_docTabs->setDocumentMode(true);
-    m_docTabs->setIconSize(QSize(18, 18));
+    m_docTabs->setIconSize(touch::iconSize(18));
+    if (touch::enabled()) {
+        // Finger-wide tabs do not all fit beside the canvas: shorten their
+        // names rather than hide one behind small scroll arrows.
+        m_docTabs->setUsesScrollButtons(false);
+        m_docTabs->setElideMode(Qt::ElideRight);
+    }
     m_shapes = new ShapeStrip(m_canvas, this);
     m_docTabs->addTab(m_shapes, toolIcon(QStringLiteral("document")), QStringLiteral("Shapes"));
     m_docTabs->addTab(m_info, toolIcon(QStringLiteral("document")), QStringLiteral("Document"));
@@ -1009,7 +1016,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto *palette = new QToolBar(QStringLiteral("Tools"), this);
     palette->setMovable(false);
     palette->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    palette->setIconSize(QSize(24, 24));
+    palette->setIconSize(touch::iconSize(24));
     addToolBar(Qt::TopToolBarArea, palette);
     auto *grp = new QActionGroup(this);
     auto addTool = [&](const QString &name, const QString &icon, Canvas::Tool t,
@@ -1148,7 +1155,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_tpBar = new QToolBar(QStringLiteral("Toolpath kinds"), this);
     m_tpBar->setMovable(false);
     m_tpBar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-    m_tpBar->setIconSize(QSize(26, 26));
+    m_tpBar->setIconSize(touch::iconSize(26));
     // A little narrower than the other toolbars, so the Options bar beside
     // it (Delete, Snap, Fit) still fits at 1280 px wide.
     m_tpBar->setStyleSheet(QStringLiteral("QToolButton { padding: 4px 5px; }"));
@@ -1159,7 +1166,7 @@ MainWindow::MainWindow(QWidget *parent)
         auto *b = new QToolButton(m_tpBar);
         b->setDefaultAction(a);
         b->setToolButtonStyle(Qt::ToolButtonIconOnly);
-        b->setIconSize(QSize(26, 26));
+        b->setIconSize(touch::iconSize(26));
         m_tpBar->addWidget(b);
     }
     m_tpBar->addSeparator();
@@ -1212,7 +1219,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_optionsBar = tb;
     tb->setMovable(false);
     tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    tb->setIconSize(QSize(20, 20));
+    tb->setIconSize(touch::iconSize(20));
 
     auto *sides = new QSpinBox(tb);
     sides->setRange(3, 64);
@@ -1252,6 +1259,31 @@ MainWindow::MainWindow(QWidget *parent)
     connect(delBtn, &QAction::triggered, this, [this] { m_canvas->deleteSelected(); });
     connect(m_canvas, &Canvas::selectionChangedIds, delBtn,
             [delBtn](const QStringList &ids) { delBtn->setEnabled(!ids.isEmpty()); });
+    // A pad has no Enter or Esc key: a path or spline is finished, and a
+    // shape half drawn is dropped, with these (touch-sized controls only;
+    // a double tap also finishes a path or spline).
+    if (touch::enabled()) {
+        auto sendKey = [this](Qt::Key key) {
+            QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(m_canvas, &press);
+            QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+            QCoreApplication::sendEvent(m_canvas, &release);
+        };
+        QAction *finishAct = tb->addAction(QStringLiteral("\u2713 Finish"));
+        finishAct->setObjectName(QStringLiteral("touchFinish"));
+        finishAct->setToolTip(QStringLiteral("Finish the path or spline  (Enter)"));
+        connect(finishAct, &QAction::triggered, this, [sendKey] { sendKey(Qt::Key_Return); });
+        QAction *cancelAct = tb->addAction(QStringLiteral("\u2715 Cancel"));
+        cancelAct->setObjectName(QStringLiteral("touchCancel"));
+        cancelAct->setToolTip(QStringLiteral("Drop the shape being drawn  (Esc)"));
+        connect(cancelAct, &QAction::triggered, this, [sendKey] { sendKey(Qt::Key_Escape); });
+        auto showFinish = [finishAct, cancelAct](Canvas::Tool t) {
+            finishAct->setVisible(t == Canvas::DrawPath || t == Canvas::DrawSpline);
+            cancelAct->setVisible(t != Canvas::Select && t != Canvas::Pan && t != Canvas::SelectArea);
+        };
+        showFinish(m_canvas->tool());
+        connect(m_canvas, &Canvas::toolChanged, this, showFinish);
+    }
     QAction *snapAct = tb->addAction(toolIcon(QStringLiteral("snap")), QStringLiteral("Snap"));
     snapAct->setCheckable(true);
     // Not plain G: that is the Constrain tool's, and a key bound twice in
@@ -1415,7 +1447,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto *fsBtn = new QToolButton(this);
     fsBtn->setDefaultAction(m_fullScreenAct);
     fsBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    fsBtn->setIconSize(QSize(22, 22));
+    fsBtn->setIconSize(touch::iconSize(22));
     fsBtn->setAutoRaise(true);
     fsBtn->setFocusPolicy(Qt::NoFocus);
     fsBtn->setToolTip(QStringLiteral("Full screen  (F11)"));
@@ -4128,14 +4160,24 @@ void MainWindow::onSettings()
     SettingsDialog dlg(this);
     if (dlg.exec() != QDialog::Accepted)
         return;
-    const bool scaleChanged = dlg.save();
+    const bool needsRestart = dlg.save();
     m_tp->applyTextSize();
-    if (!scaleChanged)
+    if (!needsRestart)
         return;
-    // QT_SCALE_FACTOR is read once, when QApplication starts.
+    // QT_SCALE_FACTOR is read once, when QApplication starts, and the touch
+    // sizes when the window is built.
+#if defined(Q_OS_ANDROID) || defined(Q_OS_IOS)
+    // A pad's app cannot start a new copy of itself, and closing the window
+    // would only end it: say how to restart instead.
+    QMessageBox::information(
+        this, QStringLiteral("Restart to apply"),
+        QStringLiteral("The new sizes take effect the next time phobiCCCP starts.\n\n"
+                       "Save your design, close phobiCCCP from the recent apps list and open it again."));
+    return;
+#else
     const auto r = QMessageBox::question(
-        this, QStringLiteral("GUI scale"),
-        QStringLiteral("The new GUI scale takes effect after a restart. Restart phobiCCCP now?"),
+        this, QStringLiteral("Restart to apply"),
+        QStringLiteral("The new GUI scale or touch sizes take effect after a restart. Restart phobiCCCP now?"),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
     if (r != QMessageBox::Yes)
         return;
@@ -4146,6 +4188,7 @@ void MainWindow::onSettings()
     if (!reopen.isEmpty())
         args << reopen;
     QProcess::startDetached(QCoreApplication::applicationFilePath(), args);
+#endif
 }
 
 // ---- recent files ---------------------------------------------------------

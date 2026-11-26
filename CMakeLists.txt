@@ -109,6 +109,8 @@ add_library(phobicccp_ui STATIC
     src/jobview.cpp
     src/shopdialog.cpp
     src/popuplook.cpp
+    src/touchprofile.cpp
+    src/apptheme.cpp
     src/isopreview.cpp
     src/simpanel.cpp
     src/vectoractions.cpp
@@ -416,6 +418,13 @@ if(Qt6Test_FOUND)
     add_executable(test_dragscroll tests/test_dragscroll.cpp)
     target_link_libraries(test_dragscroll PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME dragscroll COMMAND test_dragscroll)
+    # The touch profile: finger-sized controls, and the window and dialogs
+    # fitting a 1280x800 landscape pad (an offscreen screen of that size).
+    add_executable(test_touchsize tests/test_touchsize.cpp)
+    target_link_libraries(test_touchsize PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME touchsize COMMAND test_touchsize)
+    set_tests_properties(touchsize PROPERTIES ENVIRONMENT
+        "QT_QPA_PLATFORM=offscreen:configfile=${CMAKE_SOURCE_DIR}/tests/data/screen-1280x800.json")
     # Mirror / arrays through the real Edit → Vectors actions and undo stack.
     add_executable(test_vectoractions tests/test_vectoractions.cpp)
     target_link_libraries(test_vectoractions PRIVATE phobicccp_ui)

@@ -1,4 +1,5 @@
 #include "toolpathform.h"
+#include "touchprofile.h"
 #include "c2ddocument.h"
 #include "tooldiagram.h"
 #include "toollibrary.h"
@@ -37,7 +38,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::StrongFocus);
     }
-    QSize sizeHint() const override { return {56, 30}; }
+    QSize sizeHint() const override { return touch::enabled() ? QSize(72, 40) : QSize(56, 30); }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -589,7 +590,8 @@ ToolpathForm::ToolpathForm(QWidget *parent)
         " background: transparent; color: #d8dce4; }"
         "#tpLabel { color: #aab1bd; }"
         "#tpToolText { color: #d8dce4; }"
-        "QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { min-height: 34px; }"));
+        "QDoubleSpinBox, QSpinBox, QComboBox, QLineEdit { min-height: %1px; }")
+                      .arg(touch::minFieldHeight(34)));
 }
 
 void ToolpathForm::clear()

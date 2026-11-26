@@ -1,4 +1,5 @@
 #include "settingsdialog.h"
+#include "touchprofile.h"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -77,7 +78,7 @@ int appsettings::panelTextPercent(QSettings &s)
 QList<int> appsettings::panelTextChoices() { return {100, 110, 125, 150, 175, 200}; }
 
 SettingsDialog::SettingsDialog(QWidget *parent)
-    : QDialog(parent), m_scale(new QComboBox(this)), m_panelText(new QComboBox(this)),
+    : QDialog(parent), m_scale(new QComboBox(this)), m_touch(new QComboBox(this)), m_panelText(new QComboBox(this)),
       m_machine(new QComboBox(this)),
       m_customW(new QDoubleSpinBox(this)), m_customH(new QDoubleSpinBox(this)), m_tabHeight(new QDoubleSpinBox(this))
 {
@@ -90,6 +91,12 @@ SettingsDialog::SettingsDialog(QWidget *parent)
         if (pct == m_scaleWas)
             m_scale->setCurrentIndex(m_scale->count() - 1);
     }
+
+    m_touchWas = int(touch::mode(s));
+    m_touch->addItems(touch::modeLabels());
+    m_touch->setCurrentIndex(m_touchWas);
+    m_touch->setToolTip(QStringLiteral(
+        "Bigger buttons, menus, tabs, lists and scroll bars, for a finger on a touch screen."));
 
     const int panelText = appsettings::panelTextPercent(s);
     for (int pct : appsettings::panelTextChoices()) {
@@ -129,6 +136,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
 
     auto *form = new QFormLayout;
     form->addRow(QStringLiteral("GUI scale:"), m_scale);
+    form->addRow(QStringLiteral("Touch-sized controls:"), m_touch);
     form->addRow(QStringLiteral("Toolpaths text size:"), m_panelText);
     form->addRow(QStringLiteral("Machine:"), m_machine);
     form->addRow(QStringLiteral("Custom width (X):"), m_customW);
@@ -136,7 +144,7 @@ SettingsDialog::SettingsDialog(QWidget *parent)
     form->addRow(QStringLiteral("Tab height:"), m_tabHeight);
 
     auto *note = new QLabel(QStringLiteral(
-        "The GUI scale applies after a restart; the Toolpaths text size at once. The machine sets the size of the "
+        "The GUI scale and touch-sized controls apply after a restart; the Toolpaths text size at once. The machine sets the size of the "
         "blank design phobiCCCP starts with, and the default for File → New. The tab height is what a new "
         "contour starts with (each toolpath can change its own)."), this);
     note->setWordWrap(true);
@@ -156,12 +164,13 @@ bool SettingsDialog::save()
     QSettings s;
     const int scale = m_scale->currentData().toInt();
     s.setValue(QStringLiteral("ui/scale"), scale);
+    touch::setMode(s, touch::Mode(m_touch->currentIndex()));
     s.setValue(QStringLiteral("ui/panelText"), m_panelText->currentData().toInt());
     s.setValue(QStringLiteral("machine/size"), m_machine->currentData().toString());
     s.setValue(QStringLiteral("machine/customWidth"), m_customW->value());
     s.setValue(QStringLiteral("machine/customHeight"), m_customH->value());
     s.setValue(QStringLiteral("defaults/tabHeight"), m_tabHeight->value());
-    return scale != m_scaleWas;
+    return scale != m_scaleWas || m_touch->currentIndex() != m_touchWas;
 }
 
 } // namespace c2d

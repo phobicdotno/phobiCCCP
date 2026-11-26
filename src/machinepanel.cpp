@@ -1,6 +1,7 @@
 #include "machinepanel.h"
 #include "jobview.h"
 #include "shopdialog.h"
+#include "touchprofile.h"
 #include "toollibrary.h"
 #include "toolstrip.h"
 
@@ -298,7 +299,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         "QLabel#caption { color: #8b93a1; font-size: 11px; letter-spacing: 1px; }"
         "QLabel#axis { color: #8b93a1; font-size: 20px; }"
         "QLabel#field { color: #8b93a1; font-size: 14px; }"
-        "QDoubleSpinBox, QComboBox { font-size: 14px; min-height: 34px; }"
+        "QDoubleSpinBox, QComboBox { font-size: 14px; min-height: %1px; }"
         "QLabel#statePill { border-radius: 10px; padding: 6px 14px; background: #1e2127; "
         "  border: 1px solid #2a2e36; }"
         "QPushButton#jog { font-size: 22px; border-radius: 14px; background: #2a2e36; }"
@@ -317,7 +318,8 @@ MachinePanel::MachinePanel(QWidget *parent)
         "QPushButton#big:disabled { color: #6a717d; border-color: #2a2e36; }"
         "QToolButton#step { padding: 6px 0; border-radius: 8px; background: transparent; "
         "  color: #a3abb8; font-family: monospace; font-size: 14px; }"
-        "QToolButton#step:checked { background: #f2a536; color: #1a1a1a; font-weight: bold; }"));
+        "QToolButton#step:checked { background: #f2a536; color: #1a1a1a; font-weight: bold; }")
+                      .arg(touch::minFieldHeight(34)));
     auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
@@ -380,7 +382,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_ports->setToolTip(QStringLiteral("Serial port of the GRBL controller. "
                                        "Pick one, or type a device path."));
     auto *refresh = new QPushButton(QStringLiteral("⟳"), body);
-    refresh->setFixedSize(34, 34);
+    refresh->setFixedSize(touch::minSide(34), touch::minSide(34));
     refresh->setToolTip(QStringLiteral("Rescan serial ports"));
     m_connectBtn = new QPushButton(QStringLiteral("Connect"), body);
     m_connectBtn->setMinimumSize(110, 34);

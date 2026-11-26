@@ -4,6 +4,8 @@
 #include "cccpfile.h"
 #include "shopdialog.h"
 #include "popuplook.h"
+#include "touchprofile.h"
+#include "apptheme.h"
 #include "gamepadmapdialog.h"
 #include "toollibrary.h"
 #include "toollibrarydialog.h"
@@ -32,9 +34,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
-#include <QPalette>
-#include <QStyleFactory>
-#include <QProxyStyle>
 #include <QSettings>
 #include <QStatusBar>
 #include "settingsdialog.h"
@@ -52,6 +51,8 @@
 #include <QListView>
 #include <QToolButton>
 #include <QToolBar>
+#include <QMenuBar>
+#include <QMenu>
 #include <QPainter>
 #include <QImage>
 #include <QTreeView>
@@ -61,36 +62,6 @@
 #include <QAbstractButton>
 #include <QContextMenuEvent>
 #include <QMouseEvent>
-
-// Tool buttons with variants open their menu after a 500 ms press-and-hold
-// (Fusion's default is 600 ms); a plain click uses the current variant.
-// Scrollbars and splitter handles are thicker than Fusion's so a finger can
-// hold them on the shop PC's touchscreen. All of it is in logical pixels, so
-// it grows with the GUI scale like everything else.
-class PhobicStyle : public QProxyStyle
-{
-public:
-    using QProxyStyle::QProxyStyle;
-    int pixelMetric(PixelMetric m, const QStyleOption *opt, const QWidget *w) const override
-    {
-        switch (m) {
-        case PM_ScrollBarExtent:    return 22;   // Fusion: 14
-        case PM_ScrollBarSliderMin: return 40;
-        case PM_SplitterWidth:      return 12;
-        default:                    return QProxyStyle::pixelMetric(m, opt, w);
-        }
-    }
-    int styleHint(StyleHint hint, const QStyleOption *opt, const QWidget *w,
-                  QStyleHintReturn *ret) const override
-    {
-        if (hint == SH_ToolButton_PopupDelay)
-            return 500;
-        // Plain OK / Cancel: no tick and cross icons on dialog buttons.
-        if (hint == SH_DialogButtonBox_ButtonsHaveIcons)
-            return 0;
-        return QProxyStyle::styleHint(hint, opt, w, ret);
-    }
-};
 
 // Open / Save dialogs are Qt's own, with 16 px icons and rows that are hard to
 // hit on the shop PC's touchscreen: files and places get 24 px icons on rows
@@ -129,7 +100,9 @@ public:
             dlg->setIconProvider(new PlainFileIcons);
             for (auto *v : dlg->findChildren<QAbstractItemView *>()) {
                 v->setIconSize(QSize(24, 24));
-                v->setStyleSheet(QStringLiteral("QAbstractItemView::item { padding: 5px 2px; }"));
+                // Finger-high rows with the touch sizes on (24 px icon + 2 x 10).
+                v->setStyleSheet(QStringLiteral("QAbstractItemView::item { padding: %1px 2px; }")
+                                     .arg(c2d::touch::enabled() ? 10 : 5));
             }
             if (auto *tree = dlg->findChild<QTreeView *>(QStringLiteral("treeView"))) {
                 QHeaderView *h = tree->header();
@@ -149,11 +122,12 @@ public:
                 if (!icon.isNull())
                     b->setIcon(icon);
                 b->setIconSize(QSize(24, 24));
-                b->setMinimumSize(36, 36);
+                b->setMinimumSize(c2d::touch::minSide(36), c2d::touch::minSide(36));
             }
             for (auto *c : dlg->findChildren<QComboBox *>())
                 c->setIconSize(QSize(24, 24));
             dlg->resize(dlg->size().expandedTo(QSize(1100, 760)));
+            c2d::touch::fitToScreen(dlg);   // but never bigger than the screen
             if (auto *split = dlg->findChild<QSplitter *>(QStringLiteral("splitter"))) {
                 const int side = 180;
                 split->setSizes({side, qMax(dlg->width() - side, 400)});
@@ -277,52 +251,6 @@ static void keepUnitOutOfSelection(QWidget *now)
     });
 }
 
-
-// Fusion + a hand-tuned dark palette; small QSS pass for spacing/accents.
-static void applyDarkTheme(QApplication &app)
-{
-    app.setStyle(new PhobicStyle(QStyleFactory::create(QStringLiteral("Fusion"))));
-
-    QPalette p;
-    const QColor bg(0x1e, 0x21, 0x27), base(0x16, 0x18, 0x1d),
-        text(0xd8, 0xdc, 0xe4), disabled(0x6a, 0x71, 0x7d),
-        accent(0xf2, 0xa5, 0x36), button(0x2a, 0x2e, 0x36);
-    p.setColor(QPalette::Window, bg);
-    p.setColor(QPalette::WindowText, text);
-    p.setColor(QPalette::Base, base);
-    p.setColor(QPalette::AlternateBase, bg);
-    p.setColor(QPalette::Text, text);
-    p.setColor(QPalette::Button, button);
-    p.setColor(QPalette::ButtonText, text);
-    p.setColor(QPalette::BrightText, Qt::white);
-    p.setColor(QPalette::Highlight, accent);
-    p.setColor(QPalette::HighlightedText, QColor(0x1a, 0x1a, 0x1a));
-    p.setColor(QPalette::ToolTipBase, base);
-    p.setColor(QPalette::ToolTipText, text);
-    p.setColor(QPalette::PlaceholderText, disabled);
-    p.setColor(QPalette::Disabled, QPalette::Text, disabled);
-    p.setColor(QPalette::Disabled, QPalette::ButtonText, disabled);
-    p.setColor(QPalette::Disabled, QPalette::WindowText, disabled);
-    app.setPalette(p);
-
-    app.setStyleSheet(QStringLiteral(R"(
-        QMenuBar { font-size: 14px; background: transparent; }
-        QMenuBar::item { padding: 7px 10px; border-radius: 6px; }
-        QMenuBar::item:selected { background: #333945; }
-        QMenu { font-size: 14px; }
-        QMenu::item { padding: 6px 28px 6px 12px; }
-        QMenu::item:selected { background: palette(highlight); color: palette(highlighted-text); }
-        QMenu::item:disabled { color: palette(mid); background: transparent; }
-        QToolBar { spacing: 4px; padding: 4px; border: 0; }
-        QToolButton { padding: 4px 8px; border-radius: 4px; }
-        QToolButton:checked { background: #3a4150; }
-        QToolButton:hover { background: #333945; }
-        QStatusBar { background: #16181d; }
-        QPlainTextEdit { font-family: monospace; font-size: 12px; border: 0; }
-        QDockWidget::title { background: #23262e; padding: 7px; font-size: 13px; }
-        QSpinBox { padding: 2px 4px; }
-    )"));
-}
 
 #ifdef PHOBICCCP_DEV_TOOLS
 // --selftest <in.c2d> <out.c2d>: headless create/save/reload check — loads the
@@ -702,7 +630,18 @@ int main(int argc, char *argv[])
     c2d::installModelProvider();   // heightModelFor(doc) reads the 3D model stored in the .c2d
     QCoreApplication::setApplicationName(QStringLiteral("phobiCCCP"));
     QCoreApplication::setOrganizationName(QStringLiteral("phobicdotno"));
-    applyDarkTheme(app);
+    // Finger-sized controls: on a pad by default, on a computer when Settings
+    // asks for it. Decided before the theme and the window are made.
+    {
+        QSettings s;
+        c2d::touch::setEnabled(c2d::touch::wantedBy(c2d::touch::mode(s)));
+    }
+#ifdef PHOBICCCP_DEV_TOOLS
+    // PHOBICCCP_SHOT_TOUCH=1|0: a screenshot with the touch profile on or off.
+    if (qEnvironmentVariableIsSet("PHOBICCCP_SHOT_TOUCH"))
+        c2d::touch::setEnabled(qgetenv("PHOBICCCP_SHOT_TOUCH") == "1");
+#endif
+    c2d::applyAppTheme(app);   // dark Fusion, and the touch sizes when they are on
     // Always the Qt file dialogs: launched from the Cinnamon menu the gtk3
     // platform theme swaps in GTK's white chooser, which ignores the dark
     // palette, the icon sizes and the start folder below.
@@ -714,6 +653,7 @@ int main(int argc, char *argv[])
                 break;
             }
     app.installEventFilter(new FileDialogIcons(&app));
+    c2d::touch::install(app);
     app.installEventFilter(new TouchHold(&app));
     c2d::installPopupLook(app);
     QObject::connect(&app, &QApplication::focusChanged, &app,
@@ -1490,6 +1430,19 @@ int main(int argc, char *argv[])
                     app.exec();
                     return 0;
                 }
+                else if (step == "settings") {
+                    // The Settings dialog, grabbed on its own.
+                    const QString out = QString::fromLocal8Bit(argv[3]);
+                    c2d::SettingsDialog dlg(&w);
+                    dlg.setWindowModality(Qt::NonModal);
+                    dlg.show();
+                    QTimer::singleShot(800, [&dlg, out] {
+                        dlg.grab().save(out);
+                        QCoreApplication::exit(0);
+                    });
+                    app.exec();
+                    return 0;
+                }
                 else if (step == "padmap") {
                     // The gamepad dialog with a few buttons held down.
                     const QString out = QString::fromLocal8Bit(argv[3]);
@@ -1573,6 +1526,17 @@ int main(int argc, char *argv[])
                 QCoreApplication::processEvents();
             }
         }
+        // PHOBICCCP_SHOT_MENU=<name> opens that menu of the menu bar ("File").
+        if (qEnvironmentVariableIsSet("PHOBICCCP_SHOT_MENU"))
+            QTimer::singleShot(1000, &w, [&w] {
+                const QString want = qEnvironmentVariable("PHOBICCCP_SHOT_MENU");
+                for (QMenuBar *bar : w.findChildren<QMenuBar *>())
+                    for (QAction *a : bar->actions())
+                        if (a->menu() && a->text().remove(QLatin1Char('&')) == want) {
+                            a->menu()->popup(bar->mapToGlobal(bar->actionGeometry(a).bottomLeft()));
+                            return;
+                        }
+            });
         // PHOBICCCP_SHOT_MORE=1 opens the first toolbar \u00bb that is showing,
         // so the shot has its menu of the buttons that did not fit.
         if (qgetenv("PHOBICCCP_SHOT_MORE") == "1")

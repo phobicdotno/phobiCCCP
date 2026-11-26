@@ -39,18 +39,20 @@ class SettingsDialog : public QDialog
 public:
     explicit SettingsDialog(QWidget *parent = nullptr);
 
-    // Writes the choices to QSettings. True when the GUI scale changed, which
-    // only takes effect after a restart.
+    // Writes the choices to QSettings. True when the GUI scale or the touch
+    // sizes changed, which only take effect after a restart.
     bool save();
 
 private:
     QComboBox *m_scale;
+    QComboBox *m_touch;
     QComboBox *m_panelText;
     QComboBox *m_machine;
     QDoubleSpinBox *m_customW;
     QDoubleSpinBox *m_customH;
     QDoubleSpinBox *m_tabHeight;
     int m_scaleWas = 100;
+    int m_touchWas = 0;
 };
 
 } // namespace c2d
