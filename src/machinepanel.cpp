@@ -4737,6 +4737,47 @@ bool MachinePanel::startFromRemote(QString *why)
     return runProgram(why ? why : &dummy);
 }
 
+bool MachinePanel::holdFromRemote(const QString &who, QString *why)
+{
+    if (!m_grbl->isConnected()) {
+        if (why) *why = QStringLiteral("the machine is not connected");
+        return false;
+    }
+    if (m_held || m_liftHold) {
+        log(QStringLiteral("Hold from pad %1: already held").arg(who));
+        return true;
+    }
+    log(QStringLiteral("Hold from pad %1").arg(who));
+    m_pauseBtn->click();                  // same path as the on-screen button
+    return true;
+}
+
+bool MachinePanel::resumeFromRemote(const QString &who, QString *why)
+{
+    if (!m_grbl->isConnected()) {
+        if (why) *why = QStringLiteral("the machine is not connected");
+        return false;
+    }
+    if (!m_held && !m_liftHold) {
+        if (why) *why = QStringLiteral("the machine is not on hold");
+        return false;
+    }
+    log(QStringLiteral("Resume from pad %1").arg(who));
+    m_pauseBtn->click();
+    return true;
+}
+
+bool MachinePanel::stopFromRemote(const QString &who, QString *why)
+{
+    if (!m_grbl->isConnected()) {
+        if (why) *why = QStringLiteral("the machine is not connected");
+        return false;
+    }
+    log(QStringLiteral("Stop from pad %1").arg(who));
+    m_stopBtn->click();
+    return true;
+}
+
 bool MachinePanel::reloadMachine(QString *why)
 {
     if (isBusy()) {
@@ -4786,6 +4827,8 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("homed"), m_grbl->isConnected() && m_homed);
     o.insert(QStringLiteral("busy"), isBusy());
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
+    // On hold here (Hold pressed, here or on a pad): the pad offers Resume.
+    o.insert(QStringLiteral("held"), m_grbl->isConnected() && (m_held || m_liftHold));
     o.insert(QStringLiteral("job"), !m_ncPath.isEmpty() ? QFileInfo(m_ncPath).fileName()
                                     : m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());

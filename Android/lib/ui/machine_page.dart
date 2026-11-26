@@ -2,6 +2,7 @@
 // (machinepanel.cpp): the phobiCCCPs on the network and their machines on the
 // left, the job and the big amber Start on the right.
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -27,7 +28,108 @@ class MachinePage extends StatefulWidget {
 class _MachinePageState extends State<MachinePage> {
   String? _computer;
   bool _busy = false;
+  // Stop takes two taps: the first arms it for a few seconds.
+  bool _stopArmed = false;
+  Timer? _stopDisarm;
+  bool _controlBusy = false;
   AppState get app => widget.app;
+
+  @override
+  void dispose() {
+    _stopDisarm?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _control(Computer c, String op) async {
+    _stopDisarm?.cancel();
+    setState(() {
+      _stopArmed = false;
+      _controlBusy = true;
+    });
+    try {
+      await app.control(c, op);
+      widget.onStatus(switch (op) {
+        'hold' => 'Hold sent to ${c.name}',
+        'resume' => 'Resume sent to ${c.name}',
+        _ => 'Stop sent to ${c.name}',
+      });
+    } catch (e) {
+      widget.onStatus('Not done: $e');
+    } finally {
+      if (mounted) setState(() => _controlBusy = false);
+    }
+  }
+
+  void _stopTap(Computer c) {
+    if (_stopArmed) {
+      _control(c, 'stop');
+      return;
+    }
+    _stopDisarm?.cancel();
+    _stopDisarm = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _stopArmed = false);
+    });
+    setState(() => _stopArmed = true);
+  }
+
+  Widget _bigBtn(String label, IconData icon, Color color, VoidCallback? onTap, {Color text = C.base}) => SizedBox(
+        height: 64,
+        child: Material(
+          color: onTap != null ? color : color.withAlpha(90),
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: onTap,
+            child: Center(
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(icon, color: text, size: 30),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(label,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: text)),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      );
+
+  /// Hold / Resume and Stop while a job runs there. Hold and Stop always;
+  /// Resume only where pads may start cutting.
+  Widget _runControls(Computer c, DesktopInfo info) {
+    final held = info.status.onHold;
+    final free = !_controlBusy;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        Expanded(
+          child: held
+              ? _bigBtn('Resume', Icons.play_arrow_rounded, C.amber,
+                  free && info.allowStart ? () => _control(c, 'resume') : null)
+              : _bigBtn('Hold', Icons.pause_rounded, C.amber, free ? () => _control(c, 'hold') : null),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _bigBtn(_stopArmed ? 'Tap again to stop' : 'Stop', Icons.stop_rounded,
+              _stopArmed ? const Color(0xFFFF3B3B) : const Color(0xFFD03A3A), free ? () => _stopTap(c) : null,
+              text: Colors.white),
+        ),
+      ]),
+      if (held && !info.allowStart)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text('Resume is off on ${c.name} (Machine › Pads may start cutting); resume it there.',
+              style: const TextStyle(color: C.amber, fontSize: 13)),
+        ),
+      if (_stopArmed)
+        const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text('Stop resets the controller at once: the job ends and the machine needs Initialize after.',
+              style: TextStyle(color: Color(0xFFE06C6C), fontSize: 13)),
+        ),
+      const SizedBox(height: 10),
+    ]);
+  }
 
   List<Computer> _reach() => app.computers.where((c) => c.reachable(app.now)).toList();
 
@@ -252,6 +354,7 @@ class _MachinePageState extends State<MachinePage> {
         const SizedBox(height: 10),
       ] else
         const Spacer(),
+      if (c != null && info != null && info.status.jobRunning) _runControls(c, info),
       if (_busy)
         const Padding(
           padding: EdgeInsets.only(bottom: 10),

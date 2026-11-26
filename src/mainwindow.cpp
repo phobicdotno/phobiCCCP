@@ -3256,6 +3256,27 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
         const QString machineId = req.value(QStringLiteral("id")).toString();
         why = padSwitchRefusal(machineId, m_machine->statusJson());
         reply = why.isEmpty() && switchMachine(machineId, &why) ? padInfo() : padError(why);
+    } else if (op == QLatin1String("hold") || op == QLatin1String("resume")
+               || op == QLatin1String("stop")) {
+        // Hold and Stop from any pad that reaches here: anyone must be able
+        // to stop the machine. Resume starts it cutting again, so only when
+        // pads may start cutting.
+        QString who = m_pads.nameOf(req.value(QStringLiteral("pad")).toString());
+        if (who.isEmpty())
+            who = peer;
+        QString why;
+        bool done = false;
+        if (op == QLatin1String("resume") && !padsMayStart())
+            why = QStringLiteral("resuming from a pad is off on %1 (Machine > Pads may start cutting)")
+                      .arg(QSysInfo::machineHostName());
+        else if (op == QLatin1String("hold"))
+            done = m_machine->holdFromRemote(who, &why);
+        else if (op == QLatin1String("resume"))
+            done = m_machine->resumeFromRemote(who, &why);
+        else
+            done = m_machine->stopFromRemote(who, &why);
+        reply = done ? QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("status"), m_machine->statusJson()}}
+                     : padError(why);
     } else if (op == QLatin1String("send") || op == QLatin1String("open")) {
         m_linkBusy = true;
         reply = padSend(id, req, peer);

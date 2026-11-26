@@ -217,6 +217,16 @@ class CccpConnection {
     }
   }
 
+  /// Hold, resume or stop the job running on that computer ([op] 'hold',
+  /// 'resume' or 'stop'; Stop is the Machine page's Stop there, an instant
+  /// reset). [pad] is this pad's id, so the computer's log says which pad.
+  /// The machine's status afterwards.
+  Future<MachineStatus> control(String op, {String pad = ''}) async {
+    final r = await request({'op': op, 'pad': pad});
+    final s = r['status'];
+    return s is Map ? MachineStatus.fromJson(s.cast<String, Object?>()) : const MachineStatus();
+  }
+
   void close() {
     _closed = true;
     _socket.destroy();

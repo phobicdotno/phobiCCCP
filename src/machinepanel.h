@@ -66,6 +66,13 @@ public:
     // this screen: connected, homed, idle, not busy, no alarm. False with
     // `why` set when it did not start.
     bool startFromRemote(QString *why);
+    // A pad's Hold, Resume and Stop: the same path as this page's Hold /
+    // Resume button and its Stop button (the instant reset), written in the
+    // log with `who`, the pad's name. False with `why` set when there was
+    // nothing to do (not connected, or Resume with nothing held).
+    bool holdFromRemote(const QString &who, QString *why);
+    bool resumeFromRemote(const QString &who, QString *why);
+    bool stopFromRemote(const QString &who, QString *why);
     // The machine/ settings group was swapped for another machine's
     // (machineprofiles.h): disconnect, load it, and connect to the new
     // machine's port if the old one was connected. Refused while busy.

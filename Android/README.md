@@ -96,7 +96,7 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 
 | op | sends | answer |
 |---|---|---|
-| `info` | `pad` {id, name} (optional) | host, version, id, `machines` [{id, name, active, size}], `activeMachine`, `status` {connected, state, homed, busy, streaming, job}, `allowStart`, `document` |
+| `info` | `pad` {id, name} (optional) | host, version, id, `machines` [{id, name, active, size}], `activeMachine`, `status` {connected, state, homed, busy, streaming, held, job}, `allowStart`, `document` |
 | `tools` | | `materials` [{id, name}], `tools` [{number, name, kind, diameter, angle, flutes, materials}] |
 | `designs` | | `designs` [{id, name, modified, deleted, vv}] |
 | `get` | `id` | `design` |
@@ -104,6 +104,9 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 | `machine` | `id` | as `info`, after switching (refused while a machine is connected, unless pads may start cutting) |
 | `send` | `design`, `machine` (id or ""), `start`, `from`, `versions` | `started`, `message`, `notes`; as for `put`, `modified`, `forked` and `moved` (what opens is the pad's version: the fork unless `moved`, or the pad's copy on its own, unlinked, when that fork was deleted since; the computer's later copy when it already had one made from the pad's) |
 | `opened` | `seq`, `pad` (its id) | (nothing more) |
+| `hold` | `pad` (its id) | `status` (as in `info`). The Machine page's Hold there; always taken from a pad, whatever `allowStart` says |
+| `resume` | `pad` (its id) | `status`. Its Resume; refused unless pads may start cutting (`allowStart`), or when nothing is on hold |
+| `stop` | `pad` (its id) | `status`. Its Stop: the instant controller reset (the job ends, Initialize after); always taken from a pad |
 
 **Sent from the computer** (File › Send to pad…): the pad never listens, so a design for it
 waits on the computer. Each sync round's `info` names the pad (`pad`: its own id, the one in its vvs,
@@ -112,6 +115,10 @@ waits for that pad, the answer carries `open` {seq, design, name, from}. The des
 ordinary synced one, so the same round pulls it; then the pad opens it and answers `opened`
 with the `seq`. A request not taken in two minutes is given up. A pad that already opened a
 `seq` (its `opened` answer lost) says `opened` again without opening it twice.
+
+**Hold, Resume, Stop:** while a job runs (`streaming`, `held` or a `Hold` state) the pad's
+Machine page shows Hold (or Resume, when held) and Stop, which takes a second tap. The
+computer writes each one in its machine log with the pad's name ("Hold from pad …").
 
 The design format is described in `src/padlink.h`; `tests/data/pad-design.json` is an
 example both the app's tests and the desktop's `test_padlink` check against.

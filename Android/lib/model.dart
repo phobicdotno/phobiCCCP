@@ -683,6 +683,10 @@ class JobStep {
 
 class MachineStatus {
   final bool connected, homed, busy, streaming;
+
+  /// On hold there (Hold pressed at the computer or on a pad; phobiCCCP
+  /// 1.3.x and later say so).
+  final bool held;
   final String port, state, job;
 
   /// The job's steps while the computer has one (phobiCCCP 1.3.18 and later).
@@ -696,6 +700,7 @@ class MachineStatus {
       this.homed = false,
       this.busy = false,
       this.streaming = false,
+      this.held = false,
       this.port = '',
       this.state = '',
       this.job = '',
@@ -706,6 +711,7 @@ class MachineStatus {
         homed: _b(j['homed']),
         busy: _b(j['busy']),
         streaming: _b(j['streaming']),
+        held: _b(j['held']),
         port: _s(j['port']),
         state: _s(j['state']),
         job: _s(j['job']),
@@ -731,6 +737,12 @@ class MachineStatus {
     if (state == 'Idle') return 'Idle, ready';
     return state.isEmpty ? 'Connected' : state;
   }
+
+  /// A job going or on hold: the pad offers Hold, Resume and Stop.
+  bool get jobRunning => connected && (streaming || held || state.startsWith('Hold'));
+
+  /// On hold, so Resume, not Hold.
+  bool get onHold => held || state.startsWith('Hold');
 
   /// What the desktop checks before it starts a job from the pad.
   bool get readyToCut => connected && homed && !busy && state == 'Idle';

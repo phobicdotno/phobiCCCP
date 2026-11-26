@@ -309,6 +309,15 @@ class AppState extends ChangeNotifier {
     _changed();
   }
 
+  /// Hold, resume or stop ([op]) the job on that computer's machine.
+  Future<void> control(Computer c, String op) async {
+    try {
+      await CccpConnection.use(c.desktop.address, c.desktop.port, (k) => k.control(op, pad: store.replicaId));
+    } finally {
+      unawaited(syncNow());
+    }
+  }
+
   /// Send [d] to open on that computer (and machine), and start it when asked.
   Future<SendResult> send(Design d, Computer c, String machineId, bool start) async {
     try {
