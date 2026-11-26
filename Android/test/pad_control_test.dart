@@ -36,6 +36,9 @@ void main() {
   test('status: held and running', () {
     expect(MachineStatus.fromJson({'connected': true, 'state': 'Hold:0'}).jobRunning, true);
     expect(MachineStatus.fromJson({'connected': true, 'state': 'Idle'}).jobRunning, false);
+    // The last move still runs after the stream is done: Hold and Stop stay.
+    expect(MachineStatus.fromJson({'connected': true, 'streaming': false, 'state': 'Run'}).jobRunning, true);
+    expect(MachineStatus.fromJson({'connected': true, 'state': 'Jog'}).jobRunning, true);
     expect(MachineStatus.fromJson({'connected': false, 'held': true}).jobRunning, false);
   });
 }
