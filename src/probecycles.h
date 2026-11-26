@@ -20,9 +20,10 @@ QStringList holeProbeLines(char axis, double search, const ProbeFeeds &f);
 
 // Boss: from just over its top, out past the + side by diameter/2 +
 // clearance, down `depth`, probe back toward the boss, up, back over the
-// start; then the same on the - side. Ends where it began. Contacts as above.
+// start (machine coordinate `startAbs` on this axis); then the same on the
+// - side. Ends where it began. Contacts as above.
 QStringList bossProbeLines(char axis, double diameter, double clearance, double depth,
-                           const ProbeFeeds &f);
+                           const ProbeFeeds &f, double startAbs);
 
 // Touch plate: straight down at most `travel`, ends 5 mm over the plate.
 // Contacts: [fast, slow].

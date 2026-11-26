@@ -205,7 +205,8 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
     cRow(QStringLiteral("Boss height"), m_bossHeight, m_bossRows);
     m_bossClear = spin(m_centreBox, 1, 50, 1, QStringLiteral(" mm"));
     m_bossClear->setToolTip(QStringLiteral(
-        "How far past the boss side the bit goes before it comes down"));
+        "How far past the boss side the bit's edge goes before it comes down. More "
+        "than you are off the boss's middle when you start"));
     cRow(QStringLiteral("Clearance"), m_bossClear, m_bossRows);
     m_plateThick = spin(m_centreBox, 0, 50, 2, QStringLiteral(" mm"));
     m_plateThick->setToolTip(QStringLiteral(

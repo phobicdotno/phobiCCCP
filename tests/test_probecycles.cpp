@@ -47,14 +47,16 @@ int main()
     check(hole.at(7) == "G38.2 X-4.000 F50", "hole: slow - touch");
     check(hole.count() == 10 && hole.filter("G38.2").count() == 2, "hole: two slow touches");
 
-    const QStringList boss = bossProbeLines('Y', 20, 5, 8, f);
+    const QStringList boss = bossProbeLines('Y', 20, 5, 8, f, -100);
     check(boss.at(1) == "G0 Y15.000", "boss: out past + side (r + clearance)");
     check(boss.at(2) == "G0 Z-8.000", "boss: down beside it");
     check(boss.at(3) == "G38.3 Y-12.000 F300", "boss: fast toward it");
     check(boss.at(5) == "G38.2 Y-4.000 F50", "boss: slow toward it");
     check(boss.at(7) == "G0 Z8.000", "boss: back up before crossing");
-    check(boss.at(8) == "G0 Y-15.000", "boss: out past - side");
-    check(boss.at(10) == "G38.3 Y12.000 F300", "boss: fast toward it from -");
+    check(boss.at(9) == "G53 G0 Y-100.000", "boss: back over the start, not the contact");
+    check(boss.at(11) == "G0 Y-15.000", "boss: out past - side");
+    check(boss.at(13) == "G38.3 Y12.000 F300", "boss: fast toward it from -");
+    check(boss.filter("G53 G0 Y-100.000").count() == 2, "boss: ends over the start");
     check(boss.last() == "G90", "boss: absolute at the end");
     // Every move adds up to nothing: the cycle ends where it began, at the
     // start height (contacts aside, which stop short of the full move).
@@ -64,7 +66,7 @@ int main()
             z += l.mid(4).toDouble();
     check(near(z, 0), "boss: ends at the start height");
     // Never searches past the middle of a small boss.
-    const QStringList small = bossProbeLines('X', 2, 10, 5, f);
+    const QStringList small = bossProbeLines('X', 2, 10, 5, f, 0);
     check(small.at(3) == "G38.3 X-11.000 F300", "boss: search no farther than the centre");
 
     const QStringList plate = plateProbeLines(25, f);

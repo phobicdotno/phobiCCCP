@@ -2260,7 +2260,10 @@ void MachinePanel::bitZeroStage(Phase stage, QStringList prefix)
             // Started off-centre the far wall is up to a diameter away.
             lines += holeProbeLines(axis, std::max(r + 5.0, m_bz.holeDiameter), f);
         else
-            lines += bossProbeLines(axis, m_bz.holeDiameter, m_bz.bossClearance, m_bz.bossHeight, f);
+            // Clearance counts from the pin's side, not its middle.
+            lines += bossProbeLines(axis, m_bz.holeDiameter,
+                                    m_bz.bossClearance + m_bz.toolDiameter / 2.0, m_bz.bossHeight, f,
+                                    axis == 'Y' ? m_bzStartY : m_bzPass == 0 ? m_bzStartX : m_bzCx);
         m_grbl->startMacro(lines);
         return;
     }

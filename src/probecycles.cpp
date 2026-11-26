@@ -27,7 +27,7 @@ QStringList holeProbeLines(char axis, double search, const ProbeFeeds &f)
 }
 
 QStringList bossProbeLines(char axis, double diameter, double clearance, double depth,
-                           const ProbeFeeds &f)
+                           const ProbeFeeds &f, double startAbs)
 {
     const QChar a = QChar::fromLatin1(axis);
     const double outD = diameter / 2.0 + clearance;
@@ -46,7 +46,12 @@ QStringList bossProbeLines(char axis, double diameter, double clearance, double 
           << QStringLiteral("G0 %1%2%3").arg(a, o, back)
           << QStringLiteral("G38.2 %1%2%3 F%4").arg(a, t, again, feed(f.slowFeed))
           << QStringLiteral("G0 %1%2%3").arg(a, o, back)
-          << QStringLiteral("G0 Z%1").arg(down);
+          << QStringLiteral("G0 Z%1").arg(down)
+          // back over the start: the contact, not the start, is where the
+          // touch left the bit
+          << QStringLiteral("G90")
+          << QStringLiteral("G53 G0 %1%2").arg(a, mm(startAbs))
+          << QStringLiteral("G91");
     }
     l << QStringLiteral("G90");
     return l;

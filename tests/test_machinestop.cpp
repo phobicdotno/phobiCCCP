@@ -128,7 +128,7 @@ struct FakeGrbl {
     QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
     double bx = -130, by = -130, topZ = -40, r = 3.175, minZ = 1e9;
     // A round hole (hole centre): walls at radius hR around (hcx, hcy).
-    bool hole = false;
+    bool hole = false, boss = false;   // boss: a round post, top at topZ
     double hcx = 0, hcy = 0, hR = 10;
     double val(const QByteArray &l, char ax, bool &has) const {
         const int i = l.indexOf(ax); has = i >= 0; if (!has) return 0;
@@ -159,6 +159,20 @@ struct FakeGrbl {
                 const double w = std::sqrt(R * R - (mx - hcx) * (mx - hcx));
                 const double wall = ty > my ? hcy + w : hcy - w;
                 if ((ty - wall) * (my - wall) <= 0) { hit = true; cy = wall; }
+            }
+        }
+        if (boss && mz < topZ) {
+            // From outside toward the post: stops a pin radius off its side.
+            const double R = hR + r;
+            if (hx && std::abs(my - hcy) < R) {
+                const double w = std::sqrt(R * R - (my - hcy) * (my - hcy));
+                const double side = mx > hcx ? hcx + w : hcx - w;
+                if ((tx - side) * (mx - side) <= 0) { hit = true; cx = side; }
+            }
+            if (hy && std::abs(mx - hcx) < R) {
+                const double w = std::sqrt(R * R - (mx - hcx) * (mx - hcx));
+                const double side = my > hcy ? hcy + w : hcy - w;
+                if ((ty - side) * (my - side) <= 0) { hit = true; cy = side; }
             }
         }
         const bool overBlock = mx >= bx && mx <= bx + 60 && my >= by && my <= by + 60;
@@ -1897,6 +1911,48 @@ int main(int argc, char **argv)
               "holecentre: diameter is the hole's, pin added back");
         check(std::abs(grbl.mx - grbl.hcx) < 0.01 && std::abs(grbl.my - grbl.hcy) < 0.01,
               "holecentre: the pin ends over the centre");
+    }
+
+    if (mode == "bosscentre") {
+        // Boss centre: started a few mm over a 30 mm post, a little off its
+        // middle; X0 Y0 lands on its centre, the diameter with the pin taken off.
+        grbl.geo = true;
+        grbl.boss = true;
+        grbl.topZ = grbl.mz - 3.0;
+        grbl.hcx = grbl.mx - 2.0;
+        grbl.hcy = grbl.my + 1.5;
+        grbl.hR = 15.0;
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Boss)->click();
+        panel.m_bzPanel->m_holeDia->setValue(30.0);
+        panel.m_bzPanel->m_tipDia->setValue(6.35);
+        panel.m_bzPanel->m_bossHeight->setValue(8.0);
+        panel.m_bzPanel->m_bossClear->setValue(5.0);
+        grbl.r = 6.35 / 2.0;
+        const double startZ = grbl.mz;
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(8000);
+        std::printf("centre found X%.3f Y%.3f (boss X%.3f Y%.3f); %s\n", panel.m_bzCx, panel.m_bzCy,
+                    grbl.hcx, grbl.hcy, qPrintable(panel.m_bzPanel->m_centreResult->text()));
+        check(std::abs(panel.m_bzCx - grbl.hcx) < 0.01 && std::abs(panel.m_bzCy - grbl.hcy) < 0.01,
+              "bosscentre: the centre found is the boss's");
+        check(panel.m_bzPanel->m_centreResult->text().contains("diameter 30.000"),
+              "bosscentre: diameter is the boss's, pin taken off");
+        check(grbl.minZ >= startZ - 8.0 - 1e-6, "bosscentre: never lower than the boss height");
+        check(grbl.count("G10 L20 P1 X") == 1, "bosscentre: X0 Y0 set");
+    }
+    if (mode == "plateany") {
+        // Any touch plate: Z0 the plate thickness under the contact.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Plate)->click();
+        panel.m_bzPanel->m_plateThick->setValue(12.5);
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(4000);
+        std::printf("stock Z %.3f (contact %.3f)\n", panel.m_bzStockZ, grbl.probeZ);
+        check(std::abs(panel.m_bzStockZ - (grbl.probeZ - 12.5)) < 1e-6, "plateany: Z0 plate thickness below");
+        check(grbl.count("G10 L20 P1 Z") == 1 && grbl.count("G10 L20 P1 X") == 0, "plateany: only Z set");
     }
 
     if (mode == "v1reboot") {
