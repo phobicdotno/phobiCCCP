@@ -256,11 +256,13 @@ NcProgram readNcProgram(const QString &text)
             }
         }
         // A machine-coordinate move, or a trip to a stored spot, ends where
-        // the work X/Y it names is no longer known (G28/G30 alone: both).
+        // the work X/Y it names is no longer known (G28/G30 alone: both;
+        // a Z-only one, "G28 Z5", leaves X and Y where they were).
         if (g53 || home) {
-            if (hasX || (home && !hasX && !hasY))
+            const bool all = home && !hasX && !hasY && !hasZ;
+            if (hasX || all)
                 knownX = false;
-            if (hasY || (home && !hasX && !hasY))
+            if (hasY || all)
                 knownY = false;
         }
         // The spindle on a line of its own, the way the post writes it, so
