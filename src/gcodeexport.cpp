@@ -513,6 +513,29 @@ static QPainterPath unionRegions(const QList<QPainterPath> &regions)
 }
 #endif
 
+// The highest floor, no lower than `lowest`, that the toolpaths so far
+// cleared over all of `need`: the material top there for a cone that
+// reaches over `need` (Z0 when no cleared floor covers it).
+static double clearedTopOver(const QList<Cleared> &cleared, const QPainterPath &need, double lowest)
+{
+    double top = 0;
+    for (const Cleared &c : cleared) {
+        const double cand = qMax(c.zBot, lowest);
+        if (!(cand < top))
+            continue;
+        QList<QPainterPath> regs;
+        for (const Cleared &o : cleared)
+            if (o.zBot <= c.zBot + 1e-6)
+                regs << o.foot;
+        double left = 0;
+        for (const QPolygonF &g : subtractRegion(need, unionRegions(regs)).toSubpathPolygons())
+            left += std::fabs(vec::ringArea(g));
+        if (left < 0.01)
+            top = cand;
+    }
+    return top;
+}
+
 enum class RestVerdict { Untouched, Raised, Done, Partial };
 
 // Points along a tool-centre line no more than `step` apart: the rest test
@@ -3611,12 +3634,14 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                                             : QStringLiteral("%1 (no vectors)").arg(name));
                 continue;
             }
-            // Deeper than a V-bit's cone, the shank would cut the stock
-            // above the groove (nothing above it is cleared).
+            // Deeper than a V-bit's cone below the material top (Z0, or a
+            // floor cleared over all the bit reaches), the shank would cut
+            // the stock above the groove.
             if (const ToolGeom fg = toolGeomOf(tool); fg.kind == ToolGeom::VBit) {
                 const double halfTan = qTan(qDegreesToRadians(qBound(10.0, fg.angle, 179.0) / 2));
                 const double cone = fg.radius() / halfTan;
-                if (-cp.zBot > cone + 1e-6) {
+                const double top = clearedTopOver(cleared, sweptRegion(flutes, fg.radius()), cp.zBot);
+                if (top - cp.zBot > cone + 1e-6) {
                     res.skipped << QStringLiteral("%1 (deeper than the V-bit's cone (%2 mm): lower the end depth "
                                                   "or use a wider bit)").arg(name, QString::number(cone, 'f', 2));
                     continue;
@@ -4102,25 +4127,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // through the stock up to Z0, or to a floor cleared above that
             // covers all the bit can reach: past the bit's radius the shank cuts.
             if (cp.zTop < -1e-9 && !jobs.isEmpty()) {
-                double top = 0;
                 QList<QPolygonF> path;
                 for (const Job &jb : jobs)
                     path += jb.rings;
-                const QPainterPath need = sweptRegion(path, vg.radius());
-                for (const Cleared &c : cleared) {
-                    const double cand = qMax(c.zBot, cp.zTop);
-                    if (!(cand < top))
-                        continue;
-                    QList<QPainterPath> regs;
-                    for (const Cleared &o : cleared)
-                        if (o.zBot <= c.zBot + 1e-6)
-                            regs << o.foot;
-                    double left = 0;
-                    for (const QPolygonF &g : subtractRegion(need, unionRegions(regs)).toSubpathPolygons())
-                        left += std::fabs(vec::ringArea(g));
-                    if (left < 0.01)
-                        top = cand;
-                }
+                const double top = clearedTopOver(cleared, sweptRegion(path, vg.radius()), cp.zTop);
                 const double reach = width + tip + (top - cp.zTop) * halfTan;
                 if (reach > vg.radius() + 1e-6) {
                     res.skipped << QStringLiteral("%1 (from its start depth the V-bit would be %2 mm wide at the stock top, more than its radius %3 mm)")
