@@ -15,6 +15,7 @@ import 'canvas.dart';
 import 'icons.dart';
 import 'machine_page.dart';
 import 'panels.dart';
+import 'preview_page.dart';
 import 'send_dialog.dart';
 import 'theme.dart';
 import 'widgets.dart';
@@ -49,6 +50,7 @@ class _MainWindowState extends State<MainWindow> {
   final _zoom = CanvasZoom();
   String _status = '';
   bool _saving = false;
+  bool _previewing = false;
   int _notices = 0;
   int _opens = 0;
 
@@ -998,9 +1000,28 @@ class _MainWindowState extends State<MainWindow> {
               setState(() => _tp = to);
             },
             onPickTool: _pickTool,
+            previewOn: app.target?.name,
+            previewBusy: _previewing,
+            onPreview: () => _preview(d),
           ),
         ),
       ]);
+
+  /// The Toolpaths panel's Preview: drawn and timed by the computer the
+  /// Machine page sends to.
+  Future<void> _preview(Design d) async {
+    final c = app.target;
+    if (c == null || _previewing) return;
+    setState(() => _previewing = true);
+    try {
+      final r = await app.preview(d, c);
+      if (mounted) await showPreview(context, d.name, c.name, r);
+    } catch (e) {
+      _say('No preview from ${c.name}: $e');
+    } finally {
+      if (mounted) setState(() => _previewing = false);
+    }
+  }
 
   Widget _zoomBar() {
     Widget btn(String t, VoidCallback onTap) => SizedBox(

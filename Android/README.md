@@ -32,6 +32,9 @@ laid out for a pad in landscape.
   (desktop: Machine › Add machine…) with their state; tap one to make it the one in use.
   Switching drops the machine's connection and homing, so while one is connected a pad
   may only switch when **Machine › Pads may start cutting** is on there.
+- **Preview.** *Preview on <computer>* under the Toolpaths list has the computer the Machine
+  page sends to draw the design's toolpaths from above, exactly as it would cut them, with the
+  time the whole job and each toolpath should take; pinch to zoom in. Nothing opens there.
 - **Several phobiCCCPs.** Install phobiCCCP on as many computers as you like; Send offers
   every one that is open, and every machine on it.
 - **Send and start.** Tick *Start cutting right away* when sending. The pad asks once more,
@@ -103,6 +106,7 @@ Port 47652, shared with Syntexophobic's sender (`src/projectreceiver.h`):
 | `put` | `design` (with `base` and `vv`), `versions` | `stored`: kept (it was newer); `modified`: its copy's time now; `forked`: the id of the design one of two copies edited apart was kept as, with `moved` when that was the computer's copy (the one put took its place); or `conflict`: a deletion refused |
 | `machine` | `id` | as `info`, after switching (refused while a machine is connected, unless pads may start cutting) |
 | `send` | `design`, `machine` (id or ""), `start`, `from`, `versions` | `started`, `message`, `notes`; as for `put`, `modified`, `forked` and `moved` (what opens is the pad's version: the fork unless `moved`, or the pad's copy on its own, unlinked, when that fork was deleted since; the computer's later copy when it already had one made from the pad's) |
+| `preview` | `design` (as for `put`), or `id` of a design kept there | `png`: the toolpaths from above over the stock and shapes, base64, about 1024 px on its long side; `seconds`: the whole job, planned like GRBL (acceleration, corners); `perToolpath` [{name, seconds}]; `notes`: what was left out or changed. Nothing is saved or opened there; a design over 400 shapes, 40 000 path points or 30 toolpaths is refused |
 | `opened` | `seq`, `pad` (its id) | (nothing more) |
 | `hold` | `pad` (its id) | `status` (as in `info`). The Machine page's Hold there; always taken from a pad, whatever `allowStart` says |
 | `resume` | `pad` (its id) | `status`. Its Resume; refused unless pads may start cutting (`allowStart`), or when nothing is on hold |
