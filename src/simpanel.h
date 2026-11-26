@@ -32,6 +32,12 @@ public:
     void setJob(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
                 double stockW, double stockH, double stockT,
                 const HeightModel *part = nullptr);
+    // Where the 2D toolpaths mean to leave a flat floor (intendedFloors()),
+    // for "Show what's left". Cheap: nothing is computed until it is on.
+    void setIntendedFloors(const QVector<IntendedFloor> &floors);
+    void setShowLeftovers(bool on);
+    bool showLeftovers() const;
+    const LeftoverResult &leftovers() const { return m_left; }
     void simulate();            // asynchronous (the Simulate button)
     void simulateBlocking();    // synchronous, on this thread (used by --shot)
     void cancel();
@@ -51,6 +57,7 @@ private:
     void takeResult(const SimResult &r);
     void setBusy(bool on);
     void updateStatus();
+    void refreshImage();   // base render + the leftover tint when it is on
 
     QVector<Op> m_ops;
     QHash<int, ToolGeom> m_tools;
@@ -64,10 +71,15 @@ private:
     SimulationJob *m_job;
     SimResult m_result;
     QImage m_image;
+    QImage m_baseImage;    // renderHeightMap() without the leftover tint
+    QVector<IntendedFloor> m_floors;
+    LeftoverResult m_left;
 
     SimView *m_view;
     QPushButton *m_simBtn;
     QPushButton *m_cancelBtn;
+    QPushButton *m_leftBtn;
+    QLabel *m_leftLabel;
     QComboBox *m_res;
     QProgressBar *m_progress;
     QLabel *m_readout;

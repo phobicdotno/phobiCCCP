@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPainterPath>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -114,6 +115,19 @@ struct ToolGeom {
     QString name;
     double radius() const { return diameter / 2.0; }
 };
+
+// Where a 2D toolpath means to leave a flat floor, for the simulation's
+// "what's left" check: every enabled pocket over its whole closed region
+// (less any stock to leave), and the flat clearing area of a V-carve (where
+// the shape is wider than the cone reaches at its end depth). Contours and
+// cutouts are left out: they only cut a band along the line. `z` is the
+// floor (mm, <= 0 from the stock top).
+struct IntendedFloor {
+    QString name;          // toolpath name
+    QPainterPath region;   // document coordinates (mm), odd-even fill
+    double z = 0;
+};
+QVector<IntendedFloor> intendedFloors(Document &doc);
 
 // Tool table built from the toolpaths' embedded tool objects (`tool` and, for
 // v-carves, `tool_pocket`). First definition of a number wins.

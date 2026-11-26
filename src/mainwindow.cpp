@@ -2124,6 +2124,7 @@ void MainWindow::applyPreview(const GcodeResult &r, bool overlay)
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble(), heightModelFor(m_doc));
+    m_sim->setIntendedFloors(intendedFloors(m_doc));
     m_toolStrip->setJob(m_doc, r.ops);
     m_tp->setTimeEstimates(timeByComment(r.ops));   // each card's cutting time
     m_isoStale = false;

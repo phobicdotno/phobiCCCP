@@ -224,6 +224,16 @@ SimPanel::SimPanel(QWidget *parent)
     m_cancelBtn = new QPushButton(QStringLiteral("Cancel"), this);
     m_cancelBtn->setEnabled(false);
 
+    m_leftBtn = new QPushButton(QStringLiteral("Show what's left"), this);
+    m_leftBtn->setCheckable(true);
+    m_leftBtn->setToolTip(QStringLiteral("Colour orange what the pockets and V-carve flat areas still have "
+                                         "standing more than 0.1 mm above their floor after the simulation"));
+    m_leftLabel = new QLabel(this);
+    m_leftLabel->setWordWrap(true);
+    m_leftLabel->setContentsMargins(8, 0, 8, 2);
+    m_leftLabel->setStyleSheet(QStringLiteral("color: #ff8c1a;"));
+    m_leftLabel->hide();
+
     m_res = new QComboBox(this);
     m_res->addItem(QStringLiteral("Fine (0.1 mm)"), 0.1);
     m_res->addItem(QStringLiteral("Normal (0.2 mm)"), 0.2);
@@ -254,6 +264,7 @@ SimPanel::SimPanel(QWidget *parent)
     row->setSpacing(6);
     row->addWidget(m_simBtn);
     row->addWidget(m_cancelBtn);
+    row->addWidget(m_leftBtn);
     row->addWidget(new QLabel(QStringLiteral("Resolution"), this));
     row->addWidget(m_res);
     row->addStretch(1);              // full-page mode: keep the controls together
@@ -265,10 +276,12 @@ SimPanel::SimPanel(QWidget *parent)
     lay->addWidget(m_progress);
     lay->addWidget(m_view, 1);
     lay->addWidget(m_readout);
+    lay->addWidget(m_leftLabel);
     lay->addWidget(m_status);
 
     connect(m_simBtn, &QPushButton::clicked, this, &SimPanel::simulate);
     connect(m_cancelBtn, &QPushButton::clicked, this, &SimPanel::cancel);
+    connect(m_leftBtn, &QPushButton::toggled, this, [this](bool) { refreshImage(); });
     connect(m_job, &SimulationJob::progress, this, [this](int p) { m_progress->setValue(p); });
     connect(m_job, &SimulationJob::finished, this, [this](bool) {
         // cancel() is asynchronous: a run stopped because the program changed
@@ -297,6 +310,10 @@ SimPanel::SimPanel(QWidget *parent)
             zs += QStringLiteral(" (through)");
         if (!m_result.gougeMask.isEmpty() && m_result.gougeMask.at(qsizetype(iy) * m.width() + ix))
             zs += QStringLiteral(" (gouge)");
+        if (m_leftBtn->isChecked() && !m_left.mask.isEmpty()
+            && m_left.mask.size() == qsizetype(m.width()) * m.height()
+            && m_left.mask.at(qsizetype(iy) * m.width() + ix))
+            zs += QStringLiteral(" (left uncut)");
         m_readout->setText(QStringLiteral("X %1  Y %2  Z %3")
                                .arg(m.cellCenterX(ix), 7, 'f', 2)
                                .arg(m.cellCenterY(iy), 7, 'f', 2)
@@ -324,6 +341,36 @@ void SimPanel::setJob(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
     m_stale = !m_result.map.isNull();
     m_simBtn->setEnabled(!m_ops.isEmpty() && !isRunning());
     updateStatus();
+}
+
+void SimPanel::setIntendedFloors(const QVector<IntendedFloor> &floors)
+{
+    m_floors = floors;
+    // The current map belongs to the previous program until it is simulated
+    // again; recompute against it only when the overlay is showing.
+    if (m_leftBtn->isChecked())
+        refreshImage();
+}
+
+void SimPanel::setShowLeftovers(bool on) { m_leftBtn->setChecked(on); }
+bool SimPanel::showLeftovers() const { return m_leftBtn->isChecked(); }
+
+void SimPanel::refreshImage()
+{
+    m_left = LeftoverResult();
+    m_image = m_baseImage;
+    if (m_leftBtn->isChecked() && !m_result.map.isNull()) {
+        m_left = findLeftovers(m_result.map, m_floors);
+        paintLeftovers(m_image, m_left.mask);
+        m_leftLabel->setText(m_floors.isEmpty()
+                                 ? QStringLiteral("No pockets or V-carve flat areas to check")
+                                 : leftoverSummary(m_left));
+        m_leftLabel->show();
+    } else {
+        m_leftLabel->hide();
+    }
+    if (!m_image.isNull())
+        m_view->setImage(m_image, m_w, m_h, m_t);
 }
 
 SimSettings SimPanel::settings() const
@@ -374,10 +421,10 @@ void SimPanel::setBusy(bool on)
 void SimPanel::takeResult(const SimResult &r)
 {
     m_result = r;
-    m_image = renderHeightMap(m_result.map, m_t, m_result.gougeMask);
+    m_baseImage = renderHeightMap(m_result.map, m_t, m_result.gougeMask);
     m_stale = false;
     m_progress->setValue(100);
-    m_view->setImage(m_image, m_w, m_h, m_t);
+    refreshImage();
     updateStatus();
     emit simulationFinished();
 }

@@ -4799,6 +4799,55 @@ ToolGeom toolGeomFromJson(const QJsonObject &tool)
     return toolGeomOf(tool);
 }
 
+QVector<IntendedFloor> intendedFloors(Document &doc)
+{
+    QVector<IntendedFloor> out;
+    for (const Toolpath &t : doc.toolpaths()) {
+        const QJsonObject &j = t.json;
+        if (!j.value("enabled").toBool(true))
+            continue;
+        const bool pocket = t.type == QLatin1String("pocket_toolpath");
+        const bool vcarve = t.type == QLatin1String("advanced_vcarve_toolpath");
+        if (!pocket && !vcarve)
+            continue;
+        bool ok = true, one = true;
+        const double zTop = depthToZ(j.value("start_depth"), &one);
+        ok = ok && one;
+        const double zBot = depthToZ(j.value("end_depth"), &one);
+        ok = ok && one;
+        if (!ok || !(zBot < zTop - 1e-6))
+            continue;
+        QVector<const Element *> elems;
+        for (const Element *e : referenced(doc, j))
+            if (vec::isClosed(*e))
+                elems.append(e);
+        if (elems.isEmpty())
+            continue;
+        QPainterPath region = regionOf(elems);
+        double z = zBot;
+        if (pocket) {
+            const double leave = qMax(0.0, numOr(j.value("stock_to_leave"), 0.0));
+            if (leave > 1e-6) {
+                region = regionFromRings(insetRings(region, leave));
+                z += leave;
+            }
+        } else {
+            // Only the part wider than the cone reaches at the end depth is
+            // cut flat (by the clearing pass).
+            const ToolGeom vg = toolGeomOf(j.value("tool").toObject());
+            const double bitAngle = vg.kind == ToolGeom::VBit ? vg.angle : 60.0;
+            const double halfTan = qTan(qDegreesToRadians(qBound(10.0, bitAngle, 179.0) / 2));
+            const double dMax = (zTop - zBot) * halfTan;
+            region = regionFromRings(insetRings(region, dMax));
+        }
+        if (region.isEmpty())
+            continue;
+        region.setFillRule(Qt::OddEvenFill);
+        out.append({j.value("name").toString(), region, z});
+    }
+    return out;
+}
+
 QHash<int, ToolGeom> toolGeometry(const Document &doc)
 {
     QHash<int, ToolGeom> table;
