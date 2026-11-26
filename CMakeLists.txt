@@ -53,6 +53,7 @@ add_library(phobicccp_core STATIC
     src/simulation.cpp
     src/vectorops.cpp
     src/dogbone.cpp
+    src/nesting.cpp
     src/layers.cpp
     src/sketch.cpp
     src/parametric.cpp
@@ -222,6 +223,9 @@ add_test(NAME vectorops COMMAND test_vectorops)
 add_executable(test_dogbone tests/test_dogbone.cpp)
 target_link_libraries(test_dogbone PRIVATE phobicccp_core)
 add_test(NAME dogbone COMMAND test_dogbone)
+add_executable(test_nesting tests/test_nesting.cpp)
+target_link_libraries(test_nesting PRIVATE phobicccp_core)
+add_test(NAME nesting COMMAND test_nesting)
 add_executable(test_textpath tests/test_textpath.cpp)
 target_link_libraries(test_textpath PRIVATE phobicccp_core)
 add_test(NAME textpath COMMAND test_textpath)
