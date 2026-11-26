@@ -3116,6 +3116,9 @@ void MainWindow::setReceiving(bool on)
     if (!on) {
         delete m_receiver;
         m_receiver = nullptr;
+        m_relistenTries = 0;
+        if (m_relistenTimer)
+            m_relistenTimer->stop();
         return;
     }
     if (m_receiver)
@@ -3144,6 +3147,13 @@ void MainWindow::setReceiving(bool on)
 
 void MainWindow::relisten(bool away)
 {
+    // Receiving turned off (Machine menu): never listened on again from here.
+    if (!m_receiveAct->isChecked()) {
+        m_relistenTries = 0;
+        if (m_relistenTimer)
+            m_relistenTimer->stop();
+        return;
+    }
     if (!m_receiver) {
         setReceiving(true);
     } else if (!m_receiver->isIdle()) {

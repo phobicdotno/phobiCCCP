@@ -46,7 +46,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "v$V" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 && exit 0
+          if gh release view "v$V" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # Already released: only rebuild its APKs from the commit its tag names.
+            tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/v$V" --jq .sha)"
+            if [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "::error::release v$V already exists for $tag_sha, not this commit ($GITHUB_SHA): bump VERSION first"; exit 1
+            fi
+            exit 0
+          fi
           gh release create "v$V" --target "$GITHUB_SHA" \
             --repo "$GITHUB_REPOSITORY" --prerelease \
             --title "phobiCCCP $V" \
