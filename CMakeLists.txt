@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.62 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.69 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,7 @@ add_library(phobicccp_core STATIC
     src/cccpfile.cpp
     src/c2ddocument.cpp
     src/element.cpp
+    src/strokefont.cpp
     src/gcodeexport.cpp
     src/cam3d.cpp
     src/vcarve.cpp
@@ -48,8 +49,12 @@ add_library(phobicccp_core STATIC
     src/grblstreamer.cpp
     src/heightmodel.cpp
     src/surfacemap.cpp
+    src/probecycles.cpp
     src/simulation.cpp
     src/vectorops.cpp
+    src/dogbone.cpp
+    src/nesting.cpp
+    src/layers.cpp
     src/sketch.cpp
     src/parametric.cpp
     src/adaptive.cpp
@@ -58,9 +63,11 @@ add_library(phobicccp_core STATIC
     src/importers.cpp
     src/dxfexport.cpp
     src/toollibrary.cpp
+    src/chipload.cpp
     src/toolcollections.cpp
     src/stockstamp.cpp
     src/toolpathfactory.cpp
+    src/toolpathtemplates.cpp
     src/tiling.cpp
     data/tools.qrc
     src/backgroundimage.cpp
@@ -70,6 +77,7 @@ add_library(phobicccp_core STATIC
     src/recovery.cpp
     src/machineprofiles.cpp
     src/padlink.cpp
+    src/toolpathfields.cpp
 )
 # The binary should be able to say which build it is (--version, --help);
 # PROJECT_VERSION is the single source of truth in this file. It reaches the
@@ -96,7 +104,7 @@ add_library(phobicccp_ui STATIC
     src/aboutdialog.cpp
     src/propertiespanel.cpp
     src/parameterspanel.cpp
-    src/toolpathpanel.cpp src/shapestrip.cpp
+    src/toolpathpanel.cpp src/shapestrip.cpp src/layerspanel.cpp
     src/dragscroll.cpp src/decimalkey.cpp
     src/toolpathform.cpp
     src/toollibrarydialog.cpp
@@ -104,9 +112,10 @@ add_library(phobicccp_ui STATIC
     src/stocksync.cpp
     src/tooldiagram.cpp
     src/toolstrip.cpp
-    src/machinepanel.cpp
-    src/jobview.cpp
+    src/machinepanel.cpp src/ncprogram.cpp src/machinemacros.cpp src/surfacing.cpp
+    src/jobview.cpp src/jobhistory.cpp src/machinecounters.cpp
     src/shopdialog.cpp
+    src/grblcodes.cpp
     src/popuplook.cpp
     src/isopreview.cpp
     src/simpanel.cpp
@@ -124,6 +133,10 @@ add_library(phobicccp_ui STATIC
     src/projectreceiver.cpp
     src/sendtopaddialog.cpp
     src/sendtodialog.cpp
+    src/boxgen.cpp src/boxdialog.cpp
+    src/qrcode.cpp src/qrdialog.cpp
+    src/grblsettingsdialog.cpp
+    src/padpreview.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -205,6 +218,18 @@ add_test(NAME parametric COMMAND test_parametric)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
+add_executable(test_dogbone tests/test_dogbone.cpp)
+target_link_libraries(test_dogbone PRIVATE phobicccp_core)
+add_test(NAME dogbone COMMAND test_dogbone)
+add_executable(test_nesting tests/test_nesting.cpp)
+target_link_libraries(test_nesting PRIVATE phobicccp_core)
+add_test(NAME nesting COMMAND test_nesting)
+add_executable(test_textpath tests/test_textpath.cpp)
+target_link_libraries(test_textpath PRIVATE phobicccp_core)
+add_test(NAME textpath COMMAND test_textpath)
+add_executable(test_strokefont tests/test_strokefont.cpp)
+target_link_libraries(test_strokefont PRIVATE phobicccp_core)
+add_test(NAME strokefont COMMAND test_strokefont)
 # Projects sent from Syntexophobic: the protocol reader and a loopback transfer.
 add_executable(test_receiver tests/test_receiver.cpp)
 target_link_libraries(test_receiver PRIVATE phobicccp_ui)
@@ -241,6 +266,10 @@ add_test(NAME rehearsal COMMAND test_rehearsal)
 add_executable(test_surfacemap tests/test_surfacemap.cpp)
 target_link_libraries(test_surfacemap PRIVATE phobicccp_core)
 add_test(NAME surfacemap COMMAND test_surfacemap)
+# Hole, boss and touch-plate probe cycles: G-code and the centre sums.
+add_executable(test_probecycles tests/test_probecycles.cpp)
+target_link_libraries(test_probecycles PRIVATE phobicccp_core)
+add_test(NAME probecycles COMMAND test_probecycles)
 # The streamer against a scripted controller on a pty (Linux; skips when no
 # pty opens as a serial port).
 if(UNIX AND NOT APPLE)
@@ -282,6 +311,9 @@ if(Qt6Test_FOUND)
     add_executable(test_canvas tests/test_canvas.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
+    add_executable(test_layers tests/test_layers.cpp)
+    target_link_libraries(test_layers PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME layers COMMAND test_layers)
     # Area tool on hair-thin islands, and pattern copies round a closed path.
     add_executable(test_areathin tests/test_areathin.cpp)
     target_link_libraries(test_areathin PRIVATE phobicccp_ui Qt6::Test)
@@ -317,6 +349,11 @@ if(Qt6Test_FOUND)
     target_compile_definitions(test_toollib PRIVATE TOOLLIB_DIR="${CMAKE_SOURCE_DIR}/toollib")
     add_test(NAME toollib COMMAND test_toollib)
     set_tests_properties(toollib PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # Toolpath templates: save, apply to another design, file round trip.
+    add_executable(test_tptemplates tests/test_tptemplates.cpp)
+    target_link_libraries(test_tptemplates PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME tptemplates COMMAND test_tptemplates)
+    set_tests_properties(tptemplates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_toolpathform tests/test_toolpathform.cpp)
     target_link_libraries(test_toolpathform PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME toolpathform COMMAND test_toolpathform)
@@ -329,6 +366,9 @@ if(Qt6Test_FOUND)
     add_executable(test_panels tests/test_panels.cpp)
     target_link_libraries(test_panels PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
+    add_executable(test_grblcodes tests/test_grblcodes.cpp)
+    target_link_libraries(test_grblcodes PRIVATE phobicccp_ui)
+    add_test(NAME grblcodes COMMAND test_grblcodes)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
     # Two bits on one tool number (setup sheet, Simulate strip) and inlay bindings.
     add_executable(test_uifixes tests/test_uifixes.cpp)
@@ -343,15 +383,45 @@ if(Qt6Test_FOUND)
     add_executable(test_padput tests/test_padput.cpp)
     target_link_libraries(test_padput PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padput COMMAND test_padput)
+    # A pad's Preview: a pad design exported and drawn, with its time.
+    add_executable(test_padpreview tests/test_padpreview.cpp)
+    target_link_libraries(test_padpreview PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME padpreview COMMAND test_padpreview)
     add_executable(test_padenter tests/test_padenter.cpp)
     target_link_libraries(test_padenter PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padenter COMMAND test_padenter)
     add_executable(test_tpflush tests/test_tpflush.cpp)
     target_link_libraries(test_tpflush PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpflush COMMAND test_tpflush)
+    add_executable(test_flutewarn tests/test_flutewarn.cpp)
+    target_link_libraries(test_flutewarn PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME flutewarn COMMAND test_flutewarn)
+    add_executable(test_rasterpocket tests/test_rasterpocket.cpp)
+    target_link_libraries(test_rasterpocket PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME rasterpocket COMMAND test_rasterpocket)
+    add_executable(test_leftover tests/test_leftover.cpp)
+    target_link_libraries(test_leftover PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME leftover COMMAND test_leftover)
+    add_executable(test_fluting tests/test_fluting.cpp)
+    target_link_libraries(test_fluting PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME fluting COMMAND test_fluting)
+
+    add_executable(test_chipload tests/test_chipload.cpp)
+    target_link_libraries(test_chipload PRIVATE phobicccp_ui)
+    add_test(NAME chipload COMMAND test_chipload)
+    add_executable(test_boxgen tests/test_boxgen.cpp)
+    target_link_libraries(test_boxgen PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME boxgen COMMAND test_boxgen)
+    add_executable(test_qrcode tests/test_qrcode.cpp)
+    target_link_libraries(test_qrcode PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME qrcode COMMAND test_qrcode)
     add_executable(test_padmachinemodal tests/test_padmachinemodal.cpp)
     target_link_libraries(test_padmachinemodal PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padmachinemodal COMMAND test_padmachinemodal)
+    add_executable(test_padstop tests/test_padstop.cpp)
+    target_link_libraries(test_padstop PRIVATE phobicccp_ui Qt6::Test util)
+    add_test(NAME padstop COMMAND test_padstop)
+    set_tests_properties(padstop PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(test_typedclick tests/test_typedclick.cpp)
     target_link_libraries(test_typedclick PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME typedclick COMMAND test_typedclick)
@@ -359,6 +429,12 @@ if(Qt6Test_FOUND)
     add_executable(test_tpdelete tests/test_tpdelete.cpp)
     target_link_libraries(test_tpdelete PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME tpdelete COMMAND test_tpdelete)
+    add_executable(test_cardminutes tests/test_cardminutes.cpp)
+    target_link_libraries(test_cardminutes PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME cardminutes COMMAND test_cardminutes)
+    add_executable(test_accel tests/test_accel.cpp)
+    target_link_libraries(test_accel PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME accel COMMAND test_accel)
     # The "v" under a toolpath card: thumbnails, their bins, what is left to cut.
     add_executable(test_tpshapes tests/test_tpshapes.cpp)
     target_link_libraries(test_tpshapes PRIVATE phobicccp_ui Qt6::Test)
@@ -398,6 +474,29 @@ endif()
 add_executable(test_exportjob tests/test_exportjob.cpp)
 target_link_libraries(test_exportjob PRIVATE phobicccp_ui)
 add_test(NAME exportjob COMMAND test_exportjob)
+add_executable(test_jobzero tests/test_jobzero.cpp)
+target_link_libraries(test_jobzero PRIVATE phobicccp_ui)
+add_test(NAME jobzero COMMAND test_jobzero)
+
+# Dust collector / coolant switched with the spindle in a job's program.
+add_executable(test_coolant tests/test_coolant.cpp)
+target_link_libraries(test_coolant PRIVATE phobicccp_ui)
+add_test(NAME coolant COMMAND test_coolant)
+
+# Surfacing from the Machine page: zigzag lines, depth passes, travel check.
+add_executable(test_surfacing tests/test_surfacing.cpp)
+target_link_libraries(test_surfacing PRIVATE phobicccp_ui)
+add_test(NAME surfacing COMMAND test_surfacing)
+# Controller $ settings editor: names, changed lines, backup and restore.
+if(Qt6Test_FOUND)
+    add_executable(test_grblsettings tests/test_grblsettings.cpp)
+    target_link_libraries(test_grblsettings PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME grblsettings COMMAND test_grblsettings)
+endif()
+# Run-time counters and service reminders, fed scripted status deltas.
+add_executable(test_counters tests/test_counters.cpp)
+target_link_libraries(test_counters PRIVATE phobicccp_ui)
+add_test(NAME counters COMMAND test_counters)
 
 # The gamepad reader, driven through a fifo carrying synthetic joystick events
 # so it can be tested with no controller plugged in.
@@ -421,7 +520,13 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     add_test(NAME bzprofile COMMAND test_bzprofile)
     add_executable(test_machinestop tests/test_machinestop.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_ui)
-    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2 jobstop jobcancel jobreset jobtcstop jobcount jobclear endalarm endpark quickmove)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2 jobstop jobcancel jobreset jobtcstop jobcount jobclear endalarm endpark quickmove starthere continue holecentre holetight rpmrange bosscentre plateany warmjob)
+        add_test(NAME machinestop_${mode} COMMAND test_machinestop)
+        set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
+                             ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")
+    endforeach()
+    # The command line under the log and the operator's macro buttons.
+    foreach(mode mdi mdihome macro mdistream inchpark histtail)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

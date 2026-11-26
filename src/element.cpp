@@ -1,5 +1,6 @@
 #include "element.h"
 #include <QFont>
+#include "strokefont.h"
 #include <cmath>
 #include <QFontMetricsF>
 #include <QLineF>
@@ -98,6 +99,8 @@ QPainterPath Element::buildText(const QJsonObject &obj)
                         t.at(6).toDouble(), t.at(7).toDouble());
     }
 
+    // A single-line font's strokes are open: drawn and cut as lines.
+    const bool stroke = isStrokeText(obj);
     for (const QJsonValue &contourV : rendered) {
         const QJsonArray contour = contourV.toArray();
         for (int i = 0; i < contour.size(); ++i) {
@@ -107,9 +110,16 @@ QPainterPath Element::buildText(const QJsonObject &obj)
             else
                 path.lineTo(p);
         }
-        path.closeSubpath();
+        if (!stroke)
+            path.closeSubpath();
     }
     return path;
+}
+
+bool Element::isStrokeText(const QJsonObject &o)
+{
+    return o.value("geometryType").toString() == QLatin1String("text")
+           && strokefont::isStrokeFamily(textFont(o).family());
 }
 
 Element Element::fromJson(const QJsonObject &obj)
@@ -336,6 +346,22 @@ static QJsonArray contoursOf(const QPainterPath &mm)
     return rendered;
 }
 
+// Single-line strokes: every polyline of two or more points as it is, its
+// last point kept even when it meets the first (an "O" drawn round).
+static QJsonArray strokesOf(const QPainterPath &mm)
+{
+    QJsonArray rendered;
+    for (const QPolygonF &poly : mm.toSubpathPolygons()) {
+        if (poly.size() < 2)
+            continue;
+        QJsonArray contour;
+        for (const QPointF &p : poly)
+            contour.append(xy(p));
+        rendered.append(contour);
+    }
+    return rendered;
+}
+
 // A glyph whose outlines overlap (Liberation Sans "Å": the ring dips into
 // the A) is drawn solid by the font, but every reader of `rendered` takes an
 // overlap as a hole: merged into one outline. Others keep their curves
@@ -423,22 +449,38 @@ static QPainterPath solidGlyphOf(const QPainterPath &g)
     return up.inverted().map(ws);
 }
 
-// Rebuild `rendered` from the element's own keys. Layout is in local Y-up
-// space with the straight baseline on y = 0 starting at x = 0 (what CC
-// writes: the first glyph's left bearing is the smallest x). font_height is
-// the font's ascent in mm (CC's "P" tops out at 0.93 * font_height for
-// Helvetica, i.e. the Windows ascent). Arc mode places each glyph with its
-// advance midpoint on the circle |q - arc_center| = arc_radius, baseline
-// tangent to it, the whole string centred on the top point (90 deg) or the
-// bottom point (270 deg, glyphs upright, extending inwards) rotated by
-// arc_angle_offset degrees (counter-clockwise positive). Glyph advances are
-// measured along the arc, so the letters keep their straight spacing.
-void Element::renderText(QJsonObject &o)
+// The straight layout renderText starts from: each glyph outline in local
+// mm (Y-up, baseline on y = 0 from x = 0) with its grapheme cluster's left
+// edge and advance, letter spacing applied. `width` gets the whole advance.
+QVector<TextGlyph> Element::textGlyphs(const QJsonObject &o, double *widthOut)
 {
     const QString text = o.value("text").toString();
     const double h = o.value("font_height").toDouble(10.0);
     const double spacing = o.contains("spacing") ? o.value("spacing").toDouble(1.0) : 1.0;
     QFont font = textFont(o);
+    if (strokefont::isStrokeFamily(font.family())) {
+        // Single-line font: one glyph per character on the font's own grid,
+        // cap height = font_height.
+        const QString family = font.family();
+        const double scale = h / strokefont::kCapHeight;
+        QVector<TextGlyph> glyphs;
+        double x = 0;
+        for (const QChar c : text) {
+            if (c.isLowSurrogate())
+                continue;
+            double adv = 0;
+            const QPainterPath g = strokefont::glyph(family, c, &adv);
+            const double left = x * spacing;
+            QTransform t;
+            t.scale(scale, scale);
+            t.translate(left, 0);
+            glyphs.append({t.map(g), left * scale, adv * scale * spacing});
+            x += adv;
+        }
+        if (widthOut)
+            *widthOut = x * scale * spacing;
+        return glyphs;
+    }
     const int px = 256;                    // render size; scaled to mm below
     font.setPixelSize(px);
     font.setStyleStrategy(QFont::PreferOutline);
@@ -453,8 +495,7 @@ void Element::renderText(QJsonObject &o)
     // with the straight-baseline grapheme cluster it belongs to, so letter
     // spacing and arc placement move a cluster as one piece and the marks
     // stay on their letter.
-    struct Glyph { QPainterPath path; double cluster; double advance; };
-    QVector<Glyph> glyphs;
+    QVector<TextGlyph> glyphs;
     double width = 0;
     if (!text.isEmpty()) {
         QTextLayout layout(text, font);
@@ -537,13 +578,32 @@ void Element::renderText(QJsonObject &o)
             width = line.horizontalAdvance() * scale * spacing;
         }
     }
+    if (widthOut)
+        *widthOut = width;
+    return glyphs;
+}
+
+// Rebuild `rendered` from the element's own keys. Layout is in local Y-up
+// space with the straight baseline on y = 0 starting at x = 0 (what CC
+// writes: the first glyph's left bearing is the smallest x). font_height is
+// the font's ascent in mm (CC's "P" tops out at 0.93 * font_height for
+// Helvetica, i.e. the Windows ascent). Arc mode places each glyph with its
+// advance midpoint on the circle |q - arc_center| = arc_radius, baseline
+// tangent to it, the whole string centred on the top point (90 deg) or the
+// bottom point (270 deg, glyphs upright, extending inwards) rotated by
+// arc_angle_offset degrees (counter-clockwise positive). Glyph advances are
+// measured along the arc, so the letters keep their straight spacing.
+void Element::renderText(QJsonObject &o)
+{
+    double width = 0;
+    const QVector<TextGlyph> glyphs = textGlyphs(o, &width);
     o.insert("straight_width", width);
 
     QPainterPath out;
     const bool arc = o.value("arc_enabled").toBool();
     const double R = o.value("arc_radius").toDouble();
     if (!arc || R <= 1e-6) {
-        for (const Glyph &g : glyphs)
+        for (const TextGlyph &g : glyphs)
             out.addPath(g.path);
     } else {
         const QJsonArray ca = o.value("arc_center").toArray();
@@ -551,7 +611,7 @@ void Element::renderText(QJsonObject &o)
         const bool bottom = o.value("arc_text_on_bottom").toBool();
         const double offset = qDegreesToRadians(o.value("arc_angle_offset").toDouble());
         const double mid = (bottom ? 1.5 * M_PI : 0.5 * M_PI) + offset;
-        for (const Glyph &g : glyphs) {
+        for (const TextGlyph &g : glyphs) {
             const double c = g.cluster + g.advance / 2;   // cluster midpoint on the baseline
             // Top text reads clockwise (angle decreases with x); bottom text
             // reads counter-clockwise so it stays upright for the reader.
@@ -564,7 +624,7 @@ void Element::renderText(QJsonObject &o)
             out.addPath(t.map(g.path));
         }
     }
-    o.insert("rendered", contoursOf(out));
+    o.insert("rendered", isStrokeText(o) ? strokesOf(out) : contoursOf(out));
 }
 
 Element Element::regenText(const Element &src, const QJsonObject &changes)
@@ -968,20 +1028,23 @@ QVector<Element> Element::toPaths(const Element &src)
     }
     // Text: each rendered contour (already in absolute coordinates on the
     // painter path) becomes a closed polygon path; the first keeps the id.
+    // Single-line text gives open paths; a stroke that comes back to its
+    // start ("O") is a closed one.
+    const bool stroke = isStrokeText(src.raw);
     const auto polys = src.painterPath.toSubpathPolygons();
     bool first = true;
     for (const QPolygonF &poly : polys) {
         PathModel m;
         SubPath s;
-        s.closed = true;
+        s.closed = !stroke || (poly.size() > 3 && samePt(poly.last(), poly.first()));
         for (int i = 0; i < poly.size(); ++i) {
-            if (i == poly.size() - 1 && samePt(poly.at(i), poly.first()))
+            if (s.closed && i == poly.size() - 1 && samePt(poly.at(i), poly.first()))
                 break;
             PathNode n;
             n.p = n.in = n.out = poly.at(i);
             s.nodes.append(n);
         }
-        if (s.nodes.size() < 3)
+        if (s.nodes.size() < (s.closed ? 3 : 2))
             continue;
         m.subs.append(s);
         // Every piece stays in the group and keeps construction; only the

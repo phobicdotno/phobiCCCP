@@ -1,5 +1,7 @@
 #include <numeric>
 #include "canvas.h"
+#include "gcodeexport.h"
+#include "layers.h"
 #include <QUuid>
 #include "vectorops.h"
 #include "sketchgeom.h"
@@ -358,6 +360,31 @@ private:
     Canvas *m_c; Document *m_d; Element m_before, m_after;
 };
 
+// Swap elements for copies of themselves on another layer, or with their
+// layer's flags or name changed (same ids, same places in the z-order).
+class LayerCmd : public QUndoCommand
+{
+public:
+    LayerCmd(Canvas *c, Document *d, const QVector<Element> &after, const QString &text)
+        : m_c(c), m_d(d), m_after(after)
+    {
+        setText(text);
+        for (const Element &e : after)
+            if (const Element *was = d->elementById(e.id))
+                m_before.append(*was);
+    }
+    void redo() override { apply(m_after); }
+    void undo() override { apply(m_before); }
+private:
+    void apply(const QVector<Element> &els)
+    {
+        for (const Element &e : els)
+            m_d->replaceElement(e);
+        refresh(m_c);
+    }
+    Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+};
+
 // Swap a set of elements for another set (convert-to-path: a text becomes
 // several glyph paths). Afters are appended, so the z-order may change.
 class ReplaceCmd : public QUndoCommand
@@ -644,7 +671,7 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
     QVector<QPainterPath> paths;
     for (QGraphicsItem *it : m_scene->items())
         if (auto *e = dynamic_cast<ElemItem *>(it))
-            if (e->isClosed() && e->data(0).isValid()) {
+            if (e->isClosed() && e->data(0).isValid() && e->isVisible()) {
                 closed.append({e->data(0).toString(), e->mapToScene(e->path())});
                 paths << closed.last().second;
             }
@@ -1001,6 +1028,77 @@ void Canvas::moveElementBy(const QString &id, double dx, double dy)
         pushEdit(new MoveCmd(this, m_doc, {{id, QPointF(dx, dy)}}), {id});
 }
 
+void Canvas::editLayers(const QVector<Element> &after, const QString &text)
+{
+    if (!m_doc || after.isEmpty())
+        return;
+    QStringList ids;
+    for (const Element &e : after)
+        ids << e.id;
+    pushEdit(new LayerCmd(this, m_doc, after, text), ids);
+}
+
+void Canvas::groupSelected()
+{
+    if (!m_doc)
+        return;
+    const QVector<Element> after = groups::grouped(*m_doc, selectedElementIds());
+    if (after.isEmpty()) {
+        emit statusHint(tr("Group: select two or more shapes first"));
+        return;
+    }
+    editLayers(after, tr("group"));
+}
+
+void Canvas::ungroupSelected()
+{
+    if (!m_doc)
+        return;
+    const QVector<Element> after = groups::ungrouped(*m_doc, selectedElementIds());
+    if (after.isEmpty()) {
+        emit statusHint(tr("Ungroup: nothing selected is in a group"));
+        return;
+    }
+    editLayers(after, tr("ungroup"));
+}
+
+// A click on a grouped shape picks its whole outermost group (Alt+click
+// picks the one shape). On the press, so a drag moves the group, and again
+// on the release, where the view narrows a click to the one item.
+void Canvas::pickGroups(QMouseEvent *event)
+{
+    if (m_tool != Select || !m_doc || event->button() != Qt::LeftButton
+        || (event->modifiers() & Qt::AltModifier))
+        return;
+    const QStringList sel = selectedElementIds();
+    const QStringList all = groups::expand(*m_doc, sel);
+    if (all.size() <= sel.size())
+        return;
+    m_scene->blockSignals(true);
+    for (QGraphicsPathItem *it : itemsFor(all))
+        if (it->isVisible())
+            it->setSelected(true);
+    m_scene->blockSignals(false);
+    onSelectionChanged();
+}
+
+void Canvas::selectAll()
+{
+    if (!m_doc)
+        return;
+    if (m_tool != Select && m_tool != NodeEdit && m_tool != Pan && m_tool != SelectArea)
+        setTool(Select);
+    // Items on hidden layers are invisible and those on locked layers are
+    // not selectable: setSelected() leaves both alone.
+    m_scene->blockSignals(true);
+    for (QGraphicsItem *it : m_scene->items())
+        if (it->data(0).isValid() && it->isVisible()
+            && (it->flags() & QGraphicsItem::ItemIsSelectable))
+            it->setSelected(true);
+    m_scene->blockSignals(false);
+    onSelectionChanged();
+}
+
 QStringList Canvas::selectedElementIds() const
 {
     QStringList ids;
@@ -1040,6 +1138,19 @@ void Canvas::insertGenerated(const QVector<Element> &els, const Toolpath &tp)
     if (!m_doc)
         return;
     m_undo->push(new InsertGeneratedCmd(this, m_doc, els, tp));
+}
+
+void Canvas::addElements(const QVector<Element> &els, const QString &what)
+{
+    if (!m_doc || els.isEmpty())
+        return;
+    auto *cmd = new AddManyCmd(this, m_doc, els);
+    cmd->setText(what);
+    QStringList ids;
+    for (const Element &e : els)
+        ids << e.id;
+    pushEdit(cmd, ids);
+    selectElements(ids);
 }
 
 // Exactly one selected, parametrically resizable element? Handle sits at the
@@ -1561,8 +1672,9 @@ void Canvas::setTool(Tool t)
     const bool selectable = (t == Select || t == NodeEdit || t == Pan || t == SelectArea);
     for (QGraphicsItem *it : m_scene->items()) {
         if (it->data(0).isValid()) {
-            it->setFlag(QGraphicsItem::ItemIsSelectable, selectable);
-            it->setFlag(QGraphicsItem::ItemIsMovable, t == Select);
+            const bool locked = it->data(1).toBool();   // on a locked layer
+            it->setFlag(QGraphicsItem::ItemIsSelectable, selectable && !locked);
+            it->setFlag(QGraphicsItem::ItemIsMovable, t == Select && !locked);
         }
     }
     switch (t) {
@@ -1663,7 +1775,7 @@ void Canvas::rebuild()
     for (const Element &e : m_doc->elements()) {
         // Open paths are the only unfilled type; a path row of point_type 4
         // marks a closed one.
-        bool closed = e.geometryType != QLatin1String("path");
+        bool closed = e.geometryType != QLatin1String("path") && !Element::isStrokeText(e.raw);
         if (!closed)
             for (const auto &v : e.raw.value("point_type").toArray())
                 if (v.toInt() == 4) { closed = true; break; }
@@ -1685,8 +1797,13 @@ void Canvas::rebuild()
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
         item->setData(0, e.id);                       // scene item -> element
-        item->setFlag(QGraphicsItem::ItemIsSelectable, selectable);
-        item->setFlag(QGraphicsItem::ItemIsMovable, m_tool == Select);
+        // Layers: a hidden one is not drawn (nor picked; its toolpaths still
+        // cut it), a locked one is drawn but cannot be selected or moved.
+        const bool locked = layers::isLocked(e);
+        item->setData(1, locked);
+        item->setVisible(!layers::isHidden(e));
+        item->setFlag(QGraphicsItem::ItemIsSelectable, selectable && !locked);
+        item->setFlag(QGraphicsItem::ItemIsMovable, m_tool == Select && !locked);
         if (selected.contains(e.id))
             item->setSelected(true);
     }
@@ -2015,6 +2132,21 @@ void Canvas::drawBackground(QPainter *p, const QRectF &rect)
     p->drawLine(QLineF(0, 0, qMin(w, 15.0), 0));
     p->setPen(QPen(kAxisY, 0));
     p->drawLine(QLineF(0, 0, 0, qMin(h, 15.0)));
+
+    // Job zero, when it is not the lower-left top corner: a small crosshair
+    // and ring at the point the program's X0 Y0 is.
+    if (!c2d::jobZeroIsDefault(*m_doc)) {
+        const QPointF z = c2d::jobZeroPoint(*m_doc);
+        const double r = qBound(2.0, qMin(w, h) * 0.03, 12.0);
+        QPen zp(QColor(0x4f, 0xc3, 0xf7), 0);
+        zp.setCosmetic(true);
+        zp.setWidthF(2.0);
+        p->setPen(zp);
+        p->setBrush(Qt::NoBrush);
+        p->drawEllipse(z, r * 0.6, r * 0.6);
+        p->drawLine(QLineF(z.x() - r, z.y(), z.x() + r, z.y()));
+        p->drawLine(QLineF(z.x(), z.y() - r, z.x(), z.y() + r));
+    }
 }
 
 // The box a rectangle / ellipse drag spans: corner to corner, or (Ctrl)
@@ -2347,6 +2479,8 @@ bool Canvas::modifyTarget(const QPointF &q, QString *id, PathModel *model,
     for (int i = 0; i < els.size(); ++i) {
         int sub;
         double g;
+        if (layers::isHidden(els.at(i)) || layers::isLocked(els.at(i)))
+            continue;   // out of sight or locked: not a target (still a bound)
         if (!els.at(i).painterPath.boundingRect().adjusted(-tol, -tol, tol, tol).contains(q))
             continue;
         const PathModel &pm = modelAt(i);
@@ -2809,6 +2943,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         }
     }
     QGraphicsView::mousePressEvent(event);
+    pickGroups(event);   // before a drag moves the selection
     pressedEmpty(event);
 }
 
@@ -3095,6 +3230,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
 
     QGraphicsView::mouseReleaseEvent(event);
     cycleSelection(event);
+    pickGroups(event);
 
     // Select tool: commit any moved items back into the document. An item that
     // was dragged has a non-zero pos(); scene coords are CC mm, so the delta
@@ -3142,7 +3278,8 @@ void Canvas::cycleSelection(QMouseEvent *event)
         return;
     QList<QGraphicsItem *> stack;
     for (QGraphicsItem *it : items(event->pos()))
-        if (it->data(0).isValid() && it->isVisible())
+        if (it->data(0).isValid() && it->isVisible()
+            && (it->flags() & QGraphicsItem::ItemIsSelectable))   // not a locked layer's
             stack.append(it);
     int at = -1;
     for (int i = 0; i < stack.size(); ++i)
@@ -3385,6 +3522,9 @@ void Canvas::duplicateElements(const QStringList &ids)
         return;
     QVector<Element> copies;
     QStringList newIds;
+    // Copies keep their groups among themselves, under new group ids, so a
+    // click on a copy does not pick up the originals.
+    QHash<QString, QString> newGroup;
     for (const QString &id : ids) {
         const Element *e = m_doc->elementById(id);
         if (!e)
@@ -3392,6 +3532,18 @@ void Canvas::duplicateElements(const QStringList &ids)
         Element c = *e;
         c.id = QUuid::createUuid().toString();
         c.raw.insert(QStringLiteral("id"), c.id);
+        QJsonArray g = c.raw.value(QStringLiteral("group_id")).toArray();
+        for (int i = 0; i < g.size(); ++i) {
+            const QString old = g.at(i).toString();
+            if (old.isEmpty())
+                continue;
+            QString &fresh = newGroup[old];
+            if (fresh.isEmpty())
+                fresh = QUuid::createUuid().toString();
+            g.replace(i, fresh);
+        }
+        if (!g.isEmpty())
+            c.raw.insert(QStringLiteral("group_id"), g);
         c.translate(5, -5);
         newIds << c.id;
         copies.append(c);

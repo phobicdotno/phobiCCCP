@@ -5,6 +5,8 @@
 #include "element.h"
 #include "toollibrary.h"
 #include "toolpathfactory.h"
+#include "toolpathfields.h"
+#include "dogbone.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -56,11 +58,55 @@ const QStringList &shapeTypes()
     return t;
 }
 
-const QStringList &toolpathTypes()
+// The pad's toolpath type for a desktop one: its own four names, else the
+// desktop type itself (carried with its settings in `set`). Empty: none.
+QString padToolpathType(const QString &ccType)
 {
-    static const QStringList t = {QStringLiteral("profile"), QStringLiteral("pocket"),
-                                  QStringLiteral("drill"), QStringLiteral("engrave")};
-    return t;
+    if (ccType == QLatin1String("contour")) return QStringLiteral("profile");
+    if (ccType == QLatin1String("pocket_toolpath")) return QStringLiteral("pocket");
+    if (ccType == QLatin1String("drilling_toolpath")) return QStringLiteral("drill");
+    if (ccType == QLatin1String("engrave_toolpath")) return QStringLiteral("engrave");
+    for (const c2d::ToolpathKind &k : c2d::toolpathKinds())
+        if (k.type == ccType)
+            return ccType;
+    return {};
+}
+
+QString ccToolpathType(const QString &padType)
+{
+    if (padType == QLatin1String("profile")) return QStringLiteral("contour");
+    if (padType == QLatin1String("pocket")) return QStringLiteral("pocket_toolpath");
+    if (padType == QLatin1String("drill")) return QStringLiteral("drilling_toolpath");
+    if (padType == QLatin1String("engrave")) return QStringLiteral("engrave_toolpath");
+    for (const c2d::ToolpathKind &k : c2d::toolpathKinds())
+        if (k.type == padType && padToolpathType(k.type) == padType)
+            return padType;
+    return {};
+}
+
+// Keys a pad toolpath carries in its own fields (depth, side, tabs, corners,
+// pocket strategy): never in `set`, so an older pad editing them still wins.
+QStringList padSimpleKeys(const QString &padType)
+{
+    QStringList k = {QStringLiteral("end_depth")};
+    if (padType == QLatin1String("profile"))
+        k << QStringLiteral("ofset_dir") << QStringLiteral("ignore_tabs") << QStringLiteral("tab_height")
+          << QStringLiteral("tab_width") << QStringLiteral("corners");
+    if (padType == QLatin1String("pocket"))
+        k << QStringLiteral("corners") << QStringLiteral("pocket_strategy") << QStringLiteral("raster_angle");
+    return k;
+}
+
+// Keys a bit sets (feeds, steps, sizes): a `set` made for another bit
+// (`setTool`) leaves these to the new one.
+const QStringList &bitKeys()
+{
+    static const QStringList k = {QStringLiteral("speeds.feedrate"), QStringLiteral("speeds.plungerate"),
+                                  QStringLiteral("speeds.rpm"), QStringLiteral("stepdown"),
+                                  QStringLiteral("depth_per_pass"), QStringLiteral("stepover"),
+                                  QStringLiteral("lead_radius"), QStringLiteral("helix_diameter"),
+                                  QStringLiteral("rest_diameter")};
+    return k;
 }
 
 QString checkShape(const QJsonObject &s, int *points)
@@ -156,8 +202,11 @@ QString check(const QJsonObject &d)
     for (const QJsonValue &v : tps) {
         const QJsonObject t = v.toObject();
         const QString name = t.value(QStringLiteral("name")).toString().left(60);
-        if (!toolpathTypes().contains(t.value(QStringLiteral("type")).toString()))
+        if (ccToolpathType(t.value(QStringLiteral("type")).toString()).isEmpty())
             return QStringLiteral("toolpath %1: unknown type").arg(name);
+        if (t.contains(QStringLiteral("set"))
+            && (!t.value(QStringLiteral("set")).isObject() || t.value(QStringLiteral("set")).toObject().size() > 200))
+            return QStringLiteral("toolpath %1: bad settings").arg(name);
         if (!finite(t.value(QStringLiteral("depth")), 0, 1000))
             return QStringLiteral("toolpath %1: bad depth").arg(name);
         if (!finite(t.value(QStringLiteral("tool")), 1, 1e9))
@@ -303,10 +352,7 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         if (!feeds || !feeds->valid())
             return fail(QStringLiteral("toolpath %1: %2 has no feeds and speeds for %3")
                             .arg(name, tool->name, lib.materialName(material)));
-        const QString ccType = kind == QLatin1String("profile") ? QStringLiteral("contour")
-                             : kind == QLatin1String("pocket")  ? QStringLiteral("pocket_toolpath")
-                             : kind == QLatin1String("drill")   ? QStringLiteral("drilling_toolpath")
-                                                                : QStringLiteral("engrave_toolpath");
+        const QString ccType = ccToolpathType(kind);
         Toolpath tp = makeToolpath(doc, ccType, refs);
         QJsonObject j = tp.json;
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
@@ -324,6 +370,26 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
                 j.insert(QStringLiteral("tab_height"), qBound(0.1, t.value(QStringLiteral("tabHeight")).toDouble(), 50.0));
             if (t.value(QStringLiteral("tabWidth")).isDouble())
                 j.insert(QStringLiteral("tab_width"), qBound(1.0, t.value(QStringLiteral("tabWidth")).toDouble(), 30.0));
+        }
+        // Corner relief, set on the computer and carried untouched by the pad.
+        if ((ccType == QLatin1String("contour") || ccType == QLatin1String("pocket_toolpath"))
+            && cornerStyleOf(t.value(QStringLiteral("corners"))) != CornerStyle::Sharp)
+            j.insert(QStringLiteral("corners"), t.value(QStringLiteral("corners")).toString().trimmed().toLower());
+        // A pocket's raster strategy, set on the computer: the pad has no
+        // field for it but carries it through.
+        if (ccType == QLatin1String("pocket_toolpath")
+            && t.value(QStringLiteral("strategy")).toString() == QLatin1String("raster")) {
+            j.insert(QStringLiteral("pocket_strategy"), QStringLiteral("raster"));
+            if (t.value(QStringLiteral("rasterAngle")).isDouble())
+                j.insert(QStringLiteral("raster_angle"),
+                         qBound(-180.0, t.value(QStringLiteral("rasterAngle")).toDouble(), 180.0));
+        }
+        // Every other setting, edited on the pad or carried from here.
+        if (const QJsonObject set = t.value(QStringLiteral("set")).toObject(); !set.isEmpty()) {
+            QStringList skip = padSimpleKeys(kind);
+            if (t.value(QStringLiteral("setTool")).toInt(number) != number)
+                skip += bitKeys();
+            applyPadSettings(ccType, j, set, skip);
         }
         if (!name.isEmpty())
             j.insert(QStringLiteral("name"), name);
@@ -499,11 +565,14 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             lose(QStringLiteral("construction lines"));
             continue;
         }
-        // The pad puts every shape on one layer, in no group.
+        // The pad puts every shape on one layer, in no group. It draws every
+        // shape: a hidden or locked layer comes back shown and unlocked.
         const QJsonValue group = e.raw.value(QStringLiteral("group_id"));
+        const QJsonObject layer = e.raw.value(QStringLiteral("layer")).toObject();
         if ((group.isArray() ? !group.toArray().isEmpty() : !group.toString().isEmpty())
-            || e.raw.value(QStringLiteral("layer")).toObject().value(QStringLiteral("name")).toString()
-                   != QLatin1String("DEFAULT"))
+            || layer.value(QStringLiteral("name")).toString() != QLatin1String("DEFAULT")
+            || !layer.value(QStringLiteral("visible")).toBool(true)
+            || layer.value(QStringLiteral("locked")).toBool(false))
             lose(QStringLiteral("layers and groups"));
         if (!e.raw.value(QStringLiteral("tabs")).toArray().isEmpty())
             lose(QStringLiteral("tabs"));
@@ -604,11 +673,7 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         if (thisTool.value(QStringLiteral("diameter")).toDouble() > 0 && ccType != 1 && ccType != 2
             && thisTool.value(QStringLiteral("angle")).toDouble(0) <= 0)
             prevFlat = thisTool.value(QStringLiteral("diameter")).toDouble();
-        const QString kind = type == QLatin1String("contour")           ? QStringLiteral("profile")
-                           : type == QLatin1String("pocket_toolpath")   ? QStringLiteral("pocket")
-                           : type == QLatin1String("drilling_toolpath") ? QStringLiteral("drill")
-                           : type == QLatin1String("engrave_toolpath")  ? QStringLiteral("engrave")
-                                                                        : QString();
+        const QString kind = padToolpathType(type);
         if (kind.isEmpty()) {
             lose(QStringLiteral("%1 toolpaths").arg(toolpathLabel(type)));
             continue;
@@ -673,12 +738,56 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             j.insert(QStringLiteral("ignore_tabs"), t.json.value(QStringLiteral("ignore_tabs")));
             toolpaths.replace(toolpaths.size() - 1, tp);
         }
+        // Corner relief goes along in the design (the pad keeps keys it does
+        // not know); off is the same as no key.
+        if ((kind == QLatin1String("profile") || kind == QLatin1String("pocket"))
+            && cornerStyleOf(t.json.value(QStringLiteral("corners"))) != CornerStyle::Sharp) {
+            QJsonObject tp = toolpaths.last().toObject();
+            tp.insert(QStringLiteral("corners"), t.json.value(QStringLiteral("corners")));
+            toolpaths.replace(toolpaths.size() - 1, tp);
+            j.insert(QStringLiteral("corners"), t.json.value(QStringLiteral("corners")));
+        }
+        if (type == QLatin1String("pocket_toolpath")) {
+            // Raster or rings: carried (strategy / rasterAngle), not lost.
+            // "offset" is the rings a pocket cuts without the key.
+            const QJsonObject tc = t.json;
+            if (tc.value(QStringLiteral("pocket_strategy")).toString() == QLatin1String("raster")) {
+                QJsonObject tp = toolpaths.last().toObject();
+                tp.insert(QStringLiteral("strategy"), QStringLiteral("raster"));
+                const double a = tc.value(QStringLiteral("raster_angle")).toDouble(0);
+                if (a != 0)
+                    tp.insert(QStringLiteral("rasterAngle"), a);
+                toolpaths.replace(toolpaths.size() - 1, tp);
+            }
+            for (const char *k : {"pocket_strategy", "raster_angle"})
+                if (tc.contains(QLatin1String(k)))
+                    j.insert(QLatin1String(k), tc.value(QLatin1String(k)));
+        }
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
         sizeToTool(j, *tool);
         j.insert(QStringLiteral("end_depth"), depthString(doc, depth));
         if (type == QLatin1String("contour"))
             j.insert(QStringLiteral("ofset_dir"), dir);
         j.insert(QStringLiteral("enabled"), t.json.value(QStringLiteral("enabled")).toBool(true));
+        {
+            // The form's fields go along in `set` (for the bit they were
+            // made for), so they are carried, not lost.
+            QJsonObject set = padSettings(type, t.json);
+            for (const QString &k : padSimpleKeys(kind))
+                set.remove(k);
+            QJsonObject tp = toolpaths.last().toObject();
+            tp.insert(QStringLiteral("set"), set);
+            tp.insert(QStringLiteral("setTool"), number);
+            toolpaths.replace(toolpaths.size() - 1, tp);
+            applyPadSettings(type, j, set);
+            // A depth written "1.500" here reads the same as the file's "1.5".
+            for (auto it = set.constBegin(); it != set.constEnd(); ++it) {
+                const QJsonValue a = j.value(it.key()), b = t.json.value(it.key());
+                if (a.isString() && b.isString() && a != b
+                    && std::abs(a.toString().toDouble() - b.toString().toDouble()) < 1e-9)
+                    j.insert(it.key(), b);
+            }
+        }
         QJsonObject have = t.json;
         auto oldBuild = [&](const QString &k, double scale) {
             if (!oldSizing || !have.contains(k) || !j.contains(k) || oldSize <= 0)
@@ -693,6 +802,8 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             have.remove(k);
             j.remove(k);
         }
+        if (cornerStyleOf(have.value(QStringLiteral("corners"))) == CornerStyle::Sharp)
+            have.remove(QStringLiteral("corners"));
         // Read only with rest on (a bit change here leaves it at the old bit).
         if (!have.value(QStringLiteral("enable_rest")).toBool() && !j.value(QStringLiteral("enable_rest")).toBool()) {
             have.remove(QStringLiteral("rest_diameter"));

@@ -41,6 +41,38 @@ class PutResult {
       modified: j['modified'] is num ? (j['modified'] as num).toInt() : null);
 }
 
+/// The answer to "preview": the design's toolpaths drawn from above by the
+/// computer, and how long it should take there.
+class PreviewResult {
+  final Uint8List png;
+
+  /// The whole job, and each toolpath's share (by name, in cut order).
+  final int seconds;
+  final List<(String, int)> perToolpath;
+
+  /// What the computer left out or changed on the way.
+  final List<String> notes;
+  const PreviewResult(this.png, {this.seconds = 0, this.perToolpath = const [], this.notes = const []});
+  factory PreviewResult.fromJson(Map<String, Object?> j) {
+    Uint8List png;
+    try {
+      png = j['png'] is String ? base64Decode(j['png'] as String) : Uint8List(0);
+    } on FormatException {
+      png = Uint8List(0);
+    }
+    final per = j['perToolpath'];
+    final notes = j['notes'];
+    return PreviewResult(png,
+        seconds: j['seconds'] is num ? (j['seconds'] as num).round() : 0,
+        perToolpath: [
+          if (per is List)
+            for (final p in per.whereType<Map>())
+              (p['name'] is String ? p['name'] as String : '', p['seconds'] is num ? (p['seconds'] as num).round() : 0)
+        ],
+        notes: notes is List ? notes.whereType<String>().toList() : const []);
+  }
+}
+
 class CccpException implements Exception {
   final String message;
 
@@ -198,6 +230,13 @@ class CccpConnection {
   Future<PutResult> push(Design d, {String desktop = ''}) async =>
       PutResult.fromJson(await request({'op': 'put', 'design': d.toWire(desktop), 'versions': 1}));
 
+  /// [d] cut on paper there: its toolpaths from above, and the time.
+  Future<PreviewResult> preview(Design d) async {
+    final r = PreviewResult.fromJson(await request({'op': 'preview', 'design': d.toWire('')}, timeout: sendTimeout));
+    if (r.png.isEmpty) throw CccpException('no picture in the answer');
+    return r;
+  }
+
   Future<DesktopInfo> selectMachine(String id) async => DesktopInfo.fromJson(await request({'op': 'machine', 'id': id}));
 
   /// Open [d] on that computer, on [machine] (its id; empty for the one in use),
@@ -215,6 +254,16 @@ class CccpConnection {
       throw CccpException('No answer from phobiCCCP. It may still open${start ? ' and start' : ''} it there; '
           'check the computer before sending again');
     }
+  }
+
+  /// Hold, resume or stop the job running on that computer ([op] 'hold',
+  /// 'resume' or 'stop'; Stop is the Machine page's Stop there, an instant
+  /// reset). [pad] is this pad's id, so the computer's log says which pad.
+  /// The machine's status afterwards.
+  Future<MachineStatus> control(String op, {String pad = ''}) async {
+    final r = await request({'op': op, 'pad': pad});
+    final s = r['status'];
+    return s is Map ? MachineStatus.fromJson(s.cast<String, Object?>()) : const MachineStatus();
   }
 
   void close() {

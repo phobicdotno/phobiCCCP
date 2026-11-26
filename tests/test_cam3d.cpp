@@ -1023,6 +1023,198 @@ int main()
         check(g.done.size() == 1 && worst < 0.05, "V-bit waterline stays out of the model between contour crossings");
     }
 
+    // Rest roughing: a 30 mm square pocket and, beside it, a 4 mm wide
+    // slot, both 5 mm deep. A 6 mm rough cannot enter the slot; a 3 mm rest
+    // rough after it (bigger bit taken from the rough above) cuts the slot
+    // and the big pocket's corners only, and the two together leave no more
+    // than the 3 mm rough would alone.
+    {
+        c2d::HeightModel m;
+        m.cell = 0.25;
+        m.baseZ = -5;
+        m.resize(int(60 / m.cell), int(40 / m.cell));
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c) {
+                const double x = (c + 0.5) * m.cell, y = (r + 0.5) * m.cell;
+                const bool inY = y > 5 && y < 35;
+                const bool pocket = inY && x > 5 && x < 35, slot = inY && x > 40 && x < 44;
+                m.ref(c, r) = float(pocket || slot ? -5.0 : 0.0);
+            }
+        const QJsonObject flat6{{"number", 211}, {"diameter", 6.0}, {"type", 0}};
+        const QJsonObject flat3{{"number", 212}, {"diameter", 3.0}, {"type", 0}};
+        const QJsonObject common{{"stepdown", 2.5}, {"stock_to_leave", 0.0}, {"max_depth", "0.000"},
+                                 {"boundary_offset", 0.0}};
+        auto rough = [&](const QJsonObject &tool, const char *name, double stepover, bool rest) {
+            QJsonObject e = common;
+            e.insert("stepover", stepover);
+            e.insert("enable_rest", rest);
+            e.insert("rest_auto", true);
+            e.insert("rest_diameter", 0.0);
+            return toolpath("3d_rough_toolpath", tool, e, name);
+        };
+        c2d::Document both;
+        addToolpath(both, rough(flat6, "big", 2.4, false));
+        addToolpath(both, rough(flat3, "rest", 1.2, true));
+        const c2d::GcodeResult g = c2d::exportGcode(both, nullptr, &m);
+        check(g.done.size() == 2, "rest rough: both roughs cut");
+        bool inRest = false;
+        int restFeeds = 0, inSlot = 0, awayFromWalls = 0;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Comment)
+                inRest = o.text == QLatin1String("rest");
+            if (!inRest || o.kind != Op::Feed || o.z > -0.05)
+                continue;
+            ++restFeeds;
+            if (o.x > 39.5 && o.x < 44.5)
+                ++inSlot;
+            if (o.x > 10 && o.x < 30 && o.y > 10 && o.y < 30)
+                ++awayFromWalls;
+        }
+        std::fprintf(stderr, "rest rough: %d cutting moves, %d in the slot, %d in the open pocket\n",
+                     restFeeds, inSlot, awayFromWalls);
+        check(inSlot > 0, "rest rough: cuts the slot the big bit could not enter");
+        check(awayFromWalls == 0, "rest rough: stays out of the open middle of the big pocket");
+
+        c2d::Document small;
+        addToolpath(small, rough(flat3, "small", 1.2, false));
+        const c2d::GcodeResult gs = c2d::exportGcode(small, nullptr, &m);
+        auto leftOver = [&](const c2d::GcodeResult &res, const c2d::Document &d) {
+            c2d::SimSettings ss = stock(60, 40, 10);
+            const c2d::SimResult sim = c2d::simulate(res.ops, c2d::toolGeometry(d), ss);
+            // Material left over the floors (the square corners keep a 3 mm
+            // bit's fillet either way), in mm³.
+            double vol = 0;
+            const double a = sim.map.cellSize() * sim.map.cellSize();
+            for (int iy = 0; iy < sim.map.height(); ++iy)
+                for (int ix = 0; ix < sim.map.width(); ++ix) {
+                    const double x = sim.map.cellCenterX(ix), y = sim.map.cellCenterY(iy);
+                    if (m.sample(x, y) < -4.99)
+                        vol += a * std::fmax(0.0, sim.map.at(ix, iy) - m.sample(x, y));
+                }
+            return vol;
+        };
+        const double leftBoth = leftOver(g, both), leftSmall = leftOver(gs, small);
+        std::fprintf(stderr, "rest rough: %.2f mm³ left on the floors (6 + 3 rest), %.2f mm³ (3 alone)\n",
+                     leftBoth, leftSmall);
+        check(leftBoth <= leftSmall * 1.02 + 2.0, "rest rough: 6 mm + 3 mm rest leaves no more than the 3 mm alone");
+
+        // No rough above and no bigger rest_diameter: a full rough, with a note.
+        c2d::Document lone;
+        addToolpath(lone, rough(flat3, "lone", 1.2, true));
+        const c2d::GcodeResult gl = c2d::exportGcode(lone, nullptr, &m);
+        check(gl.done.size() == 1 && feedLevels(gl.ops) == feedLevels(gs.ops),
+              "rest rough without a bigger bit roughs everything");
+        check(!gl.notes.filter(QStringLiteral("bigger previous bit")).isEmpty(), "rest rough: says it roughed everything");
+
+        // The big rough bounded to the left 20 mm: the rest rough over the
+        // whole model must rough the pocket's right part, which it never cut.
+        c2d::Document half;
+        const c2d::Element left = c2d::Element::makeRectangle({10, 20}, 20, 40, half.defaultLayer());
+        half.addElement(left);
+        QJsonObject bigLeft = rough(flat6, "big", 2.4, false);
+        bigLeft.insert("elements", QJsonArray{QJsonObject{{"uuid", left.id}}});
+        addToolpath(half, bigLeft);
+        addToolpath(half, rough(flat3, "rest", 1.2, true));
+        const c2d::GcodeResult gh = c2d::exportGcode(half, nullptr, &m);
+        int rightMiddle = 0, leftMiddle = 0;
+        inRest = false;
+        for (const Op &o : gh.ops) {
+            if (o.kind == Op::Comment)
+                inRest = o.text == QLatin1String("rest");
+            if (!inRest || o.kind != Op::Feed || o.z > -0.05 || o.y < 12 || o.y > 28)
+                continue;
+            rightMiddle += o.x > 24 && o.x < 30;
+            leftMiddle += o.x > 10 && o.x < 12;
+        }
+        std::fprintf(stderr, "rest rough after a half rough: %d moves in the uncut right part, %d in the cut left\n",
+                     rightMiddle, leftMiddle);
+        check(gh.done.size() == 2 && rightMiddle > 0, "rest rough: roughs what the earlier rough's boundary left out");
+        check(leftMiddle == 0, "rest rough: still skips what the earlier rough cleared");
+    }
+
+
+    // ---- Pencil finish: creases only ---------------------------------------
+    {
+        // A 120° V valley along Y at x = 30: planes 30° off level, bottom at
+        // -10, meeting the stock top 17.3 mm either side.
+        c2d::HeightModel v;
+        v.cell = 0.25;
+        v.baseZ = -10;
+        v.resize(int(60 / v.cell), int(40 / v.cell));
+        const double slope = std::tan(30.0 * M_PI / 180.0);
+        for (int r = 0; r < v.rows; ++r)
+            for (int c = 0; c < v.cols; ++c) {
+                const double x = (c + 0.5) * v.cell;
+                v.ref(c, r) = float(std::fmin(0.0, -10 + slope * std::fabs(x - 30)));
+            }
+        const QJsonObject ball{{"number", 203}, {"diameter", 1.5875}, {"type", 1}, {"corner_radius", 0.79375}};
+        auto pencil = [&](const char *name) {
+            return toolpath("3d_finish_toolpath", ball,
+                            QJsonObject{{"strategy", "pencil"}, {"stepdown", 1.0}}, name);
+        };
+        c2d::Document doc;
+        addToolpath(doc, pencil("pencil"));
+        const c2d::Cam3dParams pp = c2d::cam3dParams(pencil("pp"), 5);
+        check(pp.strategy == c2d::Cam3dParams::Pencil, "pencil: strategy parsed");
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &v);
+        check(g.done.size() == 1, "pencil: V valley is cut");
+        c2d::ToolGeom tg = c2d::toolGeomFromJson(ball);
+        int feeds = 0, off = 0, badZ = 0;
+        double yMin = 1e9, yMax = -1e9;
+        for (const Op &o : g.ops) {
+            if (o.kind != Op::Feed)
+                continue;
+            ++feeds;
+            if (std::fabs(o.x - 30) > 1.0)
+                ++off;
+            if (std::fabs(o.z - c2d::compensatedZ(v, tg, o.x, o.y)) > 0.02)
+                ++badZ;
+            yMin = std::fmin(yMin, o.y);
+            yMax = std::fmax(yMax, o.y);
+        }
+        std::fprintf(stderr, "pencil: %d feeds, %d off the valley, %d off CL, y %.2f..%.2f\n",
+                     feeds, off, badZ, yMin, yMax);
+        check(feeds > 0, "pencil: cuts the valley");
+        check(off == 0, "pencil: every move within 1 mm of the valley line");
+        check(badZ == 0, "pencil: moves follow the ball's CL height");
+        check(yMax - yMin > 30, "pencil: runs along most of the valley");
+
+        // A dome on a floor: the crease is the ring where they meet.
+        const c2d::HeightModel dome = hemisphere(15, 0.5, 50);
+        c2d::Document ddoc;
+        addToolpath(ddoc, pencil("domepencil"));
+        const c2d::GcodeResult gd = c2d::exportGcode(ddoc, nullptr, &dome);
+        int dfeeds = 0, doff = 0;
+        double aMin = 1e9, aMax = -1e9;
+        for (const Op &o : gd.ops) {
+            if (o.kind != Op::Feed)
+                continue;
+            ++dfeeds;
+            const double rho = std::hypot(o.x - 25, o.y - 25);
+            if (rho < 14 || rho > 16.5)
+                ++doff;
+            const double a = std::atan2(o.y - 25, o.x - 25);
+            aMin = std::fmin(aMin, a);
+            aMax = std::fmax(aMax, a);
+        }
+        std::fprintf(stderr, "pencil dome: %d feeds, %d off the ring\n", dfeeds, doff);
+        check(dfeeds > 8 && doff == 0 && aMax - aMin > 5.5, "pencil: dome on a floor is cut round its foot only");
+
+        // Flat relief: no creases, no moves, a note.
+        c2d::HeightModel flat;
+        flat.cell = 0.5;
+        flat.baseZ = -5;
+        flat.resize(80, 80, -2.0f);
+        c2d::Document fdoc;
+        addToolpath(fdoc, pencil("flatpencil"));
+        const c2d::GcodeResult gf = c2d::exportGcode(fdoc, nullptr, &flat);
+        int ffeeds = 0;
+        for (const Op &o : gf.ops)
+            ffeeds += o.kind == Op::Feed;
+        check(ffeeds == 0 && gf.done.isEmpty(), "pencil: flat relief gives no moves");
+        check(!gf.notes.filter(QStringLiteral("no creases")).isEmpty(), "pencil: flat relief says why");
+    }
+
     std::printf("test_cam3d: %d checks OK\n", g_checks);
     return 0;
 }

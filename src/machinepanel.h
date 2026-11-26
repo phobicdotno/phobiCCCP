@@ -3,9 +3,11 @@
 #include "grblstreamer.h"
 #include "post_grbl.h"
 #include "surfacemap.h"
+#include "machinecounters.h"
 #include <QVector>
 #include <QHash>
 #include <QJsonObject>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QWidget>
@@ -16,8 +18,10 @@ class QDialog;
 class QStackedWidget;
 class QComboBox;
 class QDoubleSpinBox;
+class QSpinBox;
 class QGroupBox;
 class QLabel;
+class QLineEdit;
 class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
@@ -28,6 +32,7 @@ class QShowEvent;
 namespace c2d {
 
 class Gamepad;
+struct LibraryTool;
 
 class Document;
 
@@ -51,14 +56,30 @@ public:
     // straight into slots that then touch them. Cut the connections first.
     ~MachinePanel() override;
     void setDocument(Document *doc);
+    // True while the open design has changes the file on disk does not.
+    void setUnsavedCheck(std::function<bool()> f) { m_unsaved = std::move(f); }
     void showPage(const QString &name);   // "job" / "bitzero" / "bitsetter" (used by --shot)
     GrblStreamer *streamer() const { return m_grbl; }
+
+    // A G-code file (.nc, .gcode, .tap, .ngc) to run instead of the open
+    // design, through the same checks, tool changes and job list. False
+    // with `why` set (and nothing changed) when it cannot run here.
+    bool loadProgramFile(const QString &path, QString *why = nullptr);
+    void backToDesign();                  // run the open design again
+    QString programFile() const { return m_ncPath; }
 
     // A pad asked to cut the open document (the PhobiCCCP pad app, "Start
     // cutting"). The same program and checks as Run, minus the question on
     // this screen: connected, homed, idle, not busy, no alarm. False with
     // `why` set when it did not start.
     bool startFromRemote(QString *why);
+    // A pad's Hold, Resume and Stop: the same path as this page's Hold /
+    // Resume button and its Stop button (the instant reset), written in the
+    // log with `who`, the pad's name. False with `why` set when there was
+    // nothing to do (not connected, or Resume with nothing held).
+    bool holdFromRemote(const QString &who, QString *why);
+    bool resumeFromRemote(const QString &who, QString *why);
+    bool stopFromRemote(const QString &who, QString *why);
     // The machine/ settings group was swapped for another machine's
     // (machineprofiles.h): disconnect, load it, and connect to the new
     // machine's port if the old one was connected. Refused while busy.
@@ -136,7 +157,32 @@ private:
     void forgetReference();
     // `remoteWhy` set: started from a pad, nothing is asked here and a
     // refusal is written there instead of shown.
-    bool runProgram(QString *remoteWhy = nullptr);
+    // `from` set: start again from that toolpath or pass of the program
+    // (a row of the last job's list, found again in the new plan by its
+    // name, pass count and place counted from the end).
+    struct StartFrom {
+        QString title;       // the section's title()
+        int passes = 0;
+        int rank = 0;        // sections with that title and pass count after it
+        int pass = -1;       // -1: the section's first line
+        QString row;         // as the list names it
+    };
+    bool runProgram(QString *remoteWhy = nullptr, const StartFrom *from = nullptr);
+    void startHere(int section, int pass);
+    // The row `section`/`pass` of the job list as a StartFrom.
+    StartFrom rowOf(int section, int pass) const;
+    // Where a design's job stopped (a crash, a power cut, Stop): saved while
+    // it runs, cleared when it finishes or is cancelled, and offered as
+    // "Continue from" when that design is open again and the machine homed.
+    void saveResumePoint(int acked);
+    static void clearResumePoint();
+    void updateContinueOffer();
+    void continueWhereStopped();
+    QPushButton *m_continueBtn = nullptr;
+    QString m_docHash;                   // the open design's file, SHA-1 hex
+    QString m_runPath, m_runHash;        // the running design's, empty when not one
+    QElapsedTimer m_resumeSaveClock;
+    int m_resumeSavedSec = -1, m_resumeSavedPass = -1;
     void log(const QString &line);
 
     Document *m_doc = nullptr;
@@ -149,6 +195,26 @@ private:
     QLabel *m_state, *m_wAxis[3], *m_mpos, *m_extra;
     void setStatePill(const QString &text, const QString &border);
     QLabel *m_jobName = nullptr, *m_jobInfo = nullptr;
+    // A loaded G-code file runs instead of the design while m_ncPath is set.
+    QString m_ncPath;
+    QStringList m_ncLines;
+    QVector<Op> m_ncOps;
+    bool m_jobFromFile = false;          // the running job is a file: no design to name its bits
+    // The job history line written when the running job ends (jobhistory.h).
+    struct HistoryJob {
+        bool active = false;
+        bool cancelled = false;
+        QString job;
+        QString machine;
+        QDateTime start;
+        double estSec = 0;
+        int toolpaths = 0;
+        int toolChanges = 0;
+    } m_hist;
+    void recordJobEnd(const QString &how, int code);
+    QPushButton *m_openNcBtn = nullptr, *m_backToDesignBtn = nullptr;
+    void openProgramFile();               // the file dialog
+    void openSurfacing();                 // flatten a spoilboard or slab, no design
     void refreshJobInfo();
     // The right-hand card of the Machine page: the job, or one of the pages
     // that used to be pop-ups (BitZero probing, BitSetter settings).
@@ -180,6 +246,14 @@ private:
     quint64 m_resets = 0;                            // controller (re)starts seen
     quint64 m_bzStageResets = 0;                     // m_resets when the stage began
     void bitZeroAfterV1(Phase stage);
+    // Hole / boss centre (X, Y, X again) and the plain touch plate.
+    void bitZeroAfterCentre(Phase stage);
+    int m_bzPass = 0;                                // centre: 0 first X, 1 Y, 2 X again
+    double m_bzXp = 0, m_bzXn = 0, m_bzYp = 0, m_bzYn = 0;   // slow contacts
+    // Hole: the axis's search done, its slow touches next, on the walls the
+    // search found.
+    bool m_bzHoleTouch = false;
+    double m_bzHoleP = 0, m_bzHoleN = 0;
     static QStringList bitZeroSideLines(char axis, const BitZeroConfig &c, double startAbs);
     void openBitZero();
     void bitZeroBegin();
@@ -209,6 +283,17 @@ private:
     bool m_liftHold = false;             // Hold with a lift: Z up, spindle off, XY kept; Resume goes back down        // BitZero: wait for OK before moving after the zero
     QLabel *m_mapLabel = nullptr;
     QLabel *m_ovLabel = nullptr;         // live feed/rapid/spindle override, beside the +/- buttons
+    // Dust collector / coolant (M8 flood or M7 mist, M9 off). The button
+    // follows the controller's A: report; the setting (per machine) switches
+    // it with the spindle during a job.
+    QPushButton *m_coolantBtn = nullptr;
+    QCheckBox *m_coolantAuto = nullptr;
+    QComboBox *m_coolantCode = nullptr;
+    bool m_coolantOn = false;            // as last reported (A:F or A:M)
+    bool coolantWithJob() const;
+    bool coolantMist() const;
+    void toggleCoolant();
+    void showCoolant(bool on);
     void startSurfaceMap();
     void setSurfaceMap(const SurfaceMap &map);
     void refreshMapUi();
@@ -245,6 +330,14 @@ private:
     // index of the one parked at: names the bit when two share a number.
     QVector<Op> m_jobTools;
     int m_pendingOrdinal = -1;
+    // Which bit is in the spindle, as the stretch of the program it cuts:
+    // n = after the program's n-th tool marker (counted over the whole
+    // program); -1 unknown. Good only for the design it was set with.
+    int m_toolStretch = -1;
+    quint64 m_toolStretchSeq = 0;
+    QString m_toolStretchNc;
+    int m_pendingStretch = -1;
+    int m_toolOrdBase = 0;               // markers of the whole program before the streamed one's first
     // BitSetter off: the operator closed the prompt to jog and zero Z by hand
     // and will press Continue; m_zeroedForTool once Z was zeroed meanwhile.
     bool m_manualZero = false;
@@ -259,6 +352,8 @@ private:
     // resuming without one cuts as deep as the two tools differ in length.
     bool m_toolMeasured = false;
     bool m_rehearsal = false;            // the running program is a rehearsal
+    QPointer<QDialog> m_stopPopup;       // the "Job stopped" explanation on screen
+    int m_stopCode = 0;                  // the code the program stopped on: >0 ALARM:n, <0 error:n
     std::function<void()> m_onIdle;
     quint64 m_idleSeq = 0;      // which whenIdle() step a posted run belongs to
     bool m_idlePosted = false;   // a run of m_onIdle is queued
@@ -271,12 +366,29 @@ private:
     bool needsInit();            // true (and says so in the log) while in Alarm
     void initializeMachine();    // $H, then park()
     void park(bool afterHoming = false);   // safe Z, then the tool-change XY
+    // Manual spindle ("More" fold): on at the RPM field, off, and a timed
+    // warm-up ramp (50 %, 75 %, 100 % of the top speed; the step lengths in
+    // seconds come from machine/warmupSeconds, default 120,120,60). Only
+    // idle, homed, no job; the spindle is left as it is when the page is
+    // left or the port drops (Stop and Cancel still stop it).
+    double spindleMaxRpm() const;
+    bool spindleClear();                 // Z up, or the operator says the bit is clear
+    void spindleOn();
+    void spindleOff();
+    void toggleWarmup();
+    void warmupStep();                   // the next speed, or M5 after the last
+    void updateSpindleButtons();
+    void endWarmup(const QString &why);  // timer stopped, button back, no M5
     void hoverDryRun();   // trace the job outline 50 mm up, spindle off
     void parkSpot(double &x, double &y) const;   // where Park goes (machine)
     // Quick move: a 5 x 5 grid over the whole table, the outer ring at the
     // ends of the travel. col 0 = left .. 4 = right, row 0 = back .. 4 = front.
     void quickMoveSpot(int col, int row, double &x, double &y) const;
     void openQuickMove();
+    // The controller's $ settings: list, change, back up, restore.
+    void openControllerSettings();
+    QString settingsRefusal() const;     // why they cannot be changed now, or empty
+    void autoBackupSettings();           // first $$ of the day, per machine
     void quickMoveTo(int col, int row);   // all the way up if not up, then there
     QStringList endOfJobMoves();          // a finished job: top, park spot, M5
     bool m_parkAfterHome = false;
@@ -302,6 +414,7 @@ private:
     // cleared, the card showing the toolpaths ticked now, ready for Run.
     void clearJob();
     QStringList riseToTop() const;
+    void startMoves(const QStringList &lines);   // a built-in macro, in mm (G21 first)
     void continueAfterToolChange();      // with the rise to the top in front
     void forgetJogPlan();
     double m_jogPlan[3] = {0, 0, 0};
@@ -336,6 +449,21 @@ private:
     bool m_holdChecked = false;          // a hold left from before cleared
     QElapsedTimer m_settingsAsked;       // last $$ sent; asked again until answered
     QElapsedTimer m_busyClock;           // throttles the busy file
+    // Run-time counters and service reminders of the active machine profile
+    // (machinecounters.h): every status report adds the time since the last
+    // one; saved every 60 s, at disconnect, a machine switch and quit.
+    machinecounters::Counters m_counters;
+    QString m_countersId;                // the profile they belong to
+    QElapsedTimer m_counterClock;        // since the last status report
+    QElapsedTimer m_counterFlush;        // since the last save
+    QHash<QString, QString> m_bitKeys;   // "model|name|dia" -> tool library id (or the name)
+    QLabel *m_dueLabel = nullptr;        // amber "Due: router brushes (52 h)"
+    void loadCounters();
+    void flushCounters();
+    void countStatus(const MachineStatus &st);
+    QString bitKey(const LibraryTool &bit);
+    void showDue();
+    void openCounters();
     QVariantList m_savedHomedAt;         // last homed position written to settings
     bool requireHomed(const QString &what);
     bool insideTravel(double x, double y) const;
@@ -366,6 +494,14 @@ private:
     QCheckBox *m_airCut;                 // rehearse: spindle stripped, Z lifted
     QDoubleSpinBox *m_airLift;           // air-cut Z lift (mm)
     QPushButton *m_runBtn, *m_pauseBtn, *m_stopBtn;
+    QSpinBox *m_rpmSpin = nullptr;
+    QPushButton *m_spinOnBtn = nullptr, *m_spinOffBtn = nullptr, *m_warmBtn = nullptr;
+    QTimer *m_warmTimer = nullptr;       // 1 s ticks while warming up
+    QList<int> m_warmSecs;               // step lengths, read when it starts
+    int m_warmStep = -1;                 // -1: not warming up
+    int m_warmLeft = 0;                  // seconds left in this step
+    bool m_warmHeld = false;             // step change waiting for a busy controller
+    bool m_rpmRangeSet = false;          // $30/$31 applied to the field
     bool m_held = false;
     // m_held stays until a report shows the machine out of Hold (seen in
     // Hold before, or never in Hold within 2 s: the hold did not take).
@@ -374,8 +510,29 @@ private:
     void setHeld(bool held);             // m_held and the pause button
     bool m_endRisePending = false;       // the end-of-job rise waits for Idle
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
+    std::function<bool()> m_unsaved;
+    QString m_surfFixedPath;             // surfacing loaded at the machine's front-left
+    double m_surfWcoX = 0, m_surfWcoY = 0; // the XY work offset it was laid out with
+    bool m_jobCoolant = false;           // the streamed job switches dust/coolant: M9 at its end
     QProgressBar *m_progress;
     QPlainTextEdit *m_console;
+
+    // Command line under the log: one line of G-code or a $ command, sent
+    // like a jog or a zero (never while a job streams). $H goes through
+    // Initialize and $X through Unlock, so the page keeps track of homing;
+    // ?, ! and ~ alone go out as realtime bytes. Up/Down walk the history.
+    QLineEdit *m_mdi = nullptr;
+    QStringList m_mdiHistory;            // newest last, kept in ui/mdiHistory
+    int m_mdiBrowse = -1;                // index into the history while walking it
+    QString m_mdiDraft;                  // what was typed before walking began
+    bool sendTyped(const QString &typed);
+    bool eventFilter(QObject *watched, QEvent *event) override;
+    // The operator's macro buttons (machinemacros.h), per machine profile.
+    QWidget *m_macroRow = nullptr;
+    QList<QPushButton *> m_macroBtns;
+    void refreshMacroButtons();
+    void editMacros();
+    bool runMacro(int index);            // 0-based; false (and logged) when refused
 };
 
 } // namespace c2d

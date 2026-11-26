@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QPainter>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QSet>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -410,8 +411,15 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
     const QVector<CutShape> cuts = cutShapes(ops);
     int nameAt = 0, changeAt = 0;
 
-    if (rapidRate <= 0)
-        rapidRate = 5000;
+    // Times from GRBL's own way of planning the moves (acceleration,
+    // corners): each queued line's moves and fixed waits, summed at the end.
+    MotionLimits lim = motionLimits();
+    if (rapidRate > 0)
+        for (int i = 0; i < 2; ++i)
+            lim.rate[i] = qMin(lim.rate[i], rapidRate);
+    MotionPlanner mp(lim);
+    QVector<double> fixedSec;                 // per queued line: dwell, G53 rise
+    QVector<int> moveAt;                      // per queued line: its planned move, -1 none
     double x = 0, y = 0, z = 0, f = 0;
     int motion = 0;                           // modal G0/1/2/3
     bool haveXY = false;
@@ -509,6 +517,7 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
         }
         // From here on the line is queued.
         double sec_ = 0;
+        int move = -1;
         const QString up = line.toUpper();
         if (up.startsWith(QLatin1String("M0 ;T")) || up.startsWith(QLatin1String("M0;T"))
             || up.startsWith(QLatin1String("M00 ;T"))) {
@@ -531,6 +540,9 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
             // Ends with this line: the section after it starts with the
             // next toolpath comment (or the program's own retract).
             plan.cumSec.append(plan.cumSec.last());
+            mp.stop();
+            fixedSec.append(0);
+            moveAt.append(-1);
             ++q;
             closeSection();
             continue;
@@ -539,10 +551,13 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
             // A machine-coordinate move of the sender's (the rise to the
             // top): about a second, and nothing modal to read from it.
             sec_ = 1.0;
+            mp.stop();
         } else if (up.startsWith(QLatin1Char('M'))) {
             sec_ = 0;                                // M03/M05: no wait of its own
+            mp.stop();                               // but the moves before finish first
         } else if (up.startsWith(QLatin1String("G4"))) {
             sec_ = parseWords(up).get(QLatin1Char('P'), 0);
+            mp.stop();
         } else {
             const Words w = parseWords(up);
             if (w.has(QLatin1Char('G'))) {
@@ -555,24 +570,24 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
             if (w.has(QLatin1Char('F')))
                 f = w.get(QLatin1Char('F'), f);
             if (hasX || hasY || hasZ) {
-                double len = 0;
-                if ((motion == 2 || motion == 3) && (w.has(QLatin1Char('I')) || w.has(QLatin1Char('J')))) {
-                    const double ci = x + w.get(QLatin1Char('I'), 0), cj = y + w.get(QLatin1Char('J'), 0);
-                    const double r = std::hypot(x - ci, y - cj);
-                    double a0 = std::atan2(y - cj, x - ci), a1 = std::atan2(ny - cj, nx - ci);
-                    double sweep = motion == 3 ? a1 - a0 : a0 - a1;
-                    while (sweep <= 1e-9)
-                        sweep += 2 * M_PI;
-                    while (sweep > 2 * M_PI + 1e-9)
-                        sweep -= 2 * M_PI;
-                    len = std::hypot(r * sweep, nz - z);
-                } else {
-                    len = std::sqrt((nx - x) * (nx - x) + (ny - y) * (ny - y) + (nz - z) * (nz - z));
+                const bool hasR = w.has(QLatin1Char('R')) && !w.has(QLatin1Char('I')) && !w.has(QLatin1Char('J'));
+                if ((motion == 2 || motion == 3) && (w.has(QLatin1Char('I')) || w.has(QLatin1Char('J')) || hasR)) {
+                    double ci = w.get(QLatin1Char('I'), 0), cj = w.get(QLatin1Char('J'), 0);
+                    if (hasR) {
+                        // The centre from the radius, as the G-code reader takes it.
+                        const double r = w.get(QLatin1Char('R'), 0), dx = nx - x, dy = ny - y,
+                                     d = std::hypot(dx, dy);
+                        double h = d > 1e-9 ? std::sqrt(qMax(0.0, r * r - d * d / 4)) / d : 0;
+                        if ((motion == 2) != (r < 0))
+                            h = -h;
+                        ci = dx / 2 - h * dy;
+                        cj = dy / 2 + h * dx;
+                    }
+                    if (f > 0)
+                        move = mp.arc(x, y, z, nx, ny, nz, ci, cj, motion == 2, f);
+                } else if (motion == 0 || f > 0) {
+                    move = mp.line(nx - x, ny - y, nz - z, motion == 0 ? 0.0 : f);
                 }
-                if (motion == 0)
-                    sec_ = len / rapidRate * 60.0;
-                else if (f > 0)
-                    sec_ = len / f * 60.0;
                 // Passes: a cutting move deeper than this pass's floor, once
                 // the pass has cut along the floor, starts the next one. A
                 // ramp or a helix going down is the start of a pass; pecks
@@ -603,11 +618,23 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
                 haveXY = true;
             }
         }
-        plan.cumSec.append(plan.cumSec.last() + sec_);
+        plan.cumSec.append(plan.cumSec.last());
+        fixedSec.append(sec_);
+        moveAt.append(move);
         ++q;
     }
     closeSection();
     plan.total = q;
+    // The planned times, now the whole program is known, and every step's
+    // and pass's share of them.
+    const QVector<double> moveSec = mp.times();
+    for (int i = 0; i < q; ++i)
+        plan.cumSec[i + 1] = plan.cumSec.at(i) + fixedSec.at(i) + (moveAt.at(i) >= 0 ? moveSec.at(moveAt.at(i)) : 0.0);
+    for (JobSection &s : plan.sections) {
+        s.estSec = plan.cumSec.at(s.qEnd) - plan.cumSec.at(s.qStart);
+        for (JobPass &p : s.passes)
+            p.estSec = plan.cumSec.at(p.qEnd) - plan.cumSec.at(p.qStart);
+    }
     // Site order finishes each site before moving on, so a toolpath comes
     // back after others: one row per stretch, numbered, not a new toolpath.
     QHash<QString, int> stretches, seen;
@@ -670,6 +697,40 @@ JobView::JobView(QWidget *parent) : QWidget(parent)
     v->addWidget(m_current);
     v->addWidget(m_passBar);
     v->addWidget(m_tree, 1);
+    // Start the job again from a chosen toolpath or pass (a broken bit, a
+    // stall, a Stop): tap the row, then this.
+    m_startHere = new QPushButton(this);
+    m_startHere->setMinimumHeight(52);
+    m_startHere->setCursor(Qt::PointingHandCursor);
+    m_startHere->setStyleSheet(QStringLiteral(
+        "QPushButton { background: #f2a536; color: #16181d; border: none; border-radius: 8px;"
+        " font-size: 16px; font-weight: 700; padding: 6px 14px; }"
+        "QPushButton:pressed { background: #c8861f; }"));
+    m_startHere->hide();
+    v->addWidget(m_startHere);
+    connect(m_startHere, &QPushButton::clicked, this, [this] {
+        if (m_startAllowed && m_chosenSec >= 0)
+            emit startHereRequested(m_chosenSec, m_chosenPass);
+    });
+    connect(m_tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int) {
+        int sec = -1, pass = -1;
+        for (int i = 0; i < m_sectionItems.size() && sec < 0; ++i) {
+            if (static_cast<QTreeWidgetItem *>(m_sectionItems.at(i)) == item)
+                sec = i;
+            else if (i < m_passItems.size())
+                for (int k = 0; k < m_passItems.at(i).size(); ++k)
+                    if (m_passItems.at(i).at(k) == item) {
+                        sec = i;
+                        pass = k;
+                    }
+        }
+        // A tool change is not a place to start: the toolpath after it is.
+        if (sec < 0 || m_plan.sections.at(sec).kind != JobSection::Toolpath)
+            return;
+        m_chosenSec = sec;
+        m_chosenPass = pass;
+        updateStartHere();
+    });
     m_tick = new QTimer(this);
     m_tick->setInterval(1000);
     connect(m_tick, &QTimer::timeout, this, [this] { refresh(); });
@@ -698,6 +759,8 @@ void JobView::clear()
     m_rowShown.clear();
     m_toolpathsUpTo.clear();
     m_passItems.clear();
+    m_chosenSec = m_chosenPass = -1;
+    updateStartHere();
     m_tree->clear();
     m_title->setText(QStringLiteral("No job running"));
     m_summary->clear();
@@ -706,6 +769,34 @@ void JobView::clear()
     m_passBar->setRange(0, 1000);
     m_passBar->setValue(0);
     m_tick->stop();
+}
+
+void JobView::setStartHereAllowed(bool on)
+{
+    if (on == m_startAllowed)
+        return;
+    m_startAllowed = on;
+    updateStartHere();
+}
+
+QString JobView::rowName(int section, int pass) const
+{
+    if (section < 0 || section >= m_plan.sections.size())
+        return {};
+    const JobSection &s = m_plan.sections.at(section);
+    if (pass < 0 || pass >= s.passes.size() || s.passes.size() == 1)
+        return s.title();
+    return s.title() + QStringLiteral("  \u00b7  ") + s.passes.at(pass).what;
+}
+
+void JobView::updateStartHere()
+{
+    if (!m_startHere)
+        return;
+    const bool show = m_startAllowed && m_chosenSec >= 0 && m_chosenSec < m_plan.sections.size();
+    if (show)
+        m_startHere->setText(QStringLiteral("\u25b6 Start here: %1").arg(rowName(m_chosenSec, m_chosenPass)));
+    m_startHere->setVisible(show);
 }
 
 void JobView::setPlan(const JobPlan &plan, const QString &jobName)

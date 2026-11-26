@@ -8,11 +8,16 @@
 
 namespace c2d {
 
-ShopAnswer shopChoose(QWidget *parent, const ShopAsk &a)
+namespace {
+constexpr int kAlt = 2;
+
+// The popup itself, filled in and ready to show (exec or show).
+QDialog *makeShopDialog(QWidget *parent, const ShopAsk &a)
 {
     // No window-manager title bar: the caption inside is the title, and the
     // card gets an amber edge instead so it still reads as a popup.
-    QDialog dlg(parent, Qt::Dialog | Qt::FramelessWindowHint);
+    auto *d = new QDialog(parent, Qt::Dialog | Qt::FramelessWindowHint);
+    QDialog &dlg = *d;
     dlg.setWindowTitle(a.title);
     dlg.setObjectName(QStringLiteral("shopDialog"));
     dlg.setAttribute(Qt::WA_StyledBackground);
@@ -100,11 +105,10 @@ ShopAnswer shopChoose(QWidget *parent, const ShopAsk &a)
         QObject::connect(cancel, &QPushButton::clicked, &dlg, &QDialog::reject);
         row->addWidget(cancel);
     }
-    constexpr int kAlt = 2;
     if (!a.altText.isEmpty()) {
         auto *alt = new QPushButton(a.altText, &dlg);
         alt->setObjectName(QStringLiteral("cancel"));   // the quiet look
-        QObject::connect(alt, &QPushButton::clicked, &dlg, [&dlg] { dlg.done(kAlt); });
+        QObject::connect(alt, &QPushButton::clicked, d, [d] { d->done(kAlt); });
         row->addWidget(alt);
     }
     auto *ok = new QPushButton(a.okText, &dlg);
@@ -118,7 +122,15 @@ ShopAnswer shopChoose(QWidget *parent, const ShopAsk &a)
     else
         cancel->setDefault(true);
     (a.defaultOk || !cancel ? ok : cancel)->setFocus();
-    const int r = dlg.exec();
+    return d;
+}
+} // namespace
+
+ShopAnswer shopChoose(QWidget *parent, const ShopAsk &a)
+{
+    QDialog *dlg = makeShopDialog(parent, a);
+    const int r = dlg->exec();
+    delete dlg;
     return r == QDialog::Accepted ? ShopAnswer::Ok
          : r == kAlt              ? ShopAnswer::Alt
                                   : ShopAnswer::Cancel;
@@ -138,6 +150,22 @@ void shopTell(QWidget *parent, const QString &title, const QString &headline,
     a.body = body;
     a.cancelText.clear();
     shopAsk(parent, a);
+}
+
+QDialog *shopShow(QWidget *parent, const QString &title, const QString &headline,
+                  const QString &body)
+{
+    ShopAsk a;
+    a.title = title;
+    a.headline = headline;
+    a.body = body;
+    a.cancelText.clear();
+    QDialog *dlg = makeShopDialog(parent, a);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->setModal(false);
+    dlg->show();
+    dlg->raise();
+    return dlg;
 }
 
 } // namespace c2d

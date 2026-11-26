@@ -19,6 +19,8 @@
 #include <QApplication>
 #include <QDialog>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -27,6 +29,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSocketNotifier>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QToolButton>
@@ -89,6 +92,8 @@ struct FakeGrbl {
     int homeReports = 0;      // Home is reported at least this often, however slow the poll
     QByteArray travel = "$130=425.000\r\n$131=425.000\r\n$132=75.000\r\n$27=1.500\r\n";
     QList<QByteArray> events;
+    int ovRapid = 100, ovSpindle = 100;   // reported as Ov:100,rapid,spindle
+    bool flood = false;                   // M8 on, M9 off; reported as A:F
 
     void send(const QByteArray &s) { (void)!::write(fd, s.constData(), size_t(s.size())); }
     QByteArray num(double v) const { return QByteArray::number(v, 'f', 3); }
@@ -115,13 +120,24 @@ struct FakeGrbl {
                     --homeReports;
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdSettles ? "Hold:0" : "Hold:1") : home ? "Home" : jogging() ? "Jog" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ) + ">\r\n");   // XY zero inside the travel
+                     + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ)   // XY zero inside the travel
+                     + "|Ov:100," + QByteArray::number(ovRapid) + ',' + QByteArray::number(ovSpindle)
+                     + (flood ? "|A:F" : "") + ">\r\n");
             } else if (c == '!') {
                 held = true;
                 events << "!";
             } else if (c == '~') {
                 held = false;
                 events << "~";
+            } else if (uchar(c) >= 0x90 && uchar(c) <= 0x9D) {   // overrides
+                const uchar b = uchar(c);
+                if (b == 0x95) ovRapid = 100;
+                else if (b == 0x96) ovRapid = 50;
+                else if (b == 0x97) ovRapid = 25;
+                else if (b == 0x99) ovSpindle = 100;
+                else if (b == 0x9A) ovSpindle = qMin(200, ovSpindle + 10);
+                else if (b == 0x9B) ovSpindle = qMax(10, ovSpindle - 10);
+                events << "OV:" + QByteArray::number(b, 16);
             } else if (uchar(c) == 0x85) {
                 jogClock.invalidate();
                 events << "JOGCANCEL";
@@ -150,6 +166,10 @@ struct FakeGrbl {
                     line.clear();
                     continue;
                 }
+                if (line == "M8")
+                    flood = true;
+                else if (line == "M9")
+                    flood = false;
                 if (line == "$$")
                     send(travel);
                 else if (line == "$H") {
@@ -260,9 +280,11 @@ int main(int argc, char **argv)
                   "plan: a pocket cut in two levels is two passes, at their floors");
             // Pass 1: plunge 6.5 mm at F300 (1.3 s) + 40 mm at F1000 (2.4 s); pass 2: 1.5 mm
             // plunge + the lap + the 8 mm retract rapid at 5000 that ends the toolpath (0.1 s).
-            check(a.passes.size() == 2 && std::abs(a.passes.at(0).estSec - 3.7) < 0.05
-                      && std::abs(a.passes.at(1).estSec - (2.7 + 8.0 / 5000 * 60)) < 0.05,
-                  "plan: pass times from feed and distance");
+            // Speeding up and slowing down at the corners adds a little on top.
+            check(a.passes.size() == 2 && a.passes.at(0).estSec > 3.7 && a.passes.at(0).estSec < 3.7 + 0.35
+                      && a.passes.at(1).estSec > 2.7 + 8.0 / 5000 * 60
+                      && a.passes.at(1).estSec < 2.7 + 8.0 / 5000 * 60 + 0.6,
+                  "plan: pass times from feed and distance, with acceleration");
             check(a.estSec > 3.7 + 2.7 + 2.9, "plan: the toolpath's own time counts the spin-up dwell too");
             check(tc.kind == c2d::JobSection::ToolChange && tc.detail.startsWith(QLatin1String("T2")), "plan: the tool change is its own step");
             check(b.name == QLatin1String("Drill B") && b.passes.size() == 1 && std::abs(b.passes.at(0).z + 2.0) < 1e-6,
@@ -413,6 +435,9 @@ int main(int argc, char **argv)
                          QVariantList{grbl.mx, grbl.my, grbl.mz});
     QSettings().setValue(QStringLiteral("machine/port"), QString::fromLatin1(name));
     QSettings().setValue(QStringLiteral("gamepad/6"), QStringLiteral("home"));
+    QSettings().setValue(QStringLiteral("gamepad/10"), QStringLiteral("spindle+"));
+    QSettings().setValue(QStringLiteral("gamepad/11"), QStringLiteral("spindle-"));
+    QSettings().setValue(QStringLiteral("gamepad/12"), QStringLiteral("rapid"));
     QSettings().setValue(QStringLiteral("ui/padStyle"), QStringLiteral("xbox"));
 
     c2d::MachinePanel panel;
@@ -605,6 +630,143 @@ int main(int argc, char **argv)
         check(grbl.count("$J=") == 0, "gamepad: the triggers of an Xbox pad do nothing");
     }
 
+    // Spindle and rapid overrides beside the feed ones, and on the gamepad:
+    // each sends its GRBL realtime byte, nothing queued. The pad's rapid
+    // button steps 100 -> 50 -> 25 -> 100 from what the controller reports.
+    {
+        auto ovs = [&] {
+            QList<QByteArray> o;
+            for (const QByteArray &e : grbl.events)
+                if (e.startsWith("OV:"))
+                    o << e;
+            return o;
+        };
+        grbl.events.clear();
+        button(QStringLiteral("+10%"), QStringLiteral("Spindle 10 % faster"))->click();
+        button(QStringLiteral("−10%"), QStringLiteral("Spindle 10 % slower"))->click();
+        button(QStringLiteral("100%"), QStringLiteral("Spindle back"))->click();
+        button(QStringLiteral("25%"), QStringLiteral("Rapid moves at 25"))->click();
+        button(QStringLiteral("50%"), QStringLiteral("Rapid moves at 50"))->click();
+        button(QStringLiteral("100%"), QStringLiteral("Rapid moves back"))->click();
+        button(QStringLiteral("+10%"), QStringLiteral("Feed 10 % faster"))->click();
+        wait(300);
+        check(ovs() == QList<QByteArray>({"OV:9a", "OV:9b", "OV:99", "OV:97", "OV:96", "OV:95", "OV:91"}),
+              "overrides: spindle, rapid and feed buttons send their realtime bytes");
+        check(grbl.count("$") == 0 && grbl.count("G") == 0, "overrides: nothing queued");
+        grbl.ovRapid = 100;
+        grbl.ovSpindle = 100;
+        wait(400);
+        grbl.events.clear();
+        padPress(10);
+        padPress(11);
+        wait(300);
+        check(ovs() == QList<QByteArray>({"OV:9a", "OV:9b"}),
+              "gamepad: spindle + and - send 0x9A and 0x9B");
+        grbl.events.clear();
+        for (int i = 0; i < 3; ++i) {
+            padPress(12);
+            wait(500);                       // the next report carries the new rapid
+        }
+        check(ovs() == QList<QByteArray>({"OV:96", "OV:97", "OV:95"}),
+              "gamepad: rapid cycles 50, 25, back to 100");
+        QLabel *ov = panel.findChild<QLabel *>(QStringLiteral("ovLabel"));
+        wait(400);
+        check(ov && ov->text() == QLatin1String("feed 100 %"), "overrides: all back to 100 % on the readout");
+    }
+
+    // Spindle by hand in the "More" fold: On sends M3 at the field's speed
+    // (kept under the top speed), after asking when Z is not up; Off sends
+    // M5. Warm-up steps through half, three quarters and full speed, then M5
+    // (step lengths from machine/warmupSeconds, here 1 s each).
+    {
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0
+                                && panel.statusJson().value("state").toString() == "Idle"; });
+        wait(500);
+        QSpinBox *rpm = nullptr;
+        for (QSpinBox *b : panel.findChildren<QSpinBox *>())
+            if (b->suffix() == QLatin1String(" rpm"))
+                rpm = b;
+        check(rpm && rpm->value() == 10000, "spindle: the speed field starts at the top speed");
+        rpm->setValue(50000);
+        check(rpm->value() == 10000, "spindle: the speed field stays under the top speed");
+        rpm->setValue(8000);
+        answer = [](const Seen &v) {
+            return v.headline.contains(QStringLiteral("clear of the work")) ? QStringLiteral("Spin up")
+                                                                             : QString();
+        };
+        seen.clear();
+        grbl.events.clear();
+        QPushButton *on = button(QStringLiteral("On"), QStringLiteral("M3"));
+        check(on->isEnabled(), "spindle: On is ready on an idle, homed machine");
+        on->click();
+        spin(1500, [&] { return grbl.count("M3") > 0; });
+        check(grbl.events.contains("M3 S8000"), "spindle: On sends M3 at the field's speed");
+        check(seen.size() == 1, "spindle: with Z down it asks whether the bit is clear");
+        button(QStringLiteral("Off"), QStringLiteral("M5"))->click();
+        spin(1500, [&] { return grbl.count("M5") > 0; });
+        check(grbl.count("M5") == 1, "spindle: Off sends M5");
+
+        const double zWas = grbl.mz;
+        grbl.mz = -1.5;                       // up at the top: no question
+        wait(600);
+        QSettings().setValue(QStringLiteral("machine/warmupSeconds"),
+                             QStringList{QStringLiteral("1"), QStringLiteral("1"), QStringLiteral("1")});
+        seen.clear();
+        grbl.events.clear();
+        QPushButton *warm = button(QStringLiteral("Warm-up"));
+        warm->click();
+        spin(500, [&] { return grbl.count("M3") > 0; });
+        check(warm->text().startsWith(QStringLiteral("Stop")), "warm-up: the button counts down and stops it");
+        spin(8000, [&] { return grbl.count("M5") > 0; });
+        QList<QByteArray> sent;
+        for (const QByteArray &e : grbl.events)
+            if (e.startsWith("M3") || e.startsWith("M5"))
+                sent << e;
+        check(sent == QList<QByteArray>({"M3 S5000", "M3 S7500", "M3 S10000", "M5"}),
+              "warm-up: half, three quarters, full speed, then off");
+        check(seen.isEmpty(), "warm-up: Z at the top, no question");
+        wait(300);
+        check(warm->text() == QLatin1String("Warm-up"), "warm-up: the button is back when done");
+
+        // Stopped early with the same button: M5 at once.
+        grbl.events.clear();
+        QSettings().setValue(QStringLiteral("machine/warmupSeconds"),
+                             QStringList{QStringLiteral("60"), QStringLiteral("60"), QStringLiteral("60")});
+        warm->click();
+        spin(500, [&] { return grbl.count("M3") > 0; });
+        warm->click();
+        spin(1000, [&] { return grbl.count("M5") > 0; });
+        check(grbl.count("M3") == 1 && grbl.count("M5") == 1 && warm->text() == QLatin1String("Warm-up"),
+              "warm-up: pressed again, the spindle stops");
+        QSettings().remove(QStringLiteral("machine/warmupSeconds"));
+        grbl.mz = zWas;
+        answer = [](const Seen &) { return QString(); };
+        wait(500);
+    }
+
+    // Dust/Coolant by hand: M8 on, M9 off, and the button follows the A:
+    // field of the controller's report (here switched behind its back too).
+    {
+        QPushButton *cool = panel.findChild<QPushButton *>(QStringLiteral("coolant"));
+        check(cool && !cool->isChecked(), "coolant: the button is there, off");
+        grbl.events.clear();
+        cool->click();
+        wait(600);
+        check(grbl.events.contains("M8") && cool->isChecked() && grbl.flood,
+              "coolant: on sends M8 and the report keeps it on");
+        cool->click();
+        wait(600);
+        check(grbl.events.contains("M9") && !cool->isChecked() && !grbl.flood,
+              "coolant: off sends M9");
+        grbl.flood = true;
+        wait(600);
+        check(cool->isChecked() && panel.statusJson().value("coolant").toBool(),
+              "coolant: the button and the pad status follow A:F");
+        grbl.flood = false;
+        wait(600);
+        check(!cool->isChecked(), "coolant: no A: with Ov: means off");
+    }
+
     // A pad's Zero X/Y or Zero Z bumped while a question of this page is
     // open (here Run's): what the question says was worked out from the zero
     // as it was, so the press is ignored and logged. With nothing open the
@@ -709,6 +871,14 @@ int main(int argc, char **argv)
         spin(5000, [&] { return traced; });
         QObject::disconnect(c);
         check(seen.size() == 1 && grbl.count("G1 F") == 1, "hover: with the design as asked, it traces");
+        {
+            const int m5 = grbl.events.indexOf("M5");
+            int firstMove = -1;
+            for (int i = 0; i < grbl.events.size() && firstMove < 0; ++i)
+                if (grbl.events.at(i).startsWith("G0") || grbl.events.at(i).startsWith("G53"))
+                    firstMove = i;
+            check(m5 >= 0 && m5 < firstMove, "hover: M5 goes out before the first move (a hand-started spindle)");
+        }
         answer = [&](const Seen &) { return QStringLiteral("OK"); };
         grbl.wcoZ = wcoWas;
         wait(800);
@@ -766,6 +936,91 @@ int main(int argc, char **argv)
         check(finished && finishedOk, "manual zero: the job runs to the end");
         QObject::disconnect(s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
         spin(1500, [&] { return !panel.isBusy(); });
+    }
+
+    // A G-code file runs on the same path as a design: tidied, its T/M6
+    // turned into the tool-change pause, a job row per tool, and back to
+    // the design afterwards. Unsupported words are refused when loading.
+    {
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+        auto writeFile = [&](const QString &fn, const QByteArray &text) {
+            const QString path = dir + QLatin1Char('/') + fn;
+            QFile f(path);
+            f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            f.write(text);
+            return path;
+        };
+        QString why;
+        const QString inch = writeFile(QStringLiteral("inch.nc"), "G20 G90\nG0 X1 Y1\n");
+        check(!panel.loadProgramFile(inch, &why) && why.contains(QLatin1String("inches"))
+                  && why.contains(QLatin1String("Line 1")) && panel.programFile().isEmpty(),
+              "nc file: G20 refused, with the line and why");
+        const QString comp = writeFile(QStringLiteral("comp.nc"), "G21\nG41 D1\n");
+        check(!panel.loadProgramFile(comp, &why) && why.contains(QLatin1String("compensation")),
+              "nc file: cutter compensation refused");
+        const QString path = writeFile(QStringLiteral("tile1.nc"),
+            "%\n(made elsewhere)\nN10 G21 G90 G17\nT1 M6\nS12000 M3\nG0 X10 Y10 Z5\n"
+            "G1 Z-1 F300 ; plunge\nG2 X20 Y10 I5 J0 F800\nG0 Z5\nT2 M6\nM3 S10000\n"
+            "G0X30Y30\nG1Z-0.5F200\nG0Z5\nM5\nM30\n%\n");
+        check(panel.loadProgramFile(path, &why), qPrintable(QStringLiteral("nc file: loads (%1)").arg(why)));
+        bool named = false;
+        for (QLabel *l : panel.findChildren<QLabel *>())
+            named = named || l->text() == QLatin1String("File: tile1.nc");
+        check(named, "nc file: the job card names the file");
+        check(panel.statusJson().value("job").toString() == QLatin1String("tile1.nc"),
+              "nc file: the pad's status names the file");
+
+        seen.clear();
+        int prompts = 0;
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("RUN PROGRAM"))
+                return QStringLiteral("▶ Start");
+            if (v.caption == QLatin1String("TOOL CHANGE")) {
+                ++prompts;
+                return QStringLiteral("Same length: continue");
+            }
+            return QStringLiteral("OK");
+        };
+        bool finished = false, finishedOk = false;
+        QObject::connect(s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        grbl.events.clear();
+        runBtn->click();
+        check(s->isStreaming(), "nc file: started");
+        bool asked = false;
+        for (const Seen &v : seen)
+            asked = asked || (v.caption == QLatin1String("RUN PROGRAM") && v.headline.contains(QLatin1String("tile1.nc")));
+        check(asked, "nc file: Run asks about the file");
+        const QJsonArray steps = panel.statusJson().value("steps").toArray();
+        int changes = 0, cuts = 0;
+        for (const QJsonValue &v : steps) {
+            const QJsonObject o = v.toObject();
+            changes += o.value("kind").toString() == QLatin1String("change");
+            cuts += o.value("kind").toString() == QLatin1String("toolpath")
+                    && o.value("name").toString().startsWith(QLatin1String("Tool "));
+        }
+        check(changes == 2 && cuts == 2, qPrintable(QStringLiteral("nc file: a row per tool and per change in the job list (%1)")
+                                           .arg(QString::fromUtf8(QJsonDocument(steps).toJson(QJsonDocument::Compact)))));
+        spin(20000, [&] { return finished; });
+        QObject::disconnect(s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        check(finished && finishedOk, "nc file: runs to the end");
+        check(prompts == 2, "nc file: T/M6 parks for each tool change");
+        check(grbl.count("G1 Z-1 F300") == 1 && grbl.count("G2 X20 Y10 I5 J0 F800") == 1
+                  && grbl.count("G1 Z-0.5 F200") == 1 && grbl.count("M03 S12000") == 1 && grbl.count("M03 S10000") == 1,
+              "nc file: its moves are streamed, comments and spaces tidied");
+        check(grbl.count("N10") == 0 && grbl.count("G21 G90 G17") == 1 && grbl.count("%") == 0
+                  && grbl.count("M6") == 0 && grbl.count("T1") == 0 && grbl.count("M30") == 0,
+              "nc file: line numbers, %, T/M6 and M30 are not sent");
+        check(grbl.count("G0 X10 Y10 Z5") == 0, "nc file: rapids go across and down apart");
+        spin(3000, [&] { return !panel.isBusy(); });
+        check(panel.programFile() == path, "nc file: stays loaded for the next run");
+        panel.backToDesign();
+        check(panel.programFile().isEmpty() && panel.statusJson().value("job").toString().isEmpty(),
+              "nc file: back to the design");
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+        wait(500);
     }
 
     // Zero refused mid-job without the manual-zero answer, too.
@@ -1096,7 +1351,7 @@ int main(int argc, char **argv)
                         QStringLiteral("G0Z5.000"), QStringLiteral("X25.100Y24.900")});
         spin(8000, [&] { return finished; });
         check(finished && finishedOk, "resume: the job runs to the end");
-        const int measured = grbl.indexOf("G43.1");
+        const int measured = grbl.indexOf("G21 G43.1");
         const int back = grbl.indexOf("G53 G0 X-123.500 Y-234.250");
         const int program = grbl.indexOf("G90G21");
         const int retract = grbl.indexOf("G0Z5.000");
@@ -1264,7 +1519,7 @@ int main(int argc, char **argv)
         spin(1500, [&] { return grbl.count("G4P0.01") == 1; });
         grbl.hangDwell = false;              // (it would hang the G43.1 as well)
         s->applyToolLengthOffset(0);
-        check(s->isMacroRunning() && grbl.count("G43.1") == 0, "probe miss: the offset waits for the macro");
+        check(s->isMacroRunning() && grbl.count("G21 G43.1") == 0, "probe miss: the offset waits for the macro");
         grbl.alarm = true;                   // Alarm until $X: G-code is answered error:9
         grbl.send("ALARM:5\r\nok\r\n");
         spin(1500, [&] { return macroEnds > 0; });
@@ -1273,9 +1528,9 @@ int main(int argc, char **argv)
         // The panel unlocks by itself after a probe miss.
         spin(3000, [&] { return answers.size() >= 3 && s->pendingCommands() == 0; });
         wait(300);
-        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G43.1");
-        check(unlock >= 0 && tlo > unlock && grbl.count("G43.1") == 1
-                  && grbl.events.at(tlo) == "G43.1 Z0.000",
+        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G21 G43.1");
+        check(unlock >= 0 && tlo > unlock && grbl.count("G21 G43.1") == 1
+                  && grbl.events.at(tlo) == "G21 G43.1 Z0.000",
               "probe miss: the offset is written once, after the unlock, not into the alarm");
         check(grbl.count("G0X1") == 0, "probe miss: the rest of the macro is not sent");
         check(answers.size() == 3 && answers.at(1).first == QLatin1String("$X") && answers.at(1).second
@@ -1341,7 +1596,7 @@ int main(int argc, char **argv)
         spin(1500, [&] { return answers.size() == 1; });
         grbl.hangDwell = false;
         check(answers.size() == 1 && answers.at(0).first == QLatin1String("$X") && s->pendingCommands() == 1
-                  && grbl.count("G43.1") == 0,
+                  && grbl.count("G21 G43.1") == 0,
               "alarm after unlock: the offset waits for the line still out");
         grbl.alarm = true;                   // Alarm until $X: G-code is answered error:9
         grbl.send("ALARM:9\r\nok\r\n");
@@ -1349,13 +1604,13 @@ int main(int argc, char **argv)
         wait(400);
         check(answers.size() == 2 && answers.at(1).first == QLatin1String("G4P0.01") && !answers.at(1).second,
               "alarm after unlock: the alarm is that line's answer");
-        check(grbl.count("G43.1") == 0, "alarm after unlock: no offset written into the alarm");
+        check(grbl.count("G21 G43.1") == 0, "alarm after unlock: no offset written into the alarm");
         grbl.events.clear();
         check(s->sendCommand(QStringLiteral("$X")), "alarm after unlock: unlocked again");
         spin(1500, [&] { return answers.size() >= 4 && s->pendingCommands() == 0; });
         wait(300);
-        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G43.1");
-        check(unlock >= 0 && tlo > unlock && grbl.count("G43.1") == 1 && grbl.events.at(tlo) == "G43.1 Z2.500",
+        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G21 G43.1");
+        check(unlock >= 0 && tlo > unlock && grbl.count("G21 G43.1") == 1 && grbl.events.at(tlo) == "G21 G43.1 Z2.500",
               "alarm after unlock: the offset is written once, after the unlock");
         check(answers.size() == 4 && answers.at(3).first == QLatin1String("G43.1") && answers.at(3).second,
               "alarm after unlock: and answered for itself");

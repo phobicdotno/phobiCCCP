@@ -1,6 +1,9 @@
 #include "vectoractions.h"
 #include "canvas.h"
 #include "model3d.h"
+#include "nesting.h"
+#include "parametric.h"
+#include "shopdialog.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -10,6 +13,7 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineF>
+#include <QMessageBox>
 #include <QSpinBox>
 #include <QHash>
 #include <QIcon>
@@ -45,7 +49,8 @@ void refresh(Canvas *c, const QStringList &select)
 // result elements instead (so a pocket on two circles becomes a pocket on
 // their weld). Returns (before, after) pairs for the toolpaths that change.
 QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QString> &removed,
-                                                     const QVector<Element> &added)
+                                                     const QVector<Element> &added,
+                                                     const QHash<QString, QString> &resultOf = {})
 {
     QVector<QPair<Toolpath, Toolpath>> out;
     if (removed.isEmpty())
@@ -54,17 +59,22 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
         const QJsonArray refs = t.json.value("elements").toArray();
         bool hit = false;
         QJsonArray kept;
-        QSet<QString> seen;
+        QSet<QString> seen, wanted;   // wanted: results of this toolpath's own inputs
         for (const QJsonValue &v : refs) {
             const QString id = v.toObject().value("uuid").toString();
-            if (removed.contains(id)) { hit = true; continue; }
+            if (removed.contains(id)) {
+                hit = true;
+                if (resultOf.contains(id))
+                    wanted.insert(resultOf.value(id));
+                continue;
+            }
             kept.append(v);
             seen.insert(id);
         }
         if (!hit)
             continue;
         for (const Element &e : added)
-            if (!seen.contains(e.id))
+            if (!seen.contains(e.id) && (resultOf.isEmpty() || wanted.contains(e.id)))
                 kept.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
         Toolpath after = t;
         after.json.insert(QStringLiteral("elements"), kept);
@@ -79,8 +89,9 @@ class ReplaceCmd : public QUndoCommand
 {
 public:
     ReplaceCmd(Canvas *c, Document *d, const QVector<Element> &inputs,
-               const QVector<Element> &results, bool keepInputs, const QString &text)
-        : m_c(c), m_d(d), m_results(results)
+               const QVector<Element> &results, bool keepInputs, const QString &text,
+               const QHash<QString, QString> &resultOf = {})
+        : m_c(c), m_d(d), m_results(results), m_resultOf(resultOf)
     {
         setText(text);
         if (!keepInputs) {
@@ -93,7 +104,7 @@ public:
             }
             std::sort(m_removed.begin(), m_removed.end(),
                       [](const auto &a, const auto &b) { return a.first < b.first; });
-            m_tps = retargetToolpaths(d, removed, results);
+            m_tps = retargetToolpaths(d, removed, results, resultOf);
             m_removedIds = removed;
         }
         for (const Element &e : results)
@@ -117,8 +128,22 @@ public:
             els.insert(at + i, m_results.at(i));
         for (const auto &p : m_tps)
             m_d->replaceToolpath(p.second);
-        // 3D components follow their vectors like toolpaths do.
-        m_model = retargetModelVectors(*m_d, m_removedIds, m_resultIds);
+        // 3D components follow their vectors like toolpaths do: with a
+        // known result per input, each input separately, so a component
+        // gets only the results of the vectors it used.
+        if (m_resultOf.isEmpty()) {
+            m_model = retargetModelVectors(*m_d, m_removedIds, m_resultIds);
+        } else {
+            m_model.clear();
+            for (const QString &id : std::as_const(m_removedIds)) {
+                const QString res = m_resultOf.value(id);
+                const ModelVectorRefs was = retargetModelVectors(
+                    *m_d, {id}, res.isEmpty() ? QStringList() : QStringList{res});
+                for (auto w = was.constBegin(); w != was.constEnd(); ++w)
+                    if (!m_model.contains(w.key()))   // the first is the one before the edit
+                        m_model.insert(w.key(), w.value());
+            }
+        }
         refresh(m_c, m_resultIds);
     }
     void undo() override
@@ -143,6 +168,7 @@ private:
     QVector<QPair<Toolpath, Toolpath>> m_tps;
     QStringList m_resultIds;
     QSet<QString> m_removedIds;
+    QHash<QString, QString> m_resultOf;
     ModelVectorRefs m_model;
 };
 
@@ -418,6 +444,20 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
         [this] { offset(); },
         QStringLiteral("Offset the selection inward or outward by a distance  (Ctrl+Shift+O)"));
     m->addSeparator();
+    QVector<QAction *> always;   // with nothing selected they work on every vector
+    add(m, QStringLiteral("&Join and close vectors…"), QKeySequence(), always,
+        [this] { joinDialog(); },
+        QStringLiteral("Chain loose pieces whose ends meet into single paths, and close "
+                       "the ones that come round (selection, or all vectors)"));
+    add(m, QStringLiteral("Chec&k vectors"), QKeySequence(), always,
+        [this] { checkVectors(); },
+        QStringLiteral("Find open, doubled, zero-length and self-crossing vectors "
+                       "(selection, or all vectors) and select them"));
+    add(m, QStringLiteral("&Text on path…"), QKeySequence(), m_needTwo,
+        [this] { textOnPathDialog(); },
+        QStringLiteral("Lay the selected text along the selected vector, letter by letter "
+                       "(the text becomes plain vectors)"));
+    m->addSeparator();
 
     QMenu *al = m->addMenu(QStringLiteral("&Align"));
     add(al, QStringLiteral("&Left"), S(Qt::Key_Left), m_needTwo, [this] { align(vec::Align::Left); });
@@ -446,6 +486,10 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     add(ds, QStringLiteral("&Vertically"), A(Qt::Key_V), m_needThree,
         [this] { distribute(vec::Axis::Vertical); },
         QStringLiteral("Space the selected vectors' centers evenly bottom to top  (Ctrl+Alt+V)"));
+    add(m, QStringLiteral("&Nest on stock…"), QKeySequence(), m_needOne,
+        [this] { nestDialog(); },
+        QStringLiteral("Pack the selected parts close together on the stock to save "
+                       "material (shapes inside a part move with it)"));
 
     m->addSeparator();
     QAction *mirrorH = add(m, QStringLiteral("&Mirror horizontally"), A(Qt::Key_M), m_needOne,
@@ -567,13 +611,15 @@ QVector<Element> VectorActions::orderedSelection() const
 }
 
 void VectorActions::pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
-                                bool keepInputs, const QString &text)
+                                bool keepInputs, const QString &text,
+                                const QHash<QString, QString> &resultOf)
 {
     QStringList ids;
     for (const Element &e : inputs)
         ids << e.id;
     m_canvas->pushEdit(
-        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text), ids);
+        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text,
+                       resultOf), ids);
 }
 
 // The action's own result, with any warning its edit raised (constraints
@@ -1078,6 +1124,250 @@ void VectorActions::corners(vec::CornerStyle style, double size)
                    .arg(total).arg(size));
 }
 
+// ---- nest on stock ---------------------------------------------------------
+
+namespace {
+
+// The outline a part is packed by: a closed vector's biggest ring (when every
+// other ring lies inside it), anything else its box.
+QPolygonF partOutline(const Element &e)
+{
+    QPolygonF best;
+    double bestArea = -1;
+    if (vec::isClosed(e) && e.geometryType != QLatin1String("text")) {
+        const QList<QPolygonF> rings = e.painterPath.toSubpathPolygons();
+        int bestAt = -1;
+        for (int i = 0; i < rings.size(); ++i) {
+            const QRectF b = rings.at(i).boundingRect();
+            if (rings.at(i).size() >= 3 && b.width() * b.height() > bestArea) {
+                bestArea = b.width() * b.height();
+                best = rings.at(i);
+                bestAt = i;
+            }
+        }
+        QPainterPath fill;
+        fill.addPolygon(best);
+        fill.closeSubpath();
+        // The other rings by their own shape: a box test fails inside a
+        // concave outline (an L's box covers its empty corner).
+        for (int i = 0; i < rings.size(); ++i) {
+            if (i == bestAt)
+                continue;
+            QPainterPath ring;
+            ring.addPolygon(rings.at(i));
+            ring.closeSubpath();
+            if (!fill.contains(ring))
+                return QPolygonF(e.painterPath.boundingRect());   // separate pieces
+        }
+    }
+    if (best.size() < 3)
+        best = QPolygonF(e.painterPath.boundingRect());
+    return best;
+}
+
+} // namespace
+
+double VectorActions::defaultNestSpacing() const
+{
+    if (Document *d = m_canvas->document())
+        for (const Toolpath &t : d->toolpaths()) {
+            const bool outside = t.type == QLatin1String("cutout")
+                || (t.type == QLatin1String("contour")
+                    && t.json.value(QStringLiteral("ofset_dir")).toInt() > 0);
+            const double dia = t.json.value(QStringLiteral("tool")).toObject()
+                                   .value(QStringLiteral("diameter")).toDouble();
+            if (outside && dia > 0)
+                return 2 * dia;
+        }
+    return 6.35;
+}
+
+QStringList VectorActions::nestOnStock(const nest::Options &opt, int copies)
+{
+    QStringList misfits;
+    Document *d = m_canvas->document();
+    const QVector<Element> sel = orderedSelection();
+    if (!d || sel.isEmpty())
+        return misfits;
+    copies = qMax(1, copies);
+
+    // Parts: the biggest selected shapes not inside another one.
+    QVector<Element> cands;
+    for (const Element &e : sel)
+        if (!Element::isPoint(e) && !Element::isConstruction(e) && !e.painterPath.isEmpty())
+            cands.append(e);
+    auto boxArea = [](const QPolygonF &p) {
+        const QRectF b = p.boundingRect();
+        return b.width() * b.height();
+    };
+    std::stable_sort(cands.begin(), cands.end(), [&](const Element &a, const Element &b) {
+        return boxArea(partOutline(a)) > boxArea(partOutline(b));
+    });
+    struct Part { Element outer; QPolygonF outline; QPainterPath fill; QVector<Element> members;
+                  bool stays = false, stuck = false; };
+    QVector<Part> parts;
+    QSet<QString> outerIds;
+    for (const Element &e : cands) {
+        bool inside = false;
+        for (const Part &p : parts)
+            if (p.fill.contains(e.painterPath)) { inside = true; break; }   // the path, not its box: an L in an L
+        if (inside)
+            continue;
+        Part p;
+        p.outer = e;
+        p.outline = partOutline(e);
+        p.fill.addPolygon(p.outline);
+        p.fill.closeSubpath();
+        parts.append(p);
+        outerIds.insert(e.id);
+    }
+    // Everything inside a part (holes, text, other vectors) goes with the
+    // smallest part that holds it.
+    for (const Element &e : d->elements()) {
+        if (outerIds.contains(e.id) || e.painterPath.isEmpty())
+            continue;
+        int best = -1;
+        for (int i = 0; i < parts.size(); ++i)
+            if (parts.at(i).fill.contains(e.painterPath)
+                && (best < 0 || boxArea(parts.at(i).outline) < boxArea(parts.at(best).outline)))
+                best = i;
+        if (best >= 0)
+            parts[best].members.append(e);
+    }
+
+    // Other shapes on the stock stay where they are; parts keep clear of them
+    // (but a drawn outline of the sheet itself is no obstacle).
+    QSet<QString> moving = outerIds;
+    for (const Part &p : parts)
+        for (const Element &e : p.members)
+            moving.insert(e.id);
+    const QRectF stock(0, 0, d->boardWidth(), d->boardHeight());
+    // The sheet's outline: a rectangle the size of the stock, give or take a
+    // little. Anything else around the sheet is work that stays.
+    const double tol = 0.5;
+    auto isStockOutline = [&](const QPolygonF &o) {
+        const QRectF b = o.boundingRect();
+        if (std::fabs(b.left() - stock.left()) > tol || std::fabs(b.top() - stock.top()) > tol
+            || std::fabs(b.right() - stock.right()) > tol
+            || std::fabs(b.bottom() - stock.bottom()) > tol)
+            return false;
+        double area = 0;
+        for (int i = 0; i < o.size(); ++i) {
+            const QPointF &p = o.at(i), &q = o.at((i + 1) % o.size());
+            area += p.x() * q.y() - q.x() * p.y();
+        }
+        return std::fabs(std::fabs(area) / 2 - b.width() * b.height())
+            <= tol * (b.width() + b.height()) * 2;
+    };
+    QVector<QPolygonF> obstacles;
+    for (const Element &e : d->elements()) {
+        if (moving.contains(e.id) || Element::isConstruction(e) || Element::isPoint(e)
+            || e.painterPath.isEmpty() || !e.painterPath.boundingRect().intersects(stock))
+            continue;
+        const QPolygonF outline = partOutline(e);
+        if (!isStockOutline(outline))
+            obstacles.append(outline);
+    }
+    // A part locked with Fix stays put: its copies keep clear of it.
+    const QSet<QString> locked = param::lockedElements(*d);
+    for (Part &p : parts) {
+        p.stays = locked.contains(p.outer.id);
+        for (const Element &e : p.members)
+            p.stays = p.stays || locked.contains(e.id);
+        if (p.stays)
+            obstacles.append(p.outline);
+    }
+
+    QVector<QPolygonF> outlines;
+    QVector<QPair<int, int>> which;   // (part, copy)
+    QVector<nest::Placement> pl;
+    // A part that finds no room stays where it is; when that is on the stock,
+    // pack again with it as an obstacle so nothing lands on it.
+    for (;;) {
+        outlines.clear();
+        which.clear();
+        for (int c = 0; c < copies; ++c)
+            for (int i = 0; i < parts.size(); ++i) {
+                if (c == 0 && (parts.at(i).stays || parts.at(i).stuck))
+                    continue;
+                outlines.append(parts.at(i).outline);
+                which.append({i, c});
+            }
+        pl = nest::nestParts(outlines, stock, opt, obstacles);
+        bool again = false;
+        for (int k = 0; k < pl.size(); ++k) {
+            Part &p = parts[which.at(k).first];
+            if (which.at(k).second == 0 && !pl.at(k).placed
+                && p.outline.boundingRect().intersects(stock)) {
+                p.stuck = true;
+                obstacles.append(p.outline);
+                again = true;
+            }
+        }
+        if (!again)
+            break;
+    }
+
+    QVector<Element> before, after, added;
+    QHash<QString, QStringList> copiesOf;
+    int placedParts = 0, placedCopies = 0, lostCopies = 0;
+    QSet<int> missing;   // parts that did not fit at all
+    auto misfit = [&](const Part &p) {
+        misfits << tr("%1 (%2 × %3 mm)").arg(p.outer.geometryType)
+                       .arg(p.outline.boundingRect().width(), 0, 'f', 1)
+                       .arg(p.outline.boundingRect().height(), 0, 'f', 1);
+    };
+    for (int i = 0; i < parts.size(); ++i)
+        if (parts.at(i).stuck) {
+            missing.insert(i);
+            misfit(parts.at(i));
+        }
+    for (int k = 0; k < pl.size(); ++k) {
+        const Part &p = parts.at(which.at(k).first);
+        QVector<Element> group{p.outer};
+        group += p.members;
+        if (!pl.at(k).placed) {
+            if (which.at(k).second == 0) {
+                missing.insert(which.at(k).first);
+                misfit(p);
+            } else if (!missing.contains(which.at(k).first)) {
+                ++lostCopies;   // the part itself fit, this copy did not
+            }
+            continue;
+        }
+        if (which.at(k).second == 0) {
+            ++placedParts;
+            for (const Element &e : group) {
+                before.append(e);
+                after.append(vec::transformElement(e, pl.at(k).transform));
+            }
+        } else {
+            const QVector<Element> copy = vec::copyElements(group, pl.at(k).transform);
+            for (int i = 0; i < copy.size(); ++i)
+                copiesOf[group.at(i).id] << copy.at(i).id;
+            added += copy;
+            ++placedCopies;
+        }
+    }
+    if (!before.isEmpty() || !added.isEmpty()) {
+        const QString text = tr("nest %1 part(s) on stock").arg(parts.size());
+        QUndoStack *undo = m_canvas->undoStack();
+        undo->beginMacro(text);
+        if (!before.isEmpty())
+            pushReshape(before, after, text);
+        if (!added.isEmpty())
+            undo->push(new AddElementsCmd(m_canvas, d, added, extendToolpaths(d, copiesOf),
+                                          idsOf(after), text));
+        undo->endMacro();
+    }
+    if (lostCopies > 0)
+        misfits << tr("%1 more cop(ies) found no room").arg(lostCopies);
+    reportDone(tr("Nested %1 part(s) and %2 cop(ies) on the stock")
+                   .arg(placedParts)
+                   .arg(placedCopies));
+    return misfits;
+}
+
 static QDialogButtonBox *okCancel(QDialog &dlg, QFormLayout *form)
 {
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
@@ -1106,6 +1396,42 @@ void VectorActions::rotateDialog()
     okCancel(dlg, form);
     if (dlg.exec() == QDialog::Accepted)
         rotate(angle->value());
+}
+
+void VectorActions::nestDialog()
+{
+    if (orderedSelection().isEmpty())
+        return;
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Nest on stock"));
+    auto *form = new QFormLayout;
+    auto *spacing = mmBox(&dlg, 0, 1000, defaultNestSpacing());
+    spacing->setToolTip(tr("Gap between parts; twice the bit is enough for a cutout"));
+    auto *margin = mmBox(&dlg, 0, 1000, 5.0);
+    margin->setToolTip(tr("Gap kept from the edge of the stock"));
+    auto *turn = new QCheckBox(tr("Parts may be turned 90°, 180° or 270°"), &dlg);
+    turn->setChecked(true);
+    auto *copies = new QSpinBox(&dlg);
+    copies->setRange(1, 500);
+    copies->setValue(1);
+    copies->setToolTip(tr("How many of each part to put on the stock (copies are cut by "
+                          "the same toolpaths)"));
+    form->addRow(tr("Spacing"), spacing);
+    form->addRow(tr("Margin"), margin);
+    form->addRow(QString(), turn);
+    form->addRow(tr("Copies of each part"), copies);
+    okCancel(dlg, form);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    nest::Options opt;
+    opt.spacing = spacing->value();
+    opt.margin = margin->value();
+    opt.allowRotation = turn->isChecked();
+    const QStringList misfits = nestOnStock(opt, copies->value());
+    if (!misfits.isEmpty())
+        shopTell(m_canvas->window(), tr("Nest on stock"),
+                 tr("Some parts did not fit on the stock"),
+                 tr("Left where they were:\n%1").arg(misfits.join(QLatin1Char('\n'))));
 }
 
 void VectorActions::scaleDialog()
@@ -1219,6 +1545,154 @@ void VectorActions::cornersDialog(vec::CornerStyle style)
     okCancel(dlg, form);
     if (dlg.exec() == QDialog::Accepted)
         corners(style, size->value());
+}
+
+// ---- join and close, check ---------------------------------------------------
+
+// The selection, or every vector of the document when nothing is selected.
+static QVector<Element> selectionOrAll(const QVector<Element> &sel, Document *d)
+{
+    if (!sel.isEmpty() || !d)
+        return sel;
+    return d->elements();
+}
+
+void VectorActions::joinVectors(double gap)
+{
+    const QVector<Element> els = selectionOrAll(orderedSelection(), m_canvas->document());
+    if (els.isEmpty())
+        return;
+    const vec::JoinResult r = vec::joinElements(els, gap);
+    if (r.results.isEmpty()) {
+        emit m_canvas->statusHint(tr("Join: no open ends within %1 mm of each other").arg(gap));
+        return;
+    }
+    pushReplace(r.consumed, r.results, false,
+                tr("join %1 vector(s) into %2").arg(r.consumed.size()).arg(r.results.size()),
+                r.resultOf);
+    reportDone(tr("Joined %1 vector(s) into %2 path(s): %3 joint(s), %4 closed")
+                   .arg(r.consumed.size()).arg(r.results.size()).arg(r.joints).arg(r.closed));
+}
+
+void VectorActions::joinDialog()
+{
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Join and close vectors"));
+    auto *form = new QFormLayout;
+    auto *gap = mmBox(&dlg, 0.0, 100, 0.1);
+    gap->setToolTip(tr("Ends closer than this are joined"));
+    form->addRow(tr("Gap"), gap);
+    auto *note = new QLabel(orderedSelection().isEmpty()
+                                ? tr("Joins the open vectors of the whole drawing whose ends meet, "
+                                     "and closes the ones that come round.")
+                                : tr("Joins the selected open vectors whose ends meet, "
+                                     "and closes the ones that come round."), &dlg);
+    note->setWordWrap(true);
+    form->addRow(note);
+    okCancel(dlg, form);
+    if (dlg.exec() == QDialog::Accepted)
+        joinVectors(gap->value());
+}
+
+void VectorActions::checkVectors()
+{
+    const bool all = orderedSelection().isEmpty();
+    const QVector<Element> els = selectionOrAll(orderedSelection(), m_canvas->document());
+    if (els.isEmpty())
+        return;
+    const vec::VectorCheck c = vec::checkElements(els);
+    const QStringList ids = c.allIds();
+    const QString scope = all ? tr("%1 vector(s) in the drawing").arg(els.size())
+                              : tr("%1 selected vector(s)").arg(els.size());
+    QString text;
+    if (ids.isEmpty()) {
+        text = tr("Checked %1: no problems found.").arg(scope);
+    } else {
+        text = tr("Checked %1.\n\n"
+                  "Open (not closed): %2\n"
+                  "Exact duplicates: %3\n"
+                  "Zero length: %4\n"
+                  "Crossing themselves: %5\n\n"
+                  "The %6 problem vector(s) are now selected. Open ones can often be fixed "
+                  "with Join and close vectors; delete duplicates and zero-length pieces.")
+                   .arg(scope).arg(c.open.size()).arg(c.duplicates.size())
+                   .arg(c.zeroLength.size()).arg(c.selfCrossing.size()).arg(ids.size());
+        m_canvas->selectIds(ids);
+    }
+    if (!c.notChecked.isEmpty())
+        text += tr("\n\n%1 outline(s) have too many points to check for crossing themselves.")
+                    .arg(c.notChecked.size());
+    QMessageBox::information(m_canvas->window(), tr("Check vectors"), text);
+}
+
+// ---- text on path --------------------------------------------------------------
+
+// The one text and the one vector of the selection, or false.
+static bool textAndPath(const QVector<Element> &sel, Element *text, Element *path)
+{
+    int texts = 0, others = 0;
+    for (const Element &e : sel) {
+        if (e.geometryType == QLatin1String("text")) { *text = e; ++texts; }
+        else { *path = e; ++others; }
+    }
+    return texts == 1 && others == 1;
+}
+
+void VectorActions::textOnPath(const vec::TextOnPathOptions &opt)
+{
+    Element text, path;
+    if (!textAndPath(orderedSelection(), &text, &path)) {
+        emit m_canvas->statusHint(tr("Text on path: select one text and one vector"));
+        return;
+    }
+    const QVector<Element> results = vec::textOnPathElements(text, path, opt);
+    if (results.isEmpty()) {
+        emit m_canvas->statusHint(tr("Text on path: nothing to lay out (empty text or no path length)"));
+        return;
+    }
+    pushReplace({text}, results, false, tr("text on path"));
+    reportDone(tr("Text on path: %1 vector(s)").arg(results.size()));
+}
+
+void VectorActions::textOnPathDialog()
+{
+    Element text, path;
+    if (!textAndPath(orderedSelection(), &text, &path)) {
+        QMessageBox::information(m_canvas->window(), tr("Text on path"),
+                                 tr("Select one text and one vector (open or closed), then try again."));
+        return;
+    }
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Text on path"));
+    auto *form = new QFormLayout;
+    auto *offset = mmBox(&dlg, -1000, 1000, 0.0);
+    offset->setToolTip(tr("Lifts the letters off the line: positive above it, negative below"));
+    form->addRow(tr("Distance from path"), offset);
+    auto *centre = new QCheckBox(tr("Centre the text on the path"), &dlg);
+    centre->setChecked(true);
+    form->addRow(QString(), centre);
+    auto *start = new QDoubleSpinBox(&dlg);
+    start->setRange(0, 100);
+    start->setDecimals(1);
+    start->setSuffix(QStringLiteral(" %"));
+    start->setToolTip(tr("Where the first letter starts, as a share of the path's length"));
+    start->setEnabled(false);
+    connect(centre, &QCheckBox::toggled, start, [start](bool on) { start->setEnabled(!on); });
+    form->addRow(tr("Start along path"), start);
+    auto *flip = new QCheckBox(tr("Flip to the other side (runs the other way)"), &dlg);
+    form->addRow(QString(), flip);
+    auto *note = new QLabel(tr("The text becomes plain vectors (Carbide Create has no text on a "
+                               "path); Undo brings the text back."), &dlg);
+    note->setWordWrap(true);
+    form->addRow(note);
+    okCancel(dlg, form);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    vec::TextOnPathOptions opt;
+    opt.offset = offset->value();
+    opt.startPercent = centre->isChecked() ? -1 : start->value();
+    opt.flip = flip->isChecked();
+    textOnPath(opt);
 }
 
 } // namespace c2d

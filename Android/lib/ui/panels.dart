@@ -12,6 +12,7 @@ import '../model.dart';
 import 'canvas.dart';
 import 'icons.dart';
 import 'theme.dart';
+import 'toolpath_settings.dart';
 import 'widgets.dart';
 
 // ---- Design: Properties ------------------------------------------------------
@@ -338,7 +339,10 @@ String openPathsWords(int n) =>
 double newToolpathDepth(String type, double thickness) =>
     type == 'drill' ? thickness + 0.5 : type == 'engrave' ? 0.5 : 2.54;
 
-String tpTypeLabel(String t) => const {'profile': 'Contour', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ?? t;
+String tpTypeLabel(String t) =>
+    const {'profile': 'Contour', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ??
+    ToolpathSpec.desktopTypeLabels[t] ??
+    t;
 
 class ToolpathsPanel extends StatelessWidget {
   final Design design;
@@ -359,6 +363,11 @@ class ToolpathsPanel extends StatelessWidget {
   /// A shape's tile: select that shape and bring it to the middle.
   final ValueChanged<String>? onShowShape;
 
+  /// The computer a Preview would be drawn on, null when none answers.
+  final String? previewOn;
+  final VoidCallback? onPreview;
+  final bool previewBusy;
+
   const ToolpathsPanel({
     super.key,
     required this.design,
@@ -375,6 +384,9 @@ class ToolpathsPanel extends StatelessWidget {
     required this.onMove,
     required this.onPickTool,
     this.onShowShape,
+    this.previewOn,
+    this.onPreview,
+    this.previewBusy = false,
   });
 
   Widget _txt(String t, VoidCallback? onTap) => InkWell(
@@ -474,6 +486,12 @@ class ToolpathsPanel extends StatelessWidget {
             )),
           ),
         ),
+        if (previewOn != null && tps.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+            child: PushBtn(previewBusy ? 'Drawing on $previewOn…' : 'Preview on $previewOn',
+                height: 46, fontSize: 15, onTap: previewBusy ? null : onPreview),
+          ),
       ],
     );
   }
@@ -709,6 +727,8 @@ class ToolpathsPanel extends StatelessWidget {
               ],
             ]),
           ),
+        // Everything else the computer's form has for this toolpath.
+        ToolpathSettings(t, (n) => onChange(i, n)),
       ],
     );
   }

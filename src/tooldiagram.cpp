@@ -256,6 +256,8 @@ LibraryTool toolpathBit(const QJsonObject &tool)
     lt.kind = ty == 1 ? QStringLiteral("ball")
             : (ty == 2 || lt.angle > 0) ? QStringLiteral("vbit") : QStringLiteral("endmill");
     lt.name = tool.value(QStringLiteral("name")).toString();
+    lt.model = tool.value(QStringLiteral("model")).toString();
+    lt.number = tool.value(QStringLiteral("number")).toInt();
     return lt;
 }
 
@@ -366,6 +368,19 @@ QIcon toolpathIcon(const QString &type)
         p.drawRoundedRect(QRectF(4, 9, 18, 8), 4, 4);
         p.setPen(QPen(amber, 1.4, Qt::DashLine, Qt::RoundCap));
         p.drawLine(QPointF(8, 13), QPointF(18, 13));
+    } else if (type == QLatin1String("fluting_toolpath")) {
+        // Two flutes, narrow at the ends and full width between the ramps.
+        p.setPen(cut);
+        for (const double y : {9.0, 17.0}) {
+            QPainterPath f(QPointF(4, y));
+            f.lineTo(QPointF(9, y - 2));
+            f.lineTo(QPointF(17, y - 2));
+            f.lineTo(QPointF(22, y));
+            f.lineTo(QPointF(17, y + 2));
+            f.lineTo(QPointF(9, y + 2));
+            f.closeSubpath();
+            p.drawPath(f);
+        }
     } else if (type == QLatin1String("circular_toolpath")) {
         p.setPen(cut);
         p.drawEllipse(QPointF(13, 13), 8, 8);

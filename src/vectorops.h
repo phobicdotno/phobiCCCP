@@ -1,5 +1,6 @@
 #pragma once
 #include "element.h"
+#include <QHash>
 #include <QJsonObject>
 #include <QPainterPath>
 #include <QPolygonF>
@@ -156,6 +157,76 @@ PathModel cornerModel(const PathModel &m, CornerStyle style, double size, int *c
 // Element form: the result is a `path` with the same id (unchanged, and
 // `corners` 0, when it has no corners — circles and text never do).
 Element cornerElement(const Element &e, CornerStyle style, double size, int *corners = nullptr);
+
+// ---- join / check (pieces of imported DXF/SVG) ------------------------------
+// Join and close: the open subpaths of the `path` elements in `els` are
+// chained end to end wherever two ends lie within `gap` mm of each other
+// (pieces are reversed as needed, bezier segments are kept as they are), and
+// a chain whose two ends meet within `gap` is closed. The second end of a
+// joint is snapped onto the first. Elements that took part in a joint or a
+// close are `consumed`; each group of them that ended up linked becomes one
+// `results` path (its closed subpaths and untouched open ones kept too). A
+// single element keeps its id; a joined group gets a fresh one with the
+// first element's group. Points and construction geometry are left alone.
+struct JoinResult {
+    QVector<Element> consumed;
+    QVector<Element> results;
+    int joints = 0;   // piece ends welded together
+    int closed = 0;   // chains (or single vectors) closed
+    QHash<QString, QString> resultOf;   // consumed id -> id of the result it went into
+};
+JoinResult joinElements(const QVector<Element> &els, double gap);
+
+// Check vectors: ids of the problem shapes among `els`, by kind. `open`:
+// paths with an open end (construction lines are not counted); `duplicates`:
+// exact copies of an earlier element (the later copy is listed);
+// `zeroLength`: shapes with no length at all; `selfCrossing`: closed path
+// outlines that cross themselves (a figure 8), which pockets and profiles
+// read wrongly. `notChecked`: outlines with too many points to check for
+// crossing (not a problem, so not in allIds()).
+struct VectorCheck {
+    QStringList open, duplicates, zeroLength, selfCrossing, notChecked;
+    QStringList allIds() const;   // every listed id once, in order
+};
+VectorCheck checkElements(const QVector<Element> &els);
+
+// ---- text on path -------------------------------------------------------------
+// Lays a text element's letters along the first subpath of a vector (open or
+// closed, lines or beziers, sampled by arc length): each letter's baseline
+// midpoint sits on the path at its straight-layout distance from the start
+// and the letter turns with the path's direction there. `offset` mm moves
+// the baseline off the path (positive: to the letters' top side, negative:
+// under them). `startPercent` puts the first letter's left edge that far
+// along the path; below 0 centres the text on the path's length. `flip`
+// runs the text the other way round the path, on its other side. Letters
+// past an open path's ends carry on along the end direction; on a closed
+// path they wrap round.
+struct TextOnPathOptions {
+    double offset = 0;
+    double startPercent = -1;
+    bool flip = false;
+    int closed = -1;   // the guide's first subpath: 0 open, 1 closed, -1 judge by its ends
+};
+// Where each glyph of Element::textGlyphs landed: `arcPos` is the distance
+// along the path of its cluster's left edge, `at` the point that left edge's
+// baseline went to (offset applied), `angleDeg` its turn (counter-clockwise,
+// Y-up).
+struct GlyphPlace {
+    double arcPos = 0;
+    QPointF at;
+    double angleDeg = 0;
+};
+// The placed outlines (absolute mm), and the per-glyph placement. Empty
+// when the text has no glyphs or the path has no length.
+QPainterPath textOnPathOutline(const QJsonObject &textObj, const QPainterPath &path,
+                               const TextOnPathOptions &opt,
+                               QVector<GlyphPlace> *places = nullptr);
+// The text element as plain closed vectors along `path` (one per glyph
+// contour, the first keeping the text's id, all in its group and layer),
+// like Convert to path. Carbide Create has no text on a path, so the
+// result is ordinary geometry that opens anywhere.
+QVector<Element> textOnPathElements(const Element &text, const Element &path,
+                                    const TextOnPathOptions &opt);
 
 } // namespace vec
 } // namespace c2d

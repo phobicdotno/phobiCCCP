@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QElapsedTimer>
+#include <QPainter>
 #include <QThread>
 #include <QtMath>
 #include <algorithm>
@@ -531,12 +532,154 @@ const QColor kUncut(0xd9, 0xc5, 0x9e);     // light stock
 const QColor kDeep(0x5c, 0x41, 0x24);      // full-depth floor
 const QColor kThrough(0x2b, 0x3d, 0x5a);   // slate: nothing left, looking at the spoilboard
 const QColor kGouge(0xe0, 0x2a, 0x2a);     // red: cut below the part
+const QColor kLeftover(0xff, 0x8c, 0x1a);  // orange: still above the intended floor
 }
 
 QColor simColorUncut()   { return kUncut; }
 QColor simColorDeep()    { return kDeep; }
 QColor simColorThrough() { return kThrough; }
 QColor simColorGouge()   { return kGouge; }
+QColor simColorLeftover() { return kLeftover; }
+
+void paintLeftovers(QImage &img, const QVector<quint8> &mask, const QVector<quint8> &gouges)
+{
+    const int w = img.width(), h = img.height();
+    if (img.isNull() || mask.size() != qsizetype(w) * h)
+        return;
+    const bool haveGouges = gouges.size() == mask.size();
+    if (img.format() != QImage::Format_RGB32 && img.format() != QImage::Format_ARGB32)
+        img = img.convertToFormat(QImage::Format_RGB32);
+    for (int iy = 0; iy < h; ++iy) {
+        QRgb *out = reinterpret_cast<QRgb *>(img.scanLine(h - 1 - iy));
+        const quint8 *m = mask.constData() + qsizetype(iy) * w;
+        for (int ix = 0; ix < w; ++ix) {
+            if (!m[ix] || (haveGouges && gouges.at(qsizetype(iy) * w + ix)))
+                continue;
+            // Mostly orange, a little of the shading kept so the shape reads.
+            const QRgb c = out[ix];
+            out[ix] = qRgb((qRed(c) + 3 * kLeftover.red()) / 4,
+                           (qGreen(c) + 3 * kLeftover.green()) / 4,
+                           (qBlue(c) + 3 * kLeftover.blue()) / 4);
+        }
+    }
+}
+
+LeftoverResult findLeftovers(const HeightMap &map, const QVector<IntendedFloor> &floors,
+                             double tol, double minArea)
+{
+    LeftoverResult res;
+    if (map.isNull() || floors.isEmpty())
+        return res;
+    const int w = map.width(), h = map.height();
+    const double cell = map.cellSize();
+    // Intended floor per cell: the deepest region covering the cell centre.
+    // Each region is rasterised onto the grid (one pixel per cell, Y up as in
+    // the map) and eroded by one cell, so cells the wall only clips are not
+    // judged.
+    const float none = std::numeric_limits<float>::infinity();
+    QVector<float> want(qsizetype(w) * h, none);
+    QTransform toGrid;
+    toGrid.scale(1.0 / cell, 1.0 / cell);
+    toGrid.translate(-map.originX(), -map.originY());
+    for (const IntendedFloor &f : floors) {
+        if (f.region.isEmpty())
+            continue;
+        QImage m(w, h, QImage::Format_Grayscale8);
+        m.fill(0);
+        {
+            QPainter p(&m);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            p.setPen(Qt::NoPen);
+            p.setBrush(Qt::white);
+            p.setTransform(toGrid);
+            QPainterPath r = f.region;
+            r.setFillRule(Qt::OddEvenFill);
+            p.drawPath(r);
+        }
+        auto in = [&](int x, int y) {
+            return x >= 0 && y >= 0 && x < w && y < h && m.constScanLine(y)[x] != 0;
+        };
+        const float z = float(f.z);
+        for (int iy = 0; iy < h; ++iy) {
+            for (int ix = 0; ix < w; ++ix) {
+                if (!in(ix, iy) || !in(ix - 1, iy) || !in(ix + 1, iy) || !in(ix, iy - 1)
+                    || !in(ix, iy + 1))
+                    continue;
+                float &c = want[qsizetype(iy) * w + ix];
+                c = std::min(c, z);
+            }
+        }
+    }
+    QVector<quint8> mask(qsizetype(w) * h, 0);
+    for (int iy = 0; iy < h; ++iy) {
+        const float *row = map.row(iy);
+        for (int ix = 0; ix < w; ++ix) {
+            const float z = want[qsizetype(iy) * w + ix];
+            if (z != none && row[ix] > z + tol)
+                mask[qsizetype(iy) * w + ix] = 1;
+        }
+    }
+    // 8-connected areas.
+    const double cellArea = cell * cell;
+    QVector<int> stack;
+    for (int start = 0; start < mask.size(); ++start) {
+        if (mask[start] != 1)
+            continue;
+        LeftoverArea a;
+        int n = 0, x0 = w, x1 = -1, y0 = h, y1 = -1;
+        QVector<int> members;
+        stack.clear();
+        stack.append(start);
+        mask[start] = 2;
+        while (!stack.isEmpty()) {
+            const int i = stack.takeLast();
+            members.append(i);
+            const int x = i % w, y = i / w;
+            ++n;
+            x0 = std::min(x0, x); x1 = std::max(x1, x);
+            y0 = std::min(y0, y); y1 = std::max(y1, y);
+            a.height = std::max(a.height, double(map.at(x, y) - want[i]));
+            for (int dy = -1; dy <= 1; ++dy)
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int nx = x + dx, ny = y + dy;
+                    if (nx < 0 || ny < 0 || nx >= w || ny >= h)
+                        continue;
+                    const int j = ny * w + nx;
+                    if (mask[j] == 1) {
+                        mask[j] = 2;
+                        stack.append(j);
+                    }
+                }
+        }
+        a.area = n * cellArea;
+        if (a.area < minArea) {
+            for (int i : members)
+                mask[i] = 3;   // noise: cleared below
+            continue;
+        }
+        a.box = QRectF(map.originX() + x0 * cell, map.originY() + y0 * cell,
+                       (x1 - x0 + 1) * cell, (y1 - y0 + 1) * cell);
+        res.areas.append(a);
+        res.totalArea += a.area;
+    }
+    for (quint8 &v : mask)
+        v = v == 2 ? 1 : 0;
+    std::sort(res.areas.begin(), res.areas.end(),
+              [](const LeftoverArea &a, const LeftoverArea &b) { return a.area > b.area; });
+    if (!res.areas.isEmpty())
+        res.mask = mask;
+    return res;
+}
+
+QString leftoverSummary(const LeftoverResult &r)
+{
+    if (r.areas.isEmpty())
+        return QStringLiteral("Nothing left uncut in the pockets");
+    const QRectF &b = r.areas.first().box;
+    return QStringLiteral("Left uncut: %1 area%2, largest ≈ %3 × %4 mm — try a smaller bit or rest machining")
+        .arg(r.areas.size()).arg(r.areas.size() == 1 ? QString() : QStringLiteral("s"))
+        .arg(b.width(), 0, 'f', 1).arg(b.height(), 0, 'f', 1);
+}
 
 QImage renderHeightMap(const HeightMap &map, double stockT, const QVector<quint8> &gouges)
 {

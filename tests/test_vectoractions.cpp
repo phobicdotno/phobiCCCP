@@ -1099,6 +1099,248 @@ int main(int argc, char *argv[])
         canvas->setDocument(&doc);
     }
 
+    // --- join and close: four loose lines become one closed path, one step ---------
+    {
+        const QVector<Element> lines = {
+            Element::makePath({{100, 0}, {120, 0}}, false, layer),
+            Element::makePath({{120.05, 0}, {120, 10}}, false, layer),
+            Element::makePath({{100, 10}, {120, 10.05}}, false, layer),   // reversed
+            Element::makePath({{100, 9.95}, {100.04, 0.03}}, false, layer),
+        };
+        for (const Element &e : lines)
+            doc.addElement(e);
+        const int before = doc.elements().size();
+        const int at = undo->index();
+        canvas->selectIds({lines[0].id, lines[1].id, lines[2].id, lines[3].id});
+        va.joinVectors(0.1);
+        check(undo->index() == at + 1, "join is one undo step");
+        check(doc.elements().size() == before - 3, "join: four lines become one path");
+        check(doc.elementById(lines[0].id) == nullptr, "join: the pieces are gone");
+        bool closedOne = false;
+        for (const Element &e : doc.elements())
+            closedOne = closedOne || (e.geometryType == "path" && vec::isClosed(e)
+                                      && e.painterPath.boundingRect().left() > 99);
+        check(closedOne, "join: the result is closed");
+        undo->undo();
+        check(doc.elements().size() == before && doc.elementById(lines[2].id),
+              "undo join brings the pieces back");
+        canvas->selectIds({});
+        va.joinVectors(0.01);   // nothing selected: all vectors; the 0.05 gap stays open
+        check(undo->index() == at, "join: too small a gap changes nothing");
+    }
+
+    // --- join: a toolpath gets only the result its own pieces went into ---------
+    {
+        Document jd;
+        const Element a = Element::makePath({{0, 0}, {10, 0}}, false, layer);
+        const Element b = Element::makePath({{10, 0}, {10, 10}}, false, layer);
+        const Element c = Element::makePath({{50, 0}, {60, 0}}, false, layer);
+        const Element dd = Element::makePath({{60, 0}, {60, 10}}, false, layer);
+        for (const Element &e : {a, b, c, dd})
+            jd.addElement(e);
+        Toolpath tp;
+        tp.uuid = QStringLiteral("{tp-join}");
+        tp.type = QStringLiteral("profile");
+        tp.json.insert("elements", QJsonArray{QJsonObject{{"uuid", a.id}}});
+        jd.addToolpath(tp);
+        canvas->setDocument(&jd);
+        canvas->selectIds({a.id, b.id, c.id, dd.id});
+        va.joinVectors(0.1);
+        check(jd.elements().size() == 2, "join: two pairs become two paths");
+        check(refs(jd, tp.uuid).size() == 1, "join: the toolpath gets only its own joined path");
+        canvas->setDocument(&doc);
+    }
+    // --- join: a 3D component gets only the result its own pieces went into ------
+    {
+        Document jd;
+        const Element a = Element::makePath({{0, 0}, {10, 0}}, false, layer);
+        const Element b = Element::makePath({{10, 0}, {10, 10}}, false, layer);
+        const Element c = Element::makePath({{50, 0}, {60, 0}}, false, layer);
+        const Element dd = Element::makePath({{60, 0}, {60, 10}}, false, layer);
+        for (const Element &e : {a, b, c, dd})
+            jd.addElement(e);
+        ModelStore store;
+        store.attach(&jd);
+        ModelComponent relief;
+        relief.id = Model3D::newId();
+        relief.vectorIds = {a.id};
+        store.model.components = {relief};
+        canvas->setDocument(&jd);
+        canvas->selectIds({a.id, b.id, c.id, dd.id});
+        va.joinVectors(0.1);
+        const QStringList got = store.model.components.at(0).vectorIds;
+        const Element *joined = got.size() == 1 ? jd.elementById(got.first()) : nullptr;
+        check(joined && joined->painterPath.boundingRect().right() < 20,
+              "join: the 3D component gets only its own joined path");
+        canvas->undoStack()->undo();
+        check(store.model.components.at(0).vectorIds == QStringList({a.id}),
+              "undo join gives the component its piece back");
+        canvas->setDocument(&doc);
+    }
+
+    // --- text on path: one undo step, the text becomes vectors, the path stays ---
+    {
+        const Element t = Element::makeText(QStringLiteral("AB"), {200, 200}, 8, QStringLiteral("Helvetica"), layer);
+        const Element arc = Element::makeCircle({250, 250}, 40, layer);
+        doc.addElement(t);
+        doc.addElement(arc);
+        canvas->rebuild();
+        const int before = doc.elements().size();
+        const int at = undo->index();
+        canvas->selectIds({t.id});
+        vec::TextOnPathOptions opt;
+        va.textOnPath(opt);
+        check(undo->index() == at, "text on path needs a text and a vector");
+        canvas->selectIds({arc.id, t.id});
+        va.textOnPath(opt);
+        check(undo->index() == at + 1, "text on path is one undo step");
+        check(doc.elementById(arc.id) != nullptr, "text on path keeps the path");
+        const Element *first = doc.elementById(t.id);
+        check(first && first->geometryType == QLatin1String("path"), "the text became paths");
+        check(doc.elements().size() > before, "every glyph contour is a vector");
+        undo->undo();
+        check(doc.elements().size() == before && doc.elementById(t.id)
+                  && doc.elementById(t.id)->geometryType == QLatin1String("text"),
+              "undo brings the text back");
+    }
+
+    // --- nest on stock: holes and text ride with their part, copies join toolpaths
+    {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        const Element plate = Element::makeRectangle({220, 215}, 40, 30, layer);
+        const Element bore = Element::makeCircle({215, 215}, 3, layer);
+        const Element big = Element::makeRectangle({400, 400}, 150, 20, layer);
+        nd.addElement(plate);
+        nd.addElement(bore);
+        nd.addElement(big);
+        Toolpath cut;
+        cut.uuid = QStringLiteral("{tp-cut}");
+        cut.type = QStringLiteral("cutout");
+        cut.json.insert("tool", QJsonObject{{"diameter", 3.0}});
+        cut.json.insert("elements", QJsonArray{QJsonObject{{"uuid", plate.id}}});
+        nd.addToolpath(cut);
+        canvas->setDocument(&nd);
+        check(std::fabs(va.defaultNestSpacing() - 6.0) < 1e-9,
+              "nest spacing defaults to twice the cutout bit");
+        const int at = undo->index();
+        canvas->selectIds({plate.id, big.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        const QStringList misfits = va.nestOnStock(opt, 2);
+        check(misfits.size() == 1, "the part bigger than the stock is reported");
+        check(undo->index() == at + 1, "nest is one undo step");
+        const QRectF pb = nd.elementById(plate.id)->painterPath.boundingRect();
+        const QRectF bb = nd.elementById(bore.id)->painterPath.boundingRect();
+        check(QRectF(5, 5, 90, 90).contains(pb), "the plate is nested inside the margin");
+        check(pb.contains(bb), "the hole moved with its plate");
+        check(nd.elementById(big.id)->painterPath.boundingRect().center() == QPointF(400, 400),
+              "the part that does not fit stays where it was");
+        check(nd.elements().size() == 5, "one copy of plate and hole added");
+        check(refs(nd, cut.uuid).size() == 2, "the copy is cut by the same toolpath");
+        undo->undo();
+        check(nd.elements().size() == 3
+                  && nd.elementById(plate.id)->painterPath.boundingRect().center()
+                         == QPointF(220, 215)
+                  && refs(nd, cut.uuid).size() == 1,
+              "undo puts everything back");
+    }
+    // --- nest on stock: a part that finds no room but lies on the stock is kept clear of
+    {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        const Element wide = Element::makeRectangle({50, 15}, 150, 20, layer);
+        const Element sq = Element::makeRectangle({300, 300}, 10, 10, layer);
+        nd.addElement(wide);
+        nd.addElement(sq);
+        canvas->setDocument(&nd);
+        canvas->selectIds({wide.id, sq.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        const QStringList misfits = va.nestOnStock(opt, 1);
+        const QRectF wb = nd.elementById(wide.id)->painterPath.boundingRect();
+        const QRectF sb = nd.elementById(sq.id)->painterPath.boundingRect();
+        check(misfits.size() == 1 && wb.center() == QPointF(50, 15), "the wide part stays and is reported");
+        check(QRectF(5, 5, 90, 90).contains(sb) && !sb.intersects(wb.adjusted(-5, -5, 5, 5)),
+              "the square is nested clear of the part that stayed");
+    }
+
+    // --- nest on stock: a shape in the empty corner of an L is not part of it ------
+    {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        const Element ell = Element::makePath({{200, 200}, {240, 200}, {240, 210}, {210, 210},
+                                               {210, 240}, {200, 240}}, true, layer);
+        const Element dot = Element::makeCircle({230, 230}, 3, layer);
+        nd.addElement(ell);
+        nd.addElement(dot);
+        canvas->setDocument(&nd);
+        canvas->selectIds({ell.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        va.nestOnStock(opt, 1);
+        check(QRectF(5, 5, 90, 90).contains(nd.elementById(ell.id)->painterPath.boundingRect()),
+              "the L is nested");
+        check(nd.elementById(dot.id)->painterPath.boundingRect().center() == QPointF(230, 230),
+              "a shape in the L's empty corner stays where it was");
+    }
+    // --- nest on stock: an L inside an L rides along, though its box crosses the corner
+    for (int sel = 0; sel < 2; ++sel) {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        const Element ell = Element::makePath({{200, 200}, {240, 200}, {240, 210}, {210, 210},
+                                               {210, 240}, {200, 240}}, true, layer);
+        const Element in = Element::makePath({{202, 202}, {238, 202}, {238, 208}, {208, 208},
+                                              {208, 238}, {202, 238}}, true, layer);
+        nd.addElement(ell);
+        nd.addElement(in);
+        canvas->setDocument(&nd);
+        canvas->selectIds(sel ? QStringList{ell.id, in.id} : QStringList{ell.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        va.nestOnStock(opt, 1);
+        const QRectF eb = nd.elementById(ell.id)->painterPath.boundingRect();
+        const QRectF ib = nd.elementById(in.id)->painterPath.boundingRect();
+        check(QRectF(5, 5, 90, 90).contains(eb), "the outer L is nested");
+        check(std::fabs(ib.width() - 36) < 1e-6 && eb.contains(ib)
+                  && nd.elementById(ell.id)->painterPath.contains(nd.elementById(in.id)->painterPath),
+              sel ? "a selected L inside the L moves with it" : "an L inside the L moves with it");
+        check(nd.elements().size() == 2, "the inner L is no part of its own");
+    }
+    // --- nest on stock: only the stock's own outline is no obstacle ---------------
+    for (int k = 0; k < 2; ++k) {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        // k 0: the sheet's outline; k 1: a 90 x 90 frame of work round the inset sheet
+        const Element frame = k == 0 ? Element::makeRectangle({50, 50}, 100, 100, layer)
+                                     : Element::makeRectangle({50, 50}, 90, 90, layer);
+        const Element sq = Element::makeRectangle({300, 300}, 10, 10, layer);
+        nd.addElement(frame);
+        nd.addElement(sq);
+        canvas->setDocument(&nd);
+        canvas->selectIds({sq.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        const QStringList misfits = va.nestOnStock(opt, 1);
+        const QRectF sb = nd.elementById(sq.id)->painterPath.boundingRect();
+        if (k == 0)
+            check(misfits.isEmpty() && QRectF(5, 5, 90, 90).contains(sb),
+                  "a drawn outline of the stock is no obstacle");
+        else
+            check(misfits.size() == 1 && sb.center() == QPointF(300, 300),
+                  "a shape round the sheet that is not its outline stays an obstacle");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

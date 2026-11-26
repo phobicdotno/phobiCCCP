@@ -256,6 +256,59 @@ static void testLayersAndGroupsLost(const QString &dir)
                       "and come back to the pad");
     }
 
+    // Corner relief: a key the pad keeps without editing it; it reaches the
+    // contour and pocket, comes back, and "off" set here loses nothing.
+    {
+        QJsonObject cd = d;
+        QJsonArray tps = cd.value("toolpaths").toArray();
+        for (int i = 0; i < tps.size(); ++i) {
+            QJsonObject tp = tps.at(i).toObject();
+            const QString ty = tp.value("type").toString();
+            if (ty == QLatin1String("profile") || ty == QLatin1String("pocket")) {
+                tp.insert("corners", ty == QLatin1String("pocket") ? "tbone" : "dogbone");
+                tps[i] = tp;
+            }
+        }
+        cd.insert("toolpaths", tps);
+        const QString cpath = QDir(dir).filePath("corners.c2d");
+        check(padlink::buildDocument(cd, cpath, nullptr, &err), "corners fixture builds");
+        Document cdoc;
+        cdoc.load(cpath, &err);
+        int seen = 0;
+        for (const Toolpath &t : cdoc.toolpaths())
+            if (t.type == QLatin1String("contour") || t.type == QLatin1String("pocket_toolpath")) {
+                ++seen;
+                check(t.json.value("corners").toString()
+                          == (t.type == QLatin1String("contour") ? QLatin1String("dogbone") : QLatin1String("tbone")),
+                      "pad corners reach the toolpath");
+            }
+        check(seen > 0, "the corners fixture has a contour or pocket");
+        lost.clear();
+        const QJsonObject cback = padlink::designFromDocument(cpath, cd, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("corners are not lost (%1)").arg(lost.join(", "))));
+        for (const QJsonValue &v : cback.value("toolpaths").toArray()) {
+            const QString ty = v.toObject().value("type").toString();
+            if (ty == QLatin1String("profile") || ty == QLatin1String("pocket"))
+                check(!v.toObject().value("corners").toString().isEmpty(), "and come back to the pad");
+        }
+        // "off", as the computer's form writes it, is no setting to lose.
+        const QString opath = QDir(dir).filePath("cornersoff.c2d");
+        check(padlink::buildDocument(d, opath, nullptr, &err), "corners-off fixture builds");
+        Document odoc;
+        odoc.load(opath, &err);
+        for (const Toolpath &t : odoc.toolpaths()) {
+            Toolpath u = t;
+            u.json.insert("corners", "off");
+            odoc.replaceToolpath(u);
+        }
+        odoc.save(opath, &err);
+        lost.clear();
+        const QJsonObject oback = padlink::designFromDocument(opath, d, &lost, &err);
+        check(lost.isEmpty(), qPrintable(QStringLiteral("corners off is not lost (%1)").arg(lost.join(", "))));
+        for (const QJsonValue &v : oback.value("toolpaths").toArray())
+            check(!v.toObject().contains("corners"), "off does not go to the pad");
+    }
+
     // r49: a named layer, a toolpath group row and an edited embedded bit
     // are lost on a rebuild too, and used to go unreported.
     {
@@ -274,6 +327,24 @@ static void testLayersAndGroupsLost(const QString &dir)
         lost.clear();
         padlink::designFromDocument(p2, d, &lost, &err);
         check(lost.contains(QStringLiteral("layers and groups")), "a layer named Cut on every shape is reported as lost");
+        // A hidden DEFAULT layer: the pad shows it, and it comes back shown.
+        const QString p4 = QDir(dir).filePath("layers4.c2d");
+        check(padlink::buildDocument(d, p4, nullptr, &err), "layers4 fixture builds");
+        Document d4;
+        d4.load(p4, &err);
+        for (const Element &e : d4.elements()) {
+            QJsonObject r = e.raw;
+            QJsonObject l = r.value("layer").toObject();
+            l.insert("visible", false);
+            r.insert("layer", l);
+            d4.replaceElement(Element::fromJson(r));
+        }
+        d4.save(p4, &err);
+        lost.clear();
+        const QJsonObject back4 = padlink::designFromDocument(p4, d, &lost, &err);
+        check(lost.contains(QStringLiteral("layers and groups")), "a hidden layer is reported as lost");
+        check(back4.value("shapes").toArray().size() == d4.elements().size(),
+              "a hidden layer's shapes still go to the pad");
         Document d3;
         d3.load(path, &err);
         if (!d3.toolpaths().isEmpty()) {
@@ -422,7 +493,10 @@ static void testBackToPad(const QString &dir)
     els[1] = Element::withConstruction(els[1], true);
     doc.save(path, &err);
     const QJsonObject edited = padlink::designFromDocument(path, d, &lost, &err);
-    check(lost.size() == 2, qPrintable(QStringLiteral("own feeds and construction lines are named (%1)").arg(lost.join(", "))));
+    check(lost.size() == 1, qPrintable(QStringLiteral("construction lines are named, own feeds are not (%1)").arg(lost.join(", "))));
+    check(edited.value("toolpaths").toArray().at(0).toObject().value("set").toObject().value("speeds.feedrate").toDouble()
+              == speeds.value("feedrate").toDouble(),
+          "own feeds go to the pad in the toolpath's settings");
     check(edited.value("shapes").toArray().size() == 5 && padlink::check(edited).isEmpty(),
           "and the rest still goes to the pad");
 }
@@ -525,8 +599,10 @@ static void testDesktopEditsPadHas(const QString &dir)
         o.save(op, &err);
         Document::writeParam(op, QStringLiteral("pad_sizing"), QStringLiteral("old"), &err);
         QStringList ol;
-        padlink::designFromDocument(op, od, &ol, &err);
-        check(!ol.isEmpty(), "an old file: a lead typed here is named, not taken for the pad's");
+        const QJsonObject ob = padlink::designFromDocument(op, od, &ol, &err);
+        check(ol.isEmpty() && ob.value("toolpaths").toArray().at(1).toObject().value("set").toObject()
+                                      .value("lead_radius").toDouble() == 3.175,
+              "an old file: a lead typed here goes along in the settings, not taken for the pad's");
     }
 
 }
@@ -723,6 +799,46 @@ static void testDeletedShapesToolpath(const QString &dir, QJsonObject d)
         base = out;   // what the save shares, and gets back as the base next time
     }
     check(pockets == 1, "a toolpath without shapes is not added again on every save");
+}
+
+// A raster pocket set on the computer goes to the pad and back as raster,
+// at its angle, and is not reported as a lost setting.
+static void testRasterPocketRoundTrip(const QString &dir, QJsonObject d)
+{
+    QJsonArray tps = d.value("toolpaths").toArray();
+    QJsonObject pocket = tps.at(0).toObject();
+    pocket.insert("strategy", "raster");
+    pocket.insert("rasterAngle", 30.0);
+    tps.replace(0, pocket);
+    d.insert("toolpaths", tps);
+    const QString path = QDir(dir).filePath("raster.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "a design with a raster pocket builds");
+    Document doc;
+    doc.load(path);
+    const QJsonObject j = doc.toolpaths().first().json;
+    check(j.value("pocket_strategy").toString() == QLatin1String("raster")
+              && std::abs(j.value("raster_angle").toDouble() - 30) < 1e-9,
+          "the pad's raster pocket is a raster pocket at 30 degrees here");
+    QStringList lost;
+    const QJsonObject out = padlink::designFromDocument(path, d, &lost);
+    const QJsonObject back = out.value("toolpaths").toArray().first().toObject();
+    check(back.value("strategy").toString() == QLatin1String("raster")
+              && std::abs(back.value("rasterAngle").toDouble() - 30) < 1e-9,
+          "and goes back to the pad as raster at 30 degrees");
+    check(lost.isEmpty(), "nothing reported lost for the raster strategy");
+    // A pocket the form gave "offset" (rings) is not a lost setting either.
+    Document doc2;
+    doc2.load(path);
+    QVector<Toolpath> tv = doc2.toolpaths();
+    tv[0].json.insert("pocket_strategy", "offset");
+    tv[0].json.insert("raster_angle", 0.0);
+    doc2.setToolpaths(tv);
+    doc2.save(path, &err);
+    lost.clear();
+    const QJsonObject out2 = padlink::designFromDocument(path, d, &lost);
+    check(lost.isEmpty() && !out2.value("toolpaths").toArray().first().toObject().contains("strategy"),
+          "an offset pocket goes back with no strategy and nothing lost");
 }
 
 // The same edit put again after its answer was lost lands on the fork already
@@ -1080,10 +1196,13 @@ static void testOtherBitRoundTrip(const QString &dir)
             }
             doc.save(path, &err);
             lost.clear();
-            padlink::designFromDocument(path, d, &lost, &err);
-            check(lead == 201.0 ? lost.isEmpty() : !lost.isEmpty(),
-                  lead == 201.0 ? "other bit: an older file's #201 sizes are not settings made here"
-                                : "other bit: a lead-in typed here still is");
+            const QJsonObject lb = padlink::designFromDocument(path, d, &lost, &err);
+            check(lost.isEmpty(), lead == 201.0 ? "other bit: an older file's #201 sizes are not settings made here"
+                                                : "other bit: a lead-in typed here is not lost");
+            if (lead != 201.0)
+                check(lb.value("toolpaths").toArray().at(0).toObject().value("set").toObject()
+                              .value("lead_radius").toDouble() == lead,
+                      "other bit: and goes along in the settings");
         }
         // In a file built with the mark, the same #201 sizes are a desktop
         // edit (the first toolpath's lead-in at #201's) and fork rather than
@@ -1098,8 +1217,10 @@ static void testOtherBitRoundTrip(const QString &dir)
             doc.replaceToolpath(t);
             doc.save(path, &err);
             lost.clear();
-            padlink::designFromDocument(path, d, &lost, &err);
-            check(!lost.isEmpty(), "other bit: a lead-in set here to #201's size is a setting made here");
+            const QJsonObject mb = padlink::designFromDocument(path, d, &lost, &err);
+            check(lost.isEmpty() && mb.value("toolpaths").toArray().at(0).toObject().value("set").toObject()
+                                            .value("lead_radius").toDouble() == 3.175,
+                  "other bit: a lead-in set here to #201's size is a setting made here, carried");
         }
     }
 }
@@ -1144,6 +1265,88 @@ static void testPads()
     check(pads.recent(t + 5300).size() == 64, "only so many pads are kept");
 }
 
+// A toolpath type the pad has no own fields for (Adaptive) goes there with
+// its settings in `set` and comes back the same; a value edited on the pad
+// lands in the file within the form's bounds.
+static void testAdaptiveSettingsRoundTrip(const QString &dir, QJsonObject d)
+{
+    const int tool = d.value("toolpaths").toArray().at(0).toObject().value("tool").toInt();
+    d.insert("toolpaths", QJsonArray{QJsonObject{{"name", "Clear"}, {"type", "adaptive_toolpath"},
+                                                 {"shapes", QJsonArray{d.value("shapes").toArray().at(0).toObject().value("id")}},
+                                                 {"tool", tool}, {"depth", 4}}});
+    check(padlink::check(d).isEmpty(), "adaptive: a pad design may hold any desktop toolpath type");
+    const QString path = QDir(dir).filePath(QStringLiteral("adaptive.c2d"));
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), qPrintable(QStringLiteral("adaptive: built (%1)").arg(err)));
+    Document doc;
+    doc.load(path, &err);
+    check(doc.toolpaths().size() == 1 && doc.toolpaths().first().json.value("type").toString() == "adaptive_toolpath",
+          "adaptive: the file has an Adaptive toolpath");
+
+    // A desktop edit goes to the pad in `set`, nothing lost.
+    Toolpath t = doc.toolpaths().first();
+    t.json.insert("stepover", 1.25);
+    t.json.insert("ramp_angle", 4.0);
+    doc.replaceToolpath(t);
+    doc.save(path, &err);
+    const QJsonObject before = doc.toolpaths().first().json;
+    QStringList lost;
+    QJsonObject back = padlink::designFromDocument(path, d, &lost, &err);
+    QJsonObject tp = back.value("toolpaths").toArray().at(0).toObject();
+    const QJsonObject set = tp.value("set").toObject();
+    check(lost.isEmpty(), qPrintable(QStringLiteral("adaptive: nothing lost (%1)").arg(lost.join(", "))));
+    check(tp.value("type").toString() == "adaptive_toolpath", "adaptive: sent with its own type");
+    check(set.value("stepover").toDouble() == 1.25 && set.value("ramp_angle").toDouble() == 4.0,
+          "adaptive: its settings go along");
+    check(!set.contains("end_depth"), "adaptive: the depth is the pad's own field, not in the settings");
+    check(padlink::check(back).isEmpty(), "adaptive: what comes back passes the check");
+
+    // Unedited on the pad: built again, the same toolpath.
+    const QString again = QDir(dir).filePath(QStringLiteral("adaptive2.c2d"));
+    check(padlink::buildDocument(back, again, nullptr, &err), "adaptive: built again from the pad copy");
+    Document doc2;
+    doc2.load(again, &err);
+    QJsonObject after = doc2.toolpaths().first().json;
+    QJsonObject b = before;
+    for (const char *k : {"uuid", "elements", "toolpath_group"}) {
+        after.remove(QLatin1String(k));
+        b.remove(QLatin1String(k));
+    }
+    check(after == b, "adaptive: unedited, it comes back the same");
+    lost.clear();
+    padlink::designFromDocument(again, back, &lost, &err);
+    check(lost.isEmpty(), "adaptive: and again nothing lost");
+
+    // Edited on the pad: one value, then one beyond the form's range.
+    QJsonObject set2 = set;
+    set2.insert("stepover", 2.0);
+    set2.insert("ramp_angle", 40.0);   // Adaptive ramps at most 15 degrees
+    set2.insert("no_such_key", 5.0);
+    tp.insert("set", set2);
+    QJsonObject edited = back;
+    edited.insert("toolpaths", QJsonArray{tp});
+    const QString ep = QDir(dir).filePath(QStringLiteral("adaptive3.c2d"));
+    check(padlink::buildDocument(edited, ep, nullptr, &err), "adaptive: built from a pad edit");
+    Document doc3;
+    doc3.load(ep, &err);
+    const QJsonObject e = doc3.toolpaths().first().json;
+    check(e.value("stepover").toDouble() == 2.0, "adaptive: the pad's stepover is in the file");
+    check(e.value("ramp_angle").toDouble() == 15.0, "adaptive: a ramp angle over the form's range is held to it");
+    check(!e.contains("no_such_key"), "adaptive: a key the form does not know is not written");
+
+    // Settings made for another bit leave the feeds to the new one.
+    QJsonObject set3 = set;
+    set3.insert("speeds.feedrate", 1234.0);
+    tp.insert("set", set3);
+    tp.insert("setTool", tool + 100000);
+    edited.insert("toolpaths", QJsonArray{tp});
+    check(padlink::buildDocument(edited, ep, nullptr, &err), "adaptive: built with settings for another bit");
+    Document doc4;
+    doc4.load(ep, &err);
+    check(doc4.toolpaths().first().json.value("speeds").toObject().value("feedrate").toDouble() != 1234.0,
+          "adaptive: feeds made for another bit are not used");
+}
+
 int main(int argc, char **argv)
 {
     if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
@@ -1165,11 +1368,13 @@ int main(int argc, char **argv)
     testStore(tmp.path(), d);
     testConflicts(tmp.path(), d);
     testDeletedShapesToolpath(tmp.path(), d);
+    testRasterPocketRoundTrip(tmp.path(), d);
     testForkRetryAndUnreadable(tmp.path(), d);
     testVersions(tmp.path(), d);
     testFollowDesign(tmp.path(), d);
     testProfiles(tmp.path());
     testOtherBitRoundTrip(tmp.path());
+    testAdaptiveSettingsRoundTrip(tmp.path(), d);
     testPads();
     std::printf("%s\n", g_fail ? "FAILED" : "all passed");
     return g_fail ? 1 : 0;

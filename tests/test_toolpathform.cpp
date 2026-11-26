@@ -12,6 +12,8 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QJsonObject>
+#include <QLabel>
+#include <QPushButton>
 #include <QLineEdit>
 #include <QSpinBox>
 #include <QTemporaryDir>
@@ -143,6 +145,40 @@ int main(int argc, char *argv[])
         check(edits == before + 1 && last.value("strategy").toString() == QLatin1String("waterline")
                   && last.value("stepdown").toDouble() == 1.0,
               "3D finish: choosing waterline writes strategy = waterline");
+    }
+
+    // 3D rough: rest roughing offered (off, bigger bit from the rough above)
+    // on a toolpath saved before it existed; the bit size greyed while off.
+    {
+        QJsonObject r{{"type", "3d_rough_toolpath"}, {"uuid", "{r3d}"}, {"name", "3D Rough"},
+                      {"enabled", true}, {"stepdown", 2.0}, {"stepover", 2.5}, {"stock_to_leave", 0.5},
+                      {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{r3d}", "3d_rough_toolpath", r);
+        app.processEvents();
+        auto *rest = editorFor<QAbstractButton>(&form, "enable_rest");
+        auto *autoBit = editorFor<QAbstractButton>(&form, "rest_auto");
+        auto *dia = editorFor<QDoubleSpinBox>(&form, "rest_diameter");
+        check(rest && !rest->isChecked() && autoBit && autoBit->isChecked() && dia,
+              "3D rough: rest offered off, bigger bit from the rough above");
+        check(!dia->isEnabled(), "3D rough: previous bit size greyed while rest is off");
+    }
+
+    // Corner relief: offered as Sharp (off) on a pocket that has no key,
+    // choosing T-bone writes corners = tbone.
+    {
+        QJsonObject p{{"type", "pocket_toolpath"}, {"uuid", "{cr}"}, {"name", "Pocket"},
+                      {"enabled", true}, {"stepdown", 1.0}, {"stepover", 2.0},
+                      {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{cr}", "pocket_toolpath", p);
+        app.processEvents();
+        auto *corners = editorFor<QComboBox>(&form, "corners");
+        check(corners && corners->currentText() == QStringLiteral("Sharp (off)"),
+              "pocket: corners offered, sharp when absent");
+        const int before = edits;
+        corners->setCurrentIndex(2);
+        emit corners->activated(2);
+        check(edits == before + 1 && last.value("corners").toString() == QLatin1String("tbone"),
+              "pocket: choosing T-bone writes corners = tbone");
     }
 
     // Expressions: a field takes "depth" (a parameter) and binds to it; a
@@ -316,6 +352,55 @@ int main(int argc, char *argv[])
         app.processEvents();
         auto *ramp = editorFor<QDoubleSpinBox>(&form, "ramp_angle");
         check(ramp && ramp->maximum() == 15.0 && ramp->minimum() == 0.5, "adaptive ramp angle is 0.5 to 15");
+    }
+
+    // Pocket strategy: Offset unless set; the raster angle shows only for
+    // Raster, and appears once Raster is picked.
+    {
+        QJsonObject jp = j;
+        jp.insert("uuid", "{ps}");
+        form.setToolpath("{ps}", "pocket_toolpath", jp);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *strat = editorFor<QComboBox>(&form, "pocket_strategy");
+        check(strat && strat->currentText() == QStringLiteral("Offset (rings)"), "pocket: strategy offered, rings when absent");
+        check(!editorFor<QDoubleSpinBox>(&form, "raster_angle"), "pocket: no raster angle for rings");
+        strat->setCurrentIndex(1);
+        emit strat->activated(1);
+        check(last.value("pocket_strategy").toString() == QLatin1String("raster"), "pocket: picking Raster writes it");
+        app.processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        check(editorFor<QDoubleSpinBox>(&form, "raster_angle") != nullptr, "pocket: raster angle shown for Raster");
+        // Undo hands the old json (rings) back: the raster angle goes again.
+        form.setToolpath("{ps}", "pocket_toolpath", jp);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        check(!editorFor<QDoubleSpinBox>(&form, "raster_angle"), "pocket: undo to rings hides the raster angle");
+    }
+
+    // Chipload line under the spindle speed, and Suggest fills the feed.
+    {
+        QJsonObject slow{{"feedrate", 200.0}, {"plungerate", 100.0}, {"rpm", 16000.0}};
+        QJsonObject jc{{"type", "pocket_toolpath"}, {"uuid", "{cl}"}, {"name", "Chips"},
+                       {"enabled", true}, {"start_depth", "-0.000"}, {"end_depth", "-5.000"},
+                       {"speeds", slow}, {"tool", tool}};
+        QJsonObject got;
+        auto conn = QObject::connect(&form, &c2d::ToolpathForm::edited, [&](const QJsonObject &o) { got = o; });
+        form.setToolpath("{cl}", "pocket_toolpath", jc);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *chip = form.findChild<QLabel *>("tpChipload");
+        check(chip && chip->text().startsWith("Chipload 0.006 mm/tooth: too low"),
+              "200 mm/min at 16000 rpm on 2 flutes is too low");
+        auto *suggest = form.findChild<QPushButton *>("tpChipSuggest");
+        check(suggest != nullptr, "a Suggest button beside it");
+        suggest->click();
+        const double f = got.value("speeds").toObject().value("feedrate").toDouble();
+        check(f >= 1000 && f <= 10000, "Suggest writes a sane feed for a 10 mm bit");
+        form.setToolpath("{cl}", "pocket_toolpath", got);
+        app.processEvents();
+        check(chip->text().endsWith(": OK"), "after Suggest the chipload is OK");
+        QObject::disconnect(conn);
     }
 
     std::printf("test_toolpathform: %d checks OK\n", g_checks);

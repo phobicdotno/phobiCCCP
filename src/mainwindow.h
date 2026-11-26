@@ -35,6 +35,7 @@ class SimPanel;
 class ToolStrip;
 class ToolpathPanel;
 class ShapeStrip;
+class LayersPanel;
 
 class MainWindow : public QMainWindow
 {
@@ -171,6 +172,7 @@ private:
     QWidget *m_tpPage;
     QTabWidget *m_docTabs;
     ShapeStrip *m_shapes = nullptr;
+    LayersPanel *m_layers = nullptr;   // Design: the Layers tab
     bool m_vectorsWrapped = false;
     bool m_optionsWrapped = false;
     QToolBar *m_optionsBar = nullptr;   // Delete, Snap, Fit, Rotate, Preview, Undo (Design and Toolpaths)

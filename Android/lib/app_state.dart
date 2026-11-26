@@ -299,6 +299,18 @@ class AppState extends ChangeNotifier {
   String get lastTarget => settings.lastTarget;
   set lastTarget(String v) => settings.lastTarget = v;
 
+  /// The computer the Machine page sends to: the one last sent to, if it
+  /// answers, else the first that does.
+  Computer? get target {
+    final reach = computers.where((c) => c.reachable(now)).toList();
+    final id = lastTarget.split('/').first;
+    return reach.where((c) => c.desktop.id == id).firstOrNull ?? reach.firstOrNull;
+  }
+
+  /// [d]'s toolpaths drawn, and timed, by that computer.
+  Future<PreviewResult> preview(Design d, Computer c) =>
+      CccpConnection.use(c.desktop.address, c.desktop.port, (k) => k.preview(d));
+
   /// Make [machineId] the machine in use on that computer.
   Future<void> selectMachine(Computer c, String machineId) async {
     final info = await CccpConnection.use(c.desktop.address, c.desktop.port, (k) => k.selectMachine(machineId));
@@ -307,6 +319,15 @@ class AppState extends ChangeNotifier {
         x.desktop.id == c.desktop.id ? Computer(x.desktop, info: info, warning: x.warning, lastSync: x.lastSync, toolsAt: x.toolsAt) : x
     ];
     _changed();
+  }
+
+  /// Hold, resume or stop ([op]) the job on that computer's machine.
+  Future<void> control(Computer c, String op) async {
+    try {
+      await CccpConnection.use(c.desktop.address, c.desktop.port, (k) => k.control(op, pad: store.replicaId));
+    } finally {
+      unawaited(syncNow());
+    }
   }
 
   /// Send [d] to open on that computer (and machine), and start it when asked.

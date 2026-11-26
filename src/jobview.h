@@ -10,6 +10,7 @@
 
 class QLabel;
 class QProgressBar;
+class QPushButton;
 class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -35,7 +36,7 @@ struct JobPass {
     QString what;          // "to Z -6.0 mm", "Shape 2 of 5  ·  3 passes to Z -3 mm"...
     double z = 0;          // the floor it reaches (work Z)
     int qStart = 0, qEnd = 0;
-    double estSec = 0;     // feed-rate estimate, no acceleration model
+    double estSec = 0;     // planned like GRBL (feeds, acceleration, corners)
     QVector<JobLevel> levels;   // a shape's depth passes; empty for a plain pass
 };
 
@@ -72,7 +73,8 @@ struct JobPlan {
 // `ops` supplies the full toolpath names (the post truncates its comments to
 // 12 characters) and `doc` the toolpath type, tool and depth for the detail
 // line; both may be empty/null, the plan then says what the program says.
-// `rapidRate` in mm/min for the rapid moves' time.
+// Times from MotionPlanner with motionLimits(); `rapidRate` (mm/min) caps
+// the X/Y max rates on top.
 JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document *doc,
                 double rapidRate = 5000);
 
@@ -93,6 +95,7 @@ public:
     // are not in the plan: tell how many, so the counts line up again.
     void setProgress(int acked, int total);
     void linesInserted(int n) { m_inserted += n; refresh(); }
+    int inserted() const { return m_inserted; }
     // The controller's feed override, percent: the feed part of every
     // estimate is scaled by it.
     void setOverride(int percent);
@@ -114,9 +117,28 @@ public:
     // preview as a base64 PNG. Empty without a plan.
     QJsonArray stepsJson() const;
     int running() const { return m_running; }      // section index, -1 before start
+    // The section being run (a toolpath, or a tool change), null before the
+    // start, after a stop or at the end.
+    const JobSection *runningSection() const
+    {
+        return (m_stopped || m_running < 0 || m_running >= m_plan.sections.size())
+                   ? nullptr : &m_plan.sections.at(m_running);
+    }
+    int runningPass() const { return m_runningPass; }
+    const JobPlan &plan() const { return m_plan; }
+    // "Start here": a tapped toolpath or pass row can start the job again
+    // from its first line. The button shows only while `on` (idle, homed,
+    // nothing streaming) and a row is chosen.
+    void setStartHereAllowed(bool on);
+    // The row's name as the list shows it: "Pocket", "Pocket · to Z -3.0 mm".
+    QString rowName(int section, int pass) const;
+
+signals:
+    void startHereRequested(int section, int pass);
 
 private:
     void refresh();
+    void updateStartHere();
     double leftFrom(int q) const;                  // seconds from queue line q to the end
     double spanSec(int a, int b) const;            // estimate for queue lines [a, b)
     static QString clock(double sec);
@@ -162,6 +184,9 @@ private:
     QVector<QString> m_previewPng;                     // the cut preview alone, base64 PNG, for the pad
     QVector<QVector<QTreeWidgetItem *>> m_passItems;
     QTimer *m_tick = nullptr;
+    QPushButton *m_startHere = nullptr;
+    bool m_startAllowed = false;
+    int m_chosenSec = -1, m_chosenPass = -1;
 };
 
 } // namespace c2d

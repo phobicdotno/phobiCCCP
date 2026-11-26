@@ -43,6 +43,11 @@ struct BitZeroConfig {
     double toolDiameter = 6.35;
     double sideClearance = 40.0;  // sideways from the start before going down
     double sideDepth = 5.0;       // below the block top when probing its side
+    // Hole / boss centre and the plain touch plate (no BitZero needed)
+    double holeDiameter = 20.0;   // about how wide the hole or boss is
+    double bossHeight = 5.0;      // how far down beside the boss its sides are touched
+    double bossClearance = 5.0;   // out past the boss side before going down
+    double plateThickness = 10.0; // any touch plate: its thickness
 };
 
 // The "Probe zero (BitZero)" page of the Machine screen's right-hand card:
@@ -55,7 +60,9 @@ class BitZeroPanel : public QWidget
 public:
     // Map: the plate top touched at a grid of points over the stock, for a
     // surface map the job's Z then follows (surfacemap.h).
-    enum Mode { Corner, ZOnly, XOnly, YOnly, Map };
+    // Hole / Boss: X0 Y0 at the centre of a round hole or boss, probed from
+    // inside / outside. Plate: Z0 with any touch plate of known thickness.
+    enum Mode { Corner, ZOnly, XOnly, YOnly, Map, Hole, Boss, Plate };
     explicit BitZeroPanel(QWidget *parent = nullptr);
     Mode mode() const;
     BitZeroConfig config() const;
@@ -67,6 +74,8 @@ public:
     // (Begin then probes it); or 0 when no map is running.
     void setMapWaiting(int point, int total);
     void setMapSummary(const QString &text);
+    // Hole / boss: the centre and diameter just measured, shown under the fields.
+    void setCentreResult(const QString &text);
     void setContact(bool closed, bool known);   // live probe-pin state
     void setBusy(bool on);                      // a probe sequence is running
     void setConnected(bool on);
@@ -97,6 +106,11 @@ private:
     QSpinBox *m_mapCols, *m_mapRows;
     QDoubleSpinBox *m_mapW, *m_mapH, *m_mapMargin, *m_mapClear, *m_mapDev;
     QCheckBox *m_mapDirect;
+    QWidget *m_centreBox = nullptr;
+    QDoubleSpinBox *m_holeDia = nullptr, *m_tipDia = nullptr, *m_bossHeight = nullptr,
+                   *m_bossClear = nullptr, *m_plateThick = nullptr;
+    QLabel *m_centreResult = nullptr;
+    QList<QWidget *> m_roundRows, m_bossRows, m_plateRows;   // label and field of each
     QWidget *m_mapBox = nullptr;
     QLabel *m_mapSummary = nullptr;
     QPushButton *m_mapCancel = nullptr;

@@ -13,11 +13,14 @@
 #include <QButtonGroup>
 #include <QAbstractButton>
 #include <QDialog>
+#include <QDateTime>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
@@ -30,17 +33,20 @@
 #include <QDoubleSpinBox>
 #include <QProgressBar>
 #include <QStackedWidget>
+#include <QTemporaryDir>
 #include <functional>
 #include <memory>
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include "../src/gamepad.h"
 #include "../src/gcodeexport.h"
+#include "../src/jobhistory.h"
 #include "../src/toollibrary.h"
 #include "../src/toolstrip.h"
 #include "../src/surfacemap.h"
 #define private public
 #define protected public
+#include "../src/machinemacros.h"
 #include "../src/bitzeropanel.h"
 #include "../src/jobview.h"
 #include "../src/machinepanel.h"
@@ -51,7 +57,9 @@
 #include <QButtonGroup>
 #include <QAbstractButton>
 #include <QDialog>
+#include <QDateTime>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -120,6 +128,9 @@ struct FakeGrbl {
     bool geo = false, rel = false, noiseOnce = false;
     QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
     double bx = -130, by = -130, topZ = -40, r = 3.175, minZ = 1e9;
+    // A round hole (hole centre): walls at radius hR around (hcx, hcy).
+    bool hole = false, boss = false;   // boss: a round post, top at topZ
+    double hcx = 0, hcy = 0, hR = 10;
     double val(const QByteArray &l, char ax, bool &has) const {
         const int i = l.indexOf(ax); has = i >= 0; if (!has) return 0;
         int j = i + 1; while (j < l.size() && (l[j]=='-'||l[j]=='.'||(l[j]>='0'&&l[j]<='9'))) ++j;
@@ -129,7 +140,7 @@ struct FakeGrbl {
         if (l.contains("G90")) rel = false;
         const bool g53 = l.contains("G53");
         const bool probe = l.contains("G38.");
-        if (!probe && !l.contains("G0") && !l.contains("G1")) return false;
+        if (!probe && ((!l.contains("G0") && !l.contains("G1")) || l.startsWith("G10"))) return false;
         bool hx, hy, hz; const double X = val(l, 'X', hx), Y = val(l, 'Y', hy), Z = val(l, 'Z', hz);
         double tx = mx, ty = my, tz = mz;
         if (hx) tx = (rel && !g53) ? mx + X : X;
@@ -137,6 +148,34 @@ struct FakeGrbl {
         if (hz) tz = (rel && !g53) ? mz + Z : Z;
         if (!probe) { mx = tx; my = ty; mz = tz; minZ = qMin(minZ, mz); return true; }
         bool hit = false; double cx = tx, cy = ty, cz = tz;
+        if (hole) {
+            // The pin's centre stops a pin radius inside the wall.
+            const double R = hR - r;
+            if (hx && std::abs(my - hcy) < R) {
+                const double w = std::sqrt(R * R - (my - hcy) * (my - hcy));
+                const double wall = tx > mx ? hcx + w : hcx - w;
+                if ((tx - wall) * (mx - wall) <= 0) { hit = true; cx = wall; }
+            }
+            if (hy && std::abs(mx - hcx) < R) {
+                const double w = std::sqrt(R * R - (mx - hcx) * (mx - hcx));
+                const double wall = ty > my ? hcy + w : hcy - w;
+                if ((ty - wall) * (my - wall) <= 0) { hit = true; cy = wall; }
+            }
+        }
+        if (boss && mz < topZ) {
+            // From outside toward the post: stops a pin radius off its side.
+            const double R = hR + r;
+            if (hx && std::abs(my - hcy) < R) {
+                const double w = std::sqrt(R * R - (my - hcy) * (my - hcy));
+                const double side = mx > hcx ? hcx + w : hcx - w;
+                if ((tx - side) * (mx - side) <= 0) { hit = true; cx = side; }
+            }
+            if (hy && std::abs(mx - hcx) < R) {
+                const double w = std::sqrt(R * R - (mx - hcx) * (mx - hcx));
+                const double side = my > hcy ? hcy + w : hcy - w;
+                if ((ty - side) * (my - side) <= 0) { hit = true; cy = side; }
+            }
+        }
         const bool overBlock = mx >= bx && mx <= bx + 60 && my >= by && my <= by + 60;
         if (hz && tz < mz && overBlock && mz >= topZ && tz <= topZ) { hit = true; cz = topZ; }
         if (hx && tx > mx && mz < topZ && my >= by && my <= by + 60) {
@@ -287,7 +326,7 @@ struct FakeGrbl {
     }
     int indexOf(const QByteArray &prefix, int from = 0) const
     {
-        for (int i = from; i < events.size(); ++i)
+        for (int i = qMax(0, from); i < events.size(); ++i)
             if (events.at(i).startsWith(prefix))
                 return i;
         return -1;
@@ -331,6 +370,7 @@ int main(int argc, char **argv)
     QApplication::setOrganizationName(QStringLiteral("phobicccp-test"));
     QApplication::setApplicationName(QStringLiteral("test_machinestop_") + QString::fromLatin1(qgetenv("R4MODE")));
     QSettings().clear();
+    c2d::jobhistory::clear();
 
     // ---- which bit a tool change wants (no machine needed) ----------------
     c2d::Document doc;
@@ -621,16 +661,22 @@ int main(int argc, char **argv)
         grbl.events.clear();
         answer = [&](const Seen &) { return QStringLiteral("Cancel job"); };
         bool closed = false;
+        int padResumed = -1;      // Resume from the pad: the same button, its refusal told back
+        QString padWhy;
         QTimer::singleShot(0, [&] {
             runUntilDialogGone([&] {
                 closed = true;
-                QTimer::singleShot(100, [&] { panel.m_pauseBtn->click(); });
+                QTimer::singleShot(100, [&] {
+                    padResumed = panel.resumeFromRemote(QStringLiteral("test"), &padWhy);
+                });
             });
         });
         button(QStringLiteral("✕ Cancel job"))->click();
         spin(3000, [&] { return closed; });
         wait(7000);
         check(grbl.count("ALARM3") == 0, "cancelresume: no reset while moving");
+        std::printf("pad resume: %d (%s)\n", padResumed, qPrintable(padWhy));
+        check(padResumed == 0 && !padWhy.isEmpty(), "cancelresume: the pad hears the refusal");
     }
 
     if (mode == "safez") {
@@ -653,6 +699,170 @@ int main(int argc, char **argv)
                 check(z <= -panel.switchClearance() + 1e-9, "safez: below the switch clearance");
             }
         check(moves == 3, "safez: park, tool park and X0 Y0 each rise");
+    }
+
+    if (mode == "mdi") {
+        // The command line: a typed line goes out as typed; Up brings it back
+        // (and does not jog); ? goes out as the realtime byte, not a line.
+        using c2d::machinemacros::Typed;
+        check(c2d::machinemacros::classify(QStringLiteral(" $h ")) == Typed::Home
+                  && c2d::machinemacros::classify(QStringLiteral("$X")) == Typed::Unlock
+                  && c2d::machinemacros::classify(QStringLiteral("!")) == Typed::Realtime
+                  && c2d::machinemacros::classify(QStringLiteral("$$")) == Typed::Line
+                  && c2d::machinemacros::classify(QStringLiteral("  ")) == Typed::Empty,
+              "mdi: typed lines are told apart");
+        check(c2d::machinemacros::cleanLines(QStringLiteral("(retract) G53 G0 Z-5 (up)\n(note)\n (a) (b) ;c\n; x\nG0 X1"))
+                  == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 X1")}),
+              "macro: a move between notes in brackets is kept, notes alone are not");
+        check(c2d::machinemacros::cleanLines(QStringLiteral("(retract!) G53 G0 Z-5 ; now~\nG0 X2 (ok?"))
+                  == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 X2")}),
+              "macro: notes are not sent, so a '!' in one is no feed hold");
+        check(c2d::machinemacros::cleanLines(QStringLiteral("(retract; machine coordinates) G53 G0 Z-5\nG0 Z5 ; stop!"))
+                  == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 Z5")}),
+              "macro: a ';' inside a note in brackets does not drop the move after it");
+        QStringList h;
+        for (int i = 0; i < 40; ++i)
+            h = c2d::machinemacros::pushHistory(h, QStringLiteral("G0 X%1").arg(i));
+        h = c2d::machinemacros::pushHistory(h, QStringLiteral("G0 X39"));
+        check(h.size() == 30 && h.last() == QLatin1String("G0 X39") && h.first() == QLatin1String("G0 X10"),
+              "mdi: history keeps the last 30, no repeats");
+        grbl.events.clear();
+        panel.m_mdi->setText(QStringLiteral("G0 X10"));
+        emit panel.m_mdi->returnPressed();
+        wait(500);
+        check(grbl.count("G0 X10") == 1, "mdi: G0 X10 is sent");
+        check(panel.m_mdi->text().isEmpty(), "mdi: the line clears once sent");
+        check(QSettings().value(QStringLiteral("ui/mdiHistory")).toStringList().contains(QStringLiteral("G0 X10")),
+              "mdi: the history is kept in the settings");
+        {
+            QKeyEvent up(QEvent::KeyPress, Qt::Key_Up, Qt::NoModifier);
+            QApplication::sendEvent(panel.m_mdi, &up);
+        }
+        wait(300);
+        check(panel.m_mdi->text() == QLatin1String("G0 X10"), "mdi: Up brings the last line back");
+        check(grbl.count("$J=") == 0, "mdi: Up in the command line does not jog");
+        check(panel.sendTyped(QStringLiteral("$$")), "mdi: $ commands go out");
+        wait(300);
+        check(grbl.count("$$") >= 1, "mdi: $$ sent as a line");
+    }
+
+    if (mode == "inchpark") {
+        // A G20 typed on the command line: Park's millimetre targets would be
+        // read as inches (25.4x as far). Park and a jog go out in G21.
+        grbl.events.clear();
+        check(panel.sendTyped(QStringLiteral("G20")), "inchpark: G20 is sent");
+        wait(400);
+        panel.park();
+        wait(1500);
+        const int i20 = grbl.indexOf("G20"), ip = grbl.indexOf("G53 G0");
+        int i21 = -1;
+        for (int i = 0; i < grbl.events.size(); ++i)
+            if (grbl.events.at(i) == "G21" && i > i20) { i21 = i; break; }
+        check(i20 >= 0 && ip > i20 && i21 > i20 && i21 < ip, "inchpark: Park sends G21 before its first move");
+        grbl.events.clear();
+        panel.jogStep('X', 1);
+        wait(600);
+        bool jogMm = false, jog = false;
+        for (const QByteArray &e : grbl.events)
+            if (e.startsWith("$J=")) { jog = true; jogMm = e.startsWith("$J=G21 "); }
+        check(jog && jogMm, "inchpark: a jog names G21");
+        // A measured tool's length offset: Z1.5 mm, not 1.5 inches.
+        grbl.events.clear();
+        check(panel.sendTyped(QStringLiteral("G20")), "inchpark: G20 again");
+        wait(400);
+        s->applyToolLengthOffset(1.5);
+        wait(600);
+        int bare = 0;
+        for (const QByteArray &e : grbl.events)
+            bare += e.contains("G43.1") && !e.startsWith("G21 G43.1");
+        check(grbl.indexOf("G21 G43.1 Z1.500") > grbl.indexOf("G20") && bare == 0,
+              "inchpark: the tool length offset goes out in mm (G21 in its line)");
+    }
+
+    if (mode == "mdihome") {
+        // $H typed goes through Initialize: homing, then the park after it.
+        grbl.events.clear();
+        check(panel.sendTyped(QStringLiteral("$H")), "mdihome: taken");
+        check(panel.m_parkAfterHome, "mdihome: the page's homing path (park after) is armed");
+        wait(2500);
+        const int ih = grbl.indexOf("$H"), ip = grbl.indexOf("G53 G0 X");
+        check(ih >= 0 && ip > ih, "mdihome: homed, then parked like Initialize");
+    }
+
+    if (mode == "macro") {
+        // A two-line macro sends both lines in order; the note is not sent.
+        // From its button, and from the gamepad.
+        QSettings set;
+        c2d::machinemacros::save(set, {{QStringLiteral("Corner"),
+                                        {QStringLiteral("G0 X5"), QStringLiteral("; a note"),
+                                         QStringLiteral("G0 Y7")}}});
+        set.sync();
+        panel.refreshMacroButtons();
+        check(panel.m_macroBtns.at(0)->text() == QLatin1String("Corner")
+                  && !panel.m_macroBtns.at(0)->isHidden() && panel.m_macroBtns.at(1)->isHidden(),
+              "macro: one button, named");
+        grbl.events.clear();
+        panel.m_macroBtns.at(0)->click();
+        wait(800);
+        const int ix = grbl.indexOf("G0 X5"), iy = grbl.indexOf("G0 Y7");
+        check(ix >= 0 && iy > ix, "macro: both lines, in order");
+        check(grbl.count("; a note") == 0, "macro: notes are not sent");
+        check(c2d::gamepadmap::actions().contains(QStringLiteral("macro1"))
+                  && c2d::gamepadmap::label(QStringLiteral("macro4")) == QLatin1String("Macro 4"),
+              "macro: gamepad actions Macro 1..4");
+        panel.m_padMap.insert(11, QStringLiteral("macro1"));
+        grbl.events.clear();
+        padPress(11);
+        wait(800);
+        check(grbl.count("G0 X5") == 1 && grbl.count("G0 Y7") == 1, "macro: the gamepad runs it too");
+        {
+            // The editor: add one, name it, give it a line, move it up, save.
+            c2d::MacroEditDialog dlg(c2d::machinemacros::load(set));
+            auto dbtn = [&](const QString &t) {
+                for (QPushButton *b : dlg.findChildren<QPushButton *>())
+                    if (b->text() == t)
+                        return b;
+                std::fprintf(stderr, "no editor button '%s'\n", qPrintable(t));
+                std::exit(1);
+            };
+            dbtn(QStringLiteral("+ Add"))->click();
+            dlg.m_name->setText(QStringLiteral("Up"));
+            dlg.m_lines->setPlainText(QStringLiteral("G53 G0 Z-5"));
+            dbtn(QStringLiteral("▲ Up"))->click();
+            dbtn(QStringLiteral("+ Add"))->click();   // left empty: dropped on Save
+            dbtn(QStringLiteral("Save"))->click();
+            const QVector<c2d::MachineMacro> got = dlg.macros();
+            check(got.size() == 2 && got.at(0).name == QLatin1String("Up")
+                      && got.at(0).lines == QStringList{QStringLiteral("G53 G0 Z-5")}
+                      && got.at(1).name == QLatin1String("Corner") && got.at(1).lines.size() == 3,
+                  "macro: the editor adds, reorders and drops an empty one");
+        }
+        grbl.events.clear();
+        check(!panel.runMacro(3), "macro: no macro 4, nothing runs");
+        wait(300);
+        check(grbl.events.isEmpty() || grbl.count("G0") == 0, "macro: and nothing is sent");
+    }
+
+    if (mode == "mdistream") {
+        // While a job streams: typed lines and macros are refused, Hold typed
+        // as ! still works.
+        QSettings set;
+        c2d::machinemacros::save(set, {{QStringLiteral("Corner"),
+                                        {QStringLiteral("G0 X5"), QStringLiteral("G0 Y7")}}});
+        panel.refreshMacroButtons();
+        grbl.hangDwell = true;
+        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G4P30.00"), QStringLiteral("G0X1")});
+        wait(400);
+        grbl.events.clear();
+        check(!panel.sendTyped(QStringLiteral("G0 X10")), "mdistream: refused while streaming");
+        check(!panel.runMacro(0), "mdistream: a macro is refused while streaming");
+        wait(400);
+        check(grbl.count("G0 X10") == 0 && grbl.count("G0 X5") == 0, "mdistream: nothing sent");
+        check(panel.m_console->toPlainText().contains(QStringLiteral("a job is running")),
+              "mdistream: the log says why");
+        check(panel.sendTyped(QStringLiteral("!")), "mdistream: ! is taken");
+        wait(300);
+        check(grbl.count("!") >= 1 && panel.m_held, "mdistream: ! holds through the page's Hold");
     }
 
     if (mode == "quickmove") {
@@ -725,7 +935,7 @@ int main(int argc, char **argv)
         wait(2500);
         std::printf("offset label on machine B: %s\n", qPrintable(panel.m_tloLabel->text()));
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
-        check(grbl.count("G43.1 Z12") == 0, "tlo: machine A's tool offset is not applied on machine B");
+        check(grbl.count("G21 G43.1 Z12") == 0, "tlo: machine A's tool offset is not applied on machine B");
     }
 
     if (mode == "descendlive") {
@@ -767,16 +977,209 @@ int main(int argc, char **argv)
             return QStringLiteral("Measure and continue");
         };
         panel.m_endOfJobPending = true;
-        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G1X5F500"),
-                        QStringLiteral("M0 ;T2"), QStringLiteral("M3S1000"), QStringLiteral("G1X6F500")});
+        s->startStream({QStringLiteral("G0Z5"), QStringLiteral("G0X0Y0"), QStringLiteral("M3S1000"),
+                        QStringLiteral("G1Z-1F200"), QStringLiteral("G1X5F500"), QStringLiteral("M0 ;T2"),
+                        QStringLiteral("M3S1000"), QStringLiteral("G1X6F500")});
         spin(8000, [&] { return !s->isStreaming(); });
         wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         check(seen.size() == 1, "tc: one prompt");
         check(!s->isStreaming(), "tc: job finished");
-        check(grbl.indexOf("G43.1 Z2") >= 0, "tc: offset applied");
-        check(grbl.indexOf("G1X6") > grbl.indexOf("G43.1 Z2"), "tc: rest after offset");
+        check(grbl.indexOf("G21 G43.1 Z2") >= 0, "tc: offset applied");
+        check(grbl.indexOf("G1X6") > grbl.indexOf("G21 G43.1 Z2"), "tc: rest after offset");
         check(grbl.indexOf("M5", grbl.indexOf("G1X6")) > 0, "tc: spindle off at end");
+        // The cut goes on at its depth with no Z of its own: over its start at
+        // the top, the program's spindle start, then down, then the cut.
+        const int across = grbl.indexOf("G90 G0 X5.000 Y0.000", grbl.indexOf("G21 G43.1 Z2"));
+        const int m3 = grbl.indexOf("M3S1000", across), down = grbl.indexOf("G1 Z-1.000 F500", across);
+        check(across > 0 && m3 > across && down > m3 && grbl.indexOf("G1 F500.0", down) == down + 1
+                  && grbl.indexOf("G1X6F500") == down + 2,
+              "tc: back over the cut's start, spindle on, down to its depth, then the cut");
+    }
+
+    if (mode == "starthere") {
+        // Start again from the second toolpath ("small", its own bit): the
+        // bit in is not known, so the tool change comes first, then the way
+        // in, then that toolpath and nothing of the first. Started from it
+        // again, the bit is known to be in: no tool change.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_bsSafeZ->setValue(-30.0);
+        grbl.wcoX = -200;
+        grbl.wcoY = -200;
+        grbl.wcoZ = -60;
+        wait(800);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const QStringList all = g.gcode.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        const c2d::JobPlan plan = c2d::planJob(all, g.ops, &doc);
+        int smallPasses = -1;
+        for (const c2d::JobSection &sec : plan.sections)
+            if (sec.kind == c2d::JobSection::Toolpath && sec.title() == QLatin1String("small"))
+                smallPasses = int(sec.passes.size());
+        check(smallPasses >= 1, "starthere: the plan has the second toolpath");
+        c2d::MachinePanel::StartFrom f;
+        f.title = QStringLiteral("small");
+        f.passes = smallPasses;
+        f.row = QStringLiteral("small");
+        int asked = 0, tools = 0;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith(QLatin1String("Start from small"))) {
+                ++asked;
+                return QStringLiteral("▶ Start here");
+            }
+            if (v.headline.startsWith(QLatin1String("Insert tool")))
+                ++tools;
+            return QStringLiteral("Measure and continue");
+        };
+        grbl.events.clear();
+        check(panel.runProgram(nullptr, &f), "starthere: started");
+        spin(20000, [&] { return !s->isStreaming(); });
+        wait(1500);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(asked == 1 && tools == 1, "starthere: asked once, then the tool change prompt");
+        // The toolpath's first line is before its own spindle start (the post
+        // starts it after the tool change): over the start at the top, then
+        // the program's spindle start and wait.
+        const int m5 = grbl.indexOf("M5"), tlo = grbl.indexOf("G21 G43.1"), m3 = grbl.indexOf("M03S10000");
+        const int across = grbl.indexOf("G90 G0 X46.825 Y19.525");
+        check(across > tlo && across < m3, "starthere: across at the top after the change, before the spindle");
+        check(m5 >= 0 && tlo > m5 && m3 > tlo && grbl.indexOf("G4P3.00", m3) == m3 + 1,
+              "starthere: spindle off, the change measured, then spindle on and its wait");
+        // Each pocket goes down once (one pass to 1 mm), and only the
+        // second, the smaller bit, steps over to X42.063.
+        const int first = grbl.indexOf("G1Z-1.000F300.0");
+        check(first > m3 && grbl.count("G1Z-1.000F300.0") == 1,
+              "starthere: the second toolpath after the way in, nothing of the first");
+        check(grbl.indexOf("X42.063") > first && grbl.indexOf("Y13.175") > first,
+              "starthere: the second toolpath to its end");
+
+        // Again from there: the bit for it is in now.
+        asked = tools = 0;
+        grbl.events.clear();
+        check(panel.runProgram(nullptr, &f), "starthere: started again");
+        spin(20000, [&] { return !s->isStreaming(); });
+        wait(1500);
+        check(asked == 1 && tools == 0 && grbl.indexOf("G21 G43.1") < 0 && grbl.indexOf("M03S10000") >= 0,
+              "starthere: the bit in is the one wanted, no tool change");
+    }
+
+    if (mode == "continue") {
+        // A job stopped in the second toolpath (a crash, a power cut, Stop)
+        // leaves its place behind; the same design opened again with the
+        // machine homed offers to continue from the start of that toolpath.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_bsSafeZ->setValue(-30.0);
+        grbl.wcoX = -200;
+        grbl.wcoY = -200;
+        grbl.wcoZ = -60;
+        const QTemporaryDir tmp;           // its own folder: no other run's file touched
+        check(tmp.isValid(), "continue: temporary folder made");
+        const QString file = tmp.filePath(QStringLiteral("continue_test.c2d"));
+        {
+            // The design's file as on disk: only its bytes count (the hash).
+            QFile f(file);
+            check(f.open(QIODevice::WriteOnly) && f.write("design bytes") > 0, "continue: design file written");
+        }
+        doc.setFilePath(file);
+        panel.setDocument(&doc);
+        wait(800);
+        check(!panel.m_continueBtn->isVisible(), "continue: nothing offered before a job");
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith(QLatin1String("Start from")))
+                return QStringLiteral("▶ Start here");
+            if (v.headline.startsWith(QLatin1String("Stream")))
+                return QStringLiteral("▶ Start");
+            return QStringLiteral("Measure and continue");
+        };
+        check(panel.runProgram(), "continue: the job starts");
+        QSettings set;
+        spin(30000, [&] {
+            return !s->isStreaming() || set.value(QStringLiteral("resume/row")).toString() == QLatin1String("small");
+        });
+        s->stopStream();
+        wait(1500);
+        check(set.value(QStringLiteral("resume/row")).toString() == QLatin1String("small")
+                  && set.value(QStringLiteral("resume/path")).toString() == file
+                  && !set.value(QStringLiteral("resume/hash")).toString().isEmpty(),
+              "continue: the step it stopped in is saved with the design and its hash");
+        // Saved only once the planner's worth of answered lines past its
+        // start: an answered line is planned, not yet cut.
+        int smallStart = -1;
+        for (const c2d::JobSection &sec : panel.m_jobView->plan().sections)
+            if (sec.kind == c2d::JobSection::Toolpath && sec.title() == QLatin1String("small"))
+                smallStart = sec.qStart;
+        std::printf("continue: small starts at %d, saved at %d answered\n", smallStart,
+                    set.value(QStringLiteral("resume/acked")).toInt());
+        check(smallStart >= 0 && set.value(QStringLiteral("resume/acked")).toInt() >= smallStart + 35,
+              "continue: the step is saved from lines the machine has cut, not just answered");
+        // Opened again later, homed again.
+        panel.setDocument(&doc);
+        panel.m_homed = true;
+        spin(5000, [&] { return panel.m_continueBtn->isVisible(); });
+        check(panel.m_continueBtn->isVisible()
+                  && panel.m_continueBtn->text().contains(QLatin1String("Continue from small (where it stopped)")),
+              "continue: offered on the job card");
+        // Edited since (not saved): the point is for the file, not for what is open.
+        panel.setUnsavedCheck([] { return true; });
+        wait(600);
+        check(!panel.m_continueBtn->isVisible(), "continue: not offered once the design is edited and not saved");
+        panel.continueWhereStopped();
+        wait(300);
+        check(!s->isStreaming() && set.value(QStringLiteral("resume/row")).toString() == QLatin1String("small"),
+              "continue: refused for an unsaved design, the point is kept");
+        panel.setUnsavedCheck([] { return false; });
+        spin(5000, [&] { return panel.m_continueBtn->isVisible(); });
+        check(panel.m_continueBtn->isVisible(), "continue: offered again once saved");
+        panel.m_homed = false;
+        wait(600);
+        check(!panel.m_continueBtn->isVisible(), "continue: not offered unhomed");
+        panel.m_homed = true;
+        wait(600);
+        grbl.events.clear();
+        panel.m_continueBtn->click();
+        spin(20000, [&] { return grbl.indexOf("G1Z-1.000F300.0") >= 0 && !s->isStreaming(); });
+        wait(1500);
+        check(grbl.count("G1Z-1.000F300.0") == 1 && grbl.indexOf("X42.063") > grbl.indexOf("G1Z-1.000F300.0"),
+              "continue: the second toolpath only, from its start");
+        check(set.value(QStringLiteral("resume/path")).toString().isEmpty() && !panel.m_continueBtn->isVisible(),
+              "continue: finished, nothing left to continue");
+        // Another file with the same name is not the same design.
+        set.setValue(QStringLiteral("resume/path"), file);
+        set.setValue(QStringLiteral("resume/hash"), QStringLiteral("0000"));
+        set.setValue(QStringLiteral("resume/row"), QStringLiteral("small"));
+        panel.setDocument(&doc);
+        wait(800);
+        check(!panel.m_continueBtn->isVisible(), "continue: not offered for a changed file");
+        // Edited and not saved: what runs is not the file, so no point is kept.
+        set.remove(QStringLiteral("resume"));
+        panel.setUnsavedCheck([] { return true; });
+        panel.m_homed = true;
+        wait(600);
+        check(panel.runProgram(), "continue: an unsaved design still runs");
+        spin(30000, [&] { return !s->isStreaming() || grbl.count("G1Z-1.000F300.0") > 0; });
+        s->stopStream();
+        wait(1500);
+        check(set.value(QStringLiteral("resume/path")).toString().isEmpty(),
+              "continue: an unsaved design's run keeps no continue point");
+        panel.setUnsavedCheck({});
+        // A new run of the design drops the last run's point at once: a
+        // stop before its first point would otherwise offer the old one,
+        // past the new run's uncut first toolpath.
+        set.setValue(QStringLiteral("resume/path"), file);
+        set.setValue(QStringLiteral("resume/row"), QStringLiteral("small"));
+        panel.m_homed = true;
+        wait(600);
+        check(panel.runProgram(), "continue: the design runs again");
+        check(set.value(QStringLiteral("resume/path")).toString().isEmpty(),
+              "continue: a new run clears the last run's point at its start");
+        s->stopStream();
+        wait(1500);
+        QFile::remove(file);
     }
 
     if (mode == "tcspin") {
@@ -803,7 +1206,7 @@ int main(int argc, char **argv)
         spin(8000, [&] { return !s->isStreaming(); });
         wait(1000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
-        const int offset = grbl.indexOf("G43.1 Z2");
+        const int offset = grbl.indexOf("G21 G43.1 Z2");
         const int across = grbl.indexOf("G90 G0 X80.354 Y38.452", offset);
         const int retract = grbl.indexOf("G0Z2.540", offset);
         check(seen.size() == 1 && offset >= 0, "tcspin: one prompt, the bit measured");
@@ -857,6 +1260,83 @@ int main(int argc, char **argv)
             if (e.startsWith("G53 G0 Z") && e.mid(8).toDouble() < -10 - 1e-9)
                 down = true;
         check(!down, "parkend: no move down from the job's final retract");
+    }
+
+    if (mode == "histtail") {
+        // Every line answered is not the job done: the planner still cuts.
+        // The history says "finished" only once the machine stands still; a
+        // Stop in those last moves is what it records.
+        for (int round = 0; round < 2; ++round) {
+            const bool stop = round == 1;   // the Stop last: it leaves an alarm
+            c2d::jobhistory::clear();
+            panel.m_hist = {};
+            panel.m_hist.active = true;
+            panel.m_hist.job = QStringLiteral("tail");
+            panel.m_hist.start = QDateTime::currentDateTime();
+            panel.m_endOfJobPending = true;
+            grbl.running = true;
+            s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+            spin(2000, [&] { return !s->isStreaming(); });
+            wait(400);
+            check(c2d::jobhistory::read().isEmpty(), "histtail: nothing recorded while the last lines still run");
+            if (stop)
+                panel.m_stopBtn->click();
+            QTimer::singleShot(300, [&] { grbl.running = false; });
+            wait(2000);
+            const QVector<QJsonObject> h = c2d::jobhistory::read();
+            const QString end = h.value(0).value("end").toString();
+            check(h.size() == 1 && end == (stop ? QLatin1String("stopped") : QLatin1String("finished")),
+                  qPrintable(QStringLiteral("histtail: history says %1").arg(end)));
+            spin(3000, [&] { return !panel.isBusy() && !s->isMacroRunning(); });
+            wait(500);
+        }
+        // An alarm (an end stop) in those last moves: the record says so,
+        // not nothing, and never "finished". The Stop above left an alarm.
+        grbl.alarm = false;
+        wait(500);
+        c2d::jobhistory::clear();
+        panel.m_hist = {};
+        panel.m_hist.active = true;
+        panel.m_hist.job = QStringLiteral("tail");
+        panel.m_hist.start = QDateTime::currentDateTime();
+        panel.m_endOfJobPending = true;
+        grbl.running = true;
+        s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+        spin(2000, [&] { return !s->isStreaming(); });
+        wait(400);
+        check(panel.m_endRisePending, "histtail: the finish waits for Idle");
+        grbl.running = false;
+        grbl.locked = true;
+        grbl.send("ALARM:1\r\n[MSG:Reset to continue]\r\n");
+        wait(1500);
+        const QVector<QJsonObject> h = c2d::jobhistory::read();
+        check(h.size() == 1 && h.value(0).value("end").toString() == QLatin1String("alarm")
+                  && h.value(0).value("code").toInt() == 1,
+              qPrintable(QStringLiteral("histtail: an alarm in the tail is recorded: %1 entries, %2")
+                             .arg(h.size()).arg(h.value(0).value("end").toString())));
+        check(!panel.m_hist.active && !panel.m_endRisePending, "histtail: no unfinished record is left");
+    }
+
+    if (mode == "warmjob") {
+        // A job started while the warm-up runs takes the spindle: no later
+        // warm-up stage may start (or stop) it under the job or after it.
+        panel.m_tcX->setValue(-120.0);
+        panel.m_tcY->setValue(-120.0);
+        wait(600);
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith("Insert tool")) return QStringLiteral("Same length: continue");
+            return QStringLiteral("OK");
+        };
+        panel.m_warmSecs = {1000, 1000, 1000};
+        panel.m_warmStep = 0;
+        panel.m_warmLeft = 1000;
+        panel.m_warmTimer->start();
+        QString why;
+        check(panel.startFromRemote(&why), qPrintable(QStringLiteral("warmjob: the job starts: %1").arg(why)));
+        check(panel.m_warmStep < 0 && !panel.m_warmTimer->isActive(), "warmjob: the job ends the warm-up at once");
+        spin(20000, [&] { return !s->isStreaming() && !panel.isBusy(); });
+        wait(1500);
+        check(panel.m_warmStep < 0, "warmjob: no warm-up stage after the job");
     }
 
     if (mode == "rehearsetc") {
@@ -1287,7 +1767,7 @@ int main(int argc, char **argv)
         wait(800);
         s->applyToolLengthOffset(0.4);
         wait(800);
-        const bool g431 = grbl.indexOf("G43.1 Z0.400") >= 0;
+        const bool g431 = grbl.indexOf("G21 G43.1 Z0.400") >= 0;
         grbl.wcoZ = grbl.mz - 1.75 + 0.4;   // as GRBL reports it with G43.1 active
         wait(800);
         panel.m_useMap->setChecked(false);
@@ -1435,7 +1915,8 @@ int main(int argc, char **argv)
         wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         const int g10 = grbl.indexOf("G10 L20");
-        const int g21 = grbl.indexOf("G21");
+        // The first G21 is BitZero's own (millimetres before probing).
+        const int g21 = grbl.indexOf("G21", grbl.indexOf("G21") + 1);
         std::printf("r14bzstart: G10 at %d, job's first line at %d\n", g10, g21);
         check(!(started && (g10 < 0 || g10 > g21)), "r14bzstart: no job starts before BitZero's zero is set");
         s->stopStream();
@@ -1546,21 +2027,21 @@ int main(int argc, char **argv)
         for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
             std::printf("LOG:\n%s\n", qPrintable(t->toPlainText().right(1200)));
         wait(3000);
-        std::printf("TLO app=%.3f  G43.1 sent=%d\n", s->toolLengthOffset(), grbl.count("G43.1"));
+        std::printf("TLO app=%.3f  G43.1 sent=%d\n", s->toolLengthOffset(), grbl.count("G21 G43.1"));
         check(grbl.count("$J=") == 0, "a jog tapped while homing is refused");
-        check(grbl.count("G43.1") >= 1, "the tool offset goes out after homing");
+        check(grbl.count("G21 G43.1") >= 1, "the tool offset goes out after homing");
     }
     if (mode == "tloretry") {
         // A G43.1 the controller refuses is sent again once it is Idle.
         wait(600);
-        grbl.reject = "G43.1";
+        grbl.reject = "G21 G43.1";
         s->applyToolLengthOffset(1.5);
         wait(400);
-        const int refused = grbl.count("G43.1");
+        const int refused = grbl.count("G21 G43.1");
         grbl.reject.clear();
         wait(1500);
-        std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G43.1"));
-        check(refused >= 1 && grbl.count("G43.1") > refused, "a refused tool offset is sent again");
+        std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G21 G43.1"));
+        check(refused >= 1 && grbl.count("G21 G43.1") > refused, "a refused tool offset is sent again");
     }
     if (mode == "v1miss") {
         grbl.geo = true;
@@ -1583,6 +2064,131 @@ int main(int argc, char **argv)
         for (const QByteArray &e : grbl.events) std::printf("  2nd: %s\n", e.constData());
         std::printf("2nd Begin: lowest pin Z %.3f = %.3f mm below the stock top\n", grbl.minZ, stockTop - grbl.minZ);
         check(grbl.minZ >= stockTop, "v1miss: Begin again does not drive the pin below the stock top");
+    }
+
+    if (mode == "holecentre") {
+        // Hole centre: started off-centre in a 20 mm hole, X0 Y0 lands on
+        // its centre and the diameter comes out with the pin added back.
+        grbl.geo = true;
+        grbl.hole = true;
+        grbl.hcx = grbl.mx + 3.0;
+        grbl.hcy = grbl.my - 2.0;
+        grbl.hR = 10.0;
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Hole)->click();
+        panel.m_bzPanel->m_holeDia->setValue(20.0);
+        panel.m_bzPanel->m_tipDia->setValue(6.35);
+        grbl.r = 6.35 / 2.0;
+        panel.m_rightStack->setCurrentWidget(panel.m_bzPanel);
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(6000);
+        for (const QByteArray &e : grbl.events) std::printf("  %s\n", e.constData());
+        std::printf("centre found X%.3f Y%.3f (hole X%.3f Y%.3f); %s\n", panel.m_bzCx, panel.m_bzCy,
+                    grbl.hcx, grbl.hcy, qPrintable(panel.m_bzPanel->m_centreResult->text()));
+        check(std::abs(panel.m_bzCx - grbl.hcx) < 0.01 && std::abs(panel.m_bzCy - grbl.hcy) < 0.01,
+              "holecentre: the centre found is the hole's");
+        const int hg10 = grbl.indexOf("G10 L20 P1");
+        const QByteArray hset = hg10 >= 0 ? grbl.events.at(hg10) : QByteArray();
+        std::printf("holecentre: %s\n", hset.constData());
+        check(grbl.count("G10 L20 P1") == 1 && hset.contains(" X") && hset.contains(" Y")
+                  && !hset.contains(" Z"),
+              "holecentre: X0 Y0 set, Z left alone");
+        const int hmm = grbl.indexOf("G21"), hprobe = grbl.indexOf("G38");
+        check(hmm >= 0 && hmm < hprobe, "holecentre: millimetres set before probing");
+        check(panel.m_rightStack->currentWidget() == panel.m_bzPanel,
+              "holecentre: stays on the probe page so the diameter shows");
+        check(panel.m_bzPanel->m_centreResult->text().contains("diameter 20.000"),
+              "holecentre: diameter is the hole's, pin added back");
+        check(std::abs(grbl.mx - grbl.hcx) < 0.01 && std::abs(grbl.my - grbl.hcy) < 0.01,
+              "holecentre: the pin ends over the centre");
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Boss)->click();
+        check(panel.m_bzPanel->m_centreResult->text().isEmpty(),
+              "holecentre: the hole's result is not shown as the boss's");
+    }
+
+    if (mode == "rpmrange") {
+        // $30 raised in Controller settings: the next listing widens the
+        // manual speed box without a reconnect, the speed picked stays.
+        grbl.travel += "$30=12000.000\r\n$31=0.000\r\n";
+        panel.sendTyped(QStringLiteral("$$"));
+        spin(3000, [&] { return panel.m_rpmSpin->maximum() == 12000; });
+        panel.m_rpmSpin->setValue(9000);
+        grbl.travel.replace("$30=12000.000", "$30=24000.000");
+        panel.sendTyped(QStringLiteral("$$"));
+        spin(3000, [&] { return panel.m_rpmSpin->maximum() == 24000; });
+        wait(300);
+        std::printf("rpm range %d..%d, value %d\n", panel.m_rpmSpin->minimum(),
+                    panel.m_rpmSpin->maximum(), panel.m_rpmSpin->value());
+        check(panel.m_rpmSpin->maximum() == 24000, "rpmrange: the new $30 is the top");
+        check(panel.m_rpmSpin->value() == 9000, "rpmrange: the speed picked stays");
+    }
+
+    if (mode == "holetight") {
+        // A 3 mm pin in a 4 mm hole has 1 mm to move: the 2 mm back-off
+        // would rapid it into the far wall. Refused before any motion.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Hole)->click();
+        panel.m_bzPanel->m_holeDia->setValue(4.0);
+        panel.m_bzPanel->m_tipDia->setValue(3.0);
+        panel.m_bzPanel->m_retract->setValue(2.0);
+        // The tip is the pin in the collet: changing plates leaves it alone.
+        panel.m_bzPanel->m_plates->button(1)->click();
+        panel.m_bzPanel->m_plates->button(0)->click();
+        check(std::abs(panel.m_bzPanel->m_tipDia->value() - 3.0) < 1e-9
+                  && std::abs(panel.m_bzPanel->config().toolDiameter - 3.0) < 1e-9,
+              "holetight: the tip stays 3 mm across a plate change");
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(1500);
+        check(grbl.indexOf("G38") < 0 && grbl.indexOf("G0") < 0, "holetight: nothing moves");
+        check(panel.m_phase == c2d::MachinePanel::Phase::Idle, "holetight: no cycle started");
+    }
+
+    if (mode == "bosscentre") {
+        // Boss centre: started a few mm over a 30 mm post, a little off its
+        // middle; X0 Y0 lands on its centre, the diameter with the pin taken off.
+        grbl.geo = true;
+        grbl.boss = true;
+        grbl.topZ = grbl.mz - 3.0;
+        grbl.hcx = grbl.mx - 2.0;
+        grbl.hcy = grbl.my + 1.5;
+        grbl.hR = 15.0;
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Boss)->click();
+        panel.m_bzPanel->m_holeDia->setValue(30.0);
+        panel.m_bzPanel->m_tipDia->setValue(6.35);
+        panel.m_bzPanel->m_bossHeight->setValue(8.0);
+        panel.m_bzPanel->m_bossClear->setValue(5.0);
+        grbl.r = 6.35 / 2.0;
+        const double startZ = grbl.mz;
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(8000);
+        std::printf("centre found X%.3f Y%.3f (boss X%.3f Y%.3f); %s\n", panel.m_bzCx, panel.m_bzCy,
+                    grbl.hcx, grbl.hcy, qPrintable(panel.m_bzPanel->m_centreResult->text()));
+        check(std::abs(panel.m_bzCx - grbl.hcx) < 0.01 && std::abs(panel.m_bzCy - grbl.hcy) < 0.01,
+              "bosscentre: the centre found is the boss's");
+        check(panel.m_bzPanel->m_centreResult->text().contains("diameter 30.000"),
+              "bosscentre: diameter is the boss's, pin taken off");
+        check(grbl.minZ >= startZ - 8.0 - 1e-6, "bosscentre: never lower than the boss height");
+        const int bg10 = grbl.indexOf("G10 L20 P1");
+        const QByteArray bset = bg10 >= 0 ? grbl.events.at(bg10) : QByteArray();
+        check(grbl.count("G10 L20 P1") == 1 && bset.contains(" X") && bset.contains(" Y")
+                  && !bset.contains(" Z"),
+              "bosscentre: X0 Y0 set, Z left alone");
+    }
+    if (mode == "plateany") {
+        // Any touch plate: Z0 the plate thickness under the contact.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Plate)->click();
+        panel.m_bzPanel->m_plateThick->setValue(12.5);
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(4000);
+        std::printf("stock Z %.3f (contact %.3f)\n", panel.m_bzStockZ, grbl.probeZ);
+        check(std::abs(panel.m_bzStockZ - (grbl.probeZ - 12.5)) < 1e-6, "plateany: Z0 plate thickness below");
+        check(grbl.count("G10 L20 P1 Z") == 1 && grbl.count("G10 L20 P1 X") == 0, "plateany: only Z set");
     }
 
     if (mode == "v1reboot") {
@@ -1617,10 +2223,10 @@ int main(int argc, char **argv)
     if (mode == "tlospam") {
         // A G43.1 the controller keeps refusing gets a few tries, not one per report.
         wait(600);
-        grbl.reject = "G43.1";
+        grbl.reject = "G21 G43.1";
         s->applyToolLengthOffset(1.5);
         wait(3000);
-        check(grbl.count("G43.1") <= 4, "a refused G43.1 is not retried endlessly");
+        check(grbl.count("G21 G43.1") <= 4, "a refused G43.1 is not retried endlessly");
     }
     if (mode == "remoteset" || mode == "ovrreset") {
         // Run settings made at the computer that a pad cannot see refuse a
@@ -1720,6 +2326,13 @@ int main(int argc, char **argv)
         }
         check(running == 0, "job ended early: no step of it still says running");
         check(!panel.m_jobView->m_tick->isActive(), "job ended early: the job clock stopped");
+        {
+            const QVector<QJsonObject> h = c2d::jobhistory::read();
+            const QString end = h.value(0).value("end").toString();
+            check(h.size() == 1, "job ended early: one line in the job history");
+            check(mode == "jobcancel" ? end == QLatin1String("cancelled") : end == QLatin1String("stopped"),
+                  qPrintable(QStringLiteral("job ended early: history says how it ended: %1").arg(end)));
+        }
         if (mode == "jobcancel") {
             // Cancel job resets the whole job: no list, no progress, the
             // card back on the toolpaths ticked now.
@@ -1805,7 +2418,7 @@ int main(int argc, char **argv)
         for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
             logText += t->toPlainText();
         check(seen.isEmpty(), "endalarm: Cancel job asks nothing");
-        check(grbl.count("!") == 0 && grbl.count("G43.1") == 0 && grbl.count("G91") == 0 && grbl.count("G53") == 0,
+        check(grbl.count("!") == 0 && grbl.count("G21 G43.1") == 0 && grbl.count("G91") == 0 && grbl.count("G53") == 0,
               "endalarm: Cancel job sends nothing into the locked controller");
         check(!logText.contains(QLatin1String("job cancelled: spindle off, Z up to the top")),
               "endalarm: no claim that Z went up");
@@ -1859,6 +2472,23 @@ int main(int argc, char **argv)
         check(panel.m_progress->format() == QStringLiteral("✓ Finished"), "endpark: the job card says Finished");
         check(panel.statusJson().value("jobEnd").toString() == QLatin1String("finished"),
               "endpark: the pad is told the job finished");
+        {
+            // One history line, with what ran and how it ended.
+            const QVector<QJsonObject> h = c2d::jobhistory::read();
+            check(h.size() == 1, "endpark: one line in the job history");
+            const QJsonObject r = h.value(0);
+            check(r.value("end").toString() == QLatin1String("finished") && r.value("percent").toInt() == 100,
+                  "endpark: history says finished");
+            check(r.value("toolpaths").toInt() == 2 && r.value("toolChanges").toInt() == 2,
+                  qPrintable(QStringLiteral("endpark: history counts 2 toolpaths, 2 tool changes: %1 %2")
+                                 .arg(r.value("toolpaths").toInt()).arg(r.value("toolChanges").toInt())));
+            check(!r.value("machine").toString().isEmpty() && r.value("job").toString() == QLatin1String("Untitled")
+                      && r.value("estSec").toDouble() > 0 && r.value("realSec").toDouble() >= 0,
+                  "endpark: history has machine, job name and times");
+            check(QDateTime::fromString(r.value("start").toString(), Qt::ISODate).isValid()
+                      && QDateTime::fromString(r.value("finish").toString(), Qt::ISODate).isValid(),
+                  "endpark: history has start and end time");
+        }
         // Cancel job afterwards clears it back to a plain card.
         button(QStringLiteral("✕ Cancel job"))->click();
         wait(500);

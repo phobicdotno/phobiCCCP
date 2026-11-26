@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QImage>
 #include <QObject>
+#include <QRectF>
 #include <QStringList>
 #include <QVector>
 #include <atomic>
@@ -102,6 +103,28 @@ struct SimResult {
     RapidHit worstRapid;
 };
 
+// "What's left": cells inside a 2D toolpath's intended flat floor
+// (intendedFloors(), gcodeexport.h) whose simulated surface still stands more
+// than `tol` above it, grouped into 8-connected areas. Areas under `minArea`
+// mm² are dropped as noise. A one-cell rim just inside each region's edge is
+// not checked, so the wall's own rasterisation does not read as material.
+struct LeftoverArea {
+    QRectF box;            // bounding box, document mm
+    double area = 0;       // mm²
+    double height = 0;     // tallest, mm above the intended floor
+};
+struct LeftoverResult {
+    QVector<quint8> mask;  // width*height, 1 = left uncut; empty when none
+    QList<LeftoverArea> areas;   // largest first
+    double totalArea = 0;
+};
+LeftoverResult findLeftovers(const HeightMap &map, const QVector<IntendedFloor> &floors,
+                             double tol = 0.1, double minArea = 0.05);
+
+// One plain line for the panel, e.g. "Left uncut: 4 areas, largest ≈ 1.2 × 1.2 mm
+// — try a smaller bit or rest machining"; "Nothing left uncut" when none.
+QString leftoverSummary(const LeftoverResult &r);
+
 using SimProgress = std::function<void(int)>;   // percent 0..100
 
 // Run the simulation synchronously. `cancel` (optional) is polled between
@@ -118,12 +141,17 @@ SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
 // `gouges` mask, SimResult::gougeMask) in red.
 QImage renderHeightMap(const HeightMap &map, double stockT,
                        const QVector<quint8> &gouges = {});
+// Tints the cells of `mask` (LeftoverResult::mask) orange on an image from
+// renderHeightMap() of the same map. Cells set in `gouges` stay red.
+void paintLeftovers(QImage &img, const QVector<quint8> &mask,
+                    const QVector<quint8> &gouges = {});
 
 // Colours used by renderHeightMap, exposed for the panel's legend.
 QColor simColorUncut();
 QColor simColorDeep();
 QColor simColorThrough();
 QColor simColorGouge();
+QColor simColorLeftover();
 
 // Worker-thread wrapper: start() returns immediately, progress()/finished()
 // are emitted on the job's thread (the GUI thread), result() is valid after

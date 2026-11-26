@@ -55,6 +55,15 @@ struct SubPath {
     void moveHandle(int i, bool outHandle, const QPointF &to, bool breakSymmetry);
 };
 
+// One glyph of a text element's straight layout (Element::textGlyphs): the
+// outline in local mm (Y-up, baseline on y = 0), the left edge of its
+// grapheme cluster on the baseline and that cluster's advance.
+struct TextGlyph {
+    QPainterPath path;
+    double cluster = 0;
+    double advance = 0;
+};
+
 struct PathModel {
     QVector<SubPath> subs;
     bool isEmpty() const { return subs.isEmpty(); }
@@ -129,6 +138,12 @@ public:
     // the pseudo-keys "family", "bold", "italic" that rewrite font/qtfont.
     static Element regenText(const Element &src, const QJsonObject &changes);
     static void renderText(QJsonObject &textObj);
+    // The straight (arc ignored) glyph layout renderText starts from, in the
+    // text's local space; `width` gets the whole string's advance.
+    static QVector<TextGlyph> textGlyphs(const QJsonObject &textObj, double *width = nullptr);
+    // A text element in a single-line (stroke) font: its contours are open
+    // strokes, cut on the line by Engrave and Fluting, ignored by pockets.
+    static bool isStrokeText(const QJsonObject &textObj);
     // The font a text element was rendered with (from qtfont, else `font`).
     static QFont textFont(const QJsonObject &textObj);
 

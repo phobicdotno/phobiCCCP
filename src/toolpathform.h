@@ -1,4 +1,5 @@
 #pragma once
+#include "toolpathfields.h"
 #include <QHash>
 #include <QJsonObject>
 #include <QWidget>
@@ -10,6 +11,7 @@ class QVBoxLayout;
 namespace c2d {
 
 class Document;
+struct ChiploadRange;
 
 // The selected toolpath's settings as a form instead of a key/value table:
 // a header (name, enabled), the tool as a card, then grouped cards - Depth,
@@ -35,7 +37,7 @@ public:
     // Number fields evaluate expressions against this document's parameters.
     void setDocument(const Document *doc) { m_doc = doc; }
 
-    struct Field;   // one designed field (toolpathform.cpp)
+    using Field = ToolpathField;   // one designed field (toolpathfields.h)
 
 signals:
     void edited(const QJsonObject &json);   // the whole payload, one change applied
@@ -51,6 +53,8 @@ private:
     QWidget *card(const QString &id, const QString &title, bool openByDefault, QVBoxLayout **body);
     QWidget *editorFor(const QString &key, const Field &f);
     void refreshEnabled();
+    ChiploadRange chiploadRangeNow() const;
+    void suggestFeed();
 
     const Document *m_doc = nullptr;
     QString m_uuid, m_type;
@@ -61,6 +65,7 @@ private:
     QHash<QString, QString> m_enabledBy;   // flat key -> bool key that greys it out
     QLabel *m_toolIcon = nullptr;
     QLabel *m_toolText = nullptr;
+    QLabel *m_chipText = nullptr;          // chipload line under the spindle speed
     QLineEdit *m_name = nullptr;
     bool m_loading = false;
 };

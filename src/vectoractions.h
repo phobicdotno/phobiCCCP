@@ -1,4 +1,5 @@
 #pragma once
+#include "nesting.h"
 #include "vectorops.h"
 #include <functional>
 #include <QObject>
@@ -56,6 +57,25 @@ public:
     // points and construction geometry.
     void boolean(vec::BoolOp op);
     void offsetBy(double delta, bool keepInputs);
+    // Join and close (vec::joinElements) on the selected vectors, or on every
+    // vector when nothing is selected; one undo step. checkVectors() reports
+    // open, duplicate, zero-length and self-crossing shapes in a popup and
+    // selects them.
+    void joinVectors(double gap);
+    void checkVectors();
+    // Text on path (vec::textOnPathElements): the one selected text laid
+    // along the one selected vector, replaced by plain closed vectors; the
+    // path stays. One undo step.
+    void textOnPath(const vec::TextOnPathOptions &opt);
+
+    // Nest on stock, dialog-free: each selected shape not inside another
+    // selected one is a part; everything inside it (holes, text) moves with
+    // it. `copies` of each part are placed (copies join the originals'
+    // toolpaths). One undo step. Returns the parts that found no room (left
+    // where they were), described for the user.
+    QStringList nestOnStock(const nest::Options &opt, int copies = 1);
+    // Twice the bit of the first outside contour or cutout, else 6.35 mm.
+    double defaultNestSpacing() const;
 
     // Runs before every Vectors action: the window commits a number typed in
     // a panel (no Enter yet), or the action's refresh would drop it.
@@ -75,8 +95,11 @@ private:
     void patternOnPathDialog();
     void rotateDialog();
     void scaleDialog();
+    void nestDialog();
     void moveCopyDialog();
     void cornersDialog(vec::CornerStyle style);
+    void joinDialog();
+    void textOnPathDialog();
     void reportDone(const QString &msg);
     void pushReshape(const QVector<Element> &before, const QVector<Element> &after,
                      const QString &text, const QTransform &moved = QTransform());
@@ -84,7 +107,8 @@ private:
                     bool joinToolpaths, const QString &text);
     void pushMoves(const QStringList &ids, const QVector<QPointF> &deltas, const QString &text);
     void pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
-                     bool keepInputs, const QString &text);
+                     bool keepInputs, const QString &text,
+                     const QHash<QString, QString> &resultOf = {});
 
     Canvas *m_canvas;
     QStringList m_order;               // selected ids, first-selected first

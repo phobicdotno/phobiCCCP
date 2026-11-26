@@ -108,6 +108,8 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     // reconnect may be another machine (machine profiles) or a controller
     // whose settings changed. Until the new $$ arrives the fallbacks apply.
     m_settings.clear();
+    m_inListing = false;
+    m_banner.clear();
     m_wcoX = m_wcoY = m_wcoZ = 0;
     m_haveWco = false;
     m_statusTimer->start();
@@ -287,13 +289,18 @@ QString GrblStreamer::crossToFirstCut(const QStringList &lines, int from)
 
 GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
 {
-    static const QRegularExpression gWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*([0-9]+)(?![0-9.])"));
+    // A word starts after anything but a letter: "G90G1" is G90 and G1
+    // (a look-behind, so one match does not eat the next one's boundary).
+    static const QRegularExpression gWord(QStringLiteral("(?<![A-Z])G0*([0-9]+)(?![0-9.])"));
     static const QRegularExpression fWord(QStringLiteral("(?:^|[^A-Z])F(-?[0-9.]+)"));
     static const QRegularExpression sWord(QStringLiteral("(?:^|[^A-Z])S(-?[0-9.]+)"));
     static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z(-?[0-9.]+)"));
-    static const QRegularExpression mWord(QStringLiteral("(?:^|[^A-Z0-9.])M0*([345])(?![0-9.])"));
+    static const QRegularExpression xWord(QStringLiteral("(?:^|[^A-Z])X(-?[0-9.]+)"));
+    static const QRegularExpression yWord(QStringLiteral("(?:^|[^A-Z])Y(-?[0-9.]+)"));
+    static const QRegularExpression mWord(QStringLiteral("(?<![A-Z])M0*([345])(?![0-9.])"));
     static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
     Modal m;
+    bool hx = false, hy = false;
     for (int i = 0; i < upTo && i < lines.size(); ++i) {
         QString l = lines.at(i);
         l = l.left(l.indexOf(QChar(';')) < 0 ? l.size() : l.indexOf(QChar(';')));
@@ -301,15 +308,27 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
         l = l.toUpper();
         if (l.startsWith(kToolMarker) || l == kHoldMarker || l.trimmed().isEmpty())
             continue;
-        bool machine = false;
+        bool machine = false, home = false;
         for (auto it = gWord.globalMatch(l); it.hasNext();) {
             const int g = it.next().captured(1).toInt();
             if (g >= 0 && g <= 3)
                 m.motion = g;
+            else if (g == 28 || g == 30)
+                home = true;
             else if (g == 91)
                 m.valid = false;             // relative moves: Z cannot be followed
             else if (g == 53)
                 machine = true;
+            else if (g == 20 || g == 21) {
+                // G20/G21 change how later numbers read, not where the
+                // machine stands: keep what is known in the new units.
+                const bool in = g == 20;
+                if (in != m.inches) {
+                    const double k = in ? 1.0 / 25.4 : 25.4;
+                    m.x *= k; m.y *= k; m.z *= k; m.feed *= k;
+                    m.inches = in;
+                }
+            }
         }
         auto fm = fWord.match(l);
         if (fm.hasMatch()) { m.feed = fm.captured(1).toDouble(); m.haveFeed = true; }
@@ -317,13 +336,182 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
         if (sm.hasMatch()) { m.speed = sm.captured(1).toDouble(); m.haveSpeed = true; }
         for (auto it = mWord.globalMatch(l); it.hasNext();)
             m.spindle = it.next().captured(1).at(0);
-        auto zm = zWord.match(l);
-        if (zm.hasMatch() && !machine) {
-            m.z = zm.captured(1).toDouble();
-            m.haveZ = true;
+        const auto xm = xWord.match(l), ym = yWord.match(l), zm = zWord.match(l);
+        if (!machine && !home) {
+            if (xm.hasMatch()) { m.x = xm.captured(1).toDouble(); hx = true; }
+            if (ym.hasMatch()) { m.y = ym.captured(1).toDouble(); hy = true; }
+            if (zm.hasMatch()) { m.z = zm.captured(1).toDouble(); m.haveZ = true; }
+        } else {
+            // A machine-coordinate move or a trip to a stored spot leaves the
+            // work axis it names (G28/G30 alone: all three) unknown until
+            // set again: a descent from a stale Z would plunge.
+            const bool all = home && !xm.hasMatch() && !ym.hasMatch() && !zm.hasMatch();
+            if (xm.hasMatch() || all) hx = false;
+            if (ym.hasMatch() || all) hy = false;
+            if (zm.hasMatch() || all) m.haveZ = false;
         }
     }
+    m.haveXY = hx && hy;
     return m;
+}
+
+static bool queuedLine(const QString &l)
+{
+    const QString s = l.trimmed();
+    return !s.isEmpty() && !s.startsWith(QChar('('));
+}
+
+// GRBL refuses a G2 or G3 block with no axis words (error:26), so a modal
+// arc cannot be put back as a line of its own: name it on the program's next
+// move that does not choose its own motion mode.
+static void armNextMove(QStringList &lines, int from, int motion)
+{
+    static const QRegularExpression motionWord(QStringLiteral("(?<![A-Z])G0*[0-3](?![0-9.])"));
+    static const QRegularExpression axisWord(QStringLiteral("(?:^|[^A-Z])[XYZ]-?[0-9.]"));
+    static const QRegularExpression axisCommand(QStringLiteral("G(?:53|28|30|92|10)(?![0-9.])"));
+    static const QRegularExpression pause(QStringLiteral("^M0*[01](?![0-9])"));
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
+    for (int i = qMax(0, from); i < lines.size(); ++i) {
+        QString l = lines.at(i);
+        const int c = l.indexOf(QChar(';'));
+        if (c >= 0) l.truncate(c);
+        l.remove(paren);
+        l = l.trimmed().toUpper();
+        if (l.isEmpty())
+            continue;
+        if (l.startsWith(kToolMarker) || l == kHoldMarker || pause.match(l).hasMatch()
+            || motionWord.match(l).hasMatch())
+            return;
+        if (!axisWord.match(l).hasMatch())
+            continue;
+        if (!axisCommand.match(l).hasMatch())
+            lines[i] = QStringLiteral("G%1 ").arg(motion) + lines.at(i).trimmed();
+        return;
+    }
+}
+
+int GrblStreamer::rawIndexOfQueued(const QStringList &lines, int q)
+{
+    int n = 0;
+    for (int i = 0; i < lines.size(); ++i) {
+        if (!queuedLine(lines.at(i)))
+            continue;
+        if (n == q)
+            return i;
+        ++n;
+    }
+    return -1;
+}
+
+int GrblStreamer::toolMarkersBefore(const QStringList &lines, int q, int *lastTool)
+{
+    int n = 0, count = 0, last = -1;
+    for (int i = 0; i < lines.size() && n < q; ++i) {
+        if (!queuedLine(lines.at(i)))
+            continue;
+        const int t = toolMarkerNumber(lines.at(i).trimmed());
+        if (t >= 0) {
+            ++count;
+            last = t;
+        }
+        ++n;
+    }
+    if (lastTool)
+        *lastTool = last;
+    return count;
+}
+
+QStringList GrblStreamer::startFromLines(const QStringList &lines, int fromQ, const QStringList &rise,
+                                         int toolChange, const QString &coolant, QString *why)
+{
+    auto fail = [&](const QString &w) {
+        if (why)
+            *why = w;
+        return QStringList{};
+    };
+    const int raw = rawIndexOfQueued(lines, fromQ);
+    if (fromQ <= 0 || raw < 0)
+        return fail(QStringLiteral("that step is not in the program"));
+    if (rise.isEmpty())
+        return fail(QStringLiteral("the machine is not homed: there is no safe way up"));
+    if (toolMarkerNumber(lines.at(raw).trimmed()) >= 0)
+        return fail(QStringLiteral("pick a toolpath, not a tool change"));
+    const Modal m = scanModal(lines, raw);
+    if (!m.valid)
+        return fail(QStringLiteral("the program moves in relative steps (G91) before that point"));
+    if (m.inches)
+        return fail(QStringLiteral("the program is in inches (G20)"));
+    if (!m.haveXY || !m.haveZ || !m.haveFeed)
+        return fail(QStringLiteral("the program has not moved to a known spot before that point"));
+    // The program's first line there must not need the motion before it:
+    // an arc continued without its start point would cut a wrong curve.
+    int first = raw;
+    while (first > 0 && !queuedLine(lines.at(first - 1)) && !lines.at(first - 1).trimmed().isEmpty())
+        --first;
+    // How fast to go into the stock: the row's own plunge (a G1 with Z
+    // alone) or the program's feed, at most 600 mm/min.
+    double plunge = qMin(m.feed, 600.0);
+    {
+        static const QRegularExpression fz(QStringLiteral("F(-?[0-9.]+)"));
+        for (int i = raw; i < lines.size() && i < raw + 40; ++i) {
+            const QString u = lines.at(i).trimmed().toUpper();
+            if (!queuedLine(u) || u.contains(QChar('X')) || u.contains(QChar('Y')))
+                continue;
+            if ((u.startsWith(QLatin1String("G1")) || u.startsWith(QLatin1String("G01"))) && u.contains(QChar('Z'))) {
+                const auto f = fz.match(u);
+                if (f.hasMatch() && f.captured(1).toDouble() > 0)
+                    plunge = qMin(f.captured(1).toDouble(), plunge);
+                break;
+            }
+        }
+    }
+    QStringList r{QStringLiteral("G21"), QStringLiteral("G90"), QStringLiteral("G17")};
+    r += rise;
+    if (toolChange >= 0) {
+        if (!coolant.isEmpty())
+            r << QStringLiteral("M9");
+        r << QStringLiteral("M5") << QStringLiteral("M0 ;T%1").arg(toolChange);
+        r += rise;
+    }
+    r << QStringLiteral("G90 G0 X%1 Y%2").arg(m.x, 0, 'f', 3).arg(m.y, 0, 'f', 3);
+    if ((m.spindle == QChar('3') || m.spindle == QChar('4')) && m.haveSpeed) {
+        r << QStringLiteral("M%1 S%2").arg(m.spindle).arg(m.speed, 0, 'f', 0)
+          << QStringLiteral("G4P3.00");
+        if (!coolant.isEmpty())
+            r << coolant;
+    }
+    if (m.z >= 2.5) {
+        r << QStringLiteral("G0 Z%1").arg(m.z, 0, 'f', 3);
+    } else {
+        r << QStringLiteral("G0 Z2.500")
+          << QStringLiteral("G1 Z%1 F%2").arg(m.z, 0, 'f', 3).arg(plunge, 0, 'f', 0);
+    }
+    r << QStringLiteral("G1 F%1").arg(m.feed, 0, 'f', 1);
+    if (m.motion == 0)
+        r << QStringLiteral("G0");
+    QStringList rest = lines.mid(first);
+    if (m.motion == 2 || m.motion == 3)
+        armNextMove(rest, 0, m.motion);   // an arc continued from the line before
+    return r + rest;
+}
+
+// Down to the program's work Z after a lift: a rapid to 2.5 mm above the
+// stock, then into it at the program's feed, at most 600 mm/min. Always in
+// millimetres (the caller puts G21 before and an inch program's G20 after):
+// read in G20 the same numbers were 2.5 in and 600 in/min, a 15 m/min plunge.
+static QStringList approachZ(const GrblStreamer::Modal &m, const QString &sep)
+{
+    const double k = m.inches ? 25.4 : 1.0;
+    const double z = m.z * k;
+    QStringList r;
+    if (z >= 2.5) {
+        r << QStringLiteral("G0%1Z%2").arg(sep).arg(z, 0, 'f', 3);
+    } else {
+        r << QStringLiteral("G0%1Z2.500").arg(sep)
+          << QStringLiteral("G1%1Z%2%1F%3").arg(sep).arg(z, 0, 'f', 3)
+                 .arg(qMin(m.haveFeed ? m.feed * k : 600.0, 600.0), 0, 'f', 0);
+    }
+    return r;
 }
 
 bool GrblStreamer::canLiftHold() const
@@ -364,7 +552,9 @@ QStringList GrblStreamer::resumeLinesAfterHold() const
 {
     const Modal m = scanModal(m_queue, m_holdAt);
     QStringList r;
-    r << QStringLiteral("G90");
+    // The rise was in mm (G21), and the way down stays in mm: an inch
+    // program gets its units back after it, before its own next line.
+    r << QStringLiteral("G21") << QStringLiteral("G90");
     if ((m.spindle == QChar('3') || m.spindle == QChar('4')) && m.haveSpeed) {
         r << QStringLiteral("M0%1S%2").arg(m.spindle).arg(m.speed, 0, 'f', 0)
           << QStringLiteral("G4P3.00");                // the post's own spin-up wait
@@ -373,21 +563,17 @@ QStringList GrblStreamer::resumeLinesAfterHold() const
         // Down to where the program was: a rapid to just above the stock, then
         // slowly into the cut. The work Z is the program's own (G43.1 and the
         // zero stand), XY did not change.
-        if (m.z >= 2.5) {
-            r << QStringLiteral("G0Z%1").arg(m.z, 0, 'f', 3);
-        } else {
-            r << QStringLiteral("G0Z2.500")
-              << QStringLiteral("G1Z%1F%2").arg(m.z, 0, 'f', 3)
-                     .arg(qMin(m.haveFeed ? m.feed : 600.0, 600.0), 0, 'f', 0);
-        }
+        r += approachZ(m, QString());
     }
+    if (m.inches)
+        r << QStringLiteral("G20");
     // The program's modal state: its feed and motion mode, as it left them.
     if (m.haveFeed)
         r << QStringLiteral("G1F%1").arg(m.feed, 0, 'f', 1);
     if (m.motion == 0)
         r << QStringLiteral("G0");
     else if (m.motion >= 2)
-        r << QStringLiteral("G1");     // arcs always name their own G word
+        r << QStringLiteral("G1");     // the arc itself goes back on the next move (continueAfterHold)
     return r;
 }
 
@@ -395,12 +581,15 @@ void GrblStreamer::continueAfterHold(const QStringList &lines)
 {
     if (!m_streaming || !m_waitingHold)
         return;
+    const Modal before = scanModal(m_queue, m_holdAt);
     int at = m_nextIndex;
     for (const QString &l : lines) {
         const QString t = l.trimmed();
         if (!t.isEmpty())
             m_queue.insert(at++, t);
     }
+    if (before.valid && (before.motion == 2 || before.motion == 3))
+        armNextMove(m_queue, at, before.motion);
     m_waitingHold = false;
     m_holdQueued = false;
     m_ackClock.restart();
@@ -410,10 +599,45 @@ void GrblStreamer::continueAfterHold(const QStringList &lines)
     pump();
 }
 
-void GrblStreamer::continueAfterToolChange(const QStringList &first)
+// Does the program go on cutting where it stopped? The index of its first
+// line that moves in X, Y or Z when that is a cut (G1/G2/G3, modal or its
+// own) with X or Y: it starts from the spot and depth the machine had, and
+// run from the top it would cut in the air or ramp a wrong slope. -1 for a
+// Z-only line, a rapid or a machine-coordinate move first: the program
+// finds its own way down.
+static int cutAfterStop(const QStringList &lines, int from, int motion)
+{
+    static const QRegularExpression motionWord(QStringLiteral("(?<![A-Z])G0*([0-3])(?![0-9.])"));
+    static const QRegularExpression xyWord(QStringLiteral("(?:^|[^A-Z])[XY]-?[0-9.]"));
+    static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z-?[0-9.]"));
+    static const QRegularExpression axisCommand(QStringLiteral("G(?:53|28|30|92|10)(?![0-9.])"));
+    static const QRegularExpression pause(QStringLiteral("^M0*[01](?![0-9])"));
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
+    for (int i = qMax(0, from); i < lines.size(); ++i) {
+        QString l = lines.at(i);
+        l.remove(paren);
+        const int c = l.indexOf(QChar(';'));
+        if (c >= 0) l.truncate(c);
+        l = l.trimmed().toUpper();
+        if (l.isEmpty())
+            continue;
+        if (l.startsWith(kToolMarker) || l == kHoldMarker || pause.match(l).hasMatch()
+            || axisCommand.match(l).hasMatch() || l.contains(QStringLiteral("G91")))
+            return -1;
+        for (auto it = motionWord.globalMatch(l); it.hasNext();)
+            motion = it.next().captured(1).toInt();
+        const bool xy = xyWord.match(l).hasMatch();
+        if (!xy && !zWord.match(l).hasMatch())
+            continue;
+        return xy && motion >= 1 ? i : -1;
+    }
+    return -1;
+}
+
+int GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
-        return;
+        return 0;
     // The park travel or the BitSetter probe is still running. Resuming here
     // would put two writers on the line: pump() writes cutting moves while
     // pumpMacro() is still working through M5 / G53 moves, the macro branch
@@ -423,33 +647,97 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
     if (m_macroActive) {
         emit consoleLine(QStringLiteral("== still moving - wait for the tool "
                                         "measurement to finish =="));
-        return;
+        return 0;
     }
     // Lines to run before the program resumes (the rise to the top) go into
     // the program itself, so they are sent and acknowledged like any other
     // program line instead of as commands on the side.
+    // The rise, the crossing and the park or probe macro all leave GRBL in
+    // G0 (and a probe at its own feed): a program line after the change that
+    // names no motion word would run as a rapid. The program's own motion
+    // mode and feed go back in after the way in.
+    const Modal before = scanModal(m_queue, m_nextIndex);
+    // An arc that goes on after the change starts where the machine stood
+    // before it, and GRBL takes its centre (I/J) from there. Crossing to a
+    // later X/Y (the arc's own end) would cut a different circle. Without
+    // that spot known there is no right place to start it from.
+    const bool arc = before.valid && (before.motion == 2 || before.motion == 3);
+    if (arc && !before.haveXY) {
+        emit errorOccurred(QStringLiteral("cannot continue: the program goes on with an arc, and "
+                                          "where that arc starts is not known. Stop, and start "
+                                          "from the next toolpath."));
+        return 0;
+    }
+    // A cut that goes on after the change (a 2D contour at one depth names
+    // no Z again) starts where the machine stood, at the depth it had: back
+    // there at the top, then down, then the cut.
+    const int cutAt = !first.isEmpty() && before.valid ? cutAfterStop(m_queue, m_nextIndex, before.motion) : -1;
+    const bool cutOn = cutAt >= 0;
+    if (cutOn && (!before.haveXY || !before.haveZ)) {
+        emit errorOccurred(QStringLiteral("cannot continue: the program goes on cutting, and where "
+                                          "or how deep that cut starts is not known. Stop, and "
+                                          "start from the next toolpath."));
+        return 0;
+    }
     int at = m_nextIndex;
     for (const QString &l : first) {
         const QString t = l.trimmed();
         if (!t.isEmpty() && !t.startsWith(QChar('(')))
             m_queue.insert(at++, t);
     }
+    // The park, the measurement and the rise are in mm (G21); a program in
+    // inches gets its own units back before its next move.
+    if (before.valid && before.inches)
+        m_queue.insert(at++, QStringLiteral("G20"));
     // The resume can start with a rapid down in work Z (the post's retract),
     // and the spindle may be standing over the BitSetter still: cross to the
     // first cut at the top before the program may come down.
     if (!first.isEmpty()) {
-        const QString across = crossToFirstCut(m_queue, at);
+        const QString across = (arc || cutOn)
+                                   ? QStringLiteral("G90 G0 X%1 Y%2").arg(before.x, 0, 'f', 3).arg(before.y, 0, 'f', 3)
+                                   : crossToFirstCut(m_queue, at);
         if (!across.isEmpty())
             m_queue.insert(at++, across);
     }
+    if (!cutOn && before.valid && before.haveFeed && before.motion >= 1)
+        m_queue.insert(at++, QStringLiteral("G1 F%1").arg(before.feed, 0, 'f', 1));
+    int added = at - m_nextIndex;
+    int armFrom = at;
+    if (cutOn) {
+        // Down right before the cut, after the program's own spindle start
+        // and its wait between the change and the cut (the park stopped the
+        // spindle): as after a hold, a rapid to just above the stock, then
+        // slowly in; then the program's feed again.
+        const int cut = cutAt + added;
+        int c = cut;
+        // The program may change units between the change and the cut: the
+        // cut reads its numbers in the units active right before it.
+        const bool cutInches = scanModal(m_queue, cut).inches;
+        // The way down always in mm (G21), then the cut's own units again.
+        if (cutInches)
+            m_queue.insert(c++, QStringLiteral("G21"));
+        for (const QString &l : approachZ(before, QStringLiteral(" ")))
+            m_queue.insert(c++, l);
+        if (cutInches)
+            m_queue.insert(c++, QStringLiteral("G20"));
+        if (before.haveFeed) {
+            const double feed = before.feed * (before.inches ? 25.4 : 1.0) / (cutInches ? 25.4 : 1.0);
+            m_queue.insert(c++, QStringLiteral("G1 F%1").arg(feed, 0, 'f', 1));
+        }
+        added += c - cut;
+        armFrom = c;
+    }
+    if (before.valid && (before.motion == 2 || before.motion == 3))
+        armNextMove(m_queue, armFrom, before.motion);
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
-    if (at != m_nextIndex)
+    if (added)
         emit progressChanged(m_ackedCount, m_queue.size());
     pump();
+    return added;
 }
 
 // Everything in flight is void after a controller reset we did not ask for.
@@ -729,6 +1017,7 @@ QStringList GrblStreamer::measureToolLines(const BitSetterConfig &cfg, bool retu
     // of a G38.2 until the probe cycle ends, so the macro naturally waits.
     QStringList m;
     m << QStringLiteral("M5")
+      << QStringLiteral("G21")                 // mm, whatever was typed before
       << QStringLiteral("G90")
       << QStringLiteral("G53 G0 Z%1").arg(cfg.safeZ, 0, 'f', 3)
       << QStringLiteral("G53 G0 X%1 Y%2").arg(cfg.x, 0, 'f', 3).arg(cfg.y, 0, 'f', 3)
@@ -775,7 +1064,9 @@ void GrblStreamer::flushTlo()
     ++m_adhocPending;
     m_adhocLines << QStringLiteral("G43.1");
     m_adhocClock.restart();
-    writeLine(QStringLiteral("G43.1 Z%1").arg(m_tlo, 0, 'f', 3));
+    // In mm whatever was typed or run before: in G20 the offset would be
+    // read 25.4 times too large. An inch program gets G20 back on resume.
+    writeLine(QStringLiteral("G21 G43.1 Z%1").arg(m_tlo, 0, 'f', 3));
 }
 
 void GrblStreamer::resyncAdhoc(const QString &why)
@@ -824,9 +1115,16 @@ void GrblStreamer::handleLine(const QByteArray &line)
         bool okN = false, okV = false;
         const int n = line.mid(1, eq - 1).toInt(&okN);
         const double v = line.mid(eq + 1).toDouble(&okV);
-        if (okN && okV)
+        if (okN && okV) {
             m_settings.insert(n, v);
+            m_inListing = true;
+        }
+    } else if (m_inListing && (line == "ok" || line.startsWith("error:"))) {
+        m_inListing = false;
+        emit settingsListed();
     }
+    if (line.startsWith("Grbl"))
+        m_banner = QString::fromLatin1(line).trimmed();
     // Realtime status: <Idle|MPos:10.000,20.000,-1.000|FS:500,8000|WCO:0,0,0>
     if (line.startsWith('<')) {
         const QList<QByteArray> parts = line.mid(1).chopped(line.endsWith('>') ? 1 : 0).split('|');
@@ -865,6 +1163,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
                 if (c.size() >= 2) {
                     st.feed = c.at(0).toDouble() * k;   // inch/min with $13=1
                     st.spindle = c.at(1).toDouble();
+                    st.spindleReported = true;
                 }
             } else if (p.startsWith("Ov:")) {
                 const QList<QByteArray> c = p.mid(3).split(',');
@@ -873,6 +1172,15 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     st.ovRapid = c.at(1).toInt();
                     st.ovSpindle = c.at(2).toInt();
                 }
+                st.flood = st.mist = false;   // an A: in this report says otherwise
+                for (const QByteArray &q : parts)
+                    if (q.startsWith("A:")) {
+                        st.flood = q.indexOf('F', 2) >= 0;
+                        st.mist = q.indexOf('M', 2) >= 0;
+                    }
+            } else if (p.startsWith("A:")) {
+                st.flood = p.indexOf('F', 2) >= 0;
+                st.mist = p.indexOf('M', 2) >= 0;
             } else if (p.startsWith("Pn:")) {
                 st.probePin = p.indexOf('P', 3) >= 0;   // past the "Pn:" itself
                 for (char a : {'X', 'Y', 'Z', 'A'})

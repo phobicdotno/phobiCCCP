@@ -2,10 +2,11 @@
 // (machinepanel.cpp): the phobiCCCPs on the network and their machines on the
 // left, the job and the big amber Start on the right.
 
+import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../model.dart';
@@ -27,7 +28,156 @@ class MachinePage extends StatefulWidget {
 class _MachinePageState extends State<MachinePage> {
   String? _computer;
   bool _busy = false;
+  // Stop takes two taps: the first arms it, for that computer, for a few seconds.
+  String? _stopArmedFor;
+  Timer? _stopDisarm;
+  // Hold/Resume/Stop requests waiting for an answer, counted per computer:
+  // Hold and Resume wait for them; Stop never does (a slow Hold, or one sent
+  // to another computer, must not keep Stop out of reach).
+  final Map<String, int> _pending = {};
   AppState get app => widget.app;
+
+
+  Future<void> _control(Computer c, String op) async {
+    final id = c.desktop.id;
+    _stopDisarm?.cancel();
+    setState(() {
+      _stopArmedFor = null;
+      _pending[id] = (_pending[id] ?? 0) + 1;
+    });
+    try {
+      await app.control(c, op);
+      widget.onStatus(switch (op) {
+        'hold' => 'Hold sent to ${c.name}',
+        'resume' => 'Resume sent to ${c.name}',
+        _ => 'Stop sent to ${c.name}',
+      });
+    } catch (e) {
+      widget.onStatus('Not done: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          final n = (_pending[id] ?? 1) - 1;
+          if (n > 0) {
+            _pending[id] = n;
+          } else {
+            _pending.remove(id);
+          }
+        });
+      }
+    }
+  }
+
+  void _stopTap(Computer c) {
+    if (_stopArmedFor == c.desktop.id) {
+      _control(c, 'stop');
+      return;
+    }
+    _stopDisarm?.cancel();
+    _stopDisarm = Timer(const Duration(seconds: 4), () {
+      if (mounted) setState(() => _stopArmedFor = null);
+    });
+    setState(() => _stopArmedFor = c.desktop.id);
+  }
+
+  Widget _bigBtn(String label, IconData icon, Color color, VoidCallback? onTap, {Color text = C.base}) => SizedBox(
+        height: 64,
+        child: Material(
+          color: onTap != null ? color : color.withAlpha(90),
+          borderRadius: BorderRadius.circular(8),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: onTap,
+            child: Center(
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(icon, color: text, size: 30),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(label,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: text)),
+                ),
+              ]),
+            ),
+          ),
+        ),
+      );
+
+  /// Hold / Resume and Stop while a job runs there. Hold and Stop always;
+  /// Resume only where pads may start cutting.
+  Widget _runControls(Computer c, DesktopInfo info) {
+    final held = info.status.onHold;
+    final free = !_pending.containsKey(c.desktop.id);
+    final armed = _stopArmedFor == c.desktop.id;
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Row(children: [
+        Expanded(
+          child: held
+              ? _bigBtn('Resume', Icons.play_arrow_rounded, C.amber,
+                  free && info.allowStart ? () => _control(c, 'resume') : null)
+              : _bigBtn('Hold', Icons.pause_rounded, C.amber, free ? () => _control(c, 'hold') : null),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: _bigBtn(armed ? 'Tap again to stop' : 'Stop', Icons.stop_rounded,
+              armed ? const Color(0xFFFF3B3B) : const Color(0xFFD03A3A), () => _stopTap(c),
+              text: Colors.white),
+        ),
+      ]),
+      if (held && !info.allowStart)
+        Padding(
+          padding: const EdgeInsets.only(top: 8),
+          child: Text('Resume is off on ${c.name} (Machine › Pads may start cutting); resume it there.',
+              style: const TextStyle(color: C.amber, fontSize: 13)),
+        ),
+      if (armed)
+        const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text('Stop resets the controller at once: the job ends and the machine needs Initialize after.',
+              style: TextStyle(color: Color(0xFFE06C6C), fontSize: 13)),
+        ),
+      const SizedBox(height: 10),
+    ]);
+  }
+
+  // How each computer's last job ended, as last seen: a change to finished
+  // or stopped gets a banner and a sound here, once.
+  final Map<String, String> _jobEnds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    app.addListener(_watchJobEnd);
+    _watchJobEnd();
+  }
+
+  @override
+  void dispose() {
+    app.removeListener(_watchJobEnd);
+    _stopDisarm?.cancel();
+    super.dispose();
+  }
+
+  void _watchJobEnd() {
+    for (final c in app.computers) {
+      final info = c.info;
+      if (info == null) continue;
+      final id = c.desktop.id;
+      final end = info.status.streaming ? '' : info.status.jobEnd;
+      final before = _jobEnds[id];
+      _jobEnds[id] = end;
+      if (before == null || before == end || end.isEmpty || !mounted) continue;
+      SystemSound.play(SystemSoundType.alert);
+      final job = info.status.job.isEmpty ? 'The job' : info.status.job;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(end == 'finished' ? '✓ $job finished on ${c.name}' : '$job stopped on ${c.name}',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black)),
+        backgroundColor: end == 'finished' ? C.preview : C.amber,
+        duration: const Duration(seconds: 8),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
+  }
 
   List<Computer> _reach() => app.computers.where((c) => c.reachable(app.now)).toList();
 
@@ -133,7 +283,7 @@ class _MachinePageState extends State<MachinePage> {
             const SizedBox(width: 10),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(c.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                Text(c.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black)),
                 Text(
                     [
                       if (c.desktop.address != c.name) c.desktop.address,
@@ -165,8 +315,14 @@ class _MachinePageState extends State<MachinePage> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(color: C.card, borderRadius: BorderRadius.circular(8), border: Border.all(color: C.cardBorder)),
-            child: Text(info.status.words() + (info.document.isNotEmpty ? ' · ${info.document}' : ''),
-                style: TextStyle(fontWeight: FontWeight.w600, color: info.status.readyToCut ? C.preview : C.text)),
+            child: Row(children: [
+              Expanded(
+                child: Text(info.status.words() + (info.document.isNotEmpty ? ' · ${info.document}' : ''),
+                    style: TextStyle(fontWeight: FontWeight.w600, color: info.status.readyToCut ? C.preview : C.text)),
+              ),
+              if (info.status.coolant)
+                const Tooltip(message: 'Dust collector / coolant on', child: Icon(Icons.air, size: 18, color: C.preview)),
+            ]),
           ),
           const SizedBox(height: 6),
           for (final m in info.machines)
@@ -252,6 +408,7 @@ class _MachinePageState extends State<MachinePage> {
         const SizedBox(height: 10),
       ] else
         const Spacer(),
+      if (c != null && info != null && info.status.jobRunning) _runControls(c, info),
       if (_busy)
         const Padding(
           padding: EdgeInsets.only(bottom: 10),

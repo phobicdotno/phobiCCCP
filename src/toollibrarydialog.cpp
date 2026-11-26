@@ -1,4 +1,5 @@
 #include "toollibrarydialog.h"
+#include "chipload.h"
 #include "stockstamp.h"
 #include "stocksync.h"
 #include "tooldiagram.h"
@@ -514,6 +515,14 @@ void ToolLibraryDialog::updatePreview()
     s += QStringLiteral("\n\n%1:\n").arg(m_lib.materialName(selectedMaterialId()));
     if (!f.valid()) {
         s += QStringLiteral("  no feeds for this material");
+        // A starting point from the built-in chipload table.
+        const QString mat = selectedMaterialId();
+        const double rpm = defaultRpmFor(mat);
+        const ChiploadRange r = chiploadTable(t->diameter, mat);
+        if (const double feed = suggestedFeed(r, rpm, t->flutes); feed > 0)
+            s += QStringLiteral("\n  suggested start: %1 rpm, feed %2 mm/min\n"
+                                "  (chipload %3 mm/tooth; check before cutting)")
+                     .arg(rpm).arg(feed).arg(r.mid, 0, 'f', 3);
     } else {
         s += QStringLiteral("  rpm         %1\n  feed        %2 mm/min\n  plunge      %3 mm/min\n"
                             "  stepdown    %4 mm\n  stepover    %5 % (%6 mm)")

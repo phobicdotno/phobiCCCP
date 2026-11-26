@@ -58,51 +58,16 @@ QString setupSheetHtml(const Document &doc, const QString &title)
     // The whole job once, for the totals and for each toolpath's time.
     Document all = doc;
     const GcodeResult whole = exportGcode(all, nullptr, relief);
-    const JobStats total = computeStats(whole.ops);
+    QVector<Op> wholeProgram = whole.ops;   // extents as the program has them
+    shiftOps(wholeProgram, jobZeroShift(doc));
+    const JobStats total = computeStats(wholeProgram);
 
     // Per-toolpath times come from that same program, not from exporting
     // each toolpath alone: rest depth makes a toolpath start deeper, or
     // leaves it out, because of the ones cut before it, and on its own it
     // never sees them. Each toolpath's ops open with a comment carrying its
     // name; pooled ring toolpaths come in several runs, which add up.
-    QHash<QString, double> secByName;
-    {
-        QVector<Op> prefix;   // where the machine is when a run starts
-        QString cur;
-        int start = 0, rpm = 0;
-        bool havePos = false;
-        Op pos = Op::rapid(0, 0, 0);
-        auto close = [&](int end) {
-            if (cur.isEmpty() || end <= start)
-                return;
-            QVector<Op> run = prefix;
-            run += whole.ops.mid(start, end - start);
-            secByName[cur] += computeStats(run).timeSec - computeStats(prefix).timeSec;
-        };
-        for (int i = 0; i < whole.ops.size(); ++i) {
-            const Op &op = whole.ops.at(i);
-            if (op.kind == Op::Comment) {
-                close(i);
-                cur = op.text;
-                start = i;
-                // The machine's state carried in, so the run is charged for
-                // its first travel and not for a spin-up that never happens.
-                prefix.clear();
-                if (rpm > 0)
-                    prefix.append(Op::spindle(rpm));
-                if (havePos)
-                    prefix.append(pos);
-            } else if (op.kind == Op::Rapid || op.kind == Op::Feed || op.kind == Op::Arc) {
-                pos = Op::rapid(op.x, op.y, op.z);
-                havePos = true;
-            } else if (op.kind == Op::Spindle) {
-                rpm = op.ival;
-            } else if (op.kind == Op::Tool) {
-                rpm = 0;
-            }
-        }
-        close(whole.ops.size());
-    }
+    const QHash<QString, double> secByName = timeByComment(whole.ops);
     // A name two toolpaths share cannot be split by the comments; those fall
     // back to exporting the toolpath alone.
     QHash<QString, int> nameUses;
@@ -132,7 +97,10 @@ QString setupSheetHtml(const Document &doc, const QString &title)
                   mm(p.value(QStringLiteral("thickness"), QStringLiteral("0")).toDouble()));
     if (!p.value(QStringLiteral("material")).isEmpty())
         h += QStringLiteral("<tr><th>Material</th><td>%1</td></tr>").arg(esc(p.value(QStringLiteral("material"))));
-    h += QStringLiteral("<tr><th>Safe Z</th><td>%1 mm</td></tr>").arg(mm(documentSafeZ(doc)));
+    h += QStringLiteral("<tr><th>Zero</th><td>%1</td></tr>").arg(esc(jobZeroText(doc)));
+    // In the job-zero frame, like the Extents: with the zero at the bottom the
+    // program clears the stock at the Safe Z plus its thickness.
+    h += QStringLiteral("<tr><th>Safe Z</th><td>%1 mm</td></tr>").arg(mm(documentSafeZ(doc) + jobZeroShift(doc).z()));
     if (total.hasBounds) {
         h += QStringLiteral("<tr><th>Extents</th><td>X %1 … %2, Y %3 … %4, Z %5 … %6 mm</td></tr>")
                  .arg(mm(total.minX, 1), mm(total.maxX, 1), mm(total.minY, 1), mm(total.maxY, 1),

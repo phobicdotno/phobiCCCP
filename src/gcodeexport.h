@@ -3,6 +3,9 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPainterPath>
+#include <QPointF>
+#include <QVector3D>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -64,6 +67,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch = nullptr,
 // fine; otherwise one sentence for the operator.
 QString toolReuseWarning(const QVector<Op> &ops);
 
+// A toolpath that cuts deeper than its bit's flutes (the embedded tool's
+// `length`): past them the smooth shank rubs the wall, burns and can snap
+// the bit. Depth is the deepest the toolpath goes below the stock top: end
+// depth, a cutout's cut depth plus its break-through, or a 3D toolpath's
+// start plus its max depth. Empty when it fits, when the length is not
+// known (0 or missing), and for V-bits and V-carve / chamfer / texture,
+// whose cone has its own check. `type` is Toolpath::type.
+QString fluteLengthWarning(const QString &type, const QJsonObject &toolpath);
+
 // The document's retract height, as every exporter must read it. `retract`
 // comes verbatim out of the params table and QString::toDouble returns 0 for
 // anything it cannot parse (an empty value, a comma decimal from another
@@ -72,6 +84,27 @@ QString toolReuseWarning(const QVector<Op> &ops);
 // through it. Both the plain and the tiled exporter go through this so the
 // guard cannot drift apart again.
 double documentSafeZ(const Document &doc);
+
+// Job zero: where the program's X0 Y0 Z0 is on the stock. Carbide Create's
+// .c2d has no key for it, so these are phobiCCCP's own params (kept by CC):
+//   phobic_zero_xy = lower_left (default) | centre | upper_left | upper_right | lower_right
+//   phobic_zero_z  = top (default) | bottom   (bottom = the spoilboard)
+// Design coordinates keep the stock's lower-left at 0,0 and its top at Z 0;
+// only the posted program is moved, so with the defaults it is unchanged.
+enum class ZeroXY { LowerLeft, Centre, UpperLeft, UpperRight, LowerRight };
+ZeroXY jobZeroXY(const Document &doc);
+bool jobZeroBottom(const Document &doc);
+QString zeroXYKey(ZeroXY z);           // the param value
+QString zeroXYLabel(ZeroXY z);         // "Lower left", "Centre", ...
+// The chosen zero in design coordinates (on the stock rectangle), X and Y.
+QPointF jobZeroPoint(const Document &doc);
+// Added to every design coordinate to get the program's: (-zx, -zy, +thickness or 0).
+QVector3D jobZeroShift(const Document &doc);
+bool jobZeroIsDefault(const Document &doc);
+// Moves Rapid / Feed / Arc targets by `shift` (arc I/J are relative and stay).
+void shiftOps(QVector<Op> &ops, const QVector3D &shift);
+// "centre of stock, top" - for the setup sheet and the machine notes.
+QString jobZeroText(const Document &doc);
 
 // Carbide Create writes some numbers as JSON strings ("0.500") and others as
 // numbers, and which is which varies by key and by build. QJsonValue::toDouble
@@ -105,6 +138,19 @@ struct ToolGeom {
     QString name;
     double radius() const { return diameter / 2.0; }
 };
+
+// Where a 2D toolpath means to leave a flat floor, for the simulation's
+// "what's left" check: every enabled pocket over its whole closed region
+// (less any stock to leave), and the flat clearing area of a V-carve (where
+// the shape is wider than the cone reaches at its end depth). Contours and
+// cutouts are left out: they only cut a band along the line. `z` is the
+// floor (mm, <= 0 from the stock top).
+struct IntendedFloor {
+    QString name;          // toolpath name
+    QPainterPath region;   // document coordinates (mm), odd-even fill
+    double z = 0;
+};
+QVector<IntendedFloor> intendedFloors(Document &doc);
 
 // Tool table built from the toolpaths' embedded tool objects (`tool` and, for
 // v-carves, `tool_pocket`). First definition of a number wins.

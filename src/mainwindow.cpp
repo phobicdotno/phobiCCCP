@@ -19,8 +19,12 @@
 #include "projectreceiver.h"
 #include "machineprofiles.h"
 #include "padlink.h"
+#include "padpreview.h"
 #include "sendtopaddialog.h"
 #include <QActionGroup>
+#include <QGridLayout>
+#include <QDialogButtonBox>
+#include <QButtonGroup>
 #include <QJsonDocument>
 #include <QUuid>
 #include <QRandomGenerator>
@@ -32,10 +36,13 @@
 #include "simpanel.h"
 #include "toolpathpanel.h"
 #include "shapestrip.h"
+#include "layerspanel.h"
 #include "vectoractions.h"
 #include "importui.h"
 #include "setupsheet.h"
 #include "dxfexport.h"
+#include "boxdialog.h"
+#include "qrdialog.h"
 #include <QDesktopServices>
 #include <QUrl>
 
@@ -119,6 +126,10 @@
 #include <QPointer>
 
 namespace c2d {
+
+namespace {
+bool askJobZero(QWidget *parent, Document &doc);
+}
 
 // Simple flat tool icons drawn at runtime — no resource files needed.
 // The sketch-tool variants (Circle > 2-Point, ...): the shape in the normal
@@ -596,6 +607,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_info->setReadOnly(true);
     m_model = new ModelPanel(this);
     m_machine = new MachinePanel(this);
+    // A run of a design edited since its save is not the file on disk: no
+    // continue point for it (see MachinePanel::runProgram).
+    m_machine->setUnsavedCheck([this] { return m_dirty || m_untitled; });
     m_iso = new IsoPreview(this);
     m_sim = new SimPanel(this);
     m_toolStrip = new ToolStrip(this);
@@ -640,6 +654,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_docTabs->setIconSize(QSize(18, 18));
     m_shapes = new ShapeStrip(m_canvas, this);
     m_docTabs->addTab(m_shapes, toolIcon(QStringLiteral("document")), QStringLiteral("Shapes"));
+    m_layers = new LayersPanel(m_canvas, this);
+    m_docTabs->addTab(m_layers, toolIcon(QStringLiteral("document")), QStringLiteral("Layers"));
     m_docTabs->addTab(m_info, toolIcon(QStringLiteral("document")), QStringLiteral("Document"));
     m_docTabs->addTab(scrolled(m_model), toolIcon(QStringLiteral("model")), QStringLiteral("Model"));
     m_docTabs->addTab(scrolled(m_parameters), toolIcon(QStringLiteral("fx")), QStringLiteral("Parameters"));
@@ -860,6 +876,40 @@ MainWindow::MainWindow(QWidget *parent)
         m_canvas->deleteSelected();
     });
     delAct->setToolTip(QStringLiteral("Delete the selected vectors  (Delete)"));
+    QAction *allAct = editMenu->addAction(QStringLiteral("Select &all"), this, [this] {
+        m_canvas->selectAll();
+    });
+    allAct->setShortcut(QKeySequence::SelectAll);
+    allAct->setToolTip(QStringLiteral("Select every shape, except those on hidden or locked layers  (Ctrl+A)"));
+    // Ctrl+G is Export G-code; Group takes Ctrl+Alt+G.
+    QAction *groupAct = editMenu->addAction(QStringLiteral("&Group"), this, [this] {
+        m_canvas->groupSelected();
+    });
+    groupAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_G));
+    groupAct->setToolTip(QStringLiteral("Put the selected shapes in one group: a click on one "
+                                        "then picks them all (Alt+click picks one)  (Ctrl+Alt+G)"));
+    QAction *ungroupAct = editMenu->addAction(QStringLiteral("&Ungroup"), this, [this] {
+        m_canvas->ungroupSelected();
+    });
+    ungroupAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
+    ungroupAct->setToolTip(QStringLiteral("Take the selected group apart  (Ctrl+Shift+G)"));
+
+    // Create: generators that draw ready-made parts as plain vectors.
+    auto *createMenu = m_menuBar->addMenu(QStringLiteral("&Create"));
+    QAction *boxAct = createMenu->addAction(QStringLiteral("&Box with Finger Joints…"), this, [this] {
+        if (!hasDocument())
+            return;
+        runBoxDialog(this, m_canvas, m_doc.params().value("thickness").toDouble(),
+                     m_doc.params().value("width").toDouble());
+    });
+    boxAct->setToolTip(QStringLiteral(
+        "Draw the flat parts of a finger-jointed box on the stock: bottom, sides, ends and a lid"));
+    QAction *qrAct = createMenu->addAction(QStringLiteral("&QR code…"), this, [this] {
+        if (hasDocument())
+            runQrDialog(this, m_canvas);
+    });
+    qrAct->setToolTip(QStringLiteral(
+        "Draw a QR code for a text or web address on the centre of the stock, ready to pocket"));
 
     // View > Full Screen: the window covers the whole display, panel and all.
     // Remembered, so the shop PC comes back up the way it was left.
@@ -1081,7 +1131,8 @@ MainWindow::MainWindow(QWidget *parent)
             {QStringLiteral("adaptive_toolpath"), QStringLiteral("Clear with a light, steady bite at a deep stepdown")},
             {QStringLiteral("thread_toolpath"), QStringLiteral("Mill a thread around each circle, inside or outside")},
             {QStringLiteral("slot_toolpath"), QStringLiteral("Ramp down the centreline of a slot")},
-            {QStringLiteral("circular_toolpath"), QStringLiteral("Round pocket or boss on each circle, in full laps")}};
+            {QStringLiteral("circular_toolpath"), QStringLiteral("Round pocket or boss on each circle, in full laps")},
+            {QStringLiteral("fluting_toolpath"), QStringLiteral("Tapered groove down each open vector, ramped in and out")}};
         for (const ToolpathKind &k : toolpathKinds()) {
             QAction *a = m_tpBar->addAction(toolpathIcon(k.type), k.label);
             a->setToolTip(QStringLiteral("%1 — %2  (for the selected vectors)")
@@ -1093,6 +1144,23 @@ MainWindow::MainWindow(QWidget *parent)
     // Cut order: the list top to bottom (default), or same-tool toolpaths
     // pooled so each site is finished before the spindle moves on.
     m_tpBar->addSeparator();
+    {
+        QAction *zero = m_tpBar->addAction(QStringLiteral("Job zero"));
+        zero->setToolTip(QStringLiteral("Where X0 Y0 Z0 of the program is: a corner or the centre "
+                                        "of the stock, at its top or on the spoilboard"));
+        connect(zero, &QAction::triggered, this, [this] {
+            if (!hasDocument() || !askJobZero(this, m_doc))
+                return;
+            m_dirty = true;
+            m_undoMarksSaved = false;   // job zero is not an undo step
+            updateTitle();
+            statusBar()->showMessage(QStringLiteral("Zero: %1").arg(jobZeroText(m_doc)), 8000);
+            m_canvas->viewport()->update();
+            markIsoStale();
+            if (m_previewAct->isChecked())
+                refreshPreview();
+        });
+    }
     {
         QAction *site = m_tpBar->addAction(QStringLiteral("Site order"));
         site->setCheckable(true);
@@ -1876,9 +1944,11 @@ void MainWindow::onExportGcode()
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
     }
+    QVector<Op> program = r.ops;   // extents as posted, from the job zero
+    shiftOps(program, jobZeroShift(m_doc));
     QString msg = QStringLiteral("Exported %1 toolpath(s) to %2   [%3]")
                       .arg(QString::number(r.done.size()), path,
-                           statsSummary(computeStats(r.ops))
+                           statsSummary(computeStats(program))
                                .replace(QChar('\n'), QStringLiteral("  ·  ")));
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
@@ -2091,7 +2161,9 @@ void MainWindow::applyPreview(const GcodeResult &r, bool overlay)
                   m_doc.params().value("thickness").toDouble());
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble(), heightModelFor(m_doc));
+    m_sim->setIntendedFloors(intendedFloors(m_doc));
     m_toolStrip->setJob(m_doc, r.ops);
+    m_tp->setTimeEstimates(timeByComment(r.ops));   // each card's cutting time
     m_isoStale = false;
     if (!overlay)
         return;
@@ -2193,6 +2265,7 @@ void MainWindow::markIsoStale()
     // current job (Preview was turned off, or another file opened).
     dropPreviewRequests();
     m_isoStale = true;
+    m_tp->clearTimeEstimates();       // the cards' times are for the old moves
     if (m_isoBusy)
         m_isoRerun = true;            // the program being built is for the old state
     if (m_mode != Mode::Simulate || m_isoQueued)
@@ -2640,6 +2713,7 @@ void MainWindow::openPath(const QString &path, bool untitled)
     m_tp->setDocument(&m_doc);
     m_machine->setDocument(&m_doc);
     m_model->setDocument(&m_doc);
+    m_layers->documentReplaced();
     markSaved();
     m_recovery.discard();             // the design it replaces was saved or let go
     if (m_untitledPath != path)
@@ -3174,6 +3248,19 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
                 d.insert(QStringLiteral("desktopOnly"), QSysInfo::machineHostName());
         reply = d.isEmpty() ? padError(QStringLiteral("no such design"))
                             : QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("design"), d}};
+    } else if (op == QLatin1String("preview")) {
+        // A pad's Preview: the design as the pad holds it (or, by id, as
+        // kept here), cut on paper: the toolpaths from above and the time.
+        QJsonObject design = req.value(QStringLiteral("design")).toObject();
+        if (design.isEmpty())
+            design = store.get(req.value(QStringLiteral("id")).toString());
+        // Not while the machine works: the export runs on the thread that
+        // feeds GRBL (as autosave), and a pad's Hold or Stop would wait on it.
+        if (m_machine && m_machine->isBusy())
+            reply = padError(QStringLiteral("the machine is busy: no preview while it works"));
+        else
+            reply = design.isEmpty() ? padError(QStringLiteral("no such design"))
+                                     : padlink::previewJson(design);
     } else if (op == QLatin1String("put")) {
         QString err;
         padlink::Store::PutOutcome out;
@@ -3220,6 +3307,27 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
         const QString machineId = req.value(QStringLiteral("id")).toString();
         why = padSwitchRefusal(machineId, m_machine->statusJson());
         reply = why.isEmpty() && switchMachine(machineId, &why) ? padInfo() : padError(why);
+    } else if (op == QLatin1String("hold") || op == QLatin1String("resume")
+               || op == QLatin1String("stop")) {
+        // Hold and Stop from any pad that reaches here: anyone must be able
+        // to stop the machine. Resume starts it cutting again, so only when
+        // pads may start cutting.
+        QString who = m_pads.nameOf(req.value(QStringLiteral("pad")).toString());
+        if (who.isEmpty())
+            who = peer;
+        QString why;
+        bool done = false;
+        if (op == QLatin1String("resume") && !padsMayStart())
+            why = QStringLiteral("resuming from a pad is off on %1 (Machine > Pads may start cutting)")
+                      .arg(QSysInfo::machineHostName());
+        else if (op == QLatin1String("hold"))
+            done = m_machine->holdFromRemote(who, &why);
+        else if (op == QLatin1String("resume"))
+            done = m_machine->resumeFromRemote(who, &why);
+        else
+            done = m_machine->stopFromRemote(who, &why);
+        reply = done ? QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("status"), m_machine->statusJson()}}
+                     : padError(why);
     } else if (op == QLatin1String("send") || op == QLatin1String("open")) {
         m_linkBusy = true;
         reply = padSend(id, req, peer);
@@ -3936,6 +4044,64 @@ void MainWindow::refreshInfo()
 
     m_info->setPlainText(lines.join(QChar('\n')));
 }
+
+namespace {
+
+// Job zero: where X0 Y0 and Z0 of the program are on the stock. Two rows of
+// big buttons; true when the choice changed (and was written to the params).
+bool askJobZero(QWidget *parent, Document &doc)
+{
+    QDialog dlg(parent);
+    dlg.setWindowTitle(QStringLiteral("Job zero"));
+    auto *lay = new QVBoxLayout(&dlg);
+    auto *head = new QLabel(QStringLiteral("Where is zero on the stock? Set the machine's "
+                                           "work zero at this point before you run."), &dlg);
+    head->setWordWrap(true);
+    lay->addWidget(head);
+    auto row = [&](const QString &caption, const QStringList &labels, int current) {
+        lay->addWidget(new QLabel(caption, &dlg));
+        auto *grid = new QGridLayout;
+        auto *group = new QButtonGroup(&dlg);
+        for (int i = 0; i < labels.size(); ++i) {
+            auto *b = new QPushButton(labels.at(i), &dlg);
+            b->setCheckable(true);
+            b->setMinimumHeight(52);
+            b->setChecked(i == current);
+            group->addButton(b, i);
+            grid->addWidget(b, i / 3, i % 3);
+        }
+        lay->addLayout(grid);
+        return group;
+    };
+    const QList<ZeroXY> xyOrder{ZeroXY::LowerLeft, ZeroXY::Centre, ZeroXY::UpperLeft,
+                                ZeroXY::UpperRight, ZeroXY::LowerRight};
+    QStringList xyLabels;
+    for (ZeroXY z : xyOrder)
+        xyLabels << zeroXYLabel(z);
+    QButtonGroup *xy = row(QStringLiteral("X Y zero"), xyLabels, int(xyOrder.indexOf(jobZeroXY(doc))));
+    QButtonGroup *zz = row(QStringLiteral("Z zero"),
+                           {QStringLiteral("Top of stock"), QStringLiteral("Bottom (spoilboard)")},
+                           jobZeroBottom(doc) ? 1 : 0);
+    auto *note = new QLabel(QStringLiteral("Bottom: Z0 is the spoilboard, so a cut goes to "
+                                           "Z = thickness − depth. The surface map cannot be used then."), &dlg);
+    note->setWordWrap(true);
+    lay->addWidget(note);
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(bb);
+    if (dlg.exec() != QDialog::Accepted)
+        return false;
+    const ZeroXY newXY = xyOrder.value(qMax(0, xy->checkedId()), ZeroXY::LowerLeft);
+    const bool newBottom = zz->checkedId() == 1;
+    if (newXY == jobZeroXY(doc) && newBottom == jobZeroBottom(doc))
+        return false;
+    doc.setParam(QStringLiteral("phobic_zero_xy"), zeroXYKey(newXY));
+    doc.setParam(QStringLiteral("phobic_zero_z"), newBottom ? QStringLiteral("bottom") : QStringLiteral("top"));
+    return true;
+}
+
+} // namespace
 
 namespace {
 

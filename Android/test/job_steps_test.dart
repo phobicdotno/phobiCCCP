@@ -28,6 +28,11 @@ void main() {
     expect(MachineStatus.fromJson({'connected': true}).steps, isEmpty, reason: 'an older phobiCCCP sends none');
   });
 
+  test('status says whether the dust collector / coolant is on', () {
+    expect(MachineStatus.fromJson({'connected': true, 'coolant': true}).coolant, isTrue);
+    expect(MachineStatus.fromJson({'connected': true}).coolant, isFalse, reason: 'older phobiCCCP');
+  });
+
   test('a finished job says so over the list', () {
     expect(MachineStatus.fromJson({'streaming': true}).jobHeading('cnc'), 'RUNNING ON CNC');
     expect(MachineStatus.fromJson({'jobEnd': 'finished'}).jobHeading('cnc'), 'FINISHED ON CNC');
