@@ -717,6 +717,9 @@ int main(int argc, char **argv)
         check(c2d::machinemacros::cleanLines(QStringLiteral("(retract!) G53 G0 Z-5 ; now~\nG0 X2 (ok?"))
                   == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 X2")}),
               "macro: notes are not sent, so a '!' in one is no feed hold");
+        check(c2d::machinemacros::cleanLines(QStringLiteral("(retract; machine coordinates) G53 G0 Z-5\nG0 Z5 ; stop!"))
+                  == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 Z5")}),
+              "macro: a ';' inside a note in brackets does not drop the move after it");
         QStringList h;
         for (int i = 0; i < 40; ++i)
             h = c2d::machinemacros::pushHistory(h, QStringLiteral("G0 X%1").arg(i));

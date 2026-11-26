@@ -52,11 +52,13 @@ QStringList cleanLines(const QString &text)
     // has a move in it. Only the move is sent: GRBL acts on a '!', '~' or '?'
     // the moment it arrives, inside a note too ("(retract!)" was a feed hold).
     static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
+    // The notes in brackets go first: a ';' inside one is note text to GRBL,
+    // and "(retract; machine) G53 G0 Z-5" still has its move.
     for (QString l : raw) {
+        l.remove(paren);
         const int semi = l.indexOf(QChar(';'));
         if (semi >= 0)
             l.truncate(semi);
-        l.remove(paren);
         l = l.trimmed();
         if (l.isEmpty())
             continue;
