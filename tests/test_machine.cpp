@@ -19,6 +19,8 @@
 #include <QApplication>
 #include <QDialog>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -825,6 +827,91 @@ int main(int argc, char **argv)
         check(finished && finishedOk, "manual zero: the job runs to the end");
         QObject::disconnect(s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
         spin(1500, [&] { return !panel.isBusy(); });
+    }
+
+    // A G-code file runs on the same path as a design: tidied, its T/M6
+    // turned into the tool-change pause, a job row per tool, and back to
+    // the design afterwards. Unsupported words are refused when loading.
+    {
+        const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+        auto writeFile = [&](const QString &fn, const QByteArray &text) {
+            const QString path = dir + QLatin1Char('/') + fn;
+            QFile f(path);
+            f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            f.write(text);
+            return path;
+        };
+        QString why;
+        const QString inch = writeFile(QStringLiteral("inch.nc"), "G20 G90\nG0 X1 Y1\n");
+        check(!panel.loadProgramFile(inch, &why) && why.contains(QLatin1String("inches"))
+                  && why.contains(QLatin1String("Line 1")) && panel.programFile().isEmpty(),
+              "nc file: G20 refused, with the line and why");
+        const QString comp = writeFile(QStringLiteral("comp.nc"), "G21\nG41 D1\n");
+        check(!panel.loadProgramFile(comp, &why) && why.contains(QLatin1String("compensation")),
+              "nc file: cutter compensation refused");
+        const QString path = writeFile(QStringLiteral("tile1.nc"),
+            "%\n(made elsewhere)\nN10 G21 G90 G17\nT1 M6\nS12000 M3\nG0 X10 Y10 Z5\n"
+            "G1 Z-1 F300 ; plunge\nG2 X20 Y10 I5 J0 F800\nG0 Z5\nT2 M6\nM3 S10000\n"
+            "G0X30Y30\nG1Z-0.5F200\nG0Z5\nM5\nM30\n%\n");
+        check(panel.loadProgramFile(path, &why), qPrintable(QStringLiteral("nc file: loads (%1)").arg(why)));
+        bool named = false;
+        for (QLabel *l : panel.findChildren<QLabel *>())
+            named = named || l->text() == QLatin1String("File: tile1.nc");
+        check(named, "nc file: the job card names the file");
+        check(panel.statusJson().value("job").toString() == QLatin1String("tile1.nc"),
+              "nc file: the pad's status names the file");
+
+        seen.clear();
+        int prompts = 0;
+        answer = [&](const Seen &v) {
+            if (v.caption == QLatin1String("RUN PROGRAM"))
+                return QStringLiteral("▶ Start");
+            if (v.caption == QLatin1String("TOOL CHANGE")) {
+                ++prompts;
+                return QStringLiteral("Same length: continue");
+            }
+            return QStringLiteral("OK");
+        };
+        bool finished = false, finishedOk = false;
+        QObject::connect(s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        grbl.events.clear();
+        runBtn->click();
+        check(s->isStreaming(), "nc file: started");
+        bool asked = false;
+        for (const Seen &v : seen)
+            asked = asked || (v.caption == QLatin1String("RUN PROGRAM") && v.headline.contains(QLatin1String("tile1.nc")));
+        check(asked, "nc file: Run asks about the file");
+        const QJsonArray steps = panel.statusJson().value("steps").toArray();
+        int changes = 0, cuts = 0;
+        for (const QJsonValue &v : steps) {
+            const QJsonObject o = v.toObject();
+            changes += o.value("kind").toString() == QLatin1String("change");
+            cuts += o.value("kind").toString() == QLatin1String("toolpath")
+                    && o.value("name").toString().startsWith(QLatin1String("Tool "));
+        }
+        check(changes == 2 && cuts == 2, qPrintable(QStringLiteral("nc file: a row per tool and per change in the job list (%1)")
+                                           .arg(QString::fromUtf8(QJsonDocument(steps).toJson(QJsonDocument::Compact)))));
+        spin(20000, [&] { return finished; });
+        QObject::disconnect(s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        check(finished && finishedOk, "nc file: runs to the end");
+        check(prompts == 2, "nc file: T/M6 parks for each tool change");
+        check(grbl.count("G1 Z-1 F300") == 1 && grbl.count("G2 X20 Y10 I5 J0 F800") == 1
+                  && grbl.count("G1 Z-0.5 F200") == 1 && grbl.count("M03 S12000") == 1 && grbl.count("M03 S10000") == 1,
+              "nc file: its moves are streamed, comments and spaces tidied");
+        check(grbl.count("N10") == 0 && grbl.count("G21 G90 G17") == 1 && grbl.count("%") == 0
+                  && grbl.count("M6") == 0 && grbl.count("T1") == 0 && grbl.count("M30") == 0,
+              "nc file: line numbers, %, T/M6 and M30 are not sent");
+        check(grbl.count("G0 X10 Y10 Z5") == 0, "nc file: rapids go across and down apart");
+        spin(3000, [&] { return !panel.isBusy(); });
+        check(panel.programFile() == path, "nc file: stays loaded for the next run");
+        panel.backToDesign();
+        check(panel.programFile().isEmpty() && panel.statusJson().value("job").toString().isEmpty(),
+              "nc file: back to the design");
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+        wait(500);
     }
 
     // Zero refused mid-job without the manual-zero answer, too.

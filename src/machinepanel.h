@@ -54,6 +54,13 @@ public:
     void showPage(const QString &name);   // "job" / "bitzero" / "bitsetter" (used by --shot)
     GrblStreamer *streamer() const { return m_grbl; }
 
+    // A G-code file (.nc, .gcode, .tap, .ngc) to run instead of the open
+    // design, through the same checks, tool changes and job list. False
+    // with `why` set (and nothing changed) when it cannot run here.
+    bool loadProgramFile(const QString &path, QString *why = nullptr);
+    void backToDesign();                  // run the open design again
+    QString programFile() const { return m_ncPath; }
+
     // A pad asked to cut the open document (the PhobiCCCP pad app, "Start
     // cutting"). The same program and checks as Run, minus the question on
     // this screen: connected, homed, idle, not busy, no alarm. False with
@@ -149,6 +156,13 @@ private:
     QLabel *m_state, *m_wAxis[3], *m_mpos, *m_extra;
     void setStatePill(const QString &text, const QString &border);
     QLabel *m_jobName = nullptr, *m_jobInfo = nullptr;
+    // A loaded G-code file runs instead of the design while m_ncPath is set.
+    QString m_ncPath;
+    QStringList m_ncLines;
+    QVector<Op> m_ncOps;
+    bool m_jobFromFile = false;          // the running job is a file: no design to name its bits
+    QPushButton *m_openNcBtn = nullptr, *m_backToDesignBtn = nullptr;
+    void openProgramFile();               // the file dialog
     void refreshJobInfo();
     // The right-hand card of the Machine page: the job, or one of the pages
     // that used to be pop-ups (BitZero probing, BitSetter settings).

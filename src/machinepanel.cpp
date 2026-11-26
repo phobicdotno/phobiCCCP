@@ -15,6 +15,7 @@
 #include "surfacemap.h"
 #include "post_grbl.h"
 #include "tiling.h"
+#include "ncprogram.h"
 
 #include <QApplication>
 #include <QButtonGroup>
@@ -24,6 +25,7 @@
 #include <QPoint>
 #include <QFileInfo>
 #include <QFile>
+#include <QFileDialog>
 #include <QDir>
 #include <QDateTime>
 #include <QStandardPaths>
@@ -715,6 +717,22 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_runBtn->setObjectName(QStringLiteral("start"));
     m_runBtn->setMinimumHeight(64);
     bv->addWidget(m_runBtn);
+    {
+        // Any G-code file runs here too (a tiled design's tile programs,
+        // a program made elsewhere): the same checks, tool changes and end.
+        auto *fileRow = new QHBoxLayout;
+        m_openNcBtn = bigBtn(new QPushButton(QStringLiteral("Open G-code…"), jobCard), 52);
+        m_openNcBtn->setToolTip(QStringLiteral("Run a G-code file (.nc, .gcode, .tap, .ngc) instead of "
+                                               "the open design"));
+        m_backToDesignBtn = bigBtn(new QPushButton(QStringLiteral("Back to design"), jobCard), 52);
+        m_backToDesignBtn->setToolTip(QStringLiteral("Put the G-code file away and run the open design"));
+        m_backToDesignBtn->setVisible(false);
+        connect(m_openNcBtn, &QPushButton::clicked, this, [this] { openProgramFile(); });
+        connect(m_backToDesignBtn, &QPushButton::clicked, this, [this] { backToDesign(); });
+        fileRow->addWidget(m_openNcBtn);
+        fileRow->addWidget(m_backToDesignBtn);
+        bv->addLayout(fileRow);
+    }
     auto *runRow = new QHBoxLayout;
     m_pauseBtn = bigBtn(new QPushButton(QStringLiteral("⏸ Hold"), jobCard), 52);
     // Cancel job: hold, ask, then reset standing still and lift - the job
@@ -2489,6 +2507,71 @@ void MachinePanel::setDocument(Document *doc)
 {
     m_doc = doc;
     ++m_docSeq;
+    // A design opened (here or from a pad) is what is run next.
+    if (!m_ncPath.isEmpty()) {
+        log(QStringLiteral("G-code file %1 put away: a design was opened").arg(QFileInfo(m_ncPath).fileName()));
+        m_ncPath.clear();
+        m_ncLines.clear();
+        m_ncOps.clear();
+    }
+    refreshJobInfo();
+}
+
+void MachinePanel::openProgramFile()
+{
+    if (isBusy() || m_grbl->isParkedForTool()) {
+        shopTell(this, QStringLiteral("Machine"), QStringLiteral("The machine is busy."),
+                 QStringLiteral("Open a G-code file when the job has ended."));
+        return;
+    }
+    QSettings set;
+    const QString dir = set.value(QStringLiteral("machine/ncDir")).toString();
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Open G-code"), dir,
+        QStringLiteral("G-code (*.nc *.gcode *.tap *.ngc *.NC *.GCODE *.TAP *.NGC);;All files (*)"));
+    if (path.isEmpty())
+        return;
+    set.setValue(QStringLiteral("machine/ncDir"), QFileInfo(path).absolutePath());
+    QString why;
+    if (!loadProgramFile(path, &why))
+        shopTell(this, QStringLiteral("Machine"),
+                 QStringLiteral("%1 cannot run here.").arg(QFileInfo(path).fileName()), why);
+}
+
+bool MachinePanel::loadProgramFile(const QString &path, QString *why)
+{
+    auto no = [&](const QString &w) {
+        if (why)
+            *why = w;
+        log(QStringLiteral("!! G-code file %1 refused: %2").arg(QFileInfo(path).fileName(), w));
+        return false;
+    };
+    if (isBusy() || m_grbl->isParkedForTool())
+        return no(QStringLiteral("The machine is busy."));
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return no(QStringLiteral("It could not be read (%1).").arg(f.errorString()));
+    if (f.size() > 64 * 1024 * 1024)
+        return no(QStringLiteral("It is larger than 64 MB."));
+    const NcProgram p = readNcProgram(QString::fromUtf8(f.readAll()));
+    if (!p.ok())
+        return no(p.errorLine > 0 ? QStringLiteral("Line %1: %2").arg(p.errorLine).arg(p.error) : p.error);
+    m_ncPath = path;
+    m_ncLines = p.lines;
+    m_ncOps = p.ops;
+    log(QStringLiteral("G-code file loaded: %1 (%2 lines)").arg(QFileInfo(path).fileName()).arg(p.lines.size()));
+    refreshJobInfo();
+    return true;
+}
+
+void MachinePanel::backToDesign()
+{
+    if (m_ncPath.isEmpty())
+        return;
+    log(QStringLiteral("back to the design: %1 put away").arg(QFileInfo(m_ncPath).fileName()));
+    m_ncPath.clear();
+    m_ncLines.clear();
+    m_ncOps.clear();
     refreshJobInfo();
 }
 
@@ -2498,6 +2581,16 @@ void MachinePanel::refreshJobInfo()
 {
     if (!m_jobName)
         return;
+    if (m_backToDesignBtn)
+        m_backToDesignBtn->setVisible(!m_ncPath.isEmpty());
+    if (!m_ncPath.isEmpty()) {
+        m_jobName->setText(QStringLiteral("File: %1").arg(QFileInfo(m_ncPath).fileName()));
+        const int tools = toolChanges(m_ncOps).size();
+        m_jobInfo->setText(QStringLiteral("G-code file, %1 lines%2").arg(m_ncLines.size())
+                               .arg(tools > 0 ? QStringLiteral(", %1 tool change%2").arg(tools).arg(tools == 1 ? "" : "s")
+                                              : QString()));
+        return;
+    }
     const QString path = m_doc ? m_doc->filePath() : QString();
     QString name = QFileInfo(path).fileName();
     if (name.startsWith(QLatin1String("untitled-")))
@@ -4095,7 +4188,7 @@ void MachinePanel::askForTool()
     a.body = m_rehearsal
         ? QStringLiteral("Or leave the same one in to check the measurement repeats.")
         : QStringLiteral("Tighten the collet and set the dust boot height before you continue.");
-    if (!m_rehearsal && m_doc) {
+    if (!m_rehearsal && m_doc && !m_jobFromFile) {
         // Which bit: its diagram with the sizes on it, and the sizes in words.
         // Two bits can share a number, so the bit is the one of this very
         // tool change of the program being streamed, not the first toolpath
@@ -4311,10 +4404,14 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         m_rightStack->setCurrentWidget(m_jobPage);
     if (!m_grbl->isConnected())
         return refuse(QStringLiteral("Connect to the controller first."));
-    if (!m_doc)
+    // A loaded G-code file runs instead of the design, through all the
+    // same checks from here on.
+    const bool fromFile = !m_ncPath.isEmpty();
+    const QString ncAtStart = m_ncPath;
+    if (!fromFile && !m_doc)
         return refuse(QStringLiteral("Open a .c2d file first."));
-    const QString docAtStart = m_doc->filePath();
-    const quint64 loadAtStart = m_doc->loadCount();
+    const QString docAtStart = m_doc ? m_doc->filePath() : QString();
+    const quint64 loadAtStart = m_doc ? m_doc->loadCount() : 0;
     // The window opens a file into a fresh document and moves it in, so the
     // load count reads 1 after every open: the same path reloaded (a pad's
     // edit rebuilt it) shows only here.
@@ -4322,14 +4419,25 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     // Re-exported at the moment Run is pressed, so it is the current document
     // that gets streamed - and a 3D finish is minutes of work, which used to
     // freeze the window with the machine sitting idle.
-    const GcodeResult r = exportWithProgress(this, *m_doc, QStringLiteral("Preparing program"));
-    if (r.cancelled) {
+    GcodeResult r;
+    if (fromFile) {
+        r.ops = m_ncOps;
+        r.gcode = m_ncLines.join(QLatin1Char('\n'));
+        // A surface map bends a design's depths as they are made; a file's
+        // are fixed, and Z zeroed with the map on is not its zero.
+        if (m_useMap->isChecked() && m_map.isValid())
+            return refuse(QStringLiteral("The surface map is switched on."),
+                          QStringLiteral("It applies to designs only. Turn it off to run a G-code file."));
+    } else {
+        r = exportWithProgress(this, *m_doc, QStringLiteral("Preparing program"));
+    }
+    if (!fromFile && r.cancelled) {
         log(QStringLiteral("program preparation cancelled"));
         if (remote)
             *remoteWhy = QStringLiteral("Preparing the program was cancelled.");
         return false;
     }
-    if (r.done.isEmpty())
+    if (!fromFile && r.done.isEmpty())
         return refuse(QStringLiteral("No exportable toolpaths."));
     // A toolpath left out (a V-bit in a pocket, a depth it cannot reach)
     // and the rest cut anyway can free the part before it: from a pad,
@@ -4339,7 +4447,7 @@ bool MachinePanel::runProgram(QString *remoteWhy)
                       QStringLiteral("Fix or turn them off, then send again."));
     // A document set up for tiling whose job needs more than one tile is
     // taller than the machine: streamed whole it drove Y past the far end.
-    {
+    if (!fromFile) {
         const double tileH = m_doc->params().value("tile_height", "0").toDouble();
         if (m_doc->params().value("tiling_enabled") == QLatin1String("1") && tileH > 0
             && tileCount(r.ops, tileH) > 1)
@@ -4505,12 +4613,15 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     ShopAsk ask;
     ask.title = QStringLiteral("Run program");
     ask.headline = QStringLiteral("Stream %1 to the machine?")
-                       .arg(m_doc->filePath().isEmpty()
+                       .arg(fromFile ? QFileInfo(m_ncPath).fileName()
+                            : m_doc->filePath().isEmpty()
                                 ? QStringLiteral("the project")
                                 : QFileInfo(m_doc->filePath()).fileName());
-    ask.body = QStringLiteral("%1 toolpath(s), %2 lines\n%3")
-                   .arg(r.done.size()).arg(lines.size())
-                   .arg(statsSummary(computeStats(ops)));
+    ask.body = fromFile ? QStringLiteral("G-code file, %1 lines\n%2")
+                              .arg(lines.size()).arg(statsSummary(computeStats(ops)))
+                        : QStringLiteral("%1 toolpath(s), %2 lines\n%3")
+                              .arg(r.done.size()).arg(lines.size())
+                              .arg(statsSummary(computeStats(ops)));
     if (npause > 0)
         ask.body += QStringLiteral("\n\n%1 tool change(s): the machine parks at the "
                                    "tool-change spot and prompts%2.")
@@ -4521,11 +4632,12 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     if (const QString w = toolReuseWarning(ops); !w.isEmpty())
         ask.body += QStringLiteral("\n\n\u26a0 ") + w;
     // Not a refusal: the flute length in the tool library may be a guess.
-    for (const Toolpath &t : m_doc->toolpaths())
-        if (r.doneIds.contains(t.uuid))
-            if (const QString w = fluteLengthWarning(t.type, t.json); !w.isEmpty())
-                ask.body += QStringLiteral("\n\n\u26a0 %1 %2")
-                                .arg(t.json.value(QStringLiteral("name")).toString(), w);
+    if (!fromFile)
+        for (const Toolpath &t : m_doc->toolpaths())
+            if (r.doneIds.contains(t.uuid))
+                if (const QString w = fluteLengthWarning(t.type, t.json); !w.isEmpty())
+                    ask.body += QStringLiteral("\n\n\u26a0 %1 %2")
+                                    .arg(t.json.value(QStringLiteral("name")).toString(), w);
     if (!r.skipped.isEmpty())
         ask.body += QStringLiteral("\n\n\u26a0 Left out (not cut): %1").arg(r.skipped.join(QStringLiteral(", ")));
     if (useMap) {
@@ -4594,16 +4706,19 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("The machine is still moving (%1).").arg(stillMovingWhy()));
     // Only now: a refusal above leaves a hold (and its Resume button) as it was.
     setHeld(false);
-    if (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart || m_docSeq != seqAtStart)
+    if (m_docSeq != seqAtStart || m_ncPath != ncAtStart
+        || (!fromFile && (m_doc->filePath() != docAtStart || m_doc->loadCount() != loadAtStart)))
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
     m_progress->setFormat(QStringLiteral("%p%"));
     m_jobTools = toolChanges(ops);
+    m_jobFromFile = fromFile;
     if (m_jobView) {
-        const QString jobName = m_doc->filePath().isEmpty()
+        const QString jobName = fromFile ? QStringLiteral("File: %1").arg(QFileInfo(m_ncPath).fileName())
+                                : m_doc->filePath().isEmpty()
                                     ? QStringLiteral("Untitled job")
                                     : QFileInfo(m_doc->filePath()).completeBaseName();
-        m_jobView->setPlan(planJob(lines, ops, m_doc, qMin(m_grbl->setting(110, 5000), m_grbl->setting(111, 5000))),
+        m_jobView->setPlan(planJob(lines, ops, fromFile ? nullptr : m_doc, qMin(m_grbl->setting(110, 5000), m_grbl->setting(111, 5000))),
                            air ? jobName + QStringLiteral("  (air cut)") : jobName);
     }
     setJobRunning(true);
@@ -4671,7 +4786,8 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("homed"), m_grbl->isConnected() && m_homed);
     o.insert(QStringLiteral("busy"), isBusy());
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
-    o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
+    o.insert(QStringLiteral("job"), !m_ncPath.isEmpty() ? QFileInfo(m_ncPath).fileName()
+                                    : m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());
     // The running job's steps, for the pad's job list.
     if (m_jobView && m_jobView->hasPlan()) {
