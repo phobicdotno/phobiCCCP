@@ -182,9 +182,10 @@ JoinResult joinElements(const QVector<Element> &els, double gap);
 // exact copies of an earlier element (the later copy is listed);
 // `zeroLength`: shapes with no length at all; `selfCrossing`: closed path
 // outlines that cross themselves (a figure 8), which pockets and profiles
-// read wrongly.
+// read wrongly. `notChecked`: outlines with too many points to check for
+// crossing (not a problem, so not in allIds()).
 struct VectorCheck {
-    QStringList open, duplicates, zeroLength, selfCrossing;
+    QStringList open, duplicates, zeroLength, selfCrossing, notChecked;
     QStringList allIds() const;   // every listed id once, in order
 };
 VectorCheck checkElements(const QVector<Element> &els);

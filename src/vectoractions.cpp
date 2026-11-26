@@ -1584,6 +1584,9 @@ void VectorActions::checkVectors()
                    .arg(c.zeroLength.size()).arg(c.selfCrossing.size()).arg(ids.size());
         m_canvas->selectIds(ids);
     }
+    if (!c.notChecked.isEmpty())
+        text += tr("\n\n%1 outline(s) have too many points to check for crossing themselves.")
+                    .arg(c.notChecked.size());
     QMessageBox::information(m_canvas->window(), tr("Check vectors"), text);
 }
 

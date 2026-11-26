@@ -808,6 +808,13 @@ int main(int argc, char **argv)
         check(c.zeroLength == QStringList{dot.id}, "check: zero-length piece");
         check(c.selfCrossing == QStringList{eight.id}, "check: figure 8 crosses itself");
         check(c.allIds().size() == 4, "check: four problem shapes");
+        QVector<QPointF> many;
+        for (int i = 0; i < 20010; ++i)
+            many.append(QPointF(100 + 50 * std::cos(i * 2 * M_PI / 20010), 50 * std::sin(i * 2 * M_PI / 20010)));
+        const Element fine = Element::makePath(many, true, layer);
+        const vec::VectorCheck cf = vec::checkElements({fine});
+        check(cf.allIds().isEmpty() && cf.notChecked == QStringList{fine.id},
+              "check: an outline too big to check is reported as not checked");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);
