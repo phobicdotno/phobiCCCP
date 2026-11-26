@@ -49,6 +49,7 @@ add_library(phobicccp_core STATIC
     src/grblstreamer.cpp
     src/heightmodel.cpp
     src/surfacemap.cpp
+    src/probecycles.cpp
     src/simulation.cpp
     src/vectorops.cpp
     src/dogbone.cpp
@@ -262,6 +263,10 @@ add_test(NAME rehearsal COMMAND test_rehearsal)
 add_executable(test_surfacemap tests/test_surfacemap.cpp)
 target_link_libraries(test_surfacemap PRIVATE phobicccp_core)
 add_test(NAME surfacemap COMMAND test_surfacemap)
+# Hole, boss and touch-plate probe cycles: G-code and the centre sums.
+add_executable(test_probecycles tests/test_probecycles.cpp)
+target_link_libraries(test_probecycles PRIVATE phobicccp_core)
+add_test(NAME probecycles COMMAND test_probecycles)
 # The streamer against a scripted controller on a pty (Linux; skips when no
 # pty opens as a serial port).
 if(UNIX AND NOT APPLE)
