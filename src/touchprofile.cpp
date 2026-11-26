@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
+#include <QFontMetrics>
 #include <QFileDialog>
 #include <QLayout>
 #include <QMessageBox>
@@ -186,7 +187,7 @@ public:
 // buttons), so 40 makes 48.
 const char *kSheet = R"(
     QMenuBar { font-size: 16px; }
-    QMenuBar::item { padding: 12px 14px; }
+    QMenuBar::item { padding: %MBPAD%px 14px; }
     QMenu { font-size: 16px; }
     QMenu::item { padding: 12px 36px 12px 16px; }
     QMenu::separator { height: 9px; }
@@ -303,7 +304,14 @@ int minFieldHeight(int desktopPx)
 
 QString styleSheet()
 {
-    return g_enabled ? QString::fromLatin1(kSheet) : QString();
+    if (!g_enabled)
+        return QString();
+    // A style sheet sizes menu bar entries from the font alone, so the
+    // padding makes up whatever the font's height leaves short of a row.
+    QFont f = QApplication::font();
+    f.setPixelSize(16);
+    const int pad = qMax(12, (kRow - QFontMetrics(f).height() + 1) / 2);
+    return QString::fromLatin1(kSheet).replace(QLatin1String("%MBPAD%"), QString::number(pad));
 }
 
 QStyle *wrap(QStyle *base)
