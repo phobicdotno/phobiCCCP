@@ -1,4 +1,5 @@
 #include "machinepanel.h"
+#include "probecycles.h"
 #include "machinemacros.h"
 #include "jobview.h"
 #include "shopdialog.h"
@@ -2163,7 +2164,8 @@ void MachinePanel::bitZeroBegin()
         return;
     }
     // Z with the BitSetter on ends in a reference measure on the button.
-    if ((m_bzPanel->mode() == BitZeroPanel::Corner || m_bzPanel->mode() == BitZeroPanel::ZOnly)
+    if ((m_bzPanel->mode() == BitZeroPanel::Corner || m_bzPanel->mode() == BitZeroPanel::ZOnly
+         || m_bzPanel->mode() == BitZeroPanel::Plate)
         && bitSetter().enabled && !bitSetterReachable(bitSetter(), QStringLiteral("BitZero")))
         return;
     // The plate finds the stock's lower-left corner and its top. A job whose
@@ -2175,7 +2177,8 @@ void MachinePanel::bitZeroBegin()
                            && (mode == BitZeroPanel::Corner || mode == BitZeroPanel::XOnly
                                || mode == BitZeroPanel::YOnly);
         const bool zOff = jobZeroBottom(*m_doc)
-                          && (mode == BitZeroPanel::Corner || mode == BitZeroPanel::ZOnly);
+                          && (mode == BitZeroPanel::Corner || mode == BitZeroPanel::ZOnly
+                              || mode == BitZeroPanel::Plate);
         if (xyOff || zOff) {
             ShopAsk ask;
             ask.title = QStringLiteral("BitZero");
@@ -2194,9 +2197,14 @@ void MachinePanel::bitZeroBegin()
     stopHoldJog();
     m_bz = m_bzPanel->config();
     m_bzMode = m_bzPanel->mode();
-    m_bzWantX = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::XOnly;
-    m_bzWantY = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::YOnly;
-    m_bzWantZ = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::ZOnly;
+    const bool round = m_bzMode == BitZeroPanel::Hole || m_bzMode == BitZeroPanel::Boss;
+    m_bzWantX = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::XOnly || round;
+    m_bzWantY = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::YOnly || round;
+    m_bzWantZ = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::ZOnly
+                || m_bzMode == BitZeroPanel::Plate;
+    m_bzPass = 0;
+    if (round)
+        m_bzPanel->setCentreResult(QString());
     m_bzCx = st.mx;
     m_bzCy = st.my;
     m_bzPanel->setBusy(true);
@@ -2204,10 +2212,24 @@ void MachinePanel::bitZeroBegin()
             .arg(m_bzMode == BitZeroPanel::Corner ? QStringLiteral("the corner (X, Y, Z)")
                  : m_bzMode == BitZeroPanel::ZOnly ? QStringLiteral("Z only")
                  : m_bzMode == BitZeroPanel::XOnly ? QStringLiteral("X only")
+                 : m_bzMode == BitZeroPanel::Hole ? QStringLiteral("the centre of a hole")
+                 : m_bzMode == BitZeroPanel::Boss ? QStringLiteral("the centre of a boss")
+                 : m_bzMode == BitZeroPanel::Plate ? QStringLiteral("Z on a touch plate")
                                                     : QStringLiteral("Y only"))
             .arg(st.mx, 0, 'f', 3).arg(st.my, 0, 'f', 3).arg(st.mz, 0, 'f', 3));
     m_bzStartX = st.mx;
     m_bzStartY = st.my;
+    if (round) {
+        // A failed boss touch leaves the bit beside the boss, below its
+        // top: back up to here before anything goes sideways.
+        m_bzOverZ = st.mz;
+        bitZeroStage(Phase::BitZeroX);
+        return;
+    }
+    if (m_bzMode == BitZeroPanel::Plate) {
+        bitZeroStage(Phase::BitZeroZ);
+        return;
+    }
     // V1 always touches the top first: the side probes descend from there.
     if (m_bz.v1 || !(m_bzWantX || m_bzWantY))
         bitZeroStage(Phase::BitZeroZ);
@@ -2224,6 +2246,24 @@ void MachinePanel::bitZeroStage(Phase stage, QStringList prefix)
     m_phase = stage;
     QStringList lines = {QStringLiteral("G90")};
     lines += prefix;
+    if (m_bzMode == BitZeroPanel::Hole || m_bzMode == BitZeroPanel::Boss
+        || m_bzMode == BitZeroPanel::Plate) {
+        ProbeFeeds f;
+        f.fastFeed = m_bz.fastFeed;
+        f.slowFeed = m_bz.slowFeed;
+        f.retract = m_bz.retract;
+        const char axis = stage == Phase::BitZeroY ? 'Y' : 'X';
+        const double r = m_bz.holeDiameter / 2.0;
+        if (stage == Phase::BitZeroZ)
+            lines += plateProbeLines(m_bz.zTravel, f);
+        else if (m_bzMode == BitZeroPanel::Hole)
+            // Started off-centre the far wall is up to a diameter away.
+            lines += holeProbeLines(axis, std::max(r + 5.0, m_bz.holeDiameter), f);
+        else
+            lines += bossProbeLines(axis, m_bz.holeDiameter, m_bz.bossClearance, m_bz.bossHeight, f);
+        m_grbl->startMacro(lines);
+        return;
+    }
     switch (stage) {
     case Phase::BitZeroX:
         lines += m_bz.v1 ? bitZeroSideLines('X', m_bz, m_bzStartX) : bitZeroWallLines('X', m_bz);
@@ -2253,16 +2293,25 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
 {
     // A stage ended by a controller reset reports its failure after the
     // reset was seen: the position is gone, so nothing may move back.
-    if (!ok && m_bz.v1 && (stage == Phase::BitZeroX || stage == Phase::BitZeroY)
+    const bool boss = m_bzMode == BitZeroPanel::Boss;
+    if (!ok && (m_bz.v1 || boss) && m_bzMode != BitZeroPanel::Hole
+        && m_bzMode != BitZeroPanel::Plate
+        && (stage == Phase::BitZeroX || stage == Phase::BitZeroY)
         && m_resets == m_bzStageResets) {
         // A V1 side probe stops beside the block, below its top: Begin
         // again from there would search Z downward past the block, into
         // the stock or the spoilboard. Once unlocked, back up over the
         // block and over to where Begin was pressed.
-        log(QStringLiteral("!! BitZero V1 probe failed: no contact on the block's %1 side. "
-                           "Check the magnet clip and that the block sits on the corner; the "
-                           "pin goes back up over the block, then Begin again")
-                .arg(stage == Phase::BitZeroX ? QStringLiteral("left") : QStringLiteral("front")));
+        if (boss)
+            log(QStringLiteral("!! Boss centre failed: no contact on its %1 sides. Check the "
+                               "ground clip and the diameter, boss height and clearance; the bit "
+                               "goes back up to where it started, then Begin again")
+                    .arg(stage == Phase::BitZeroX ? QStringLiteral("X") : QStringLiteral("Y")));
+        else
+            log(QStringLiteral("!! BitZero V1 probe failed: no contact on the block's %1 side. "
+                               "Check the magnet clip and that the block sits on the corner; the "
+                               "pin goes back up over the block, then Begin again")
+                    .arg(stage == Phase::BitZeroX ? QStringLiteral("left") : QStringLiteral("front")));
         m_hits.clear();
         const double z = m_bzOverZ, x = m_bzStartX, y = m_bzStartY;
         const quint64 resets = m_resets;
@@ -2277,11 +2326,20 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
             m_bzPanel->setBusy(false);
         return;
     }
+    if (!ok && m_bzMode == BitZeroPanel::Hole) {
+        bitZeroFail(stage == Phase::BitZeroHome ? QStringLiteral("could not move to the hole's centre")
+                                                : QStringLiteral("no contact on a hole wall"));
+        return;
+    }
     if (!ok) {
         bitZeroFail(stage == Phase::BitZeroZ ? QStringLiteral("no contact on the plate")
                     : stage == Phase::BitZeroHome ? QStringLiteral("could not move back over the corner")
                     : m_bz.v1 ? QStringLiteral("the side probe beside the block stopped")
                                                   : QStringLiteral("no contact on a bore wall"));
+        return;
+    }
+    if (m_bzMode == BitZeroPanel::Hole || boss || m_bzMode == BitZeroPanel::Plate) {
+        bitZeroAfterCentre(stage);
         return;
     }
     if (m_bz.v1) {
@@ -2363,6 +2421,76 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
         bitZeroApply();
         return;
     default:
+        return;
+    }
+}
+
+// Hole / boss: X walls, over to their middle, Y walls, over to theirs, X
+// once more (the first X chord was off-centre in Y), then X0 Y0 there.
+// Touch plate: one Z touch, Z0 the plate thickness below it.
+void MachinePanel::bitZeroAfterCentre(Phase stage)
+{
+    const bool boss = m_bzMode == BitZeroPanel::Boss;
+    const QString what = boss ? QStringLiteral("Boss") : QStringLiteral("Hole");
+    switch (stage) {
+    case Phase::BitZeroX: {
+        if (m_hits.size() < 4) {
+            bitZeroFail(QStringLiteral("expected four X contacts, got %1").arg(m_hits.size()));
+            return;
+        }
+        m_bzXp = m_hits.at(1).x;
+        m_bzXn = m_hits.at(3).x;
+        m_bzCx = (m_bzXp + m_bzXn) / 2.0;
+        log(QStringLiteral("%1 centre: X sides at %2 and %3 → centre X %4")
+                .arg(what).arg(m_bzXp, 0, 'f', 3).arg(m_bzXn, 0, 'f', 3).arg(m_bzCx, 0, 'f', 3));
+        const QStringList toCentre = {QStringLiteral("G53 G0 X%1").arg(m_bzCx, 0, 'f', 3)};
+        if (m_bzPass == 0) {
+            m_bzPass = 1;
+            bitZeroStage(Phase::BitZeroY, toCentre);
+            return;
+        }
+        const ProbeCentre c = probeCentre(m_bzXp, m_bzXn, m_bzYp, m_bzYn, m_bz.toolDiameter, boss);
+        const QString res = QStringLiteral("%1 diameter %2 mm (X %3, Y %4; tip %5 mm %6)")
+                                .arg(what).arg(c.diameter(), 0, 'f', 3)
+                                .arg(c.diameterX, 0, 'f', 3).arg(c.diameterY, 0, 'f', 3)
+                                .arg(m_bz.toolDiameter, 0, 'f', 3)
+                                .arg(boss ? QStringLiteral("taken off") : QStringLiteral("added"));
+        log(QStringLiteral("%1 centre at machine X %2 Y %3. %4")
+                .arg(what).arg(c.x, 0, 'f', 3).arg(c.y, 0, 'f', 3).arg(res));
+        m_bzPanel->setCentreResult(QStringLiteral("Centre set as X0 Y0. ") + res);
+        m_phase = Phase::BitZeroHome;
+        m_grbl->startMacro({QStringLiteral("G90"),
+                            QStringLiteral("G53 G0 X%1 Y%2").arg(m_bzCx, 0, 'f', 3).arg(m_bzCy, 0, 'f', 3)});
+        return;
+    }
+    case Phase::BitZeroY: {
+        if (m_hits.size() < 4) {
+            bitZeroFail(QStringLiteral("expected four Y contacts, got %1").arg(m_hits.size()));
+            return;
+        }
+        m_bzYp = m_hits.at(1).y;
+        m_bzYn = m_hits.at(3).y;
+        m_bzCy = (m_bzYp + m_bzYn) / 2.0;
+        log(QStringLiteral("%1 centre: Y sides at %2 and %3 → centre Y %4")
+                .arg(what).arg(m_bzYp, 0, 'f', 3).arg(m_bzYn, 0, 'f', 3).arg(m_bzCy, 0, 'f', 3));
+        m_bzPass = 2;
+        bitZeroStage(Phase::BitZeroX, {QStringLiteral("G53 G0 Y%1").arg(m_bzCy, 0, 'f', 3)});
+        return;
+    }
+    case Phase::BitZeroZ: {
+        if (m_hits.size() < 2) {
+            bitZeroFail(QStringLiteral("expected two Z contacts, got %1").arg(m_hits.size()));
+            return;
+        }
+        const double plate = m_hits.at(1).z;
+        m_bzStockZ = plate - m_bz.plateThickness;
+        log(QStringLiteral("Touch plate: top at machine Z %1, %2 mm thick → stock top Z %3")
+                .arg(plate, 0, 'f', 3).arg(m_bz.plateThickness, 0, 'f', 2).arg(m_bzStockZ, 0, 'f', 3));
+        bitZeroApply();
+        return;
+    }
+    default:
+        bitZeroApply();
         return;
     }
 }

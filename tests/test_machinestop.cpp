@@ -127,6 +127,9 @@ struct FakeGrbl {
     bool geo = false, rel = false, noiseOnce = false;
     QByteArray rebootOn;   // the controller reboots (brown-out, USB stall) on this line
     double bx = -130, by = -130, topZ = -40, r = 3.175, minZ = 1e9;
+    // A round hole (hole centre): walls at radius hR around (hcx, hcy).
+    bool hole = false;
+    double hcx = 0, hcy = 0, hR = 10;
     double val(const QByteArray &l, char ax, bool &has) const {
         const int i = l.indexOf(ax); has = i >= 0; if (!has) return 0;
         int j = i + 1; while (j < l.size() && (l[j]=='-'||l[j]=='.'||(l[j]>='0'&&l[j]<='9'))) ++j;
@@ -136,7 +139,7 @@ struct FakeGrbl {
         if (l.contains("G90")) rel = false;
         const bool g53 = l.contains("G53");
         const bool probe = l.contains("G38.");
-        if (!probe && !l.contains("G0") && !l.contains("G1")) return false;
+        if (!probe && ((!l.contains("G0") && !l.contains("G1")) || l.startsWith("G10"))) return false;
         bool hx, hy, hz; const double X = val(l, 'X', hx), Y = val(l, 'Y', hy), Z = val(l, 'Z', hz);
         double tx = mx, ty = my, tz = mz;
         if (hx) tx = (rel && !g53) ? mx + X : X;
@@ -144,6 +147,20 @@ struct FakeGrbl {
         if (hz) tz = (rel && !g53) ? mz + Z : Z;
         if (!probe) { mx = tx; my = ty; mz = tz; minZ = qMin(minZ, mz); return true; }
         bool hit = false; double cx = tx, cy = ty, cz = tz;
+        if (hole) {
+            // The pin's centre stops a pin radius inside the wall.
+            const double R = hR - r;
+            if (hx && std::abs(my - hcy) < R) {
+                const double w = std::sqrt(R * R - (my - hcy) * (my - hcy));
+                const double wall = tx > mx ? hcx + w : hcx - w;
+                if ((tx - wall) * (mx - wall) <= 0) { hit = true; cx = wall; }
+            }
+            if (hy && std::abs(mx - hcx) < R) {
+                const double w = std::sqrt(R * R - (mx - hcx) * (mx - hcx));
+                const double wall = ty > my ? hcy + w : hcy - w;
+                if ((ty - wall) * (my - wall) <= 0) { hit = true; cy = wall; }
+            }
+        }
         const bool overBlock = mx >= bx && mx <= bx + 60 && my >= by && my <= by + 60;
         if (hz && tz < mz && overBlock && mz >= topZ && tz <= topZ) { hit = true; cz = topZ; }
         if (hx && tx > mx && mz < topZ && my >= by && my <= by + 60) {
@@ -1852,6 +1869,34 @@ int main(int argc, char **argv)
         for (const QByteArray &e : grbl.events) std::printf("  2nd: %s\n", e.constData());
         std::printf("2nd Begin: lowest pin Z %.3f = %.3f mm below the stock top\n", grbl.minZ, stockTop - grbl.minZ);
         check(grbl.minZ >= stockTop, "v1miss: Begin again does not drive the pin below the stock top");
+    }
+
+    if (mode == "holecentre") {
+        // Hole centre: started off-centre in a 20 mm hole, X0 Y0 lands on
+        // its centre and the diameter comes out with the pin added back.
+        grbl.geo = true;
+        grbl.hole = true;
+        grbl.hcx = grbl.mx + 3.0;
+        grbl.hcy = grbl.my - 2.0;
+        grbl.hR = 10.0;
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Hole)->click();
+        panel.m_bzPanel->m_holeDia->setValue(20.0);
+        panel.m_bzPanel->m_tipDia->setValue(6.35);
+        grbl.r = 6.35 / 2.0;
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(6000);
+        for (const QByteArray &e : grbl.events) std::printf("  %s\n", e.constData());
+        std::printf("centre found X%.3f Y%.3f (hole X%.3f Y%.3f); %s\n", panel.m_bzCx, panel.m_bzCy,
+                    grbl.hcx, grbl.hcy, qPrintable(panel.m_bzPanel->m_centreResult->text()));
+        check(std::abs(panel.m_bzCx - grbl.hcx) < 0.01 && std::abs(panel.m_bzCy - grbl.hcy) < 0.01,
+              "holecentre: the centre found is the hole's");
+        check(grbl.count("G10 L20 P1 X") == 1 && grbl.count(" Z") >= 0, "holecentre: X0 Y0 set");
+        check(panel.m_bzPanel->m_centreResult->text().contains("diameter 20.000"),
+              "holecentre: diameter is the hole's, pin added back");
+        check(std::abs(grbl.mx - grbl.hcx) < 0.01 && std::abs(grbl.my - grbl.hcy) < 0.01,
+              "holecentre: the pin ends over the centre");
     }
 
     if (mode == "v1reboot") {

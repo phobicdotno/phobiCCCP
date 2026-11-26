@@ -244,6 +244,10 @@ private:
     quint64 m_resets = 0;                            // controller (re)starts seen
     quint64 m_bzStageResets = 0;                     // m_resets when the stage began
     void bitZeroAfterV1(Phase stage);
+    // Hole / boss centre (X, Y, X again) and the plain touch plate.
+    void bitZeroAfterCentre(Phase stage);
+    int m_bzPass = 0;                                // centre: 0 first X, 1 Y, 2 X again
+    double m_bzXp = 0, m_bzXn = 0, m_bzYp = 0, m_bzYn = 0;   // slow contacts
     static QStringList bitZeroSideLines(char axis, const BitZeroConfig &c, double startAbs);
     void openBitZero();
     void bitZeroBegin();

@@ -103,6 +103,15 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
         m_modes->addButton(b, Map);
         modeGrid->addWidget(b, 1, 0, 1, 4);
     }
+    // No BitZero needed: a round hole or boss, or any plate for Z.
+    {
+        const char *more[] = {"Hole centre", "Boss centre", "Touch plate (any)"};
+        for (int i = 0; i < 3; ++i) {
+            QToolButton *b = toggle(modeBox, QString::fromUtf8(more[i]));
+            m_modes->addButton(b, Hole + i);
+            modeGrid->addWidget(b, 2, i == 2 ? 2 : i, 1, i == 2 ? 2 : 1);
+        }
+    }
     lay->addWidget(modeBox);
 
     m_help = new QLabel(this);
@@ -167,6 +176,47 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
     m_mapSummary->setStyleSheet(QStringLiteral("color: #8b93a1; font-size: 12px;"));
     mapForm->addRow(m_mapSummary);
     lay->addWidget(m_mapBox);
+
+    // Hole / boss centre and the plain touch plate.
+    m_centreBox = new QWidget(this);
+    auto *cForm = new QFormLayout(m_centreBox);
+    cForm->setContentsMargins(0, 0, 0, 0);
+    cForm->setHorizontalSpacing(10);
+    cForm->setVerticalSpacing(6);
+    auto cRow = [&](const QString &label, QDoubleSpinBox *field, QList<QWidget *> &rows) {
+        auto *l = new QLabel(label, m_centreBox);
+        cForm->addRow(l, field);
+        rows << l << field;
+    };
+    m_holeDia = spin(m_centreBox, 1, 500, 2, QStringLiteral(" mm"));
+    m_holeDia->setToolTip(QStringLiteral(
+        "About how wide the hole or boss is. A few mm out is fine: it sets how far "
+        "each touch searches"));
+    cRow(QStringLiteral("About this wide"), m_holeDia, m_roundRows);
+    m_tipDia = spin(m_centreBox, 0.5, 25.4, 3, QStringLiteral(" mm"));
+    m_tipDia->setToolTip(QStringLiteral(
+        "Diameter of the pin or bit doing the touching (the same as Tool diameter "
+        "under Plate and feeds): it goes into the measured size"));
+    cRow(QStringLiteral("Tip diameter"), m_tipDia, m_roundRows);
+    m_bossHeight = spin(m_centreBox, 1, 100, 1, QStringLiteral(" mm"));
+    m_bossHeight->setToolTip(QStringLiteral(
+        "How far down beside the boss its sides are touched, from where you start "
+        "(a few mm over its top). Less than the boss is tall"));
+    cRow(QStringLiteral("Boss height"), m_bossHeight, m_bossRows);
+    m_bossClear = spin(m_centreBox, 1, 50, 1, QStringLiteral(" mm"));
+    m_bossClear->setToolTip(QStringLiteral(
+        "How far past the boss side the bit goes before it comes down"));
+    cRow(QStringLiteral("Clearance"), m_bossClear, m_bossRows);
+    m_plateThick = spin(m_centreBox, 0, 50, 2, QStringLiteral(" mm"));
+    m_plateThick->setToolTip(QStringLiteral(
+        "Thickness of your touch plate: Z0 is this far below where the bit touches it"));
+    cRow(QStringLiteral("Plate thickness"), m_plateThick, m_plateRows);
+    m_centreResult = new QLabel(m_centreBox);
+    m_centreResult->setWordWrap(true);
+    m_centreResult->setStyleSheet(QStringLiteral("color: #6fcf97; font-weight: bold;"));
+    cForm->addRow(m_centreResult);
+    m_roundRows << m_centreResult;
+    lay->addWidget(m_centreBox);
 
     // The probe circuit, live. Nothing should move until this reacts.
     m_contact = new QLabel(this);
@@ -271,6 +321,10 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
         dimsToggle->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
     });
 
+    // One tip diameter: the V1 row and the centre row are the same number.
+    connect(m_tipDia, &QDoubleSpinBox::valueChanged, m_toolDia, &QDoubleSpinBox::setValue);
+    connect(m_toolDia, &QDoubleSpinBox::valueChanged, m_tipDia, &QDoubleSpinBox::setValue);
+
     lay->addStretch(1);
     m_mapCancel = new QPushButton(QStringLiteral("Stop the surface map"), this);
     m_mapCancel->setObjectName(QStringLiteral("big"));
@@ -298,7 +352,8 @@ BitZeroPanel::BitZeroPanel(QWidget *parent)
     });
     for (QDoubleSpinBox *s : {m_thick, m_search, m_spotX, m_spotY, m_zTravel, m_fast, m_slow,
                               m_retract, m_lip, m_toolDia, m_clearance, m_sideDepth, m_lipDrop,
-                              m_mapW, m_mapH, m_mapMargin, m_mapClear, m_mapDev})
+                              m_mapW, m_mapH, m_mapMargin, m_mapClear, m_mapDev,
+                              m_holeDia, m_bossHeight, m_bossClear, m_plateThick})
         connect(s, &QDoubleSpinBox::valueChanged, this, [this] { save(); });
     for (QSpinBox *s : {m_mapCols, m_mapRows})
         connect(s, &QSpinBox::valueChanged, this, [this] { save(); });
@@ -327,7 +382,7 @@ void BitZeroPanel::reload()
 
 BitZeroPanel::Mode BitZeroPanel::mode() const
 {
-    return Mode(qBound(0, m_modes->checkedId(), int(Map)));
+    return Mode(qBound(0, m_modes->checkedId(), int(Plate)));
 }
 
 SurfaceMapPlan BitZeroPanel::mapPlan() const
@@ -378,6 +433,11 @@ void BitZeroPanel::setMapSummary(const QString &text)
     m_mapSummary->setText(text);
 }
 
+void BitZeroPanel::setCentreResult(const QString &text)
+{
+    m_centreResult->setText(text);
+}
+
 void BitZeroPanel::updateBegin()
 {
     QString t;
@@ -423,6 +483,10 @@ BitZeroConfig BitZeroPanel::config() const
     c.sideClearance = m_clearance->value();
     c.sideDepth = m_sideDepth->value();
     c.lipDrop = m_lipDrop->value();
+    c.holeDiameter = m_holeDia->value();
+    c.bossHeight = m_bossHeight->value();
+    c.bossClearance = m_bossClear->value();
+    c.plateThickness = m_plateThick->value();
     return c;
 }
 
@@ -521,10 +585,37 @@ void BitZeroPanel::updateHelp()
                 "surface: turn <b>Surface map</b> on under the job.")
                   .arg(v1 ? QStringLiteral("block") : QStringLiteral("BitZero"));
         break;
+    case Hole:
+        t = QStringLiteral(
+            "Pin or bit in the collet, ground clip on conductive stock (or the hole's "
+            "part). Jog it <b>into the hole, below its top</b>, near the middle. Touches "
+            "the X walls, moves to their middle, the Y walls, X once more, then sets "
+            "<b>X0 Y0 at the centre</b> and shows the measured diameter.");
+        break;
+    case Boss:
+        t = QStringLiteral(
+            "Pin or bit in the collet, ground clip on the boss. Jog it a few mm <b>over "
+            "the top of the boss, near its middle</b>. Goes out past each side, down by "
+            "the boss height, touches it from outside, back up; sets <b>X0 Y0 at the "
+            "centre</b> and shows the measured diameter.");
+        break;
+    case Plate:
+        t = QStringLiteral(
+            "Any touch plate, no BitZero needed. Plate flat on the stock, ground clip on "
+            "the bit. Jog the bit a few mm <b>above the plate</b>. Probes straight down, "
+            "sets <b>Z0</b> the plate thickness below the contact.");
+        break;
     }
     m_help->setText(t);
     if (m_mapBox)
         m_mapBox->setVisible(mode() == Map);
+    if (m_centreBox) {
+        const Mode m = mode();
+        m_centreBox->setVisible(m == Hole || m == Boss || m == Plate);
+        for (QWidget *w : std::as_const(m_roundRows)) w->setVisible(m == Hole || m == Boss);
+        for (QWidget *w : std::as_const(m_bossRows)) w->setVisible(m == Boss);
+        for (QWidget *w : std::as_const(m_plateRows)) w->setVisible(m == Plate);
+    }
 }
 
 void BitZeroPanel::load()
@@ -563,6 +654,16 @@ void BitZeroPanel::load()
     m_mapDev->setValue(s.value(QStringLiteral("maxDip"), mp.maxDeviation).toDouble());
     m_mapDirect->setChecked(s.value(QStringLiteral("direct"), false).toBool());
     s.endGroup();
+    m_tipDia->setValue(m_toolDia->value());
+    {
+        const BitZeroConfig pd;
+        s.beginGroup(QStringLiteral("machine/probe"));
+        m_holeDia->setValue(s.value(QStringLiteral("holeDiameter"), pd.holeDiameter).toDouble());
+        m_bossHeight->setValue(s.value(QStringLiteral("bossHeight"), pd.bossHeight).toDouble());
+        m_bossClear->setValue(s.value(QStringLiteral("bossClearance"), pd.bossClearance).toDouble());
+        m_plateThick->setValue(s.value(QStringLiteral("plateThickness"), pd.plateThickness).toDouble());
+        s.endGroup();
+    }
     if (QAbstractButton *b = m_modes->button(s.value(QStringLiteral("machine/bitzero/mode"), 0).toInt()))
         b->setChecked(true);
     m_loading = false;
@@ -597,6 +698,12 @@ void BitZeroPanel::save()
     s.setValue(QStringLiteral("clearance"), m_mapClear->value());
     s.setValue(QStringLiteral("maxDip"), m_mapDev->value());
     s.setValue(QStringLiteral("direct"), m_mapDirect->isChecked());
+    s.endGroup();
+    s.beginGroup(QStringLiteral("machine/probe"));
+    s.setValue(QStringLiteral("holeDiameter"), m_holeDia->value());
+    s.setValue(QStringLiteral("bossHeight"), m_bossHeight->value());
+    s.setValue(QStringLiteral("bossClearance"), m_bossClear->value());
+    s.setValue(QStringLiteral("plateThickness"), m_plateThick->value());
     s.endGroup();
     s.setValue(QStringLiteral("machine/bitzero/mode"), m_modes->checkedId());
 }
