@@ -689,6 +689,9 @@ class MachineStatus {
   final bool held;
   final String port, state, job;
 
+  /// Dust collector / coolant on (M7 or M8), as the controller reports it.
+  final bool coolant;
+
   /// The job's steps while the computer has one (phobiCCCP 1.3.18 and later).
   final List<JobStep> steps;
 
@@ -701,6 +704,7 @@ class MachineStatus {
       this.busy = false,
       this.streaming = false,
       this.held = false,
+      this.coolant = false,
       this.port = '',
       this.state = '',
       this.job = '',
@@ -712,6 +716,7 @@ class MachineStatus {
         busy: _b(j['busy']),
         streaming: _b(j['streaming']),
         held: _b(j['held']),
+        coolant: _b(j['coolant']),
         port: _s(j['port']),
         state: _s(j['state']),
         job: _s(j['job']),

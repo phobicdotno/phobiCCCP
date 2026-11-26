@@ -301,8 +301,14 @@ class _MachinePageState extends State<MachinePage> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(color: C.card, borderRadius: BorderRadius.circular(8), border: Border.all(color: C.cardBorder)),
-            child: Text(info.status.words() + (info.document.isNotEmpty ? ' · ${info.document}' : ''),
-                style: TextStyle(fontWeight: FontWeight.w600, color: info.status.readyToCut ? C.preview : C.text)),
+            child: Row(children: [
+              Expanded(
+                child: Text(info.status.words() + (info.document.isNotEmpty ? ' · ${info.document}' : ''),
+                    style: TextStyle(fontWeight: FontWeight.w600, color: info.status.readyToCut ? C.preview : C.text)),
+              ),
+              if (info.status.coolant)
+                const Tooltip(message: 'Dust collector / coolant on', child: Icon(Icons.air, size: 18, color: C.preview)),
+            ]),
           ),
           const SizedBox(height: 6),
           for (final m in info.machines)

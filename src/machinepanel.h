@@ -244,6 +244,17 @@ private:
     bool m_liftHold = false;             // Hold with a lift: Z up, spindle off, XY kept; Resume goes back down        // BitZero: wait for OK before moving after the zero
     QLabel *m_mapLabel = nullptr;
     QLabel *m_ovLabel = nullptr;         // live feed/rapid/spindle override, beside the +/- buttons
+    // Dust collector / coolant (M8 flood or M7 mist, M9 off). The button
+    // follows the controller's A: report; the setting (per machine) switches
+    // it with the spindle during a job.
+    QPushButton *m_coolantBtn = nullptr;
+    QCheckBox *m_coolantAuto = nullptr;
+    QComboBox *m_coolantCode = nullptr;
+    bool m_coolantOn = false;            // as last reported (A:F or A:M)
+    bool coolantWithJob() const;
+    bool coolantMist() const;
+    void toggleCoolant();
+    void showCoolant(bool on);
     void startSurfaceMap();
     void setSurfaceMap(const SurfaceMap &map);
     void refreshMapUi();

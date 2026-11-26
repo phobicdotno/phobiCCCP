@@ -207,6 +207,46 @@ QStringList airCutTransform(const QStringList &lines, double lift)
     return out;
 }
 
+QStringList coolantTransform(const QStringList &lines, bool mist)
+{
+    // Word M followed by a number: "M3", "M03 S12000", "G90 M5".
+    static const QRegularExpression mWord(QStringLiteral("(?:^|[^A-Z])M0*([0-9]+)(?![0-9.])"));
+    auto codesOf = [](const QString &raw) {
+        QString code = raw.trimmed().toUpper();
+        const int semi = code.indexOf(QChar(';'));
+        if (semi >= 0)
+            code = code.left(semi);
+        if (code.startsWith(QChar('(')))
+            code.clear();
+        QVector<int> m;
+        auto it = mWord.globalMatch(code);
+        while (it.hasNext())
+            m << it.next().captured(1).toInt();
+        return m;
+    };
+    for (const QString &raw : lines) {
+        const QVector<int> m = codesOf(raw);
+        if (m.contains(7) || m.contains(8) || m.contains(9))
+            return lines;   // the program switches it itself
+    }
+    const QString on = mist ? QStringLiteral("M7") : QStringLiteral("M8");
+    QStringList out;
+    bool running = false;
+    for (const QString &raw : lines) {
+        const QVector<int> m = codesOf(raw);
+        if (m.contains(5) && running) {
+            out << QStringLiteral("M9");
+            running = false;
+        }
+        out << raw;
+        if ((m.contains(3) || m.contains(4)) && !running) {
+            out << on;
+            running = true;
+        }
+    }
+    return out;
+}
+
 QStringList safeRapidsTransform(const QStringList &lines)
 {
     static const QRegularExpression word(QStringLiteral("([A-Z])\\s*(-?[0-9]*\\.?[0-9]+)"));

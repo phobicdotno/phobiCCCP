@@ -93,6 +93,7 @@ struct FakeGrbl {
     QByteArray travel = "$130=425.000\r\n$131=425.000\r\n$132=75.000\r\n$27=1.500\r\n";
     QList<QByteArray> events;
     int ovRapid = 100, ovSpindle = 100;   // reported as Ov:100,rapid,spindle
+    bool flood = false;                   // M8 on, M9 off; reported as A:F
 
     void send(const QByteArray &s) { (void)!::write(fd, s.constData(), size_t(s.size())); }
     QByteArray num(double v) const { return QByteArray::number(v, 'f', 3); }
@@ -121,7 +122,7 @@ struct FakeGrbl {
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
                      + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ)   // XY zero inside the travel
                      + "|Ov:100," + QByteArray::number(ovRapid) + ',' + QByteArray::number(ovSpindle)
-                     + ">\r\n");
+                     + (flood ? "|A:F" : "") + ">\r\n");
             } else if (c == '!') {
                 held = true;
                 events << "!";
@@ -165,6 +166,10 @@ struct FakeGrbl {
                     line.clear();
                     continue;
                 }
+                if (line == "M8")
+                    flood = true;
+                else if (line == "M9")
+                    flood = false;
                 if (line == "$$")
                     send(travel);
                 else if (line == "$H") {
@@ -735,6 +740,29 @@ int main(int argc, char **argv)
         grbl.mz = zWas;
         answer = [](const Seen &) { return QString(); };
         wait(500);
+    }
+
+    // Dust/Coolant by hand: M8 on, M9 off, and the button follows the A:
+    // field of the controller's report (here switched behind its back too).
+    {
+        QPushButton *cool = panel.findChild<QPushButton *>(QStringLiteral("coolant"));
+        check(cool && !cool->isChecked(), "coolant: the button is there, off");
+        grbl.events.clear();
+        cool->click();
+        wait(600);
+        check(grbl.events.contains("M8") && cool->isChecked() && grbl.flood,
+              "coolant: on sends M8 and the report keeps it on");
+        cool->click();
+        wait(600);
+        check(grbl.events.contains("M9") && !cool->isChecked() && !grbl.flood,
+              "coolant: off sends M9");
+        grbl.flood = true;
+        wait(600);
+        check(cool->isChecked() && panel.statusJson().value("coolant").toBool(),
+              "coolant: the button and the pad status follow A:F");
+        grbl.flood = false;
+        wait(600);
+        check(!cool->isChecked(), "coolant: no A: with Ov: means off");
     }
 
     // A pad's Zero X/Y or Zero Z bumped while a question of this page is

@@ -884,6 +884,27 @@ MachinePanel::MachinePanel(QWidget *parent)
     mapRow->addWidget(m_useMap);
     mapRow->addWidget(m_mapLabel, 1);
     mv->addLayout(mapRow);
+    // Dust collector / coolant with the job, kept per machine.
+    auto *coolRow = new QHBoxLayout;
+    m_coolantAuto = new QCheckBox(QStringLiteral("Dust/coolant on with the job"), more);
+    m_coolantAuto->setToolTip(QStringLiteral(
+        "Switch the dust collector or coolant on (M8 or M7) after the spindle starts "
+        "and off (M9) before it stops: at the end of the job, just before the spindle "
+        "goes off at the park spot, and before each tool change."));
+    m_coolantCode = new QComboBox(more);
+    m_coolantCode->addItem(QStringLiteral("M8 flood"));
+    m_coolantCode->addItem(QStringLiteral("M7 mist"));
+    m_coolantCode->setMinimumHeight(34);
+    m_coolantCode->setToolTip(QStringLiteral(
+        "Which output the relay hangs on. Most Shapeoko dust collector relays use M8 (flood)."));
+    m_coolantCode->setEnabled(false);
+    connect(m_coolantAuto, &QCheckBox::toggled, m_coolantCode, &QWidget::setEnabled);
+    connect(m_coolantAuto, &QCheckBox::toggled, this, [this] { saveSettings(); });
+    connect(m_coolantCode, &QComboBox::currentIndexChanged, this, [this] { saveSettings(); });
+    coolRow->addWidget(m_coolantAuto);
+    coolRow->addWidget(m_coolantCode);
+    coolRow->addStretch(1);
+    mv->addLayout(coolRow);
     connect(m_useMap, &QCheckBox::toggled, this, [this](bool on) {
         if (!m_loading)
             QSettings().setValue(QStringLiteral("machine/heightmap/use"), on);
@@ -928,13 +949,21 @@ MachinePanel::MachinePanel(QWidget *parent)
         "Dry run before cutting: the spindle (off) traces the outer rectangle of "
         "the job 50 mm above the work zero, so you can check the stock and the zero."));
     connect(hoverBtn, &QPushButton::clicked, this, [this] { hoverDryRun(); });
-    m_idleOnly << homeBtn << parkBtn << quickBtn << unlockBtn << bsBtn << hoverBtn;
+    m_coolantBtn = bigBtn(new QPushButton(QStringLiteral("Dust/Coolant off"), body), 44);
+    m_coolantBtn->setObjectName(QStringLiteral("coolant"));
+    m_coolantBtn->setCheckable(true);
+    m_coolantBtn->setToolTip(QStringLiteral(
+        "Dust collector or coolant on (M8, or M7 when set to mist) or off (M9). "
+        "Shows what the controller reports."));
+    connect(m_coolantBtn, &QPushButton::clicked, this, [this] { toggleCoolant(); });
+    m_idleOnly << homeBtn << parkBtn << quickBtn << unlockBtn << bsBtn << hoverBtn << m_coolantBtn;
     foot->addWidget(homeBtn);
     foot->addWidget(parkBtn);
     foot->addWidget(quickBtn);
     foot->addWidget(hoverBtn);
     foot->addWidget(unlockBtn);
     foot->addWidget(bsBtn);
+    foot->addWidget(m_coolantBtn);
     foot->addStretch(1);
     lay->addLayout(foot);
 
@@ -2998,6 +3027,8 @@ void MachinePanel::gamepadButton(int number, bool pressed)
         unlock();
     } else if (action == QLatin1String("spindle+") || action == QLatin1String("spindle-")) {
         m_grbl->sendRealtime(char(action == QLatin1String("spindle+") ? 0x9A : 0x9B));
+    } else if (action == QLatin1String("coolant")) {
+        toggleCoolant();
     } else if (action == QLatin1String("rapid")) {
         // 100 → 50 → 25 → 100, from what the controller last reported.
         const int now = m_grbl->status().ovRapid;
@@ -3095,6 +3126,8 @@ void MachinePanel::loadSettings()
     m_bsSlow->setValue(s.value(QStringLiteral("bitsetter/slow"), 50.0).toDouble());
     m_tcX->setValue(s.value(QStringLiteral("toolchange/x"), -120.0).toDouble());
     m_tcY->setValue(s.value(QStringLiteral("toolchange/y"), -20.0).toDouble());
+    m_coolantAuto->setChecked(s.value(QStringLiteral("coolant/withJob"), false).toBool());
+    m_coolantCode->setCurrentIndex(s.value(QStringLiteral("coolant/mist"), false).toBool() ? 1 : 0);
     m_haveRef = s.value(QStringLiteral("ref/valid"), false).toBool();
     m_refZ = s.value(QStringLiteral("ref/z"), 0.0).toDouble();
     const QString port = s.value(QStringLiteral("port")).toString();
@@ -3118,6 +3151,8 @@ void MachinePanel::saveSettings()
     s.setValue(QStringLiteral("bitsetter/slow"), m_bsSlow->value());
     s.setValue(QStringLiteral("toolchange/x"), m_tcX->value());
     s.setValue(QStringLiteral("toolchange/y"), m_tcY->value());
+    s.setValue(QStringLiteral("coolant/withJob"), m_coolantAuto->isChecked());
+    s.setValue(QStringLiteral("coolant/mist"), m_coolantCode->currentIndex() == 1);
     s.setValue(QStringLiteral("ref/valid"), m_haveRef);
     s.setValue(QStringLiteral("ref/z"), m_refZ);
     if (m_grbl->isConnected())
@@ -3359,6 +3394,8 @@ void MachinePanel::onStatus(const MachineStatus &st)
     m_extra->setText(extra);
     if (m_jobView)
         m_jobView->setOverride(st.ovFeed);
+    if ((st.flood || st.mist) != m_coolantOn)
+        showCoolant(st.flood || st.mist);
     if (m_ovLabel) {
         QString ov = QStringLiteral("feed %1 %").arg(st.ovFeed);
         if (st.ovRapid != 100)
@@ -3529,6 +3566,12 @@ void MachinePanel::toggleWarmup()
 void MachinePanel::warmupStep()
 {
     static const double share[] = {0.5, 0.75, 1.0};
+    // A job took over (it streams its own M3 and may be parked at a tool
+    // change, where commands still go through): leave the spindle to it.
+    if (m_grbl->isStreaming()) {
+        endWarmup(QStringLiteral("warm-up ended: a job is running"));
+        return;
+    }
     const int next = m_warmStep + 1;
     if (next >= 3) {
         m_warmTimer->stop();
@@ -3864,12 +3907,55 @@ void MachinePanel::parkSpot(double &x, double &y) const
 // then costs nothing, the machine already stands parked. Not homed, machine
 // coordinates say nothing about where the park spot is: only up (never down,
 // riseZ) and the spindle off, as before.
+bool MachinePanel::coolantWithJob() const
+{
+    return m_coolantAuto && m_coolantAuto->isChecked();
+}
+
+bool MachinePanel::coolantMist() const
+{
+    return m_coolantCode && m_coolantCode->currentIndex() == 1;
+}
+
+// The button shows what the controller reports, not what was last pressed.
+void MachinePanel::showCoolant(bool on)
+{
+    m_coolantOn = on;
+    if (!m_coolantBtn)
+        return;
+    m_coolantBtn->setChecked(on);
+    m_coolantBtn->setText(on ? QStringLiteral("Dust/Coolant ON") : QStringLiteral("Dust/Coolant off"));
+}
+
+// By hand (button or gamepad), when the machine takes a command: M8 (or M7)
+// on, M9 off. During a job the program's own lines switch it.
+void MachinePanel::toggleCoolant()
+{
+    if (!m_grbl->isConnected() || !m_grbl->canSendCommand()) {
+        log(QStringLiteral("!! busy — dust/coolant not switched"));
+        showCoolant(m_coolantOn);   // undo the button's own check
+        return;
+    }
+    const QString code = m_coolantOn ? QStringLiteral("M9")
+                         : coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8");
+    if (m_grbl->sendCommand(code)) {
+        log(QStringLiteral("dust/coolant %1 (%2)").arg(m_coolantOn ? QStringLiteral("off")
+                                                                   : QStringLiteral("on"), code));
+        showCoolant(!m_coolantOn);  // until the next report says otherwise
+    } else {
+        showCoolant(m_coolantOn);
+    }
+}
+
 QStringList MachinePanel::endOfJobMoves()
 {
     if (!m_homed) {
         log(QStringLiteral("job done: not homed, so up to safe Z and spindle off, no park"));
-        return {QStringLiteral("G90"), QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
-                QStringLiteral("M5")};
+        QStringList up{QStringLiteral("G90"), QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3)};
+        if (coolantWithJob())
+            up << QStringLiteral("M9");
+        up << QStringLiteral("M5");
+        return up;
     }
     double x = 0, y = 0;
     parkSpot(x, y);
@@ -3882,6 +3968,8 @@ QStringList MachinePanel::endOfJobMoves()
     } else {
         log(QStringLiteral("job done: up to the top, then spindle off (the park spot is off the machine)"));
     }
+    if (coolantWithJob())
+        moves << QStringLiteral("M9");
     moves << QStringLiteral("M5");
     return moves;
 }
@@ -4894,10 +4982,19 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         const QString last = lines.last().trimmed().toUpper();
         if (last == QLatin1String("M05") || last == QLatin1String("M5")
             || last == QLatin1String("M02") || last == QLatin1String("M2")
-            || last == QLatin1String("M30"))
+            || last == QLatin1String("M30")
+            || (coolantWithJob() && (last == QLatin1String("M9") || last == QLatin1String("M09"))))
             lines.removeLast();
         else
             break;
+    }
+    // Dust collector / coolant with the spindle: on after each start, off
+    // before each tool change; the last off is in the end-of-job moves,
+    // just before the spindle stops at the park spot.
+    if (coolantWithJob()) {
+        lines = coolantTransform(lines, coolantMist());
+        log(QStringLiteral("dust/coolant: %1 after the spindle starts, M9 before it stops")
+                .arg(coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8")));
     }
     // Preparing and asking ran the event loop: a pad may have started a job
     // or opened another design meanwhile.
@@ -5083,6 +5180,7 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
     // On hold here (Hold pressed, here or on a pad): the pad offers Resume.
     o.insert(QStringLiteral("held"), m_grbl->isConnected() && (m_held || m_liftHold));
+    o.insert(QStringLiteral("coolant"), m_grbl->isConnected() && m_coolantOn);
     o.insert(QStringLiteral("job"), !m_ncPath.isEmpty() ? QFileInfo(m_ncPath).fileName()
                                     : m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());

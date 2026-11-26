@@ -20,6 +20,10 @@ struct MachineStatus {
     // Ov: field - feed / rapid / spindle override, percent. GRBL sends it
     // only every few reports and after a change, so the last seen stays.
     int ovFeed = 100, ovRapid = 100, ovSpindle = 100;
+    // A: field - flood (M8) and mist (M7) on. GRBL sends it with Ov: and
+    // leaves it out when nothing is on, so a report with Ov: and no A:
+    // means both off; a report without Ov: keeps the last seen.
+    bool flood = false, mist = false;
     bool probePin = false;               // Pn:P — the probe input is closed
     QString limitPins;                   // Pn: limit inputs that are active (X, Y, Z, A)
     bool valid = false;

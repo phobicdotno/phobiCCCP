@@ -73,6 +73,14 @@ QStringList airCutTransform(const QStringList &lines, double lift);
 // bit is wherever the operator jogged it - so the next rapid rises first.
 QStringList safeRapidsTransform(const QStringList &lines);
 
+// Dust collector / coolant switched with the spindle (GRBL M8 flood, M7 mist,
+// M9 off; a relay on the flood pin often runs the dust collector): the
+// on-code right after every spindle start (M3/M4, so after a tool change
+// too) and M9 right before every spindle stop (M5), so the end of the job
+// and the park for a tool change happen with it off. A program that already
+// switches it itself is left alone.
+QStringList coolantTransform(const QStringList &lines, bool mist = false);
+
 class GrblPost
 {
 public:

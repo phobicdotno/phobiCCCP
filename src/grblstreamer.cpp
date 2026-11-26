@@ -873,6 +873,15 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     st.ovRapid = c.at(1).toInt();
                     st.ovSpindle = c.at(2).toInt();
                 }
+                st.flood = st.mist = false;   // an A: in this report says otherwise
+                for (const QByteArray &q : parts)
+                    if (q.startsWith("A:")) {
+                        st.flood = q.indexOf('F', 2) >= 0;
+                        st.mist = q.indexOf('M', 2) >= 0;
+                    }
+            } else if (p.startsWith("A:")) {
+                st.flood = p.indexOf('F', 2) >= 0;
+                st.mist = p.indexOf('M', 2) >= 0;
             } else if (p.startsWith("Pn:")) {
                 st.probePin = p.indexOf('P', 3) >= 0;   // past the "Pn:" itself
                 for (char a : {'X', 'Y', 'Z', 'A'})

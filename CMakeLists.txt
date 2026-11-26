@@ -445,6 +445,11 @@ add_executable(test_exportjob tests/test_exportjob.cpp)
 target_link_libraries(test_exportjob PRIVATE phobicccp_ui)
 add_test(NAME exportjob COMMAND test_exportjob)
 
+# Dust collector / coolant switched with the spindle in a job's program.
+add_executable(test_coolant tests/test_coolant.cpp)
+target_link_libraries(test_coolant PRIVATE phobicccp_ui)
+add_test(NAME coolant COMMAND test_coolant)
+
 # The gamepad reader, driven through a fifo carrying synthetic joystick events
 # so it can be tested with no controller plugged in.
 if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
