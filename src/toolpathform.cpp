@@ -413,7 +413,14 @@ void ToolpathForm::setToolpath(const QString &uuid, const QString &type, const Q
 {
     const QJsonObject json = withFormDefaults(type, json_);
     const QStringList keys = flatKeys(json);
-    const bool same = uuid == m_uuid && type == m_type && keys == m_keys;
+    // The strategy shows or hides fields (raster angle, pencil bigger bit):
+    // a change from outside (undo) needs the full rebuild too.
+    auto shapeOf = [](const QJsonObject &j) {
+        return QStringList{flatGet(j, QStringLiteral("pocket_strategy")).toVariant().toString(),
+                           flatGet(j, QStringLiteral("strategy")).toVariant().toString()};
+    };
+    const bool same = uuid == m_uuid && type == m_type && keys == m_keys
+                      && shapeOf(json) == shapeOf(m_json);
     m_uuid = uuid;
     m_type = type;
     m_json = json;

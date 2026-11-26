@@ -11,6 +11,7 @@
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QTemporaryDir>
+#include <QListWidget>
 #include <QTest>
 #include <QUndoStack>
 #include <cstdio>
@@ -90,6 +91,17 @@ int main(int argc, char **argv)
 
     // New shapes land on a shown, unlocked layer.
     check(c2d::layers::keyOf(d.defaultLayer()) == defKey, "new shapes go on a usable layer");
+    {
+        // Only a hidden blank-uuid DEFAULT layer: the fallback is a layer of its own.
+        c2d::Document h;
+        h.load(blank, &err);
+        QJsonObject def = h.defaultLayer();
+        def.insert("visible", false);
+        h.addElement(c2d::Element::makeRectangle({30, 30}, 20, 20, def));
+        const QJsonObject fb = h.defaultLayer();
+        check(c2d::layers::keyOf(fb) != c2d::layers::keyOf(def) && fb.value("visible").toBool(),
+              "fallback layer is not the hidden DEFAULT");
+    }
 
     // Show the hidden layer: one undo step, and undo hides it again.
     QUndoStack *undo = canvas->undoStack();
@@ -114,6 +126,20 @@ int main(int argc, char **argv)
     panel->renameLayer(newKey, QStringLiteral("Inlays"));
     check(d.elementById(a.id)->raw.value("layer").toObject().value("name").toString() == "Inlays",
           "rename layer");
+    {
+        // Undo the rename and the move: the added layer is back, empty.
+        undo->undo();
+        undo->undo();
+        auto *lw = panel->findChild<QListWidget *>();
+        bool listed = false;
+        for (int i = 0; lw && i < lw->count(); ++i)
+            listed = listed || lw->item(i)->data(Qt::UserRole).toString() == newKey;
+        check(c2d::layers::keyOf(*d.elementById(a.id)) == defKey && listed,
+              "undoing the move keeps the added layer, empty");
+        undo->redo();
+        undo->redo();
+        check(c2d::layers::keyOf(*d.elementById(a.id)) == newKey, "redo moves it back");
+    }
 
     // Lock / unlock through the panel.
     panel->setLocked(lckKey, false);

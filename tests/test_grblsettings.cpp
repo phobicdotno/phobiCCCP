@@ -92,6 +92,13 @@ int main(int argc, char **argv)
     check(dlg.pendingLines() == (QStringList{QStringLiteral("$100=40.25"), QStringLiteral("$110=4000")}),
           "restore sends the changed ones");
 
+    // Homing ($22) goes before soft limits ($20), which GRBL refuses while homing is off.
+    QMap<int, double> off = s, on = s;
+    off[20] = 0; off[22] = 0; on[20] = 1; on[22] = 1;
+    const QStringList order = grblsettings::changeLines(off, on);
+    check(order.size() == 2 && order.at(0) == QLatin1String("$22=1") && order.at(1) == QLatin1String("$20=1"),
+          "homing before soft limits");
+
     // Daily automatic copy: once per profile and day.
     const QString dir = tmp.filePath(QStringLiteral("grbl-backups"));
     const QString p1 = grblsettings::autoBackup(dir, QStringLiteral("Shapeoko 5/Pro"),

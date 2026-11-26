@@ -12,6 +12,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QStandardPaths>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -97,6 +98,10 @@ QStringList changeLines(const QMap<int, double> &from, const QMap<int, double> &
     for (auto it = to.cbegin(); it != to.cend(); ++it)
         if (!from.contains(it.key()) || !sameValue(from.value(it.key()), it.value()))
             out << QStringLiteral("$%1=%2").arg(it.key()).arg(formatValue(it.value()));
+    // GRBL refuses $20=1 (soft limits) while homing is off, so send $22 first.
+    for (int i = 1; i < out.size(); ++i)
+        if (out.at(i).startsWith(QLatin1String("$22=")))
+            out.move(i, 0);
     return out;
 }
 
@@ -173,11 +178,11 @@ QString autoBackup(const QString &dir, const QString &profile, const QDate &day,
         QStringLiteral("%1-%2.json").arg(name, day.toString(Qt::ISODate)));
     if (QFile::exists(path) || !QDir().mkpath(dir))
         return QString();
-    QFile f(path);
+    QSaveFile f(path);
     if (!f.open(QIODevice::WriteOnly))
         return QString();
     f.write(toJson(banner, QDateTime::currentDateTime(), settings));
-    return path;
+    return f.commit() ? path : QString();
 }
 
 } // namespace grblsettings
@@ -409,13 +414,16 @@ void GrblSettingsDialog::saveToFile()
         QStringLiteral("Settings backup (*.json)"));
     if (path.isEmpty())
         return;
-    QFile f(path);
+    QSaveFile f(path);
     if (!f.open(QIODevice::WriteOnly)) {
         shopTell(this, QStringLiteral("Controller settings"), QStringLiteral("Could not save"),
                  f.errorString());
         return;
     }
     f.write(toJson(m_banner, QDateTime::currentDateTime(), m_orig));
+    if (!f.commit())
+        shopTell(this, QStringLiteral("Controller settings"), QStringLiteral("Could not save"),
+                 f.errorString());
 }
 
 void GrblSettingsDialog::restoreFromFile()

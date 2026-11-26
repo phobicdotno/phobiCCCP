@@ -176,9 +176,25 @@ public:
             if (!l.isEmpty() && l.value("visible").toBool(true) && !l.value("locked").toBool(false))
                 return l;
         }
+        // Every layer is hidden or locked: a name none of them has, so the
+        // new shape is not taken for one of those layers.
+        QString name = QStringLiteral("DEFAULT");
+        for (int n = 2;; ++n) {
+            bool used = false;
+            for (const Element &e : m_elements) {
+                const QJsonObject l = e.raw.value("layer").toObject();
+                if (l.value("uuid").toString().isEmpty() && l.value("name").toString() == name) {
+                    used = true;
+                    break;
+                }
+            }
+            if (!used)
+                break;
+            name = QStringLiteral("DEFAULT %1").arg(n);
+        }
         QJsonObject l;
         l.insert("blue", 0); l.insert("green", 0); l.insert("red", 0);
-        l.insert("locked", false); l.insert("name", QStringLiteral("DEFAULT"));
+        l.insert("locked", false); l.insert("name", name);
         l.insert("uuid", QString()); l.insert("visible", true);
         return l;
     }

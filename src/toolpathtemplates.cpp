@@ -107,6 +107,9 @@ QVector<Toolpath> instantiate(const Document &doc, const QJsonObject &tpl,
         params.insert(p.name);
     for (const QString &b : param::builtinNames())
         params.insert(b);
+    // Named dimensions too (values() holds every name that works out here).
+    for (const QString &n : param::values(doc, doc.parametric()).keys())
+        params.insert(n);
     QSet<QString> taken;
     for (const Toolpath &t : doc.toolpaths())
         taken.insert(t.json.value("name").toString());
@@ -163,6 +166,12 @@ QVector<Toolpath> instantiate(const Document &doc, const QJsonObject &tpl,
         }
         out << t;
     }
+    // Work the kept bindings out against this design now, so a depth bound to
+    // the stock follows this stock and not the one the template was saved on.
+    Document scratch = doc;
+    scratch.toolpathsRef() = out;
+    param::applyToolpathBindings(scratch, notes);
+    out = scratch.toolpaths();
     return out;
 }
 

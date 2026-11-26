@@ -765,7 +765,15 @@ MachinePanel::MachinePanel(QWidget *parent)
         connect(surfBtn, &QPushButton::clicked, this, [this] { openSurfacing(); });
         auto *historyBtn = bigBtn(new QPushButton(QStringLiteral("History"), jobCard), 52);
         historyBtn->setToolTip(QStringLiteral("The last jobs: when, how long, how they ended"));
-        connect(historyBtn, &QPushButton::clicked, this, [this] { jobhistory::showDialog(this); });
+        connect(historyBtn, &QPushButton::clicked, this, [this] {
+            // The dialog is modal: open, it would cover Hold and Stop.
+            if (isBusy()) {
+                shopTell(this, QStringLiteral("Job history"), QStringLiteral("Not while the machine works"),
+                         QStringLiteral("Hold and Stop stay in reach: look at the history once the machine is idle."));
+                return;
+            }
+            jobhistory::showDialog(this);
+        });
         fileRow->addWidget(m_openNcBtn);
         fileRow->addWidget(m_backToDesignBtn);
         fileRow->addWidget(surfBtn);
@@ -4328,7 +4336,9 @@ static QMap<int, double> toMap(const QHash<int, double> &h)
 void MachinePanel::autoBackupSettings()
 {
     QSettings ps;
-    const QString profile = machineprofiles::nameOf(ps, machineprofiles::activeId(ps));
+    const QString id = machineprofiles::activeId(ps);
+    // The id keeps profiles whose names clean up to the same file name apart.
+    const QString profile = machineprofiles::nameOf(ps, id) + QLatin1Char('_') + id;
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                         + QStringLiteral("/grbl-backups");
     const QString path = grblsettings::autoBackup(dir, profile, QDate::currentDate(),
@@ -6189,6 +6199,12 @@ void MachinePanel::showDue()
 
 void MachinePanel::openCounters()
 {
+    // The dialog is modal: open, it would cover Hold and Stop.
+    if (isBusy()) {
+        shopTell(this, QStringLiteral("Counters"), QStringLiteral("Not while the machine works"),
+                 QStringLiteral("Hold and Stop stay in reach: look at the counters once the machine is idle."));
+        return;
+    }
     QSettings s;
     if (machinecounters::showDialog(this, m_counters, machineprofiles::nameOf(s, m_countersId)))
         flushCounters();

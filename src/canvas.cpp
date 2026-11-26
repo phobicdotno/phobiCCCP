@@ -3522,6 +3522,9 @@ void Canvas::duplicateElements(const QStringList &ids)
         return;
     QVector<Element> copies;
     QStringList newIds;
+    // Copies keep their groups among themselves, under new group ids, so a
+    // click on a copy does not pick up the originals.
+    QHash<QString, QString> newGroup;
     for (const QString &id : ids) {
         const Element *e = m_doc->elementById(id);
         if (!e)
@@ -3529,6 +3532,18 @@ void Canvas::duplicateElements(const QStringList &ids)
         Element c = *e;
         c.id = QUuid::createUuid().toString();
         c.raw.insert(QStringLiteral("id"), c.id);
+        QJsonArray g = c.raw.value(QStringLiteral("group_id")).toArray();
+        for (int i = 0; i < g.size(); ++i) {
+            const QString old = g.at(i).toString();
+            if (old.isEmpty())
+                continue;
+            QString &fresh = newGroup[old];
+            if (fresh.isEmpty())
+                fresh = QUuid::createUuid().toString();
+            g.replace(i, fresh);
+        }
+        if (!g.isEmpty())
+            c.raw.insert(QStringLiteral("group_id"), g);
         c.translate(5, -5);
         newIds << c.id;
         copies.append(c);

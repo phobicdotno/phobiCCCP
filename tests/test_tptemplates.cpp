@@ -9,6 +9,7 @@
 #include "../src/toolpathfactory.h"
 #include "../src/toolpathpanel.h"
 #include "../src/toolpathtemplates.h"
+#include <cmath>
 
 #include <QApplication>
 #include <QDir>
@@ -117,7 +118,12 @@ int main(int argc, char *argv[])
     const Toolpath &p2 = b.toolpaths().at(0);
     const Toolpath &c2 = b.toolpaths().at(1);
     check(p2.type == pocket.type && c2.type == chamfer.type, "types equal");
-    check(withoutRefs(p2.json) == withoutRefs(pocket.json), "pocket params equal");
+    QJsonObject p2Rest = withoutRefs(p2.json), pocketRest = withoutRefs(pocket.json);
+    const QJsonValue step = p2Rest.take(QStringLiteral("stepdown"));
+    pocketRest.remove(QStringLiteral("stepdown"));
+    check(p2Rest == pocketRest, "pocket params equal");
+    const double stepMm = step.isString() ? step.toString().toDouble() : step.toDouble();
+    check(std::fabs(stepMm - 1.2) < 1e-9, "a kept binding is worked out on this stock (12 / 10)");
     check(withoutRefs(c2.json) == withoutRefs(chamfer.json), "chamfer params equal");
     check(c2.json.value("side").toString() == QLatin1String("inside"), "the chamfer keeps its side");
     for (const Toolpath *t : {&p2, &c2}) {
