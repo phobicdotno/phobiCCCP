@@ -1,6 +1,7 @@
 #include "machinepanel.h"
 #include "jobview.h"
 #include "shopdialog.h"
+#include "grblcodes.h"
 #include "toollibrary.h"
 #include "toolstrip.h"
 
@@ -1271,9 +1272,9 @@ MachinePanel::MachinePanel(QWidget *parent)
             QTimer::singleShot(400, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
         }
         if (l.startsWith(QLatin1String("ALARM:4")) || l.startsWith(QLatin1String("ALARM:5"))) {
-            log(QStringLiteral("!! the probe did not touch anything within its travel. "
-                               "Position is kept — unlocking ($X); no need to Initialize. "
-                               "Jog closer and probe again."));
+            const int n = l.mid(6, 1).toInt();
+            log(QStringLiteral("!! %1. %2 Unlocking ($X) now; no need to Initialize.")
+                    .arg(grblcodes::label(true, n), grblcodes::alarm(n).fix));
             QTimer::singleShot(300, this, [this] { m_grbl->sendCommand(QStringLiteral("$X")); });
         }
         // Every other alarm (hard/soft limit, reset while moving, homing
@@ -1282,12 +1283,12 @@ MachinePanel::MachinePanel(QWidget *parent)
         if (l.startsWith(QLatin1String("ALARM:"))
             && !l.startsWith(QLatin1String("ALARM:4")) && !l.startsWith(QLatin1String("ALARM:5"))) {
             m_homed = false;
-            static const QHash<QString, QString> why = {
-                {QStringLiteral("1"), QStringLiteral("an end stop fired (ALARM:1)")},
-                {QStringLiteral("2"), QStringLiteral("a move went past the travel (ALARM:2)")},
-                {QStringLiteral("3"), QStringLiteral("the controller was reset while moving (ALARM:3)")}};
-            const QString n = l.mid(6, 1);
-            m_unhomedWhy = why.value(n, QStringLiteral("homing failed (%1)").arg(l.trimmed()));
+            bool isAlarm = true;
+            int n = 0;
+            grblcodes::find(l, &isAlarm, &n);
+            m_unhomedWhy = QStringLiteral("%1 (ALARM:%2)").arg(grblcodes::alarm(n).brief).arg(n);
+            if (n != 8 && n != 9)       // those two get their own line below
+                log(QStringLiteral("!! %1. %2").arg(grblcodes::label(true, n), grblcodes::alarm(n).fix));
             // The end-of-job rise and spindle stop come after the program:
             // an alarm there does not undo the job, but it does lock the
             // controller and lose the position.
@@ -1309,13 +1310,22 @@ MachinePanel::MachinePanel(QWidget *parent)
         }
         if (l.startsWith(QLatin1String("ALARM:8")) || l.startsWith(QLatin1String("ALARM:9"))) {
             m_parkAfterHome = false;
-            log(QStringLiteral("!! homing could not find a limit switch. Check that every "
-                               "homing sensor's LED lights when metal is in front of it — "
-                               "on the Shapeoko 5 both Y sensors, including the back-left one."));
+            const int n = l.mid(6, 1).toInt();
+            log(QStringLiteral("!! %1. %2").arg(grblcodes::label(true, n), grblcodes::alarm(n).fix));
         }
     });
     connect(m_grbl, &GrblStreamer::errorOccurred, this, [this](const QString &e) {
-        log(QStringLiteral("!! %1").arg(e));
+        // A bare "error:22" from the controller gets its meaning beside it.
+        bool isAlarm = false;
+        int n = 0;
+        const bool coded = grblcodes::find(e, &isAlarm, &n);
+        log(coded && e.trimmed() == QStringLiteral("error:%1").arg(n)
+                ? QStringLiteral("!! %1").arg(grblcodes::label(false, n))
+                : QStringLiteral("!! %1").arg(e));
+        // The program stopped on a code: streamFinished(false) comes next and
+        // explains it in a popup.
+        if (coded && e.startsWith(QLatin1String("program stopped:")))
+            m_stopCode = (isAlarm ? n : -n);
     });
     // A manual zero for the new bit counts once the controller took it:
     // refused (error:9 while still jogging, say), Z still belongs to the
@@ -1391,6 +1401,21 @@ MachinePanel::MachinePanel(QWidget *parent)
         // summary's dialog would stop status and alarms being read.
         if (rehearsal)
             QTimer::singleShot(0, this, [this, ok, measured] { finishRehearsal(ok, measured); });
+        // Stopped on a GRBL error or alarm: say in plain words what it was,
+        // why it likely happened here and what to do. Not over a rehearsal's
+        // own summary.
+        const int stopCode = m_stopCode;
+        m_stopCode = 0;
+        // It does not wait for OK: the machine still needs Initialize or
+        // Unlock, and the serial line keeps being read.
+        if (!ok && stopCode != 0 && !rehearsal) {
+            const bool isAlarm = stopCode > 0;
+            const int n = isAlarm ? stopCode : -stopCode;
+            if (m_stopPopup)
+                m_stopPopup->close();
+            m_stopPopup = shopShow(this, QStringLiteral("Job stopped"), grblcodes::label(isAlarm, n),
+                                   grblcodes::details(isAlarm, n));
+        }
         // The job card says how it ended, not a bare percentage that reads
         // like a job still going.
         m_progress->setFormat(ok ? QStringLiteral("✓ Finished")

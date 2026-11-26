@@ -109,6 +109,7 @@ add_library(phobicccp_ui STATIC
     src/machinepanel.cpp
     src/jobview.cpp
     src/shopdialog.cpp
+    src/grblcodes.cpp
     src/popuplook.cpp
     src/isopreview.cpp
     src/simpanel.cpp
@@ -334,6 +335,9 @@ if(Qt6Test_FOUND)
     add_executable(test_panels tests/test_panels.cpp)
     target_link_libraries(test_panels PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME panels COMMAND test_panels)
+    add_executable(test_grblcodes tests/test_grblcodes.cpp)
+    target_link_libraries(test_grblcodes PRIVATE phobicccp_ui)
+    add_test(NAME grblcodes COMMAND test_grblcodes)
     set_tests_properties(panels PROPERTIES SKIP_RETURN_CODE 77)
     # Two bits on one tool number (setup sheet, Simulate strip) and inlay bindings.
     add_executable(test_uifixes tests/test_uifixes.cpp)

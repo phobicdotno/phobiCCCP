@@ -2,6 +2,7 @@
 #include <QPixmap>
 #include <QString>
 
+class QDialog;
 class QWidget;
 
 namespace c2d {
@@ -34,5 +35,9 @@ bool shopAsk(QWidget *parent, const ShopAsk &a);
 // An information popup with a single OK.
 void shopTell(QWidget *parent, const QString &title, const QString &headline,
               const QString &body = QString());
+// The same, without waiting: on screen over the page while it keeps
+// working (and the buttons under it stay usable); OK closes and deletes it.
+QDialog *shopShow(QWidget *parent, const QString &title, const QString &headline,
+                  const QString &body = QString());
 
 } // namespace c2d

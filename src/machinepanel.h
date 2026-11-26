@@ -259,6 +259,8 @@ private:
     // resuming without one cuts as deep as the two tools differ in length.
     bool m_toolMeasured = false;
     bool m_rehearsal = false;            // the running program is a rehearsal
+    QPointer<QDialog> m_stopPopup;       // the "Job stopped" explanation on screen
+    int m_stopCode = 0;                  // the code the program stopped on: >0 ALARM:n, <0 error:n
     std::function<void()> m_onIdle;
     quint64 m_idleSeq = 0;      // which whenIdle() step a posted run belongs to
     bool m_idlePosted = false;   // a run of m_onIdle is queued
