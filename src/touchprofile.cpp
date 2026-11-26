@@ -189,7 +189,7 @@ const char *kSheet = R"(
     QMenuBar { font-size: 16px; }
     QMenuBar::item { padding: %MBPAD%px 14px; }
     QMenu { font-size: 16px; }
-    QMenu::item { padding: 12px 36px 12px 16px; }
+    QMenu::item { padding: %MBPAD%px 36px %MBPAD%px 16px; }
     QMenu::separator { height: 9px; }
     QToolBar { padding: 2px; }
     QToolButton { min-width: 32px; min-height: 40px; }
@@ -306,7 +306,7 @@ QString styleSheet()
 {
     if (!g_enabled)
         return QString();
-    // A style sheet sizes menu bar entries from the font alone, so the
+    // A style sheet sizes menu bar entries and menu rows from the font alone, so the
     // padding makes up whatever the font's height leaves short of a row.
     QFont f = QApplication::font();
     f.setPixelSize(16);
