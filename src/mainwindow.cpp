@@ -125,10 +125,11 @@
 namespace c2d {
 
 // Where designs are kept on the pad, and where files opened from elsewhere
-// go: Documents/phobiCCCP (on Android the app's own Documents folder).
+// go: Documents/phobiCCCP (on Android the app's own Documents folder, on
+// every Android version: androidfiles::documentsDir).
 static QString designsDir()
 {
-    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+    return androidfiles::documentsDir()
            + QStringLiteral("/phobiCCCP");
 }
 
@@ -2932,8 +2933,12 @@ void MainWindow::onShareDesign()
     if (m_doc.filePath().isEmpty())
         return;
     // A copy as the design is now, saved or not; the file itself is left alone.
+    // In a folder of its own: the share sheet or Save to… reads it later,
+    // and a send (which removes its copy once read) must not take it away.
+    // Old shares are cleared when the program starts.
     QString err;
-    const QString copy = sendCopy(m_doc.filePath(), &err);
+    const QString copy = sendCopy(m_doc.filePath(), &err, shareDir() + QLatin1Char('/')
+                                                              + QString::number(QDateTime::currentMSecsSinceEpoch()));
     if (copy.isEmpty()) {
         QMessageBox::warning(this, QStringLiteral("Share or save a copy"), err);
         return;
@@ -2957,6 +2962,8 @@ void MainWindow::showStartupWindow()
         show();
     // Only the real window listens: --shot and the tests build a MainWindow too.
     setReceiving(m_receiveAct->isChecked());
+    // Copies shared or saved on an earlier run (onShareDesign) are done with.
+    QDir(shareDir()).removeRecursively();
     // Android may take the app's sockets away while it is in the background
     // (screen off, another app in front). Back in front, listen again when
     // they are gone, or, after being away, whenever no one is connected, so
@@ -2968,11 +2975,7 @@ void MainWindow::showStartupWindow()
         }
         if (st != Qt::ApplicationActive || !m_receiveAct->isChecked())
             return;
-        const bool away = std::exchange(m_wasAway, false);
-        if (!m_receiver || !m_receiver->isHealthy() || (away && m_receiver->isIdle())) {
-            setReceiving(false);
-            setReceiving(true);
-        }
+        relisten(std::exchange(m_wasAway, false));
     });
     QTimer::singleShot(3000, this, [this] { checkForUpdate(); });
     // ... and once an hour after that, so a long-running copy sees a new
@@ -3131,6 +3134,25 @@ void MainWindow::setReceiving(bool on)
     refreshDiscovery();
 }
 
+void MainWindow::relisten(bool away)
+{
+    if (!m_receiver) {
+        setReceiving(true);
+    } else if (!m_receiver->isIdle()) {
+        // A sender or pad is connected (maybe waiting on a question here):
+        // kept, and only a socket that is gone is listened on again.
+        if (!m_receiver->isHealthy()) {
+            QString err;
+            if (!m_receiver->rebind(&err))
+                statusBar()->showMessage(QStringLiteral("Cannot receive from Syntexophobic (port %1): %2")
+                                             .arg(ProjectReceiver::kPort).arg(err), 10000);
+        }
+    } else if (away || !m_receiver->isHealthy()) {
+        setReceiving(false);
+        setReceiving(true);
+    }
+}
+
 void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
 {
     const QString host = QSysInfo::machineHostName();
@@ -3186,7 +3208,7 @@ void MainWindow::onProjectReceived(int id, const ReceivedProject &p)
             m_receiver->answer(id, false, QStringLiteral("could not open it on %1: %2").arg(host, why));
     };
 
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+    const QString base = androidfiles::documentsDir()
                          + QStringLiteral("/phobiCCCP/Received");
     QStringList paths;
     QString err;
@@ -3233,7 +3255,7 @@ namespace {
 
 QString padDir()
 {
-    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+    return androidfiles::documentsDir()
            + QStringLiteral("/phobiCCCP/Pad");
 }
 
@@ -3333,7 +3355,12 @@ bool MainWindow::sameDesign(const QString &opened, QString *err) const
     return false;
 }
 
-QString MainWindow::sendCopy(const QString &opened, QString *err)
+QString MainWindow::shareDir()
+{
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/share");
+}
+
+QString MainWindow::sendCopy(const QString &opened, QString *err, const QString &folder)
 {
     if (!sameDesign(opened, err))
         return {};
@@ -3341,16 +3368,24 @@ QString MainWindow::sendCopy(const QString &opened, QString *err)
     const QString name = m_untitled || m_doc.filePath().isEmpty()
                              ? QStringLiteral("Untitled")
                              : QFileInfo(m_doc.filePath()).completeBaseName();
-    const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
-                        + QStringLiteral("/send");
+    const QString dir = !folder.isEmpty() ? folder
+                                          : QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+                                                + QStringLiteral("/send");
     QDir().mkpath(dir);
     const QString path = QDir(dir).filePath(safeFileName(name) + QStringLiteral(".c2d"));
     QFile::remove(path);
     Document d = m_doc;
     if (!d.save(path, err))
         return {};
-    m_bg.saveTo(path);
-    m_model->saveTo(path);
+    // A copy without its background image or 3D model is not the design:
+    // not sent (or shared) at all, and the caller says why.
+    QString partErr;
+    if (!m_bg.saveTo(path, &partErr) || !m_model->saveTo(path, &partErr)) {
+        QFile::remove(path);
+        if (err)
+            *err = QStringLiteral("could not copy the background image or 3D model: %1").arg(partErr);
+        return {};
+    }
     return path;
 }
 
@@ -3656,7 +3691,7 @@ QJsonObject MainWindow::padSend(int id, const QJsonObject &req, const QString &p
 
     ReceivedProject folder;   // no files: only the folder, named like a received project
     folder.name = name;
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+    const QString base = androidfiles::documentsDir()
                          + QStringLiteral("/phobiCCCP/Received");
     QString err;
     const QString dir = saveReceived(folder, base, nullptr, &err);

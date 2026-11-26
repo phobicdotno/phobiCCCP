@@ -108,6 +108,9 @@ private:
     void offerRecovery();
     // Projects sent from Syntexophobic (File > Receive from Syntexophobic).
     void setReceiving(bool on);
+    // Back in front: listen again where the sockets are gone, or afresh
+    // (`away`: after being in the background) when no one is connected.
+    void relisten(bool away);
     void onProjectReceived(int id, const ReceivedProject &project);
     // The PhobiCCCP pad app on the same port (projectreceiver.h): status,
     // tool library, design sync, machine switch, and designs sent to be
@@ -127,7 +130,9 @@ private:
     // File > Send to pad…: the open file to a pad, to edit it there.
     void onSendToPad();
     // The design as it is now, saved or not, as a .c2d in the cache (to send whole).
-    QString sendCopy(const QString &opened, QString *error);
+    // `folder`: where the copy goes; empty, cache/send (a send removes it once read).
+    QString sendCopy(const QString &opened, QString *error, const QString &folder = QString());
+    static QString shareDir();   // cache/share: copies for the share sheet and Save to…
     bool sameDesign(const QString &opened, QString *error) const;
     qint64 sendToPad(const QString &padId, QString *note, QString *error);
     padlink::Pads m_pads;   // pads in touch lately, and designs waiting for them

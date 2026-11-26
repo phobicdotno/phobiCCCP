@@ -137,7 +137,12 @@ if(ANDROID)
     # The same program on a pad: Qt builds it as the app's library, and
     # qt-android/ holds the manifest (network access, landscape, the icon).
     qt_add_executable(phobicccp ${PHOBICCCP_APP_SOURCES})
-    # Always rising, and above the Flutter pad app's build numbers.
+    # Always rising, and above the Flutter pad app's build numbers. Minor or
+    # patch 100 would give another version's code (1.3.100 is 1.4.0's).
+    if(PROJECT_VERSION_MINOR GREATER_EQUAL 100 OR PROJECT_VERSION_PATCH GREATER_EQUAL 100)
+        message(FATAL_ERROR "Version ${PROJECT_VERSION}: minor and patch must be below 100 "
+                            "(the Android version code is major*10000 + minor*100 + patch)")
+    endif()
     math(EXPR PHOBICCCP_VERSION_CODE
          "${PROJECT_VERSION_MAJOR} * 10000 + ${PROJECT_VERSION_MINOR} * 100 + ${PROJECT_VERSION_PATCH}")
     set_target_properties(phobicccp PROPERTIES

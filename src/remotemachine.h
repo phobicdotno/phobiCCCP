@@ -63,6 +63,9 @@ public:
         qint64 answeredAt = 0;   // when it last answered (ms since 1970)
         QString error;           // why the last "info" failed
         bool asking = false;     // an "info" is on its way
+        // When the info held was asked for (RemoteMachine's request count):
+        // an answer to an earlier question is older news and is dropped.
+        quint64 infoSeq = 0;
         QString key() const { return QStringLiteral("%1:%2").arg(address).arg(port); }
         QString name() const { return host.isEmpty() ? address : host; }
     };
@@ -84,8 +87,11 @@ public:
     int addAddress(const QString &text);
     // A typed-in computer, no longer kept.
     void forget(int index);
-    // A discovery answer (pads and this install are left out).
-    void addFound(const SendToDialog::Computer &c);
+    // A discovery answer (pads and this install are left out: false). One
+    // found before by its id that answers from another address now (a new
+    // DHCP lease) is asked there from now on; one typed in keeps its address.
+    bool addFound(const SendToDialog::Computer &c);
+    // The user's pick: remembered, so the same computer is picked next time.
     void select(int index);
     int selected() const { return m_selected; }
     const Computer *current() const;
@@ -96,9 +102,12 @@ public:
     // Switch the selected computer to machine `id`; machineSwitched() tells.
     void switchMachine(const QString &id);
     // Send the design (the bytes of a .c2d) to the selected computer's
-    // machine in use; with `start`, ask it to start cutting. False (and
-    // sent() is not emitted) when there is no computer or a send is on its way.
-    bool send(const QString &name, const QByteArray &c2d, bool start);
+    // machine in use; with `start`, ask it to start cutting. `machine`: the
+    // id of the machine the user was shown (asked about) when they said so;
+    // when that computer has gone over to another since, nothing is sent and
+    // sent() says why. False (and sent() is not emitted) when there is no
+    // computer or a send is on its way.
+    bool send(const QString &name, const QByteArray &c2d, bool start, const QString &machine = QString());
     bool isSending() const { return m_sending; }
 
 signals:
@@ -113,12 +122,16 @@ private:
     void ask(int index);
     int indexOf(const QString &key) const;
     void saveTyped() const;
+    // Shown, without remembering it as the user's pick.
+    void show(int index);
     void onAppState(Qt::ApplicationState state);
 
     QString m_ownId;
     QList<Computer> m_computers;
     int m_selected = -1;
-    QString m_selectedKey;   // remembered, so the same computer is picked next time
+    // The user's last pick (kept in the settings): picked again when it turns
+    // up, over one picked only because it came first.
+    QString m_rememberedKey;
     QUdpSocket *m_udp = nullptr;
     QTimer *m_poll = nullptr;
     QTimer *m_discover = nullptr;
@@ -128,6 +141,7 @@ private:
     bool m_sending = false;
     bool m_paused = false;   // the app is in the background
     int m_ticks = 0;         // polls
+    quint64 m_seq = 0;       // requests asked, and machine switches answered
     int m_rounds = 0;        // discovery rounds
 };
 

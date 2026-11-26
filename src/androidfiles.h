@@ -41,4 +41,10 @@ void saveCopy(const QString &path, const QString &mimeType, const QString &sugge
 // Where the earlier PhobiCCCP pad app (Flutter) kept its designs; empty off Android.
 QString oldPadDesignsDir();
 
+// The Documents folder phobiCCCP keeps its files in. On Android the app's own
+// (Android/data/<app>/files/Documents) on every version: Qt gives the public
+// Documents folder below Android 11, which the app has no permission to write
+// and its FileProvider cannot share from. Elsewhere QStandardPaths' Documents.
+QString documentsDir();
+
 } // namespace c2d::androidfiles

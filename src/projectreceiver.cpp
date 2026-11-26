@@ -265,6 +265,10 @@ struct ProjectReceiver::Conn {
 
 namespace {
 int g_multicastHolders = 0;
+// Request and transfer ids, never used twice in a run: a receiver started
+// again (MainWindow, back from the background) must not hand out an id an
+// answer still on its way for the old one is meant for.
+int g_nextId = 1;
 
 #ifdef Q_OS_ANDROID
 // WifiManager.MulticastLock, made once. Not reference counted on the Java
@@ -338,20 +342,35 @@ ProjectReceiver::~ProjectReceiver()
 bool ProjectReceiver::start(quint16 port, QString *error)
 {
     stop();
-    m_tcp = new QTcpServer(this);
-    if (!m_tcp->listen(QHostAddress::Any, port)) {
-        if (error) *error = m_tcp->errorString();
+    m_port = port;
+    return rebind(error);
+}
+
+bool ProjectReceiver::rebind(QString *error)
+{
+    if (!isListening()) {
+        // The connections are the receiver's own (onConnection), so they
+        // outlive the server they came in on.
         delete m_tcp;
-        m_tcp = nullptr;
-        return false;
+        m_tcp = new QTcpServer(this);
+        if (!m_tcp->listen(QHostAddress::Any, m_port)) {
+            if (error) *error = m_tcp->errorString();
+            delete m_tcp;
+            m_tcp = nullptr;
+            return false;
+        }
+        m_port = m_tcp->serverPort();   // the one picked, for port 0
+        connect(m_tcp, &QTcpServer::newConnection, this, &ProjectReceiver::onConnection);
     }
-    connect(m_tcp, &QTcpServer::newConnection, this, &ProjectReceiver::onConnection);
-    // Discovery is a convenience: without it a host can still be typed in.
-    m_udp = new QUdpSocket(this);
-    if (m_udp->bind(QHostAddress::Any, m_tcp->serverPort(),
-                    QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint))
-        connect(m_udp, &QUdpSocket::readyRead, this, &ProjectReceiver::onDatagrams);
-    m_multicast = std::make_unique<MulticastHold>();
+    if (!m_udp || m_udp->state() != QAbstractSocket::BoundState) {
+        // Discovery is a convenience: without it a host can still be typed in.
+        delete m_udp;
+        m_udp = new QUdpSocket(this);
+        if (m_udp->bind(QHostAddress::Any, m_port, QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint))
+            connect(m_udp, &QUdpSocket::readyRead, this, &ProjectReceiver::onDatagrams);
+    }
+    if (!m_multicast)
+        m_multicast = std::make_unique<MulticastHold>();
     return true;
 }
 
@@ -385,7 +404,7 @@ bool ProjectReceiver::isHealthy() const
 
 quint16 ProjectReceiver::port() const
 {
-    return m_tcp ? m_tcp->serverPort() : 0;
+    return m_tcp ? m_port : 0;
 }
 
 void ProjectReceiver::onDatagrams()
@@ -411,6 +430,7 @@ void ProjectReceiver::onConnection()
 {
     while (m_tcp && m_tcp->hasPendingConnections()) {
         QTcpSocket *s = m_tcp->nextPendingConnection();
+        s->setParent(this);   // kept when the server is listened again (rebind)
         if (m_conns.size() >= kMaxConns) {
             // As in drop(): a peer that never closes its end is cut off.
             connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
@@ -510,7 +530,7 @@ void ProjectReceiver::onData(QTcpSocket *s)
         return;
     c->idle.stop();
     c->deadline.stop();
-    const int id = m_nextId++;
+    const int id = g_nextId++;
     m_waiting.insert(id, s);
     ReceivedProject p = c->reader.project();
     p.peer = s->peerAddress().toString();
@@ -558,7 +578,7 @@ void ProjectReceiver::onApiData(QTcpSocket *s)
     }
     c->pending = true;
     c->idle.stop();
-    const int id = m_nextId++;
+    const int id = g_nextId++;
     m_apiWaiting.insert(id, s);
     QString peer = s->peerAddress().toString();
     if (peer.startsWith(QStringLiteral("::ffff:")))

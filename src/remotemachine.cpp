@@ -108,7 +108,7 @@ RemoteMachine::RemoteMachine(const QString &ownId, QObject *parent) : QObject(pa
     // coming back, ask again at once instead of showing stale answers.
     connect(qGuiApp, &QGuiApplication::applicationStateChanged, this, &RemoteMachine::onAppState);
 
-    m_selectedKey = QSettings().value(kLastKey).toString();
+    m_rememberedKey = QSettings().value(kLastKey).toString();
     for (const QString &h : QSettings().value(kTypedKey).toStringList())
         addAddress(h);
 }
@@ -157,11 +157,14 @@ void RemoteMachine::rediscover()
     delete m_udp;
     m_udp = new QUdpSocket(this);
     m_udp->bind(QHostAddress::AnyIPv4, 0);
+    // Maybe another network now: broadcast first again, then sweep while
+    // no computer answers.
+    m_heard = false;
+    m_rounds = 0;
     connect(m_udp, &QUdpSocket::readyRead, this, [this] {
-        for (const SendToDialog::Computer &c : SendToDialog::answers(m_udp)) {
-            m_heard = true;
-            addFound(c);
-        }
+        for (const SendToDialog::Computer &c : SendToDialog::answers(m_udp))
+            if (addFound(c))
+                m_heard = true;   // not for a pad or this install
     });
     discoverNow();
 }
@@ -183,32 +186,56 @@ int RemoteMachine::indexOf(const QString &key) const
     return -1;
 }
 
-void RemoteMachine::addFound(const SendToDialog::Computer &f)
+bool RemoteMachine::addFound(const SendToDialog::Computer &f)
 {
     // A pad has no machine; this install is not another computer.
     if (f.pad || (!f.id.isEmpty() && f.id == m_ownId))
-        return;
-    for (Computer &c : m_computers) {
+        return false;
+    const quint16 port = f.port ? f.port : ProjectReceiver::kPort;
+    for (int i = 0; i < m_computers.size(); ++i) {
+        Computer &c = m_computers[i];
         // The same install answering again, or on another of its addresses:
         // one typed in stays as typed.
-        if ((!f.id.isEmpty() && c.id == f.id) || (c.address == f.address && c.port == f.port)) {
+        if ((!f.id.isEmpty() && c.id == f.id) || (c.address == f.address && c.port == port)) {
             if (c.id.isEmpty())
                 c.id = f.id;
             if (!c.typed || c.host == c.address)
                 c.host = f.host;
-            return;
+            // Found before, and no longer answering where it was (a new
+            // address from the router, say): asked where it answers now.
+            // Not while it answers: a computer on two networks answers on
+            // both, and would flip between them.
+            const QString was = c.key();
+            const QString moved = QStringLiteral("%1:%2").arg(f.address).arg(port);
+            if (!c.typed && moved != was && !online(i) && indexOf(moved) < 0) {
+                c.address = f.address;
+                c.port = port;
+                c.info = QJsonObject();   // the old address's, stale
+                c.answeredAt = 0;
+                c.error.clear();
+                c.asking = false;         // an answer from the old one is dropped (indexOf)
+                if (m_rememberedKey == was) {
+                    m_rememberedKey = moved;
+                    QSettings().setValue(kLastKey, m_rememberedKey);
+                }
+                if (m_running)
+                    ask(i);
+                emit changed();
+            }
+            return true;
         }
     }
     Computer c;
     c.id = f.id;
     c.host = f.host;
     c.address = f.address;
-    c.port = f.port ? f.port : ProjectReceiver::kPort;
+    c.port = port;
     m_computers.append(c);
-    if (m_selected < 0 || (c.key() == m_selectedKey && !online(m_selected)))
-        select(m_computers.size() - 1);
+    if (m_selected < 0 || c.key() == m_rememberedKey)
+        show(m_computers.size() - 1);
     ask(m_computers.size() - 1);
     emit changed();
+    return true;
 }
 
 int RemoteMachine::addAddress(const QString &text)
@@ -238,8 +265,8 @@ int RemoteMachine::addAddress(const QString &text)
         m_computers[i].typed = true;
     }
     saveTyped();
-    if (m_selected < 0 || c.key() == m_selectedKey)
-        select(i);
+    if (m_selected < 0 || c.key() == m_rememberedKey)
+        show(i);
     if (m_running)
         ask(i);
     emit changed();
@@ -251,11 +278,16 @@ void RemoteMachine::forget(int index)
     if (index < 0 || index >= m_computers.size() || !m_computers[index].typed)
         return;
     const QString was = m_selected >= 0 ? m_computers[m_selected].key() : QString();
+    if (m_computers[index].key() == m_rememberedKey) {
+        // Not picked again should it turn up on the network.
+        m_rememberedKey.clear();
+        QSettings().remove(kLastKey);
+    }
     m_computers.removeAt(index);
     saveTyped();
     m_selected = indexOf(was);
     if (m_selected < 0 && !m_computers.isEmpty())
-        m_selected = 0;
+        show(0);
     emit changed();
 }
 
@@ -270,11 +302,18 @@ void RemoteMachine::saveTyped() const
 
 void RemoteMachine::select(int index)
 {
+    if (index < 0 || index >= m_computers.size())
+        return;
+    m_rememberedKey = m_computers[index].key();
+    QSettings().setValue(kLastKey, m_rememberedKey);
+    show(index);
+}
+
+void RemoteMachine::show(int index)
+{
     if (index < 0 || index >= m_computers.size() || index == m_selected)
         return;
     m_selected = index;
-    m_selectedKey = m_computers[index].key();
-    QSettings().setValue(kLastKey, m_selectedKey);
     if (m_running)
         ask(index);
     emit changed();
@@ -314,13 +353,18 @@ void RemoteMachine::ask(int index)
     Computer &c = m_computers[index];
     c.asking = true;
     const QString key = c.key();
+    const quint64 seq = ++m_seq;
     SendToDialog::call(this, c.address, c.port, QJsonObject{{QStringLiteral("op"), QStringLiteral("info")}},
-                       kInfoTimeoutMs, [this, key](const QJsonObject &r) {
+                       kInfoTimeoutMs, [this, key, seq](const QJsonObject &r) {
                            const int i = indexOf(key);
                            if (i < 0)
                                return;   // forgotten meanwhile
                            Computer &c = m_computers[i];
                            c.asking = false;
+                           // Asked before a machine switch was answered: it
+                           // may name the machine from before the switch.
+                           if (seq < c.infoSeq)
+                               return;
                            if (!r.value(QStringLiteral("ok")).toBool()) {
                                c.error = r.value(QStringLiteral("error")).toString();
                                emit changed();
@@ -334,6 +378,7 @@ void RemoteMachine::ask(int index)
                                return;
                            }
                            c.info = r;
+                           c.infoSeq = seq;
                            c.error.clear();
                            c.answeredAt = now();
                            if (!id.isEmpty())
@@ -360,8 +405,11 @@ void RemoteMachine::switchMachine(const QString &id)
                                return;
                            }
                            // The answer is the computer's "info" as it is now.
+                           // An "info" asked before now may still be on its
+                           // way with the machine from before: dropped.
                            if (const int i = indexOf(key); i >= 0) {
                                m_computers[i].info = r;
+                               m_computers[i].infoSeq = ++m_seq;
                                m_computers[i].answeredAt = now();
                            }
                            emit machineSwitched(true, QStringLiteral("%1 now uses %2").arg(name, activeMachineName(r)));
@@ -369,11 +417,21 @@ void RemoteMachine::switchMachine(const QString &id)
                        });
 }
 
-bool RemoteMachine::send(const QString &name, const QByteArray &c2d, bool start)
+bool RemoteMachine::send(const QString &name, const QByteArray &c2d, bool start, const QString &machine)
 {
     const Computer *c = current();
     if (!c || m_sending)
         return false;
+    const QString active = c->info.value(QStringLiteral("activeMachine")).toString();
+    if (!machine.isEmpty() && machine != active) {
+        // Someone switched machines there (or another pad did) while the
+        // user was asked: what they said yes to is not what would get it.
+        const QString now = activeMachineName(c->info);
+        emit sent(false, false, QStringLiteral("Not sent: %1 switched to %2 meanwhile. Check the machine there "
+                                               "and try again.")
+                                    .arg(c->name(), now.isEmpty() ? QStringLiteral("another machine") : now));
+        return true;
+    }
     if (c2d.size() > SendToDialog::kMaxDesign) {
         emit sent(false, false, QStringLiteral("Not sent: the design is %1 MB; at most %2 MB can be sent.")
                                     .arg(c2d.size() >> 20).arg(SendToDialog::kMaxDesign >> 20));
@@ -384,7 +442,7 @@ bool RemoteMachine::send(const QString &name, const QByteArray &c2d, bool start)
     const QJsonObject req{{QStringLiteral("op"), QStringLiteral("open")},
                           {QStringLiteral("name"), name},
                           {QStringLiteral("c2d"), QString::fromLatin1(c2d.toBase64())},
-                          {QStringLiteral("machine"), c->info.value(QStringLiteral("activeMachine")).toString()},
+                          {QStringLiteral("machine"), machine.isEmpty() ? active : machine},
                           {QStringLiteral("start"), start},
                           {QStringLiteral("from"), QSysInfo::machineHostName()}};
     m_sending = true;
@@ -767,6 +825,9 @@ void RemoteMachinePanel::send(bool start)
         return;
     const QString name = m_design.name ? m_design.name() : QStringLiteral("Design");
     const QString host = c->name(), key = c->key();
+    // The machine the user sees now (and is asked about): the design goes
+    // to that one or nowhere, whatever the polls bring meanwhile.
+    const QString machineId = c->info.value(QStringLiteral("activeMachine")).toString();
     if (start) {
         QString machine = activeMachineName(c->info);
         if (machine.isEmpty())
@@ -802,7 +863,7 @@ void RemoteMachinePanel::send(bool start)
     const QByteArray data = f.readAll();
     f.close();
     QFile::remove(path);
-    m_client->send(name, data, start);
+    m_client->send(name, data, start, machineId);
     refresh();
 }
 

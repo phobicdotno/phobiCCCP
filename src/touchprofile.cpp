@@ -212,16 +212,34 @@ QRect screenRect(QDialog *dlg)
     return s ? s->availableGeometry() : QRect();
 }
 
-// The style sheet sizes a spin box for one of Fusion's narrow arrows (with a
-// style sheet set, Qt does not ask the style); ours are two finger-wide
-// buttons, so the box asks for that much more room the first time it shows.
+// With a style sheet set, a spin box's size hint may be made for one of
+// Fusion's narrow arrows, or already for our two finger-wide buttons: that
+// differs between Qt versions. So it is measured, the first time the box
+// shows: what the hint puts round the text against what the style really
+// takes from the edit field, and only the shortfall is added.
 void widenSpinBox(QAbstractSpinBox *sb)
 {
     if (sb->property("touchWidened").toBool() || sb->buttonSymbols() == QAbstractSpinBox::NoButtons)
         return;
     sb->setProperty("touchWidened", true);
-    const int extra = 2 * spinButtonWidth(QRect(0, 0, 0, qMax(sb->height(), kRow))) - 16;
-    sb->setMinimumWidth(qMax(sb->minimumWidth(), sb->sizeHint().width() + extra));
+    const QSize hint = sb->sizeHint();
+    const int h = qMax(hint.height(), sb->height());
+    QStyleOptionSpinBox opt;
+    opt.initFrom(sb);
+    opt.frame = sb->hasFrame();
+    opt.buttonSymbols = sb->buttonSymbols();
+    opt.subControls = QStyle::SC_All;
+    opt.stepEnabled = QAbstractSpinBox::StepUpEnabled | QAbstractSpinBox::StepDownEnabled;
+    QStyle *st = sb->style();
+    // Round the text in the hint: sizeFromContents for no text at all.
+    const int hinted = st->sizeFromContents(QStyle::CT_SpinBox, &opt, QSize(0, h), sb).width();
+    // Round the text in the box: measured on a box wide enough for the
+    // buttons, as the field of a narrower one comes out empty.
+    constexpr int kWide = 2000;
+    opt.rect = QRect(0, 0, kWide, h);
+    const int taken = kWide - st->subControlRect(QStyle::CC_SpinBox, &opt, QStyle::SC_SpinBoxEditField, sb).width();
+    if (taken > hinted)
+        sb->setMinimumWidth(qMax(sb->minimumWidth(), hint.width() + taken - hinted));
 }
 
 class Watcher : public QObject

@@ -1,5 +1,7 @@
 #include "androidfiles.h"
 
+#include <QStandardPaths>
+
 #ifdef Q_OS_ANDROID
 #include <QCoreApplication>
 #include <QJniEnvironment>
@@ -107,6 +109,18 @@ QString oldPadDesignsDir()
            + QStringLiteral("/designs");
 }
 
+QString documentsDir()
+{
+    // Context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS).
+    const QJniObject dir = activity().callObjectMethod("getExternalFilesDir", "(Ljava/lang/String;)Ljava/io/File;",
+                                                      QJniObject::fromString(QStringLiteral("Documents"))
+                                                          .object<jstring>());
+    QJniEnvironment().checkAndClearExceptions();
+    const QString path = dir.isValid() ? dir.callObjectMethod("getAbsolutePath", "()Ljava/lang/String;").toString()
+                                       : QString();
+    return path.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) : path;
+}
+
 #else
 
 bool available() { return false; }
@@ -115,6 +129,7 @@ void pick(Purpose) {}
 void share(const QStringList &, const QString &, const QString &) {}
 void saveCopy(const QString &, const QString &, const QString &) {}
 QString oldPadDesignsDir() { return {}; }
+QString documentsDir() { return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation); }
 
 #endif
 

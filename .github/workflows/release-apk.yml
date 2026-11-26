@@ -23,6 +23,16 @@ jobs:
       - name: Version
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="$(cat VERSION)"; fi
+          # The Android version code is major*10000 + minor*100 + patch
+          # (CMakeLists.txt): minor or patch 100 or more would collide with
+          # another version's code. Nothing is released for such a version.
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version '$v' is not major.minor.patch"; exit 1
+          fi
+          IFS=. read -r ma mi pa <<< "$v"
+          if (( 10#$mi >= 100 || 10#$pa >= 100 )); then
+            echo "::error::version $v: minor and patch must be below 100 (Android version code)"; exit 1
+          fi
           echo "V=$v" >> "$GITHUB_ENV"
 
       - name: Create the release
@@ -63,8 +73,15 @@ jobs:
           # The same Android version code as the desktop program's APK
           # (CMakeLists.txt: major*10000 + minor*100 + patch), so the two
           # can replace each other either way round.
+          # As checked in the release job (10#: 1.3.08 is not octal).
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version '$v' is not major.minor.patch"; exit 1
+          fi
           IFS=. read -r ma mi pa <<< "$v"
-          echo "CODE=$((ma * 10000 + mi * 100 + pa))" >> "$GITHUB_ENV"
+          if (( 10#$mi >= 100 || 10#$pa >= 100 )); then
+            echo "::error::version $v: minor and patch must be below 100 (Android version code)"; exit 1
+          fi
+          echo "CODE=$((10#$ma * 10000 + 10#$mi * 100 + 10#$pa))" >> "$GITHUB_ENV"
 
       - name: Release signing key
         env:

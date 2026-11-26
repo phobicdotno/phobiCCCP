@@ -5,14 +5,16 @@
 // not let pads start cutting. Also the addresses discovery sweeps.
 #define private public
 #include "../src/mainwindow.h"
+#include "../src/projectreceiver.h"
 #undef private
 #include "../src/machinepanel.h"
 #include "../src/machineprofiles.h"
-#include "../src/projectreceiver.h"
 #include "../src/remotemachine.h"
 #include "../src/sendtodialog.h"
 
 #include <QApplication>
+#include <QDir>
+#include <QJsonDocument>
 #include <QFile>
 #include <QLabel>
 #include <QLineEdit>
@@ -27,6 +29,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QUdpSocket>
 
 using namespace c2d;
 
@@ -180,6 +183,130 @@ private slots:
         QCOMPARE(rm.current()->host, QStringLiteral("shop-pc"));
     }
 
+    void remembersTheUsersPick()
+    {
+        // Typed-in computers restored at start are shown, not taken for the
+        // user's pick: the computer picked last is picked again when it turns up.
+        forgetHosts();
+        const QString lastKey = QStringLiteral("remoteMachine/last");
+        const QString found = QStringLiteral("192.0.2.9:%1").arg(ProjectReceiver::kPort);
+        QSettings().setValue(lastKey, found);
+        QSettings().setValue(QStringLiteral("remoteMachine/hosts"),
+                             QStringList{QStringLiteral("192.0.2.7"), QStringLiteral("192.0.2.8")});
+        {
+            RemoteMachine rm(QStringLiteral("pad-1"));
+            QCOMPARE(rm.computers().size(), 2);
+            QCOMPARE(rm.selected(), 0);
+            QCOMPARE(QSettings().value(lastKey).toString(), found);
+            SendToDialog::Computer f;
+            f.id = QStringLiteral("o");
+            f.address = QStringLiteral("192.0.2.9");
+            f.host = QStringLiteral("shop-pc");
+            rm.addFound(f);
+            QCOMPARE(rm.current()->host, QStringLiteral("shop-pc"));
+            // The user's pick is what is remembered.
+            rm.select(1);
+            QCOMPARE(QSettings().value(lastKey).toString(), QStringLiteral("192.0.2.8:%1").arg(ProjectReceiver::kPort));
+        }
+        {
+            RemoteMachine rm(QStringLiteral("pad-1"));
+            QCOMPARE(rm.current()->address, QStringLiteral("192.0.2.8"));
+            // Forgotten: no longer remembered, nor picked when it turns up again.
+            rm.forget(rm.selected());
+            QVERIFY(!QSettings().contains(lastKey));
+            QCOMPARE(rm.current()->address, QStringLiteral("192.0.2.7"));
+            SendToDialog::Computer f;
+            f.id = QStringLiteral("x");
+            f.address = QStringLiteral("192.0.2.8");
+            rm.addFound(f);
+            QCOMPARE(rm.current()->address, QStringLiteral("192.0.2.7"));
+            QVERIFY(!QSettings().contains(lastKey));
+            // Picking the one already shown remembers it too (Add does so).
+            rm.select(rm.selected());
+            QCOMPARE(QSettings().value(lastKey).toString(), QStringLiteral("192.0.2.7:%1").arg(ProjectReceiver::kPort));
+        }
+        forgetHosts();
+    }
+
+    void foundComputerMoves()
+    {
+        forgetHosts();
+        RemoteMachine rm(QStringLiteral("me"));
+        SendToDialog::Computer self, pad, pc;
+        self.id = QStringLiteral("me");
+        self.address = QStringLiteral("192.0.2.2");
+        pad.id = QStringLiteral("p");
+        pad.address = QStringLiteral("192.0.2.3");
+        pad.pad = true;
+        // Not computers found: they must not stop the sweep (m_heard).
+        QVERIFY(!rm.addFound(self));
+        QVERIFY(!rm.addFound(pad));
+        pc.id = QStringLiteral("pc");
+        pc.address = QStringLiteral("192.0.2.4");
+        pc.host = QStringLiteral("shop-pc");
+        QVERIFY(rm.addFound(pc));
+        QCOMPARE(rm.computers().size(), 1);
+        // A new address from the router: it is not answering where it was,
+        // so it is asked where it answers now.
+        pc.address = QStringLiteral("192.0.2.40");
+        QVERIFY(rm.addFound(pc));
+        QCOMPARE(rm.computers().size(), 1);
+        QCOMPARE(rm.computers().first().address, QStringLiteral("192.0.2.40"));
+        QVERIFY(rm.computers().first().info.isEmpty());
+        // One typed in keeps the address it was given.
+        rm.addAddress(QStringLiteral("192.0.2.5"));
+        SendToDialog::Computer typed;
+        typed.id = QStringLiteral("t");
+        typed.address = QStringLiteral("192.0.2.5");
+        rm.addFound(typed);
+        typed.address = QStringLiteral("192.0.2.50");
+        rm.addFound(typed);
+        QCOMPARE(rm.computers().size(), 2);
+        QCOMPARE(rm.computers().at(1).address, QStringLiteral("192.0.2.5"));
+        forgetHosts();
+    }
+
+    void staleInfoAfterSwitchDropped()
+    {
+        // An "info" asked before a machine switch, answered after it, names
+        // the machine from before: it must not undo the switch on the page.
+        QTcpServer fake;
+        QVERIFY(fake.listen(QHostAddress::LocalHost, 0));
+        auto answer = [](const QString &machine) {
+            return QJsonObject{{"ok", true}, {"id", "fake"}, {"activeMachine", machine},
+                               {"machines", QJsonArray{QJsonObject{{"id", "old"}, {"name", "Old"}},
+                                                       QJsonObject{{"id", "new"}, {"name", "New"}}}}};
+        };
+        connect(&fake, &QTcpServer::newConnection, &fake, [&fake, answer] {
+            QTcpSocket *s = fake.nextPendingConnection();
+            connect(s, &QTcpSocket::readyRead, s, [s, answer] {
+                const QByteArray all = s->peek(1 << 20);
+                if (all.count('\n') < 2)
+                    return;
+                const QJsonObject req = QJsonDocument::fromJson(all.split('\n').at(1)).object();
+                s->readAll();
+                if (req.value("op").toString() == QLatin1String("info")) {
+                    QTimer::singleShot(800, s, [s, answer] {
+                        s->write(QJsonDocument(answer("old")).toJson(QJsonDocument::Compact) + '\n');
+                    });
+                } else {
+                    s->write(QJsonDocument(answer("new")).toJson(QJsonDocument::Compact) + '\n');
+                }
+            });
+        });
+        forgetHosts();
+        RemoteMachine rm(QStringLiteral("pad-1"));
+        rm.addAddress(QStringLiteral("127.0.0.1:%1").arg(fake.serverPort()));
+        rm.pollNow();   // on its way, slowly
+        QSignalSpy switched(&rm, &RemoteMachine::machineSwitched);
+        rm.switchMachine(QStringLiteral("new"));
+        QVERIFY(switched.wait(3000));
+        QCOMPARE(rm.current()->info.value("activeMachine").toString(), QStringLiteral("new"));
+        QTRY_VERIFY_WITH_TIMEOUT(!rm.current()->asking, 3000);   // the slow answer came
+        QCOMPARE(rm.current()->info.value("activeMachine").toString(), QStringLiteral("new"));
+        forgetHosts();
+    }
+
     void switchesMachine()
     {
         forgetHosts();
@@ -238,6 +365,89 @@ private slots:
         QVERIFY2(msg.contains(QStringLiteral("not started")) && msg.contains(QStringLiteral("Pads may start cutting")),
                  qPrintable(msg));
         QVERIFY(!w->m_machine->isBusy());
+    }
+
+    void startRefusedWhenMachineChanged()
+    {
+        // The user said yes to a start on one machine; the computer has gone
+        // over to another since: nothing is sent, and the pad says why.
+        forgetHosts();
+        RemoteMachine rm(QStringLiteral("pad-1"));
+        rm.addAddress(address());
+        rm.start();
+        QTRY_VERIFY_WITH_TIMEOUT(rm.current() && !rm.current()->info.isEmpty(), 5000);
+        QCOMPARE(rm.current()->info.value("activeMachine").toString(), a);
+        const QString before = w->m_doc.filePath();
+        QSignalSpy sent(&rm, &RemoteMachine::sent);
+        QVERIFY(rm.send(QStringLiteral("Elsewhere"), design(), true, b));
+        QCOMPARE(sent.size(), 1);   // at once, nothing on its way
+        QVERIFY(!rm.isSending());
+        QCOMPARE(sent.at(0).at(0).toBool(), false);
+        const QString msg = sent.at(0).at(2).toString();
+        QVERIFY2(msg.startsWith(QStringLiteral("Not sent")) && msg.contains(QStringLiteral("switched")), qPrintable(msg));
+        QTest::qWait(300);
+        QCOMPARE(w->m_doc.filePath(), before);
+        QCOMPARE(activeMachine(), a);
+    }
+
+    void relistenKeepsPads()
+    {
+        // Back in front with a pad connected and the sockets gone: the pad is
+        // kept and only the sockets are listened on again.
+        QTcpSocket pad;
+        pad.connectToHost(QHostAddress::LocalHost, rx->port());
+        QVERIFY(pad.waitForConnected(3000));
+        pad.write("PHOBICCCP-API 1\n");
+        QTRY_VERIFY_WITH_TIMEOUT(!rx->isIdle(), 3000);
+        const quint16 port = rx->port();
+        rx->m_tcp->close();
+        rx->m_udp->close();
+        QVERIFY(!rx->isHealthy());
+        w->relisten(true);
+        QCOMPARE(w->m_receiver, rx);
+        QVERIFY(rx->isHealthy());
+        QCOMPARE(rx->port(), port);
+        pad.write("{\"op\":\"info\"}\n");
+        QTRY_VERIFY_WITH_TIMEOUT(pad.canReadLine(), 5000);
+        QVERIFY(QJsonDocument::fromJson(pad.readLine()).object().value("ok").toBool());
+        // And new connections come in on the port listened on again.
+        forgetHosts();
+        RemoteMachine rm(QStringLiteral("pad-1"));
+        rm.addAddress(address());
+        rm.start();
+        QTRY_VERIFY_WITH_TIMEOUT(rm.current() && !rm.current()->info.isEmpty(), 5000);
+        rm.stop();
+        pad.abort();
+        QTRY_VERIFY_WITH_TIMEOUT(rx->isIdle(), 3000);
+        forgetHosts();
+    }
+
+    void requestIdsNeverReused()
+    {
+        // A receiver started again must not give out an id an answer still on
+        // its way for the old one is meant for.
+        QList<int> ids;
+        auto ask = [&ids](ProjectReceiver &r) {
+            const auto conn = connect(&r, &ProjectReceiver::request, &r,
+                                      [&ids](int id, const QJsonObject &, const QString &) { ids << id; });
+            QTcpSocket s;
+            s.connectToHost(QHostAddress::LocalHost, r.port());
+            s.waitForConnected(3000);
+            s.write("PHOBICCCP-API 1\n{\"op\":\"x\"}\n");
+            const int had = ids.size();
+            QTRY_VERIFY_WITH_TIMEOUT(ids.size() > had, 3000);
+            disconnect(conn);
+        };
+        {
+            ProjectReceiver one;
+            QVERIFY(one.start(0));
+            ask(one);
+        }
+        ProjectReceiver two;
+        QVERIFY(two.start(0));
+        ask(two);
+        QCOMPARE(ids.size(), 2);
+        QVERIFY2(ids.at(1) > ids.at(0), qPrintable(QStringLiteral("%1 then %2").arg(ids.at(0)).arg(ids.at(1))));
     }
 
     void refusedConnection()
@@ -335,6 +545,37 @@ private slots:
         start->click();
         QVERIFY(asked.contains(QStringLiteral("will start on")));
         QVERIFY(!panel.client()->isSending());
+        // Switched to another machine there while the question was up:
+        // refused, nothing sent, and the page says so.
+        QTimer::singleShot(300, [this] {
+            QString why;
+            w->switchMachine(b, &why);
+            QTimer::singleShot(2 * RemoteMachine::kPollMs + 500, [] {
+                if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
+                    for (QAbstractButton *bt : box->buttons())
+                        if (bt->text().remove(QLatin1Char('&')) == QLatin1String("Send and start"))
+                            bt->click();
+            });
+        });
+        const QString before = w->m_doc.filePath();
+        start->click();
+        QVERIFY(!panel.client()->isSending());
+        QVERIFY(labelWith(QStringLiteral("switched to Router B")));
+        QCOMPARE(w->m_doc.filePath(), before);
+        {
+            QString why;
+            QVERIFY(w->switchMachine(a, &why));
+        }
+        QTRY_COMPARE_WITH_TIMEOUT(panel.client()->current()->info.value("activeMachine").toString(), a, 5000);
+        // A copy shared (or being saved) meanwhile is not the one a send
+        // reads and removes.
+        QDir(MainWindow::shareDir()).removeRecursively();
+        w->onShareDesign();
+        const QStringList shared = QDir(MainWindow::shareDir()).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        QCOMPARE(shared.size(), 1);
+        const QString sharedCopy = QDir(MainWindow::shareDir() + QLatin1Char('/') + shared.first())
+                                       .filePath(QFileInfo(w->m_doc.filePath()).completeBaseName() + QStringLiteral(".c2d"));
+        QVERIFY2(QFileInfo::exists(sharedCopy), qPrintable(sharedCopy));
         asked.clear();
         answer(QStringLiteral("Send and start"));
         start->click();
@@ -343,6 +584,7 @@ private slots:
         // The machine here is not connected, so it opens but does not start.
         QTRY_VERIFY_WITH_TIMEOUT(labelWith(QStringLiteral("not started")), 20000);
         QVERIFY(!w->m_machine->isBusy());
+        QVERIFY(QFileInfo::exists(sharedCopy));
         panel.hide();
         QVERIFY(!panel.client()->isRunning());
     }

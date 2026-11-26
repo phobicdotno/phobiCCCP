@@ -110,9 +110,25 @@ QString cleanName(const QString &displayName, const QByteArray &head)
     while (s.startsWith(QLatin1Char('.')))
         s.remove(0, 1);
     s = s.trimmed();
-    if (s.size() > 120) {
-        const QString suffix = QFileInfo(s).suffix();
-        s = s.left(120 - suffix.size() - 1).trimmed() + QLatin1Char('.') + suffix;
+    // At most 120 characters and 200 bytes (file systems take 255 bytes, and
+    // uniquePath's " (999)" and a sniffed extension still have to fit), the
+    // extension kept. One too long to be an extension is cut with the rest.
+    constexpr int kMaxChars = 120, kMaxBytes = 200;
+    if (s.size() > kMaxChars || s.toUtf8().size() > kMaxBytes) {
+        QString suffix = QFileInfo(s).suffix();
+        if (suffix.size() > 16 || suffix.size() + 1 >= s.size())
+            suffix.clear();
+        QString base = suffix.isEmpty() ? s : s.left(s.size() - suffix.size() - 1);
+        const int room = suffix.isEmpty() ? 0 : int(suffix.toUtf8().size()) + 1;
+        base.truncate(kMaxChars - (suffix.isEmpty() ? 0 : suffix.size() + 1));
+        if (!base.isEmpty() && base.back().isHighSurrogate())
+            base.chop(1);   // never half a character
+        while (!base.isEmpty() && base.toUtf8().size() > kMaxBytes - room)
+            base.chop(base.size() >= 2 && base.back().isLowSurrogate() ? 2 : 1);
+        base = base.trimmed();
+        if (base.isEmpty())
+            base = QStringLiteral("file");
+        s = suffix.isEmpty() ? base : base + QLatin1Char('.') + suffix;
     }
     if (s.isEmpty())
         s = QStringLiteral("file");
@@ -155,11 +171,17 @@ QString settle(const QString &cachedPath, const QString &displayName,
     if (kindOf(name) == Kind::Design) {
         if (!QDir().mkpath(designsDir))
             return fail(QStringLiteral("cannot make the folder %1").arg(designsDir));
-        // Picked again (the same file from Downloads, say): the copy already here.
-        const QString same = QDir(designsDir).filePath(name);
-        if (QFileInfo::exists(same) && sameContents(same, cachedPath)) {
-            QFile::remove(cachedPath);
-            return same;
+        // Picked again (the same file from Downloads, say): the copy already
+        // here, under its name or one uniquePath gave it ("Door (2).c2d").
+        const QFileInfo named(name);
+        const QString base = named.completeBaseName();
+        const QString ext = named.suffix().isEmpty() ? QString() : QLatin1Char('.') + named.suffix();
+        for (int n = 1; n < 1000; ++n) {
+            const QString same = QDir(designsDir).filePath(n == 1 ? name : QStringLiteral("%1 (%2)%3").arg(base).arg(n).arg(ext));
+            if (QFileInfo::exists(same) && sameContents(same, cachedPath)) {
+                QFile::remove(cachedPath);
+                return same;
+            }
         }
         const QString dest = uniquePath(designsDir, name);
         if (dest.isEmpty())
@@ -212,6 +234,12 @@ Adopted adoptPadDesigns(const QString &fromDir, const QString &toDir,
         const QString path = uniquePath(toDir, cleanName(name + QStringLiteral(".c2d")));
         QString err;
         if (path.isEmpty() || !padlink::buildDocument(d, path, nullptr, &err)) {
+            // It may fail after the file was made (a tool not in the
+            // library): no half-made design is left behind. The name was free.
+            if (!path.isEmpty())
+                for (const QString &f : {path, path + QStringLiteral("-journal"), path + QStringLiteral("-wal"),
+                                         path + QStringLiteral("-shm")})
+                    QFile::remove(f);
             out.failed << QStringLiteral("%1: %2").arg(name, path.isEmpty() ? QStringLiteral("no free file name") : err);
             continue;
         }

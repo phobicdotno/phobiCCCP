@@ -52,7 +52,8 @@ public:
     // `sweep`: also to every address of this device's own /24 networks, one
     // by one (sweepTargets), for networks that drop broadcasts or their
     // answers (some Wi-Fi access points, Android without a multicast lock).
-    // Callers sweep only when broadcasting has found nothing.
+    // Callers sweep only when broadcasting has found nothing. Android only:
+    // on a desktop `sweep` is ignored.
     static void discover(QUdpSocket *udp, bool sweep = false);
     // The addresses a sweep goes to for these address entries (this
     // device's own): x.y.z.1 to x.y.z.254 of every IPv4 /24 they are on,

@@ -152,6 +152,9 @@ public:
     // sockets away while it is in the background; the window then starts
     // the receiver again when it comes back (MainWindow).
     bool isHealthy() const;
+    // Listen again on the port of start() where the socket is gone, keeping
+    // the senders and pads still connected (start() would drop them).
+    bool rebind(QString *error = nullptr);
     // No sender or pad is connected.
     bool isIdle() const { return m_conns.isEmpty(); }
     quint16 port() const;
@@ -194,7 +197,7 @@ private:
     QHash<int, QTcpSocket *> m_apiWaiting;   // API request waiting for respond()
     QJsonObject m_discoveryExtra;
     std::unique_ptr<MulticastHold> m_multicast;   // while listening
-    int m_nextId = 1;
+    quint16 m_port = 0;   // listened on
     int m_idleMs = kIdleMs;
     int m_deadlineMs = kDeadlineMs;
 };

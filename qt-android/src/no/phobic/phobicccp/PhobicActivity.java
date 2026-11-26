@@ -45,14 +45,35 @@ public class PhobicActivity extends QtActivity
     private static final long MAX_BYTES = 512L * 1024 * 1024;
 
     // Set once the program can take files (nativeReady); until then the
-    // intent that started the app waits in getIntent().
-    private boolean m_ready = false;
-    private String m_pendingSave = null;
+    // intent that started the app waits in getIntent(). Both live as long as
+    // the process, not the activity: Android may destroy and recreate the
+    // activity while the program (which calls nativeReady once) runs on, and
+    // the save dialog's answer then comes to the new activity.
+    private static volatile boolean s_ready = false;
+    private static String s_pendingSave = null;
+    private static final String KEY_PENDING_SAVE = "phobicccp.pendingSave";
+    // Files copied in before this were for an earlier run of the program and
+    // are open or imported by now; later ones may still be on their way in.
+    private static final long PROCESS_START = System.currentTimeMillis();
 
     @Override
     public void onCreate(Bundle savedInstanceState)
     {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null && s_pendingSave == null)
+            s_pendingSave = savedInstanceState.getString(KEY_PENDING_SAVE);
+        // A new activity in a program that is up already: the file it was
+        // started with (a recreated one's intent was handled before).
+        if (s_ready && savedInstanceState == null)
+            handleIntent(getIntent());
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState)
+    {
+        super.onSaveInstanceState(outState);
+        if (s_pendingSave != null)
+            outState.putString(KEY_PENDING_SAVE, s_pendingSave);
     }
 
     @Override
@@ -60,7 +81,7 @@ public class PhobicActivity extends QtActivity
     {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (m_ready)
+        if (s_ready)
             handleIntent(intent);
     }
 
@@ -69,15 +90,20 @@ public class PhobicActivity extends QtActivity
     {
         runOnUiThread(new Runnable() {
             @Override public void run() {
-                if (m_ready)
+                if (s_ready)
                     return;
-                m_ready = true;
-                // What came in last time is open or imported by now: cleared
-                // before the file that started the app (if any) is copied in.
+                s_ready = true;
+                // What came in on an earlier run is open or imported by now:
+                // cleared, but not what was copied in since this process
+                // started (the file that started the app, one shared meanwhile).
                 final Uri first = takeIncoming(getIntent());
                 new Thread(new Runnable() {
                     @Override public void run() {
-                        deleteTree(new File(getCacheDir(), "incoming"), false);
+                        File[] old = new File(getCacheDir(), "incoming").listFiles();
+                        if (old != null)
+                            for (File f : old)
+                                if (f.lastModified() < PROCESS_START)
+                                    deleteTree(f, true);
                         if (first != null)
                             copyIn(first, PURPOSE_INCOMING);
                     }
@@ -152,7 +178,7 @@ public class PhobicActivity extends QtActivity
     {
         runOnUiThread(new Runnable() {
             @Override public void run() {
-                m_pendingSave = path;
+                s_pendingSave = path;
                 Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                 i.addCategory(Intent.CATEGORY_OPENABLE);
                 i.setType(mimeType);
@@ -160,7 +186,7 @@ public class PhobicActivity extends QtActivity
                 try {
                     startActivityForResult(i, REQUEST_SAVE);
                 } catch (ActivityNotFoundException e) {
-                    m_pendingSave = null;
+                    s_pendingSave = null;
                     fileMessage("This tablet has no save dialog", true);
                 }
             }
@@ -171,8 +197,8 @@ public class PhobicActivity extends QtActivity
     protected void onActivityResult(int requestCode, int resultCode, Intent data)
     {
         if (requestCode == REQUEST_SAVE) {
-            final String from = m_pendingSave;
-            m_pendingSave = null;
+            final String from = s_pendingSave;
+            s_pendingSave = null;
             if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null && from != null) {
                 final Uri to = data.getData();
                 new Thread(new Runnable() {

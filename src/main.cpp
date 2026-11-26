@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "androidfiles.h"
 #include "decimalkey.h"
 #include "phobiversion.h"
 #include "cccpfile.h"
@@ -665,7 +666,7 @@ int main(int argc, char *argv[])
     // else come through Android's picker, Open with and Share as a copy
     // (androidfiles.h), and exports go out through the share sheet.
     app.setAttribute(Qt::AA_DontUseNativeDialogs);
-    QDir().mkpath(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+    QDir().mkpath(c2d::androidfiles::documentsDir()
                   + QStringLiteral("/phobiCCCP"));
 #endif
 

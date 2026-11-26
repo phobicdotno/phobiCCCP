@@ -96,6 +96,27 @@ private slots:
         const QString longName = incoming::cleanName(QString(300, QLatin1Char('x')) + QStringLiteral(".svg"));
         QVERIFY(longName.size() <= 120);
         QVERIFY(longName.endsWith(QStringLiteral(".svg")));
+        // An "extension" longer than the room for the name: cut with the
+        // rest, never left whole (it was, and the name grew).
+        const QString longSuffix = incoming::cleanName(QStringLiteral("a.") + QString(300, QLatin1Char('y')));
+        QVERIFY2(longSuffix.size() <= 120 && longSuffix.startsWith(QStringLiteral("a.y")), qPrintable(longSuffix));
+        // Letters of three and four bytes: short enough in characters, too
+        // long for a file system in bytes; never half a character.
+        const QString wide = incoming::cleanName(QString(110, QChar(0x4e2d)) + QStringLiteral(".c2d"));
+        QVERIFY2(wide.toUtf8().size() <= 200 && wide.endsWith(QStringLiteral(".c2d")), qPrintable(wide));
+        QString emoji;
+        for (int i = 0; i < 100; ++i)
+            emoji += QString::fromUcs4(U"\U0001F600");
+        const QString faces = incoming::cleanName(emoji + QStringLiteral(".svg"));
+        QVERIFY(faces.toUtf8().size() <= 200 && faces.endsWith(QStringLiteral(".svg")));
+        QCOMPARE(QString::fromUtf8(faces.toUtf8()), faces);   // whole surrogate pairs only
+        for (const QString &n : {longName, longSuffix, wide, faces}) {
+            // With " (999)" and a sniffed extension it still fits in 255 bytes.
+            QVERIFY(n.toUtf8().size() + 6 + 4 <= 255);
+            QTemporaryDir tmp;
+            QFile f(QDir(tmp.path()).filePath(n));
+            QVERIFY2(f.open(QIODevice::WriteOnly), qPrintable(f.errorString()));
+        }
     }
 
     void uniqueNames()
@@ -137,6 +158,10 @@ private slots:
         const QString second = incoming::settle(cache + "/Door sign.c2d", "Door sign.c2d", designs, &err);
         QCOMPARE(second, designs + "/Door sign (2).c2d");
         QCOMPARE(read(first), design);
+        // That one picked again: the "(2)" copy, not a third.
+        write(cache + "/Door sign.c2d", sqliteHead() + "two");
+        QCOMPARE(incoming::settle(cache + "/Door sign.c2d", "Door sign.c2d", designs, &err), second);
+        QCOMPARE(QDir(designs).entryList(QDir::Files).size(), 2);
 
         // A file that is not there.
         err.clear();
@@ -196,6 +221,18 @@ private slots:
         broken["stock"] = QJsonObject{{"width", -5}, {"height", 0}, {"thickness", 0}};
         write(from + "/broken-1.json", QJsonDocument(broken).toJson());
 
+        // Fails only at the tool lookup, after the file was made.
+        QJsonObject noTool = good;
+        noTool["id"] = "notool-1";
+        noTool["name"] = "No tool";
+        QJsonArray paths = noTool["toolpaths"].toArray();
+        QVERIFY(!paths.isEmpty());
+        QJsonObject first = paths.first().toObject();
+        first["tool"] = 987654;
+        paths[0] = first;
+        noTool["toolpaths"] = paths;
+        write(from + "/notool-1.json", QJsonDocument(noTool).toJson());
+
         write(from + "/junk.json", "not json at all");
         write(from + "/half.json.tmp", QJsonDocument(good).toJson());   // a write the old app never finished
         write(from + "/.replica", "abc");
@@ -203,12 +240,16 @@ private slots:
         const QByteArray original = read(goodFile);
         const QStringList before = QDir(from).entryList(QDir::Files | QDir::Hidden);
 
-        QCOMPARE(incoming::padDesignsWaiting(from, {}), 3);   // good, slashy, broken
+        QCOMPARE(incoming::padDesignsWaiting(from, {}), 4);   // good, slashy, broken, no tool
         const incoming::Adopted r = incoming::adoptPadDesigns(from, to);
         QCOMPARE(r.made.size(), 2);
         QCOMPARE(r.ids.size(), 2);
-        QCOMPARE(r.failed.size(), 1);
-        QVERIFY(r.failed.first().startsWith("Broken: "));
+        QCOMPARE(r.failed.size(), 2);
+        QVERIFY(r.failed.filter("Broken: ").size() == 1);
+        QVERIFY2(r.failed.filter("No tool: ").size() == 1 && r.failed.join(" ").contains("987654"),
+                 qPrintable(r.failed.join(" | ")));
+        QVERIFY(!QFile::exists(to + "/No tool.c2d"));
+        QCOMPARE(QDir(to).entryList(QDir::Files).size(), 2);   // nothing half made
         QCOMPARE(r.skipped, 2);   // the deleted design and the junk
         QVERIFY(r.made.contains(to + "/Door sign.c2d"));
         QVERIFY(r.made.contains(to + "/Shelf A-B.c2d"));
@@ -229,7 +270,7 @@ private slots:
 
         // Asked again with what was brought in: nothing more, nothing twice.
         const QSet<QString> done(r.ids.begin(), r.ids.end());
-        QCOMPARE(incoming::padDesignsWaiting(from, done), 1);   // only the broken one
+        QCOMPARE(incoming::padDesignsWaiting(from, done), 2);   // only the broken ones
         const incoming::Adopted again = incoming::adoptPadDesigns(from, to, done);
         QVERIFY(again.made.isEmpty());
         QCOMPARE(QDir(to).entryList({"*.c2d"}, QDir::Files).size(), 2);

@@ -65,6 +65,7 @@
                 <data android:mimeType="image/x-dxf" />
                 <data android:mimeType="application/dxf" />
                 <data android:mimeType="application/x-dxf" />
+                <data android:mimeType="application/vnd.hp-hpgl" />
             </intent-filter>
             <!-- A file shared to phobiCCCP from another app (Drive, mail, a chat). -->
             <intent-filter>
@@ -79,6 +80,7 @@
                 <data android:mimeType="image/x-dxf" />
                 <data android:mimeType="application/dxf" />
                 <data android:mimeType="application/x-dxf" />
+                <data android:mimeType="application/vnd.hp-hpgl" />
             </intent-filter>
 
           <meta-data

@@ -101,9 +101,15 @@ void SendToDialog::discover(QUdpSocket *udp, bool sweep)
             if (!e.broadcast().isNull())
                 udp->writeDatagram(ask, e.broadcast(), ProjectReceiver::kPort);
     }
+    // Only on a pad: phones and tablets are on Wi-Fi that may drop
+    // broadcasts, while a desktop asks its networks as it always has.
+#ifdef Q_OS_ANDROID
     if (sweep)
         for (const QHostAddress &a : sweepTargets())
             udp->writeDatagram(ask, a, ProjectReceiver::kPort);
+#else
+    Q_UNUSED(sweep);
+#endif
 }
 
 QList<QHostAddress> SendToDialog::sweepTargets(const QList<QNetworkAddressEntry> &own)
@@ -165,9 +171,12 @@ QList<SendToDialog::Computer> SendToDialog::answers(QUdpSocket *udp)
 void SendToDialog::onDatagrams()
 {
     for (const Computer &c : answers(m_udp)) {
-        m_heard = true;
-        if (c.id.isEmpty() || c.id != m_ownId)
+        // This install's own answer is not a computer found: it must not
+        // stop the sweep that may find the others.
+        if (c.id.isEmpty() || c.id != m_ownId) {
+            m_heard = true;
             addComputer(c);
+        }
     }
 }
 
