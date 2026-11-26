@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.68 (build 158) — 2026-11-26
+
+> Single-line fonts, QR codes, a pencil finish, a leftover view in Simulate, job zero at the centre or any corner, realistic job times, surfacing, and a command line with macros.
+
+- **Single-line fonts:** text can use "Single line (Roman)" or "Single line (Italic)" letters made of one stroke per line (Æ Ø Å, Ä Ö Ü and ß included), so Engrave on the line and Fluting cut each letter as a single groove. Pick them under Letters in Properties.
+- **Show what's left:** a new button in Simulate colours orange whatever still stands more than 0.1 mm above a pocket's floor or a V-carve's flat area after the simulated cut, such as the round corners a big bit cannot reach. A line under the view gives the count and the largest, e.g. "Left uncut: 4 areas, largest ≈ 3.0 × 3.0 mm — try a smaller bit or rest machining".
+- **QR code:** Create > QR code… draws a QR code for a text or web address on the centre of the stock. Set the size in mm, error correction L/M/Q/H and margin, and add a square border if you like. The dark squares come out merged into outlines with holes, so one Pocket cuts them cleanly.
+- **Pencil finish:** a new 3D Finish strategy that cuts only the valleys and inside corners a bigger bit (default twice this one) could not reach, following the surface with the small ball.
+- **Command line and macros:** a line under the Machine page log takes G-code or $ commands with a Send button, and Up/Down bring back the last 30 lines. Nothing is sent while a job runs; $H homes like Initialize and $X unlocks like Unlock. Up to 8 of your own macro buttons per machine, set up under Macros…, and the gamepad can run Macro 1 to 4.
+- **Job zero:** a Job zero button on the Toolpaths page sets where X0 Y0 is (lower left, centre or any corner of the stock) and where Z0 is (top of the stock or the spoilboard; a spoilboard zero cuts at Z = thickness − depth). The G-code, tiles, Hover 5 cm, the travel check and the setup sheet all follow it, a crosshair marks the zero on the canvas, and BitZero warns when it would zero somewhere else.
+- **Realistic job times:** time estimates now include speeding up, slowing down and the corners, using your machine's own max rates and accelerations ($110–$122, $11), read from $$ when connected and kept with the machine profile. Jobs with many short moves no longer look much faster than they really are.
+- **Surfacing:** a Surfacing… button on the Machine page flattens a spoilboard or slab with no design: area, start corner (your X/Y zero or the machine's front-left), bit, stepover, depth per pass, total depth, feed, rpm, line direction and an optional climb finish round the edge. It shows the time and line count, refuses an area that would leave the travel, and loads as the job so Start, the checks, Hold/Stop and the end park work as for any G-code file.
+
 ## v1.3.67 (build 157) — 2026-11-26
 
 > On the Machine page: Hold, Resume and Stop from the pad, a job history with an end-of-job chime, the spindle by hand with a warm-up, and a dust/coolant switch.
