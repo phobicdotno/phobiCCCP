@@ -222,9 +222,14 @@ JobStats computeStats(const QVector<Op> &ops)
         s.minZ = qMin(s.minZ, z); s.maxZ = qMax(s.maxZ, z);
     };
     bool spinning = false;
+    int lastRpm = 0;
     for (const Op &op : ops) {
-        if (op.kind == Op::Dwell || op.kind == Op::Spindle || op.kind == Op::Tool)
-            plan.stop();   // GRBL finishes its moves before these
+        // GRBL finishes its moves before these, when the post writes them: no
+        // G4 for a zero dwell, no S word for the speed already running.
+        const bool spindleLine = op.kind == Op::Spindle
+            && (op.ival > 0 ? !spinning || op.ival != lastRpm : spinning);
+        if ((op.kind == Op::Dwell && op.feed > 0) || spindleLine || op.kind == Op::Tool)
+            plan.stop();
         if (op.kind == Op::Dwell)
             s.timeSec += qMax(0.0, op.feed);
         // The post's spin-up wait: every start from standstill, and a tool
@@ -233,6 +238,8 @@ JobStats computeStats(const QVector<Op> &ops)
             if (op.ival > 0 && !spinning)
                 s.timeSec += kSpindleSpinUpSec;
             spinning = op.ival > 0;
+            if (spinning)
+                lastRpm = op.ival;
         } else if (op.kind == Op::Tool) {
             spinning = false;
         }

@@ -570,10 +570,21 @@ JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document
             if (w.has(QLatin1Char('F')))
                 f = w.get(QLatin1Char('F'), f);
             if (hasX || hasY || hasZ) {
-                if ((motion == 2 || motion == 3) && (w.has(QLatin1Char('I')) || w.has(QLatin1Char('J')))) {
+                const bool hasR = w.has(QLatin1Char('R')) && !w.has(QLatin1Char('I')) && !w.has(QLatin1Char('J'));
+                if ((motion == 2 || motion == 3) && (w.has(QLatin1Char('I')) || w.has(QLatin1Char('J')) || hasR)) {
+                    double ci = w.get(QLatin1Char('I'), 0), cj = w.get(QLatin1Char('J'), 0);
+                    if (hasR) {
+                        // The centre from the radius, as the G-code reader takes it.
+                        const double r = w.get(QLatin1Char('R'), 0), dx = nx - x, dy = ny - y,
+                                     d = std::hypot(dx, dy);
+                        double h = d > 1e-9 ? std::sqrt(qMax(0.0, r * r - d * d / 4)) / d : 0;
+                        if ((motion == 2) != (r < 0))
+                            h = -h;
+                        ci = dx / 2 - h * dy;
+                        cj = dy / 2 + h * dx;
+                    }
                     if (f > 0)
-                        move = mp.arc(x, y, z, nx, ny, nz, w.get(QLatin1Char('I'), 0), w.get(QLatin1Char('J'), 0),
-                                      motion == 2, f);
+                        move = mp.arc(x, y, z, nx, ny, nz, ci, cj, motion == 2, f);
                 } else if (motion == 0 || f > 0) {
                     move = mp.line(nx - x, ny - y, nz - z, motion == 0 ? 0.0 : f);
                 }
