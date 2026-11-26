@@ -306,11 +306,13 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
         l = l.toUpper();
         if (l.startsWith(kToolMarker) || l == kHoldMarker || l.trimmed().isEmpty())
             continue;
-        bool machine = false;
+        bool machine = false, home = false;
         for (auto it = gWord.globalMatch(l); it.hasNext();) {
             const int g = it.next().captured(1).toInt();
             if (g >= 0 && g <= 3)
                 m.motion = g;
+            else if (g == 28 || g == 30)
+                home = true;
             else if (g == 91)
                 m.valid = false;             // relative moves: Z cannot be followed
             else if (g == 53)
@@ -331,10 +333,15 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
             m.z = zm.captured(1).toDouble();
             m.haveZ = true;
         }
-        if (!machine) {
-            const auto xm = xWord.match(l), ym = yWord.match(l);
+        const auto xm = xWord.match(l), ym = yWord.match(l);
+        if (!machine && !home) {
             if (xm.hasMatch()) { m.x = xm.captured(1).toDouble(); hx = true; }
             if (ym.hasMatch()) { m.y = ym.captured(1).toDouble(); hy = true; }
+        } else {
+            // A machine-coordinate move or a trip to a stored spot leaves the
+            // work X/Y it names (G28/G30 alone: both) unknown until set again.
+            if (xm.hasMatch() || (home && !xm.hasMatch() && !ym.hasMatch())) hx = false;
+            if (ym.hasMatch() || (home && !xm.hasMatch() && !ym.hasMatch())) hy = false;
         }
     }
     m.haveXY = hx && hy;
@@ -591,6 +598,17 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
     // names no motion word would run as a rapid. The program's own motion
     // mode and feed go back in after the way in.
     const Modal before = scanModal(m_queue, m_nextIndex);
+    // An arc that goes on after the change starts where the machine stood
+    // before it, and GRBL takes its centre (I/J) from there. Crossing to a
+    // later X/Y (the arc's own end) would cut a different circle. Without
+    // that spot known there is no right place to start it from.
+    const bool arc = before.valid && (before.motion == 2 || before.motion == 3);
+    if (arc && !before.haveXY) {
+        emit errorOccurred(QStringLiteral("cannot continue: the program goes on with an arc, and "
+                                          "where that arc starts is not known. Stop, and start "
+                                          "from the next toolpath."));
+        return 0;
+    }
     int at = m_nextIndex;
     for (const QString &l : first) {
         const QString t = l.trimmed();
@@ -601,7 +619,8 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
     // and the spindle may be standing over the BitSetter still: cross to the
     // first cut at the top before the program may come down.
     if (!first.isEmpty()) {
-        const QString across = crossToFirstCut(m_queue, at);
+        const QString across = arc ? QStringLiteral("G90 G0 X%1 Y%2").arg(before.x, 0, 'f', 3).arg(before.y, 0, 'f', 3)
+                                   : crossToFirstCut(m_queue, at);
         if (!across.isEmpty())
             m_queue.insert(at++, across);
     }

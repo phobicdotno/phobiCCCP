@@ -120,6 +120,59 @@ struct FakeGrbl {
     }
 };
 
+// Follows the work X/Y and motion mode through the lines a controller was
+// sent and checks every arc as GRBL would run it: from where the machine
+// stands, the centre at start + I/J, the end as far from the centre as the
+// start. A machine-coordinate or stored-spot move with X/Y leaves the start
+// unknown, and an arc from an unknown start fails too.
+static bool arcsConsistent(const QList<QByteArray> &lines)
+{
+    static const QRegularExpression word(QStringLiteral("([GXYIJ])\\s*(-?[0-9.]+)"));
+    double x = 0, y = 0;
+    bool known = false;
+    int motion = 0;
+    for (const QByteArray &raw : lines) {
+        QString l = QString::fromLatin1(raw).toUpper();
+        const int c = l.indexOf(QLatin1Char(';'));
+        if (c >= 0)
+            l.truncate(c);
+        l.remove(QRegularExpression(QStringLiteral("\\([^)]*\\)")));
+        bool machine = false, hasX = false, hasY = false, hasI = false, hasJ = false;
+        double nx = x, ny = y, i = 0, j = 0;
+        for (auto it = word.globalMatch(l); it.hasNext();) {
+            const auto m = it.next();
+            const double v = m.captured(2).toDouble();
+            switch (m.captured(1).at(0).toLatin1()) {
+            case 'G':
+                if (v == 53 || v == 28 || v == 30) machine = true;
+                else if (v >= 0 && v <= 3 && v == std::floor(v)) motion = int(v);
+                break;
+            case 'X': nx = v; hasX = true; break;
+            case 'Y': ny = v; hasY = true; break;
+            case 'I': i = v; hasI = true; break;
+            case 'J': j = v; hasJ = true; break;
+            }
+        }
+        if (machine) {
+            if (hasX || hasY)
+                known = false;
+            continue;
+        }
+        if ((motion == 2 || motion == 3) && (hasX || hasY || hasI || hasJ)) {
+            if (!known)
+                return false;
+            const double cx = x + i, cy = y + j;
+            if (std::abs(std::hypot(x - cx, y - cy) - std::hypot(nx - cx, ny - cy)) > 0.005)
+                return false;
+        }
+        if (hasX && hasY)
+            known = true;
+        x = nx;
+        y = ny;
+    }
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
@@ -267,13 +320,42 @@ int main(int argc, char **argv)
         spin(2000, [&] { return parked >= 0; });
         added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
         spin(3000, [&] { return finished; });
-        const int across = grbl.seen.indexOf("G90 G0 X-10 Y0");
+        // Back to where the arc starts (where the machine stood before the
+        // change), not to its end: from there I0 J-10 is the programmed centre.
+        const int across = grbl.seen.indexOf("G90 G0 X0.000 Y10.000");
         check(finished && finishedOk && across > 0 && grbl.seen.value(across + 1) == "G1 F800.0"
-                  && grbl.seen.value(across + 2) == "G2 X-10Y0I0J-10" && !grbl.seen.contains("G2"),
-              "tool change: a modal arc goes back on its own block, not as a bare G2");
+                  && grbl.seen.value(across + 2) == "G2 X-10Y0I0J-10" && !grbl.seen.contains("G2")
+                  && !grbl.seen.contains("G90 G0 X-10 Y0"),
+              "tool change: a modal arc goes back on its own block, from its own start");
+        check(arcsConsistent(grbl.seen), "tool change: every arc sent runs from its start, end on its circle");
         check(added == 4, "tool change: every line put in is counted (rise, crossing, feed)");
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // The same arc, but the program moved in machine coordinates before the
+    // change: where the arc starts in work X/Y is not known, so it is refused
+    // rather than sent from a guess.
+    {
+        grbl.seen.clear();
+        int parked = -1;
+        QString err;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::errorOccurred, [&](const QString &e) { err = e; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("G0X10Y0"),
+                       QStringLiteral("G1Z-1F300"), QStringLiteral("G2X0Y10I-10J0F800"),
+                       QStringLiteral("G53G0X-50"), QStringLiteral("M0 ;T2"), QStringLiteral("X-10Y0I0J-10")});
+        spin(2000, [&] { return parked >= 0; });
+        const int before = grbl.seen.size();
+        const int added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(500, [] { return false; });
+        check(added == 0 && err.contains(QLatin1String("arc")) && grbl.seen.size() == before
+                  && !grbl.seen.contains("G2 X-10Y0I0J-10"),
+              "tool change: an arc from an unknown start is refused, nothing sent");
+        s.stopStream();
+        spin(300, [] { return false; });
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
     }
 
     // The look-ahead that keeps a Z-only plunge off the BitSetter.
@@ -577,6 +659,10 @@ int main(int argc, char **argv)
             check(a.size() > 2 && !a.contains("G2") && a.last() == "G2 X-10Y0I0J-10"
                       && a.contains("G90 G0 X0.000 Y10.000"),
                   "start here: a modal arc keeps its G2, on the arc block itself");
+            QList<QByteArray> sent;
+            for (const QString &l : a)
+                sent << l.toLatin1();
+            check(arcsConsistent(sent), "start here: the arc runs from its own start, end on its circle");
             const QStringList own = GrblStreamer::startFromLines(
                 {"G90G21", "G0Z5", "M03S10000", "G0X10Y0", "G1Z-1F200", "G2X0Y10I-10J0F800", "G1X-10Y0"},
                 6, rise, -1, QString(), &why);
