@@ -142,6 +142,15 @@ int main(int argc, char **argv)
     check(qrEncode(QString(7, QChar(0xe9)).toUtf8(), QrEcc::M).version == 2, "UTF-8 adds the ECI header");
     check(qrEncode(QByteArray(qrMaxBytes(QrEcc::L), char(0xc3)), QrEcc::L).error.contains(QLatin1String("bytes")),
           "UTF-8 too long: limit told in bytes");
+    {
+        // The told limit is the real one: the 12 ECI bits cost 1.5 bytes, not 2.
+        const int n = qrMaxBytes(QrEcc::L) - 1;   // fits with the ECI header
+        const QByteArray fit = QByteArray(n - 2, 'x') + QString(QChar(0xe9)).toUtf8();
+        check(qrEncode(fit, QrEcc::L).version == 10, "longest UTF-8 text fits version 10");
+        const QrCode over = qrEncode(QByteArray(n - 1, 'x') + QString(QChar(0xe9)).toUtf8(), QrEcc::L);
+        check(over.version == 0 && over.error.contains(QStringLiteral("up to %1 bytes").arg(n)),
+              "UTF-8 too long: told the limit it just missed");
+    }
 
     // Vectors: 50 mm with 2 quiet modules, centred at (100, 80).
     for (const QrCode *c : {&hello, &url, &big}) {
