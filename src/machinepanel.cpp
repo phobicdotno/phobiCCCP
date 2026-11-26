@@ -4328,7 +4328,9 @@ static QMap<int, double> toMap(const QHash<int, double> &h)
 void MachinePanel::autoBackupSettings()
 {
     QSettings ps;
-    const QString profile = machineprofiles::nameOf(ps, machineprofiles::activeId(ps));
+    const QString id = machineprofiles::activeId(ps);
+    // The id keeps profiles whose names clean up to the same file name apart.
+    const QString profile = machineprofiles::nameOf(ps, id) + QLatin1Char('_') + id;
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                         + QStringLiteral("/grbl-backups");
     const QString path = grblsettings::autoBackup(dir, profile, QDate::currentDate(),
