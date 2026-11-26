@@ -33,6 +33,7 @@
 #include <QDoubleSpinBox>
 #include <QProgressBar>
 #include <QStackedWidget>
+#include <QTemporaryDir>
 #include <functional>
 #include <memory>
 #include "../src/c2ddocument.h"
@@ -660,16 +661,22 @@ int main(int argc, char **argv)
         grbl.events.clear();
         answer = [&](const Seen &) { return QStringLiteral("Cancel job"); };
         bool closed = false;
+        int padResumed = -1;      // Resume from the pad: the same button, its refusal told back
+        QString padWhy;
         QTimer::singleShot(0, [&] {
             runUntilDialogGone([&] {
                 closed = true;
-                QTimer::singleShot(100, [&] { panel.m_pauseBtn->click(); });
+                QTimer::singleShot(100, [&] {
+                    padResumed = panel.resumeFromRemote(QStringLiteral("test"), &padWhy);
+                });
             });
         });
         button(QStringLiteral("✕ Cancel job"))->click();
         spin(3000, [&] { return closed; });
         wait(7000);
         check(grbl.count("ALARM3") == 0, "cancelresume: no reset while moving");
+        std::printf("pad resume: %d (%s)\n", padResumed, qPrintable(padWhy));
+        check(padResumed == 0 && !padWhy.isEmpty(), "cancelresume: the pad hears the refusal");
     }
 
     if (mode == "safez") {
@@ -1023,8 +1030,9 @@ int main(int argc, char **argv)
         grbl.wcoX = -200;
         grbl.wcoY = -200;
         grbl.wcoZ = -60;
-        const QString file = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
-                             + QStringLiteral("/continue_test.c2d");
+        const QTemporaryDir tmp;           // its own folder: no other run's file touched
+        check(tmp.isValid(), "continue: temporary folder made");
+        const QString file = tmp.filePath(QStringLiteral("continue_test.c2d"));
         {
             // The design's file as on disk: only its bytes count (the hash).
             QFile f(file);
@@ -1052,6 +1060,16 @@ int main(int argc, char **argv)
                   && set.value(QStringLiteral("resume/path")).toString() == file
                   && !set.value(QStringLiteral("resume/hash")).toString().isEmpty(),
               "continue: the step it stopped in is saved with the design and its hash");
+        // Saved only once the planner's worth of answered lines past its
+        // start: an answered line is planned, not yet cut.
+        int smallStart = -1;
+        for (const c2d::JobSection &sec : panel.m_jobView->plan().sections)
+            if (sec.kind == c2d::JobSection::Toolpath && sec.title() == QLatin1String("small"))
+                smallStart = sec.qStart;
+        std::printf("continue: small starts at %d, saved at %d answered\n", smallStart,
+                    set.value(QStringLiteral("resume/acked")).toInt());
+        check(smallStart >= 0 && set.value(QStringLiteral("resume/acked")).toInt() >= smallStart + 35,
+              "continue: the step is saved from lines the machine has cut, not just answered");
         // Opened again later, homed again.
         panel.setDocument(&doc);
         panel.m_homed = true;
@@ -1750,7 +1768,8 @@ int main(int argc, char **argv)
         wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         const int g10 = grbl.indexOf("G10 L20");
-        const int g21 = grbl.indexOf("G21");
+        // The first G21 is BitZero's own (millimetres before probing).
+        const int g21 = grbl.indexOf("G21", grbl.indexOf("G21") + 1);
         std::printf("r14bzstart: G10 at %d, job's first line at %d\n", g10, g21);
         check(!(started && (g10 < 0 || g10 > g21)), "r14bzstart: no job starts before BitZero's zero is set");
         s->stopStream();
@@ -1912,6 +1931,7 @@ int main(int argc, char **argv)
         panel.m_bzPanel->m_holeDia->setValue(20.0);
         panel.m_bzPanel->m_tipDia->setValue(6.35);
         grbl.r = 6.35 / 2.0;
+        panel.m_rightStack->setCurrentWidget(panel.m_bzPanel);
         wait(600);
         grbl.events.clear();
         panel.bitZeroBegin();
@@ -1921,11 +1941,61 @@ int main(int argc, char **argv)
                     grbl.hcx, grbl.hcy, qPrintable(panel.m_bzPanel->m_centreResult->text()));
         check(std::abs(panel.m_bzCx - grbl.hcx) < 0.01 && std::abs(panel.m_bzCy - grbl.hcy) < 0.01,
               "holecentre: the centre found is the hole's");
-        check(grbl.count("G10 L20 P1 X") == 1 && grbl.count(" Z") >= 0, "holecentre: X0 Y0 set");
+        const int hg10 = grbl.indexOf("G10 L20 P1");
+        const QByteArray hset = hg10 >= 0 ? grbl.events.at(hg10) : QByteArray();
+        std::printf("holecentre: %s\n", hset.constData());
+        check(grbl.count("G10 L20 P1") == 1 && hset.contains(" X") && hset.contains(" Y")
+                  && !hset.contains(" Z"),
+              "holecentre: X0 Y0 set, Z left alone");
+        const int hmm = grbl.indexOf("G21"), hprobe = grbl.indexOf("G38");
+        check(hmm >= 0 && hmm < hprobe, "holecentre: millimetres set before probing");
+        check(panel.m_rightStack->currentWidget() == panel.m_bzPanel,
+              "holecentre: stays on the probe page so the diameter shows");
         check(panel.m_bzPanel->m_centreResult->text().contains("diameter 20.000"),
               "holecentre: diameter is the hole's, pin added back");
         check(std::abs(grbl.mx - grbl.hcx) < 0.01 && std::abs(grbl.my - grbl.hcy) < 0.01,
               "holecentre: the pin ends over the centre");
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Boss)->click();
+        check(panel.m_bzPanel->m_centreResult->text().isEmpty(),
+              "holecentre: the hole's result is not shown as the boss's");
+    }
+
+    if (mode == "rpmrange") {
+        // $30 raised in Controller settings: the next listing widens the
+        // manual speed box without a reconnect, the speed picked stays.
+        grbl.travel += "$30=12000.000\r\n$31=0.000\r\n";
+        panel.sendTyped(QStringLiteral("$$"));
+        spin(3000, [&] { return panel.m_rpmSpin->maximum() == 12000; });
+        panel.m_rpmSpin->setValue(9000);
+        grbl.travel.replace("$30=12000.000", "$30=24000.000");
+        panel.sendTyped(QStringLiteral("$$"));
+        spin(3000, [&] { return panel.m_rpmSpin->maximum() == 24000; });
+        wait(300);
+        std::printf("rpm range %d..%d, value %d\n", panel.m_rpmSpin->minimum(),
+                    panel.m_rpmSpin->maximum(), panel.m_rpmSpin->value());
+        check(panel.m_rpmSpin->maximum() == 24000, "rpmrange: the new $30 is the top");
+        check(panel.m_rpmSpin->value() == 9000, "rpmrange: the speed picked stays");
+    }
+
+    if (mode == "holetight") {
+        // A 3 mm pin in a 4 mm hole has 1 mm to move: the 2 mm back-off
+        // would rapid it into the far wall. Refused before any motion.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Hole)->click();
+        panel.m_bzPanel->m_holeDia->setValue(4.0);
+        panel.m_bzPanel->m_tipDia->setValue(3.0);
+        panel.m_bzPanel->m_retract->setValue(2.0);
+        // The tip is the pin in the collet: changing plates leaves it alone.
+        panel.m_bzPanel->m_plates->button(1)->click();
+        panel.m_bzPanel->m_plates->button(0)->click();
+        check(std::abs(panel.m_bzPanel->m_tipDia->value() - 3.0) < 1e-9
+                  && std::abs(panel.m_bzPanel->config().toolDiameter - 3.0) < 1e-9,
+              "holetight: the tip stays 3 mm across a plate change");
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(1500);
+        check(grbl.indexOf("G38") < 0 && grbl.indexOf("G0") < 0, "holetight: nothing moves");
+        check(panel.m_phase == c2d::MachinePanel::Phase::Idle, "holetight: no cycle started");
     }
 
     if (mode == "bosscentre") {
@@ -1955,7 +2025,11 @@ int main(int argc, char **argv)
         check(panel.m_bzPanel->m_centreResult->text().contains("diameter 30.000"),
               "bosscentre: diameter is the boss's, pin taken off");
         check(grbl.minZ >= startZ - 8.0 - 1e-6, "bosscentre: never lower than the boss height");
-        check(grbl.count("G10 L20 P1 X") == 1, "bosscentre: X0 Y0 set");
+        const int bg10 = grbl.indexOf("G10 L20 P1");
+        const QByteArray bset = bg10 >= 0 ? grbl.events.at(bg10) : QByteArray();
+        check(grbl.count("G10 L20 P1") == 1 && bset.contains(" X") && bset.contains(" Y")
+                  && !bset.contains(" Z"),
+              "bosscentre: X0 Y0 set, Z left alone");
     }
     if (mode == "plateany") {
         // Any touch plate: Z0 the plate thickness under the contact.

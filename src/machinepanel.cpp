@@ -2229,6 +2229,16 @@ void MachinePanel::bitZeroBegin()
     m_bz = m_bzPanel->config();
     m_bzMode = m_bzPanel->mode();
     const bool round = m_bzMode == BitZeroPanel::Hole || m_bzMode == BitZeroPanel::Boss;
+    // In a hole the pin backs off from one wall with a rapid: it needs that
+    // much room (and a little) before the far wall.
+    if (m_bzMode == BitZeroPanel::Hole
+        && m_bz.holeDiameter - m_bz.toolDiameter < m_bz.retract + 1.0) {
+        log(QStringLiteral("!! Hole centre: a %1 mm pin in a %2 mm hole has no room for the "
+                           "%3 mm back-off. Use a thinner pin or a shorter back-off")
+                .arg(m_bz.toolDiameter, 0, 'f', 2).arg(m_bz.holeDiameter, 0, 'f', 2)
+                .arg(m_bz.retract, 0, 'f', 1));
+        return;
+    }
     m_bzWantX = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::XOnly || round;
     m_bzWantY = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::YOnly || round;
     m_bzWantZ = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::ZOnly
@@ -2275,7 +2285,9 @@ void MachinePanel::bitZeroStage(Phase stage, QStringList prefix)
     m_bzStageResets = m_resets;
     m_hits.clear();
     m_phase = stage;
-    QStringList lines = {QStringLiteral("G90")};
+    // Millimetres: a G20 typed on the console must not turn the probe
+    // distances into inches.
+    QStringList lines = {QStringLiteral("G21"), QStringLiteral("G90")};
     lines += prefix;
     if (m_bzMode == BitZeroPanel::Hole || m_bzMode == BitZeroPanel::Boss
         || m_bzMode == BitZeroPanel::Plate) {
@@ -2806,8 +2818,9 @@ void MachinePanel::bitZeroApply()
         if (m_bzPanel)
             m_bzPanel->setBusy(false);
         // Done: back to the job card. A failed cycle stays on the probe
-        // page so it can be run again.
-        if (m_rightStack)
+        // page so it can be run again; a hole or boss stays so its measured
+        // diameter can be read.
+        if (m_rightStack && m_bzMode != BitZeroPanel::Hole && m_bzMode != BitZeroPanel::Boss)
             m_rightStack->setCurrentWidget(m_jobPage);
     });
 }
@@ -4217,11 +4230,15 @@ void MachinePanel::updateSpindleButtons()
 {
     if (!m_rpmSpin)
         return;
-    if (!m_rpmRangeSet && m_grbl->haveSettings()) {
+    // Again whenever $30 / $31 change (Controller settings), keeping a
+    // speed that is still inside.
+    const int hi = m_grbl->haveSettings() ? int(spindleMaxRpm()) : 0;
+    const int lo = qBound(0, int(m_grbl->setting(31, 0)), hi);
+    if (m_grbl->haveSettings()
+        && (!m_rpmRangeSet || m_rpmSpin->minimum() != lo || m_rpmSpin->maximum() != hi)) {
+        const bool first = !m_rpmRangeSet;
         m_rpmRangeSet = true;
-        const int hi = int(spindleMaxRpm());
-        const int lo = qBound(0, int(m_grbl->setting(31, 0)), hi);
-        const bool atDefault = m_rpmSpin->value() == 10000
+        const bool atDefault = (first && m_rpmSpin->value() == 10000)
                                || m_rpmSpin->value() > hi || m_rpmSpin->value() < lo;
         m_rpmSpin->setRange(lo, hi);
         if (atDefault)
@@ -4419,6 +4436,17 @@ void MachinePanel::openControllerSettings()
         if (!no.isEmpty()) {
             shopTell(&dlg, QStringLiteral("Controller settings"), QStringLiteral("Not sent"), no);
             return;
+        }
+        // Hard limits are kept on: a $21=0 would be set back to 1 at the
+        // next listing, so it is not sent at all.
+        for (const QString &l : lines) {
+            const QString t = QString(l).remove(QLatin1Char(' '));
+            if (t.startsWith(QLatin1String("$21=")) && t.mid(4).toDouble() == 0) {
+                shopTell(&dlg, QStringLiteral("Controller settings"), QStringLiteral("Not sent"),
+                         QStringLiteral("Hard limits ($21) stay on in this program: an end stop must "
+                                        "stop the machine. Leave $21 at 1 and send again."));
+                return;
+            }
         }
         for (const QString &l : lines)
             log(QStringLiteral("setting %1").arg(l));
@@ -4705,11 +4733,13 @@ void MachinePanel::hoverDryRun()
         return;
     ShopAsk ask;
     ask.title = QStringLiteral("Hover dry run");
-    ask.headline = QStringLiteral("Trace the job outline 50 mm above the work zero?");
-    ask.body = QStringLiteral("X %1 to %2, Y %3 to %4 (%5 × %6 mm), at Z +50 mm, feed %7 mm/min. "
-                              "Spindle stays off. It ends hovering over the first corner.")
+    ask.headline = QStringLiteral("Trace the job outline 50 mm above the stock?");
+    ask.body = QStringLiteral("X %1 to %2, Y %3 to %4 (%5 × %6 mm), at work Z %7 mm (50 mm above the "
+                              "stock top), feed %8 mm/min. Spindle stays off. It ends hovering over "
+                              "the first corner.")
                    .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1)
-                   .arg(x1 - x0, 0, 'f', 1).arg(y1 - y0, 0, 'f', 1).arg(kFeed, 0, 'f', 0);
+                   .arg(x1 - x0, 0, 'f', 1).arg(y1 - y0, 0, 'f', 1).arg(hoverZ, 0, 'f', 1)
+                   .arg(kFeed, 0, 'f', 0);
     ask.note = QStringLiteral("Nothing is cut: the bit stays 5 cm up.");
     ask.okText = QStringLiteral("▶ Trace");
     ask.defaultOk = false;
@@ -4732,8 +4762,9 @@ void MachinePanel::hoverDryRun()
           << QStringLiteral("G1 X%1 Y%2").arg(x1, 0, 'f', 3).arg(y1, 0, 'f', 3)
           << QStringLiteral("G1 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y1, 0, 'f', 3)
           << QStringLiteral("G1 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y0, 0, 'f', 3);
-    log(QStringLiteral("hover dry run: X %1..%2 Y %3..%4 at Z +%5")
-            .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1).arg(kHover, 0, 'f', 0));
+    log(QStringLiteral("hover dry run: X %1..%2 Y %3..%4 at work Z %5 (%6 mm above the stock)")
+            .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1)
+            .arg(hoverZ, 0, 'f', 1).arg(kHover, 0, 'f', 0));
     m_grbl->startMacro(lines);
 }
 
@@ -6103,19 +6134,31 @@ void MachinePanel::saveResumePoint(int acked)
 {
     if (m_runPath.isEmpty() || !m_jobView || !m_grbl->isStreaming())
         return;
-    const int sec = m_jobView->running();
-    if (sec < 0 || sec >= m_jobView->plan().sections.size()
-        || m_jobView->plan().sections.at(sec).kind != JobSection::Toolpath)
+    // An answered line is only planned, not cut: the controller's planner
+    // still holds up to 16 moves (GRBL 1.1), 35 by default on grblHAL. Save
+    // the step of the line that far behind, so a resume repeats a little
+    // rather than skips a cut.
+    constexpr int kNotYetCut = 35;
+    const int q = acked - kNotYetCut;
+    const QVector<JobSection> &secs = m_jobView->plan().sections;
+    int sec = -1, pass = -1;
+    for (int i = 0; i < secs.size() && sec < 0; ++i)
+        if (q >= secs.at(i).qStart && q < secs.at(i).qEnd)
+            sec = i;
+    if (sec < 0 || secs.at(sec).kind != JobSection::Toolpath)
         return;
+    for (int k = 0; k < secs.at(sec).passes.size() && pass < 0; ++k)
+        if (q >= secs.at(sec).passes.at(k).qStart && q < secs.at(sec).passes.at(k).qEnd)
+            pass = k;
     // On each new step, else at most every 2 s: every answered line would
     // be a disk write.
-    const bool moved = sec != m_resumeSavedSec || m_jobView->runningPass() != m_resumeSavedPass;
+    const bool moved = sec != m_resumeSavedSec || pass != m_resumeSavedPass;
     if (!moved && m_resumeSaveClock.isValid() && m_resumeSaveClock.elapsed() < 2000)
         return;
     m_resumeSaveClock.start();
     m_resumeSavedSec = sec;
-    m_resumeSavedPass = m_jobView->runningPass();
-    const StartFrom f = rowOf(sec, m_jobView->runningPass());
+    m_resumeSavedPass = pass;
+    const StartFrom f = rowOf(sec, pass);
     QSettings set;
     set.setValue(QStringLiteral("resume/path"), m_runPath);
     set.setValue(QStringLiteral("resume/hash"), m_runHash);
@@ -6211,6 +6254,14 @@ bool MachinePanel::resumeFromRemote(const QString &who, QString *why)
     }
     log(QStringLiteral("Resume from pad %1").arg(who));
     m_pauseBtn->click();
+    // The button can refuse (the job is being cancelled, Z still lifting):
+    // still held then, and the pad must hear so.
+    if (m_held || m_liftHold) {
+        if (why)
+            *why = m_resetPending ? QStringLiteral("the job is being cancelled")
+                                  : QStringLiteral("the machine could not resume yet, try again");
+        return false;
+    }
     return true;
 }
 
