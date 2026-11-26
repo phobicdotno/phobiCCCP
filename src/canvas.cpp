@@ -1774,7 +1774,7 @@ void Canvas::rebuild()
     for (const Element &e : m_doc->elements()) {
         // Open paths are the only unfilled type; a path row of point_type 4
         // marks a closed one.
-        bool closed = e.geometryType != QLatin1String("path");
+        bool closed = e.geometryType != QLatin1String("path") && !Element::isStrokeText(e.raw);
         if (!closed)
             for (const auto &v : e.raw.value("point_type").toArray())
                 if (v.toInt() == 4) { closed = true; break; }

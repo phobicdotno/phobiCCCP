@@ -2,6 +2,7 @@
 #include <QWidget>
 
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
 class QFontComboBox;
 class QLabel;
@@ -58,6 +59,7 @@ private:
     // Text rows.
     QLineEdit *m_text;
     QFontComboBox *m_family;
+    QComboBox *m_lineFont;        // "Outline" or a single-line (stroke) font
     QDoubleSpinBox *m_fontHeight, *m_arcRadius, *m_arcAngle;
     QCheckBox *m_bold, *m_italic, *m_arcOn, *m_arcBottom;
     QPushButton *m_convert;

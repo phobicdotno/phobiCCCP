@@ -141,6 +141,9 @@ public:
     // The straight (arc ignored) glyph layout renderText starts from, in the
     // text's local space; `width` gets the whole string's advance.
     static QVector<TextGlyph> textGlyphs(const QJsonObject &textObj, double *width = nullptr);
+    // A text element in a single-line (stroke) font: its contours are open
+    // strokes, cut on the line by Engrave and Fluting, ignored by pockets.
+    static bool isStrokeText(const QJsonObject &textObj);
     // The font a text element was rendered with (from qtfont, else `font`).
     static QFont textFont(const QJsonObject &textObj);
 

@@ -1,5 +1,6 @@
 #include "element.h"
 #include <QFont>
+#include "strokefont.h"
 #include <cmath>
 #include <QFontMetricsF>
 #include <QLineF>
@@ -98,6 +99,8 @@ QPainterPath Element::buildText(const QJsonObject &obj)
                         t.at(6).toDouble(), t.at(7).toDouble());
     }
 
+    // A single-line font's strokes are open: drawn and cut as lines.
+    const bool stroke = isStrokeText(obj);
     for (const QJsonValue &contourV : rendered) {
         const QJsonArray contour = contourV.toArray();
         for (int i = 0; i < contour.size(); ++i) {
@@ -107,9 +110,16 @@ QPainterPath Element::buildText(const QJsonObject &obj)
             else
                 path.lineTo(p);
         }
-        path.closeSubpath();
+        if (!stroke)
+            path.closeSubpath();
     }
     return path;
+}
+
+bool Element::isStrokeText(const QJsonObject &o)
+{
+    return o.value("geometryType").toString() == QLatin1String("text")
+           && strokefont::isStrokeFamily(textFont(o).family());
 }
 
 Element Element::fromJson(const QJsonObject &obj)
@@ -336,6 +346,22 @@ static QJsonArray contoursOf(const QPainterPath &mm)
     return rendered;
 }
 
+// Single-line strokes: every polyline of two or more points as it is, its
+// last point kept even when it meets the first (an "O" drawn round).
+static QJsonArray strokesOf(const QPainterPath &mm)
+{
+    QJsonArray rendered;
+    for (const QPolygonF &poly : mm.toSubpathPolygons()) {
+        if (poly.size() < 2)
+            continue;
+        QJsonArray contour;
+        for (const QPointF &p : poly)
+            contour.append(xy(p));
+        rendered.append(contour);
+    }
+    return rendered;
+}
+
 // A glyph whose outlines overlap (Liberation Sans "Å": the ring dips into
 // the A) is drawn solid by the font, but every reader of `rendered` takes an
 // overlap as a hole: merged into one outline. Others keep their curves
@@ -432,6 +458,29 @@ QVector<TextGlyph> Element::textGlyphs(const QJsonObject &o, double *widthOut)
     const double h = o.value("font_height").toDouble(10.0);
     const double spacing = o.contains("spacing") ? o.value("spacing").toDouble(1.0) : 1.0;
     QFont font = textFont(o);
+    if (strokefont::isStrokeFamily(font.family())) {
+        // Single-line font: one glyph per character on the font's own grid,
+        // cap height = font_height.
+        const QString family = font.family();
+        const double scale = h / strokefont::kCapHeight;
+        QVector<TextGlyph> glyphs;
+        double x = 0;
+        for (const QChar c : text) {
+            if (c.isLowSurrogate())
+                continue;
+            double adv = 0;
+            const QPainterPath g = strokefont::glyph(family, c, &adv);
+            const double left = x * spacing;
+            QTransform t;
+            t.scale(scale, scale);
+            t.translate(left, 0);
+            glyphs.append({t.map(g), left * scale, adv * scale * spacing});
+            x += adv;
+        }
+        if (widthOut)
+            *widthOut = x * scale * spacing;
+        return glyphs;
+    }
     const int px = 256;                    // render size; scaled to mm below
     font.setPixelSize(px);
     font.setStyleStrategy(QFont::PreferOutline);
@@ -575,7 +624,7 @@ void Element::renderText(QJsonObject &o)
             out.addPath(t.map(g.path));
         }
     }
-    o.insert("rendered", contoursOf(out));
+    o.insert("rendered", isStrokeText(o) ? strokesOf(out) : contoursOf(out));
 }
 
 Element Element::regenText(const Element &src, const QJsonObject &changes)
@@ -979,20 +1028,23 @@ QVector<Element> Element::toPaths(const Element &src)
     }
     // Text: each rendered contour (already in absolute coordinates on the
     // painter path) becomes a closed polygon path; the first keeps the id.
+    // Single-line text gives open paths; a stroke that comes back to its
+    // start ("O") is a closed one.
+    const bool stroke = isStrokeText(src.raw);
     const auto polys = src.painterPath.toSubpathPolygons();
     bool first = true;
     for (const QPolygonF &poly : polys) {
         PathModel m;
         SubPath s;
-        s.closed = true;
+        s.closed = !stroke || (poly.size() > 3 && samePt(poly.last(), poly.first()));
         for (int i = 0; i < poly.size(); ++i) {
-            if (i == poly.size() - 1 && samePt(poly.at(i), poly.first()))
+            if (s.closed && i == poly.size() - 1 && samePt(poly.at(i), poly.first()))
                 break;
             PathNode n;
             n.p = n.in = n.out = poly.at(i);
             s.nodes.append(n);
         }
-        if (s.nodes.size() < 3)
+        if (s.nodes.size() < (s.closed ? 3 : 2))
             continue;
         m.subs.append(s);
         // Every piece stays in the group and keeps construction; only the

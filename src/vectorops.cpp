@@ -159,6 +159,8 @@ double ringArea(const QPolygonF &ring)
 
 bool isClosed(const Element &e)
 {
+    if (e.geometryType == QLatin1String("text"))
+        return !Element::isStrokeText(e.raw);
     if (e.geometryType != QLatin1String("path"))
         return true;
     for (const QJsonValue &v : e.raw.value("point_type").toArray())
@@ -1351,11 +1353,12 @@ QVector<Element> textOnPathElements(const Element &text, const Element &path,
     // does, so ids, groups, layer and tabs follow the same rules.
     QJsonArray contours;
     const double k = 20.0;   // flatten in a scaled space: ~0.025 mm tolerance
+    const bool stroke = Element::isStrokeText(text.raw);   // single-line strokes: 2 points do
     for (const QPolygonF &poly : placed.toSubpathPolygons(QTransform::fromScale(k, k))) {
         QJsonArray c;
         for (const QPointF &q : poly)
             c.append(QJsonArray{q.x() / k, q.y() / k});
-        if (c.size() >= 3)
+        if (c.size() >= (stroke ? 2 : 3))
             contours.append(c);
     }
     QJsonObject o = text.raw;

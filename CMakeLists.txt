@@ -41,6 +41,7 @@ add_library(phobicccp_core STATIC
     src/cccpfile.cpp
     src/c2ddocument.cpp
     src/element.cpp
+    src/strokefont.cpp
     src/gcodeexport.cpp
     src/cam3d.cpp
     src/vcarve.cpp
@@ -217,6 +218,9 @@ add_test(NAME dogbone COMMAND test_dogbone)
 add_executable(test_textpath tests/test_textpath.cpp)
 target_link_libraries(test_textpath PRIVATE phobicccp_core)
 add_test(NAME textpath COMMAND test_textpath)
+add_executable(test_strokefont tests/test_strokefont.cpp)
+target_link_libraries(test_strokefont PRIVATE phobicccp_core)
+add_test(NAME strokefont COMMAND test_strokefont)
 # Projects sent from Syntexophobic: the protocol reader and a loopback transfer.
 add_executable(test_receiver tests/test_receiver.cpp)
 target_link_libraries(test_receiver PRIVATE phobicccp_ui)

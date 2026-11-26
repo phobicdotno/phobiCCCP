@@ -1,8 +1,10 @@
 #include "propertiespanel.h"
 #include "canvas.h"
 #include "c2ddocument.h"
+#include "strokefont.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QFontComboBox>
 #include <QFormLayout>
@@ -148,6 +150,18 @@ PropertiesPanel::PropertiesPanel(Canvas *canvas, QWidget *parent)
     m_family = new NoWheel<QFontComboBox>(this);
     connect(m_family, &QFontComboBox::currentFontChanged, this, [textEdited](const QFont &) { textEdited(); });
     textRow(QStringLiteral("Font"), m_family, m_textRows, m_textLabels);
+
+    // Single-line fonts: one stroke per line of a letter, for engraving and
+    // fluting. Picking one puts the font list above aside.
+    m_lineFont = new NoWheel<QComboBox>(this);
+    m_lineFont->addItem(QStringLiteral("Outline (font above)"));
+    for (const QString &fam : strokefont::families())
+        m_lineFont->addItem(fam, fam);
+    m_lineFont->setToolTip(QStringLiteral("Single line letters are cut as one groove per stroke "
+                                          "(Engrave on the line, Fluting). Pockets and profiles "
+                                          "leave them out."));
+    connect(m_lineFont, &QComboBox::currentIndexChanged, this, [textEdited](int) { textEdited(); });
+    textRow(QStringLiteral("Letters"), m_lineFont, m_textRows, m_textLabels);
 
     m_fontHeight = new NoWheel<QDoubleSpinBox>(this);
     m_fontHeight->setRange(0.5, 1000);
@@ -305,6 +319,11 @@ void PropertiesPanel::refresh()
         m_fontHeightShown = m_fontHeight->value();
         m_bold->setChecked(f.bold());
         m_italic->setChecked(f.italic());
+        const int line = m_lineFont->findData(f.family());
+        m_lineFont->setCurrentIndex(line < 0 ? 0 : line);
+        m_family->setEnabled(line < 0);
+        m_bold->setEnabled(line < 0);
+        m_italic->setEnabled(line < 0);
         m_arcOn->setChecked(arcOn);
         m_arcRadius->setValue(e->raw.value("arc_radius").toDouble(25.4) * rScale);
         m_arcAngle->setValue(e->raw.value("arc_angle_offset").toDouble());
@@ -380,7 +399,11 @@ void PropertiesPanel::applyText()
     QJsonObject ch;
     if (m_text->text() != e->raw.value("text").toString() && !m_text->text().isEmpty())
         ch.insert("text", m_text->text());
-    if (m_family->currentFont().family() != m_familyShown)
+    const QString lineFam = m_lineFont->currentData().toString();
+    const bool wasLine = strokefont::isStrokeFamily(f.family());
+    if (!lineFam.isEmpty() && lineFam != f.family())
+        ch.insert("family", lineFam);
+    else if (lineFam.isEmpty() && (wasLine || m_family->currentFont().family() != m_familyShown))
         ch.insert("family", m_family->currentFont().family());
     // Compared with what the box showed, not the stored value: 9.525 shows as
     // 9.53, so a Bold toggle must not write 9.53, and typing 9.52 must count.
