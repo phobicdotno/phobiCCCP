@@ -19,6 +19,7 @@
 #include "projectreceiver.h"
 #include "machineprofiles.h"
 #include "padlink.h"
+#include "padpreview.h"
 #include "sendtopaddialog.h"
 #include <QActionGroup>
 #include <QGridLayout>
@@ -3243,6 +3244,14 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
                 d.insert(QStringLiteral("desktopOnly"), QSysInfo::machineHostName());
         reply = d.isEmpty() ? padError(QStringLiteral("no such design"))
                             : QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("design"), d}};
+    } else if (op == QLatin1String("preview")) {
+        // A pad's Preview: the design as the pad holds it (or, by id, as
+        // kept here), cut on paper: the toolpaths from above and the time.
+        QJsonObject design = req.value(QStringLiteral("design")).toObject();
+        if (design.isEmpty())
+            design = store.get(req.value(QStringLiteral("id")).toString());
+        reply = design.isEmpty() ? padError(QStringLiteral("no such design"))
+                                 : padlink::previewJson(design);
     } else if (op == QLatin1String("put")) {
         QString err;
         padlink::Store::PutOutcome out;

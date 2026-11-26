@@ -137,6 +137,7 @@ add_library(phobicccp_ui STATIC
     src/boxgen.cpp src/boxdialog.cpp
     src/qrcode.cpp src/qrdialog.cpp
     src/grblsettingsdialog.cpp
+    src/padpreview.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -380,6 +381,10 @@ if(Qt6Test_FOUND)
     add_executable(test_padput tests/test_padput.cpp)
     target_link_libraries(test_padput PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padput COMMAND test_padput)
+    # A pad's Preview: a pad design exported and drawn, with its time.
+    add_executable(test_padpreview tests/test_padpreview.cpp)
+    target_link_libraries(test_padpreview PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME padpreview COMMAND test_padpreview)
     add_executable(test_padenter tests/test_padenter.cpp)
     target_link_libraries(test_padenter PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padenter COMMAND test_padenter)
