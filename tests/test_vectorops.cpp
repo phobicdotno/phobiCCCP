@@ -740,6 +740,76 @@ int main(int argc, char **argv)
         check(approx(bb.left(), -1, 1e-2) && approx(bb.right(), 6, 1e-2), "offset: NaN still becomes 0");
     }
 
+    // --- join and close: a rectangle that arrived as 4 loose lines ---------
+    {
+        // 0..20 x 0..10; the top edge is drawn backwards and each joint has
+        // a 0.05 mm gap, as a DXF exported with rounded coordinates does.
+        const QVector<Element> lines = {
+            Element::makePath({{0, 0}, {20, 0}}, false, layer),
+            Element::makePath({{20.05, 0}, {20, 10}}, false, layer),
+            Element::makePath({{0, 10.04}, {19.97, 10}}, false, layer),   // reversed
+            Element::makePath({{0, 9.96}, {0.03, 0.02}}, false, layer),
+        };
+        const vec::JoinResult tight = vec::joinElements(lines, 0.01);
+        check(tight.results.isEmpty() && tight.consumed.isEmpty() && tight.joints == 0,
+              "join: gaps wider than the tolerance stay apart");
+        const vec::JoinResult r = vec::joinElements(lines, 0.1);
+        check(r.consumed.size() == 4, "join: all 4 lines consumed");
+        check(r.results.size() == 1, "join: one path out");
+        check(r.joints == 3 && r.closed == 1, "join: 3 joints, closed");
+        const Element &rect = r.results.first();
+        check(vec::isClosed(rect), "join: result is closed");
+        const PathModel m = Element::pathModel(rect);
+        check(m.subs.size() == 1 && m.subs.first().closed && m.subs.first().nodes.size() == 4,
+              "join: one closed subpath of 4 corners");
+        const QPolygonF ring = rect.painterPath.toFillPolygon();
+        check(approx(std::fabs(vec::ringArea(ring)), 200.0, 1.0), "join: encloses the 20x10 area");
+        for (const Element &e : lines)
+            check(rect.id != e.id, "join: a group of pieces gets a fresh id");
+    }
+    {
+        // Bezier pieces stay curves; a single open vector whose ends almost
+        // meet is closed and keeps its id.
+        PathModel arc;
+        SubPath s;
+        PathNode a, b;
+        a.p = {0, 0}; a.in = a.p; a.out = {0, 5};
+        b.p = {10, 0}; b.in = {10, 5}; b.out = b.p;
+        s.nodes = {a, b};
+        arc.subs.append(s);
+        const Element top = Element::makeBezierPath(arc, layer);
+        const Element bottom = Element::makePath({{0.02, 0}, {10, 0.01}}, false, layer);
+        const vec::JoinResult r = vec::joinElements({top, bottom}, 0.1);
+        check(r.results.size() == 1 && r.closed == 1, "join: curve + line closes");
+        bool curve = false;
+        const QPainterPath &pp = r.results.first().painterPath;
+        for (int i = 0; i < pp.elementCount(); ++i)
+            curve = curve || pp.elementAt(i).type == QPainterPath::CurveToElement;
+        check(curve, "join: the bezier segment is kept, not flattened");
+
+        const Element almost = Element::makePath({{0, 0}, {10, 0}, {10, 10}, {0.05, 0}}, false, layer);
+        const vec::JoinResult c = vec::joinElements({almost}, 0.1);
+        check(c.results.size() == 1 && c.closed == 1 && c.joints == 0, "join: single vector closed");
+        check(c.results.first().id == almost.id && vec::isClosed(c.results.first()),
+              "join: single closed vector keeps its id");
+        check(vec::joinElements({almost}, 0.01).results.isEmpty(),
+              "join: single vector with a wider gap stays open");
+        check(vec::joinElements({sqA, hole}, 0.1).results.isEmpty(), "join: closed shapes untouched");
+    }
+    // --- check vectors ---------------------------------------------------------
+    {
+        const Element open = Element::makePath({{0, 0}, {10, 0}}, false, layer);
+        const Element dup = Element::makeRectangle({10, 10}, 20, 20, layer);
+        const Element dot = Element::makePath({{5, 5}, {5, 5}}, false, layer);
+        const Element eight = Element::makePath({{0, 0}, {10, 10}, {10, 0}, {0, 10}}, true, layer);
+        const vec::VectorCheck c = vec::checkElements({sqA, open, dup, dot, eight, hole});
+        check(c.open == QStringList{open.id}, "check: one open vector");
+        check(c.duplicates == QStringList{dup.id}, "check: later copy is the duplicate");
+        check(c.zeroLength == QStringList{dot.id}, "check: zero-length piece");
+        check(c.selfCrossing == QStringList{eight.id}, "check: figure 8 crosses itself");
+        check(c.allIds().size() == 4, "check: four problem shapes");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

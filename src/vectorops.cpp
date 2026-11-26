@@ -1,5 +1,7 @@
 #include "vectorops.h"
 #include <QHash>
+#include <QSet>
+#include <functional>
 #include <QJsonArray>
 #include <QLineF>
 #include <QTransform>
@@ -990,6 +992,274 @@ Element cornerElement(const Element &e, CornerStyle style, double size, int *cor
     if (corners)
         *corners = k;
     return k ? Element::withPathModel(e, m) : e;
+}
+
+// ---- join / check ----------------------------------------------------------
+
+static SubPath reversedSub(const SubPath &s)
+{
+    SubPath r;
+    r.closed = s.closed;
+    for (int i = s.nodes.size() - 1; i >= 0; --i) {
+        PathNode n = s.nodes.at(i);
+        std::swap(n.in, n.out);
+        r.nodes.append(n);
+    }
+    return r;
+}
+
+static double ptDist(QPointF a, QPointF b)
+{
+    return QLineF(a, b).length();
+}
+
+// Append `b` to `a`, b's first node landing on a's last (its leaving handle
+// moved along, so the first segment of b keeps its shape).
+static void appendSub(SubPath &a, const SubPath &b)
+{
+    PathNode &end = a.nodes.last();
+    const PathNode &head = b.nodes.first();
+    end.out = head.out + (end.p - head.p);
+    end.kind = PathNode::Corner;
+    for (int i = 1; i < b.nodes.size(); ++i)
+        a.nodes.append(b.nodes.at(i));
+}
+
+static bool zeroLengthSub(const SubPath &s)
+{
+    for (const PathNode &n : s.nodes)
+        if (ptDist(n.p, s.nodes.first().p) > 1e-9 || n.hasIn() || n.hasOut())
+            return false;
+    return true;
+}
+
+static bool joinCandidate(const Element &e)
+{
+    return e.geometryType == QLatin1String("path") && !Element::isPoint(e)
+        && !Element::isConstruction(e);
+}
+
+JoinResult joinElements(const QVector<Element> &els, double gap)
+{
+    JoinResult out;
+    gap = std::max(0.0, gap) + 1e-9;
+    struct Piece { SubPath sub; int el; };
+    QVector<PathModel> models(els.size());
+    QVector<Piece> pieces;
+    for (int k = 0; k < els.size(); ++k) {
+        if (!joinCandidate(els.at(k)))
+            continue;
+        models[k] = Element::pathModel(els.at(k));
+        for (const SubPath &s : models.at(k).subs)
+            if (!s.closed && s.nodes.size() >= 2 && !zeroLengthSub(s))
+                pieces.append({s, k});
+    }
+    if (pieces.isEmpty())
+        return out;
+
+    // Union-find over elements linked by a changed chain.
+    QVector<int> parent(els.size());
+    std::iota(parent.begin(), parent.end(), 0);
+    std::function<int(int)> root = [&](int i) {
+        return parent[i] == i ? i : parent[i] = root(parent[i]);
+    };
+    struct Chain { SubPath sub; int el; bool changed; };
+    QVector<Chain> chains;
+    QVector<bool> used(pieces.size(), false);
+    for (int i = 0; i < pieces.size(); ++i) {
+        if (used.at(i))
+            continue;
+        used[i] = true;
+        SubPath chain = pieces.at(i).sub;
+        const int el = pieces.at(i).el;
+        bool changed = false;
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (int side = 0; side < 2 && !grew; ++side) {
+                // side 0: grow at the chain's end, side 1: at its start.
+                const QPointF at = side == 0 ? chain.nodes.last().p : chain.nodes.first().p;
+                int best = -1;
+                bool bestFlip = false;
+                double bestD = gap;
+                for (int j = 0; j < pieces.size(); ++j) {
+                    if (used.at(j))
+                        continue;
+                    const SubPath &s = pieces.at(j).sub;
+                    const double dFirst = ptDist(at, s.nodes.first().p);
+                    const double dLast = ptDist(at, s.nodes.last().p);
+                    // At the end a piece should start there, at the start end there.
+                    const double dKeep = side == 0 ? dFirst : dLast;
+                    const double dFlip = side == 0 ? dLast : dFirst;
+                    if (dKeep <= bestD) { best = j; bestFlip = false; bestD = dKeep; }
+                    if (dFlip < bestD) { best = j; bestFlip = true; bestD = dFlip; }
+                }
+                if (best < 0)
+                    continue;
+                used[best] = true;
+                const SubPath piece = bestFlip ? reversedSub(pieces.at(best).sub)
+                                               : pieces.at(best).sub;
+                if (side == 0) {
+                    appendSub(chain, piece);
+                } else {
+                    SubPath front = piece;
+                    appendSub(front, chain);
+                    chain = front;
+                }
+                parent[root(pieces.at(best).el)] = root(el);
+                ++out.joints;
+                changed = grew = true;
+            }
+        }
+        if (chain.nodes.size() >= 2
+            && ptDist(chain.nodes.first().p, chain.nodes.last().p) <= gap) {
+            SubPath closed = chain;
+            const PathNode last = closed.nodes.takeLast();
+            PathNode &first = closed.nodes.first();
+            first.in = last.in + (first.p - last.p);
+            first.kind = PathNode::Corner;
+            closed.closed = true;
+            // Two straight lines back and forth enclose nothing.
+            bool curved = false;
+            for (const PathNode &n : closed.nodes)
+                curved = curved || n.hasIn() || n.hasOut();
+            if (closed.nodes.size() >= 3 || (closed.nodes.size() == 2 && curved)) {
+                chain = closed;
+                ++out.closed;
+                changed = true;
+            }
+        }
+        chains.append({chain, el, changed});
+    }
+
+    QSet<int> consumedRoots;
+    for (const Chain &c : chains)
+        if (c.changed)
+            consumedRoots.insert(root(c.el));
+    if (consumedRoots.isEmpty())
+        return out;
+    // One result per linked group, in the order of its first element.
+    for (int k = 0; k < els.size(); ++k) {
+        if (!consumedRoots.contains(k) || root(k) != k)
+            continue;
+        QVector<int> members;
+        for (int m = 0; m < els.size(); ++m)
+            if (joinCandidate(els.at(m)) && root(m) == k)
+                members.append(m);
+        PathModel model;
+        for (int m : members) {
+            out.consumed.append(els.at(m));
+            for (const SubPath &s : models.at(m).subs)
+                if (s.closed)
+                    model.subs.append(s);
+        }
+        for (const Chain &c : chains)
+            if (root(c.el) == k)
+                model.subs.append(c.sub);
+        const Element &first = els.at(members.first());
+        out.results.append(members.size() == 1 ? Element::withPathModel(first, model)
+                                               : Element::pieceOf(first, model));
+    }
+    return out;
+}
+
+QStringList VectorCheck::allIds() const
+{
+    QStringList ids;
+    for (const QStringList *l : {&open, &duplicates, &zeroLength, &selfCrossing})
+        for (const QString &id : *l)
+            if (!ids.contains(id))
+                ids << id;
+    return ids;
+}
+
+static double crossZ(QPointF a, QPointF b, QPointF c)
+{
+    return (b.x() - a.x()) * (c.y() - a.y()) - (b.y() - a.y()) * (c.x() - a.x());
+}
+
+// Two edges cross each other strictly (touching or overlapping does not count).
+static bool edgesCross(QPointF p1, QPointF p2, QPointF q1, QPointF q2)
+{
+    const double eps = 1e-12;
+    const double d1 = crossZ(q1, q2, p1), d2 = crossZ(q1, q2, p2);
+    const double d3 = crossZ(p1, p2, q1), d4 = crossZ(p1, p2, q2);
+    return ((d1 > eps && d2 < -eps) || (d1 < -eps && d2 > eps))
+        && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
+}
+
+static bool ringCrossesItself(QPolygonF ring)
+{
+    QPolygonF r;
+    for (const QPointF &p : ring)
+        if (r.isEmpty() || ptDist(r.last(), p) > 1e-9)
+            r.append(p);
+    while (r.size() > 1 && ptDist(r.first(), r.last()) <= 1e-9)
+        r.removeLast();
+    const int n = r.size();
+    if (n < 4 || n > 20000)
+        return false;
+    QVector<QRectF> box(n);
+    for (int i = 0; i < n; ++i)
+        box[i] = QRectF(r.at(i), r.at((i + 1) % n)).normalized();
+    for (int i = 0; i < n; ++i)
+        for (int j = i + 2; j < n; ++j) {
+            if (i == 0 && j == n - 1)
+                continue;   // neighbours across the start
+            if (box.at(i).right() < box.at(j).left() || box.at(j).right() < box.at(i).left()
+                || box.at(i).bottom() < box.at(j).top() || box.at(j).bottom() < box.at(i).top())
+                continue;
+            if (edgesCross(r.at(i), r.at((i + 1) % n), r.at(j), r.at((j + 1) % n)))
+                return true;
+        }
+    return false;
+}
+
+VectorCheck checkElements(const QVector<Element> &els)
+{
+    VectorCheck out;
+    QHash<QString, QVector<int>> seen;   // rough key -> earlier elements
+    for (int k = 0; k < els.size(); ++k) {
+        const Element &e = els.at(k);
+        const QPainterPath &pp = e.painterPath;
+        if (pp.length() < 1e-6) {
+            out.zeroLength << e.id;
+            continue;
+        }
+        const QRectF bb = pp.boundingRect();
+        const QString key = QStringLiteral("%1/%2/%3/%4/%5")
+                                .arg(qRound64(bb.left() * 1000)).arg(qRound64(bb.top() * 1000))
+                                .arg(qRound64(bb.right() * 1000)).arg(qRound64(bb.bottom() * 1000))
+                                .arg(pp.elementCount());
+        bool dup = false;
+        for (int m : seen.value(key))
+            if (els.at(m).painterPath == pp) { dup = true; break; }
+        if (dup)
+            out.duplicates << e.id;
+        else
+            seen[key].append(k);
+        if (e.geometryType != QLatin1String("path") || Element::isPoint(e))
+            continue;
+        const PathModel model = Element::pathModel(e);
+        bool open = false, crosses = false;
+        for (const SubPath &s : model.subs) {
+            if (!s.closed) {
+                open = open || !Element::isConstruction(e);
+                continue;
+            }
+            if (crosses || s.nodes.size() < 2)
+                continue;
+            PathModel one;
+            one.subs.append(s);
+            const QList<QPolygonF> polys = one.painterPath().toSubpathPolygons();
+            if (!polys.isEmpty() && ringCrossesItself(polys.first()))
+                crosses = true;
+        }
+        if (open)
+            out.open << e.id;
+        if (crosses)
+            out.selfCrossing << e.id;
+    }
+    return out;
 }
 
 } // namespace vec

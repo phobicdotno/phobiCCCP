@@ -56,6 +56,12 @@ public:
     // points and construction geometry.
     void boolean(vec::BoolOp op);
     void offsetBy(double delta, bool keepInputs);
+    // Join and close (vec::joinElements) on the selected vectors, or on every
+    // vector when nothing is selected; one undo step. checkVectors() reports
+    // open, duplicate, zero-length and self-crossing shapes in a popup and
+    // selects them.
+    void joinVectors(double gap);
+    void checkVectors();
 
     // Runs before every Vectors action: the window commits a number typed in
     // a panel (no Enter yet), or the action's refresh would drop it.
@@ -77,6 +83,7 @@ private:
     void scaleDialog();
     void moveCopyDialog();
     void cornersDialog(vec::CornerStyle style);
+    void joinDialog();
     void reportDone(const QString &msg);
     void pushReshape(const QVector<Element> &before, const QVector<Element> &after,
                      const QString &text, const QTransform &moved = QTransform());

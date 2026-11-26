@@ -10,6 +10,7 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineF>
+#include <QMessageBox>
 #include <QSpinBox>
 #include <QHash>
 #include <QIcon>
@@ -417,6 +418,16 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
     QAction *offsetAct = add(m, QStringLiteral("&Offset…"), S(Qt::Key_O), m_needOne,
         [this] { offset(); },
         QStringLiteral("Offset the selection inward or outward by a distance  (Ctrl+Shift+O)"));
+    m->addSeparator();
+    QVector<QAction *> always;   // with nothing selected they work on every vector
+    add(m, QStringLiteral("&Join and close vectors…"), QKeySequence(), always,
+        [this] { joinDialog(); },
+        QStringLiteral("Chain loose pieces whose ends meet into single paths, and close "
+                       "the ones that come round (selection, or all vectors)"));
+    add(m, QStringLiteral("Chec&k vectors"), QKeySequence(), always,
+        [this] { checkVectors(); },
+        QStringLiteral("Find open, doubled, zero-length and self-crossing vectors "
+                       "(selection, or all vectors) and select them"));
     m->addSeparator();
 
     QMenu *al = m->addMenu(QStringLiteral("&Align"));
@@ -1219,6 +1230,80 @@ void VectorActions::cornersDialog(vec::CornerStyle style)
     okCancel(dlg, form);
     if (dlg.exec() == QDialog::Accepted)
         corners(style, size->value());
+}
+
+// ---- join and close, check ---------------------------------------------------
+
+// The selection, or every vector of the document when nothing is selected.
+static QVector<Element> selectionOrAll(const QVector<Element> &sel, Document *d)
+{
+    if (!sel.isEmpty() || !d)
+        return sel;
+    return d->elements();
+}
+
+void VectorActions::joinVectors(double gap)
+{
+    const QVector<Element> els = selectionOrAll(orderedSelection(), m_canvas->document());
+    if (els.isEmpty())
+        return;
+    const vec::JoinResult r = vec::joinElements(els, gap);
+    if (r.results.isEmpty()) {
+        emit m_canvas->statusHint(tr("Join: no open ends within %1 mm of each other").arg(gap));
+        return;
+    }
+    pushReplace(r.consumed, r.results, false,
+                tr("join %1 vector(s) into %2").arg(r.consumed.size()).arg(r.results.size()));
+    reportDone(tr("Joined %1 vector(s) into %2 path(s): %3 joint(s), %4 closed")
+                   .arg(r.consumed.size()).arg(r.results.size()).arg(r.joints).arg(r.closed));
+}
+
+void VectorActions::joinDialog()
+{
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Join and close vectors"));
+    auto *form = new QFormLayout;
+    auto *gap = mmBox(&dlg, 0.0, 100, 0.1);
+    gap->setToolTip(tr("Ends closer than this are joined"));
+    form->addRow(tr("Gap"), gap);
+    auto *note = new QLabel(orderedSelection().isEmpty()
+                                ? tr("Joins the open vectors of the whole drawing whose ends meet, "
+                                     "and closes the ones that come round.")
+                                : tr("Joins the selected open vectors whose ends meet, "
+                                     "and closes the ones that come round."), &dlg);
+    note->setWordWrap(true);
+    form->addRow(note);
+    okCancel(dlg, form);
+    if (dlg.exec() == QDialog::Accepted)
+        joinVectors(gap->value());
+}
+
+void VectorActions::checkVectors()
+{
+    const bool all = orderedSelection().isEmpty();
+    const QVector<Element> els = selectionOrAll(orderedSelection(), m_canvas->document());
+    if (els.isEmpty())
+        return;
+    const vec::VectorCheck c = vec::checkElements(els);
+    const QStringList ids = c.allIds();
+    const QString scope = all ? tr("%1 vector(s) in the drawing").arg(els.size())
+                              : tr("%1 selected vector(s)").arg(els.size());
+    QString text;
+    if (ids.isEmpty()) {
+        text = tr("Checked %1: no problems found.").arg(scope);
+    } else {
+        text = tr("Checked %1.\n\n"
+                  "Open (not closed): %2\n"
+                  "Exact duplicates: %3\n"
+                  "Zero length: %4\n"
+                  "Crossing themselves: %5\n\n"
+                  "The %6 problem vector(s) are now selected. Open ones can often be fixed "
+                  "with Join and close vectors; delete duplicates and zero-length pieces.")
+                   .arg(scope).arg(c.open.size()).arg(c.duplicates.size())
+                   .arg(c.zeroLength.size()).arg(c.selfCrossing.size()).arg(ids.size());
+        m_canvas->selectIds(ids);
+    }
+    QMessageBox::information(m_canvas->window(), tr("Check vectors"), text);
 }
 
 } // namespace c2d

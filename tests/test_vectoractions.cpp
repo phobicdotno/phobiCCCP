@@ -1099,6 +1099,36 @@ int main(int argc, char *argv[])
         canvas->setDocument(&doc);
     }
 
+    // --- join and close: four loose lines become one closed path, one step ---------
+    {
+        const QVector<Element> lines = {
+            Element::makePath({{100, 0}, {120, 0}}, false, layer),
+            Element::makePath({{120.05, 0}, {120, 10}}, false, layer),
+            Element::makePath({{100, 10}, {120, 10.05}}, false, layer),   // reversed
+            Element::makePath({{100, 9.95}, {100.04, 0.03}}, false, layer),
+        };
+        for (const Element &e : lines)
+            doc.addElement(e);
+        const int before = doc.elements().size();
+        const int at = undo->index();
+        canvas->selectIds({lines[0].id, lines[1].id, lines[2].id, lines[3].id});
+        va.joinVectors(0.1);
+        check(undo->index() == at + 1, "join is one undo step");
+        check(doc.elements().size() == before - 3, "join: four lines become one path");
+        check(doc.elementById(lines[0].id) == nullptr, "join: the pieces are gone");
+        bool closedOne = false;
+        for (const Element &e : doc.elements())
+            closedOne = closedOne || (e.geometryType == "path" && vec::isClosed(e)
+                                      && e.painterPath.boundingRect().left() > 99);
+        check(closedOne, "join: the result is closed");
+        undo->undo();
+        check(doc.elements().size() == before && doc.elementById(lines[2].id),
+              "undo join brings the pieces back");
+        canvas->selectIds({});
+        va.joinVectors(0.01);   // nothing selected: all vectors; the 0.05 gap stays open
+        check(undo->index() == at, "join: too small a gap changes nothing");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

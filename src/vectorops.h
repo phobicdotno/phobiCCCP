@@ -157,5 +157,35 @@ PathModel cornerModel(const PathModel &m, CornerStyle style, double size, int *c
 // `corners` 0, when it has no corners — circles and text never do).
 Element cornerElement(const Element &e, CornerStyle style, double size, int *corners = nullptr);
 
+// ---- join / check (pieces of imported DXF/SVG) ------------------------------
+// Join and close: the open subpaths of the `path` elements in `els` are
+// chained end to end wherever two ends lie within `gap` mm of each other
+// (pieces are reversed as needed, bezier segments are kept as they are), and
+// a chain whose two ends meet within `gap` is closed. The second end of a
+// joint is snapped onto the first. Elements that took part in a joint or a
+// close are `consumed`; each group of them that ended up linked becomes one
+// `results` path (its closed subpaths and untouched open ones kept too). A
+// single element keeps its id; a joined group gets a fresh one with the
+// first element's group. Points and construction geometry are left alone.
+struct JoinResult {
+    QVector<Element> consumed;
+    QVector<Element> results;
+    int joints = 0;   // piece ends welded together
+    int closed = 0;   // chains (or single vectors) closed
+};
+JoinResult joinElements(const QVector<Element> &els, double gap);
+
+// Check vectors: ids of the problem shapes among `els`, by kind. `open`:
+// paths with an open end (construction lines are not counted); `duplicates`:
+// exact copies of an earlier element (the later copy is listed);
+// `zeroLength`: shapes with no length at all; `selfCrossing`: closed path
+// outlines that cross themselves (a figure 8), which pockets and profiles
+// read wrongly.
+struct VectorCheck {
+    QStringList open, duplicates, zeroLength, selfCrossing;
+    QStringList allIds() const;   // every listed id once, in order
+};
+VectorCheck checkElements(const QVector<Element> &els);
+
 } // namespace vec
 } // namespace c2d
