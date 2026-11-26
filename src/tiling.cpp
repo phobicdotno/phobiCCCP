@@ -603,8 +603,21 @@ TiledExport exportTiled(Document &doc, const QString &outBase, double tileHeight
             return r;
         QVector<Op> ops;
         ops.append(Op::comment(QStringLiteral("tile %1/%2").arg(k + 1).arg(tiles.size())));
-        ops.append(tiles.at(k));
-        const QString gcode = GrblPost(true).generate(ops);
+        QVector<Op> tile = tiles.at(k);
+        if (!jobZeroIsDefault(doc)) {
+            // Each tile is zeroed at its own lower edge in Y; X and Z follow
+            // the job zero (a centre zero is the centre of the stock's width).
+            QVector3D zs = jobZeroShift(doc);
+            zs.setY(0);
+            shiftOps(tile, zs);
+        }
+        ops.append(tile);
+        QString gcode = GrblPost(true).generate(ops);
+        if (!jobZeroIsDefault(doc)) {
+            QString zt = jobZeroText(doc);
+            zt.replace(QStringLiteral(" ("), QStringLiteral(", ")).remove(QLatin1Char(')'));
+            gcode.prepend(QStringLiteral("(Zero: X and Z as %1; Y at this tile's lower edge)\n").arg(zt));
+        }
         const QString path = QStringLiteral("%1_tile%2.nc").arg(outBase, QString::number(k + 1));
         staged.push_back(std::make_unique<QSaveFile>(path));
         QSaveFile &f = *staged.back();

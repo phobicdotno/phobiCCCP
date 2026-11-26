@@ -2110,6 +2110,31 @@ void MachinePanel::bitZeroBegin()
     if ((m_bzPanel->mode() == BitZeroPanel::Corner || m_bzPanel->mode() == BitZeroPanel::ZOnly)
         && bitSetter().enabled && !bitSetterReachable(bitSetter(), QStringLiteral("BitZero")))
         return;
+    // The plate finds the stock's lower-left corner and its top. A job whose
+    // zero is elsewhere (centre, another corner, the spoilboard) would run
+    // from the wrong point unless the zero is moved there afterwards.
+    if (m_doc && !jobZeroIsDefault(*m_doc)) {
+        const auto mode = m_bzPanel->mode();
+        const bool xyOff = jobZeroXY(*m_doc) != ZeroXY::LowerLeft
+                           && (mode == BitZeroPanel::Corner || mode == BitZeroPanel::XOnly
+                               || mode == BitZeroPanel::YOnly);
+        const bool zOff = jobZeroBottom(*m_doc)
+                          && (mode == BitZeroPanel::Corner || mode == BitZeroPanel::ZOnly);
+        if (xyOff || zOff) {
+            ShopAsk ask;
+            ask.title = QStringLiteral("BitZero");
+            ask.headline = QStringLiteral("This job's zero is not where BitZero sets it.");
+            ask.body = QStringLiteral("BitZero sets zero at the stock's lower-left corner, on its top. "
+                                      "The open design's zero is the %1. Probe anyway, then set the "
+                                      "zero at the point the job uses before you run it.")
+                           .arg(jobZeroText(*m_doc));
+            ask.okText = QStringLiteral("Probe anyway");
+            ask.defaultOk = false;
+            if (!shopAsk(this, ask))
+                return;
+            log(QStringLiteral("BitZero: job zero is the %1, not the probed corner").arg(jobZeroText(*m_doc)));
+        }
+    }
     stopHoldJog();
     m_bz = m_bzPanel->config();
     m_bzMode = m_bzPanel->mode();
@@ -3999,7 +4024,11 @@ void MachinePanel::hoverDryRun()
     if (r.cancelled || designSwapped())
         return;
     double x0, y0, x1, y1;
-    if (r.done.isEmpty() || !cutBounds(r.ops, x0, y0, x1, y1)) {
+    QVector<Op> program = r.ops;   // as posted: from the job zero
+    shiftOps(program, jobZeroShift(*m_doc));
+    // 5 cm above the stock top, wherever Z zero is (top or spoilboard).
+    const double hoverZ = kHover + double(jobZeroShift(*m_doc).z());
+    if (r.done.isEmpty() || !cutBounds(program, x0, y0, x1, y1)) {
         shopTell(this, QStringLiteral("Machine"), QStringLiteral("The job has nothing to trace."));
         return;
     }
@@ -4025,8 +4054,8 @@ void MachinePanel::hoverDryRun()
             if (lo[k] + off[k] < -travel[k] - 1e-6)
                 over << QStringLiteral("%1 %2 mm past the far end of its travel").arg(ax).arg(-travel[k] - (lo[k] + off[k]), 0, 'f', 1);
         }
-        if (kHover + off[2] > top + 1e-6)
-            over << QStringLiteral("Z %1 mm above the top of its travel").arg(kHover + off[2] - top, 0, 'f', 1);
+        if (hoverZ + off[2] > top + 1e-6)
+            over << QStringLiteral("Z %1 mm above the top of its travel").arg(hoverZ + off[2] - top, 0, 'f', 1);
         if (!over.isEmpty()) {
             shopTell(this, QStringLiteral("Machine"), QStringLiteral("The outline goes off the machine."),
                      QStringLiteral("From the current work zero it reaches %1. Set the zero again or move the design.")
@@ -4057,7 +4086,7 @@ void MachinePanel::hoverDryRun()
     QStringList lines = riseToTop();
     lines << QStringLiteral("G21") << QStringLiteral("G90")
           << QStringLiteral("G0 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y0, 0, 'f', 3)
-          << QStringLiteral("G0 Z%1").arg(kHover, 0, 'f', 3)
+          << QStringLiteral("G0 Z%1").arg(hoverZ, 0, 'f', 3)
           << QStringLiteral("G1 F%1 X%2 Y%3").arg(kFeed, 0, 'f', 0).arg(x1, 0, 'f', 3).arg(y0, 0, 'f', 3)
           << QStringLiteral("G1 X%1 Y%2").arg(x1, 0, 'f', 3).arg(y1, 0, 'f', 3)
           << QStringLiteral("G1 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y1, 0, 'f', 3)
@@ -4971,6 +5000,17 @@ bool MachinePanel::runProgram(QString *remoteWhy)
             return refuse(QStringLiteral("This design is tiled: the job needs %1 tiles of %2 mm.")
                               .arg(QString::number(tileCount(r.ops, tileH)), QString::number(tileH)),
                           QStringLiteral("Export G-code makes one program per tile; run those one at a time."));
+        // The program is posted from the job zero; its operations are made
+        // to match, so the travel check and the stats see what will run.
+        if (!jobZeroIsDefault(*m_doc)) {
+            if (m_useMap->isChecked() && m_map.isValid())
+                return refuse(jobZeroBottom(*m_doc)
+                                  ? QStringLiteral("The surface map cannot be used with Z zero on the spoilboard.")
+                                  : QStringLiteral("The surface map is measured from the lower-left corner, "
+                                                   "and this job's zero is the %1.").arg(jobZeroText(*m_doc)),
+                              QStringLiteral("Turn the surface map off, or set the job zero back to lower left, top."));
+            shiftOps(r.ops, jobZeroShift(*m_doc));
+        }
     }
     // Settings made at the computer for one run, which nobody at a pad sees:
     // an old surface map bent the new design's depths, and a left-on air

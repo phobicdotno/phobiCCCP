@@ -2747,6 +2747,95 @@ double documentSafeZ(const Document &doc)
     return (!std::isfinite(z) || z < 0.5) ? 2.54 : z;
 }
 
+ZeroXY jobZeroXY(const Document &doc)
+{
+    const QString v = doc.params().value(QStringLiteral("phobic_zero_xy"));
+    for (ZeroXY z : {ZeroXY::Centre, ZeroXY::UpperLeft, ZeroXY::UpperRight, ZeroXY::LowerRight})
+        if (v == zeroXYKey(z))
+            return z;
+    return ZeroXY::LowerLeft;
+}
+
+bool jobZeroBottom(const Document &doc)
+{
+    return doc.params().value(QStringLiteral("phobic_zero_z")) == QLatin1String("bottom");
+}
+
+QString zeroXYKey(ZeroXY z)
+{
+    switch (z) {
+    case ZeroXY::Centre: return QStringLiteral("centre");
+    case ZeroXY::UpperLeft: return QStringLiteral("upper_left");
+    case ZeroXY::UpperRight: return QStringLiteral("upper_right");
+    case ZeroXY::LowerRight: return QStringLiteral("lower_right");
+    case ZeroXY::LowerLeft: break;
+    }
+    return QStringLiteral("lower_left");
+}
+
+QString zeroXYLabel(ZeroXY z)
+{
+    switch (z) {
+    case ZeroXY::Centre: return QStringLiteral("Centre");
+    case ZeroXY::UpperLeft: return QStringLiteral("Upper left");
+    case ZeroXY::UpperRight: return QStringLiteral("Upper right");
+    case ZeroXY::LowerRight: return QStringLiteral("Lower right");
+    case ZeroXY::LowerLeft: break;
+    }
+    return QStringLiteral("Lower left");
+}
+
+QPointF jobZeroPoint(const Document &doc)
+{
+    const double w = qMax(0.0, doc.boardWidth()), h = qMax(0.0, doc.boardHeight());
+    switch (jobZeroXY(doc)) {
+    case ZeroXY::Centre: return QPointF(w / 2, h / 2);
+    case ZeroXY::UpperLeft: return QPointF(0, h);
+    case ZeroXY::UpperRight: return QPointF(w, h);
+    case ZeroXY::LowerRight: return QPointF(w, 0);
+    case ZeroXY::LowerLeft: break;
+    }
+    return QPointF(0, 0);
+}
+
+QVector3D jobZeroShift(const Document &doc)
+{
+    const QPointF p = jobZeroPoint(doc);
+    double t = 0;
+    if (jobZeroBottom(doc)) {
+        t = doc.params().value(QStringLiteral("thickness"), QStringLiteral("0")).toDouble();
+        if (!std::isfinite(t) || t < 0)
+            t = 0;
+    }
+    return QVector3D(float(-p.x()), float(-p.y()), float(t));
+}
+
+bool jobZeroIsDefault(const Document &doc)
+{
+    return jobZeroXY(doc) == ZeroXY::LowerLeft && !jobZeroBottom(doc);
+}
+
+void shiftOps(QVector<Op> &ops, const QVector3D &shift)
+{
+    if (shift.isNull())
+        return;
+    for (Op &o : ops) {
+        if (o.kind != Op::Rapid && o.kind != Op::Feed && o.kind != Op::Arc)
+            continue;
+        o.x += double(shift.x());
+        o.y += double(shift.y());
+        o.z += double(shift.z());
+    }
+}
+
+QString jobZeroText(const Document &doc)
+{
+    const ZeroXY z = jobZeroXY(doc);
+    const QString xy = z == ZeroXY::Centre ? QStringLiteral("centre of stock")
+                                           : zeroXYLabel(z).toLower() + QStringLiteral(" corner");
+    return xy + (jobZeroBottom(doc) ? QStringLiteral(", bottom (spoilboard)") : QStringLiteral(", top"));
+}
+
 GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         const HeightModel *relief)
 {
@@ -4763,8 +4852,17 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
     }
     flush();
 
-    res.gcode = GrblPost(true).generate(ops);
     res.ops = ops;
+    if (!jobZeroIsDefault(doc)) {
+        // The preview keeps design coordinates; only the program moves.
+        QVector<Op> moved = ops;
+        shiftOps(moved, jobZeroShift(doc));
+        QString zt = jobZeroText(doc);
+        zt.replace(QStringLiteral(" ("), QStringLiteral(", ")).remove(QLatin1Char(')'));
+        res.gcode = QStringLiteral("(Zero: %1)\n").arg(zt) + GrblPost(true).generate(moved);
+    } else {
+        res.gcode = GrblPost(true).generate(ops);
+    }
     if (const QString w = toolReuseWarning(ops); !w.isEmpty())
         res.notes << w;
     return res;

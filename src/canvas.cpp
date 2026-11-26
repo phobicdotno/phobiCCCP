@@ -1,5 +1,6 @@
 #include <numeric>
 #include "canvas.h"
+#include "gcodeexport.h"
 #include "layers.h"
 #include <QUuid>
 #include "vectorops.h"
@@ -2131,6 +2132,21 @@ void Canvas::drawBackground(QPainter *p, const QRectF &rect)
     p->drawLine(QLineF(0, 0, qMin(w, 15.0), 0));
     p->setPen(QPen(kAxisY, 0));
     p->drawLine(QLineF(0, 0, 0, qMin(h, 15.0)));
+
+    // Job zero, when it is not the lower-left top corner: a small crosshair
+    // and ring at the point the program's X0 Y0 is.
+    if (!c2d::jobZeroIsDefault(*m_doc)) {
+        const QPointF z = c2d::jobZeroPoint(*m_doc);
+        const double r = qBound(2.0, qMin(w, h) * 0.03, 12.0);
+        QPen zp(QColor(0x4f, 0xc3, 0xf7), 0);
+        zp.setCosmetic(true);
+        zp.setWidthF(2.0);
+        p->setPen(zp);
+        p->setBrush(Qt::NoBrush);
+        p->drawEllipse(z, r * 0.6, r * 0.6);
+        p->drawLine(QLineF(z.x() - r, z.y(), z.x() + r, z.y()));
+        p->drawLine(QLineF(z.x(), z.y() - r, z.x(), z.y() + r));
+    }
 }
 
 // The box a rectangle / ellipse drag spans: corner to corner, or (Ctrl)

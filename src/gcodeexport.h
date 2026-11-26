@@ -4,6 +4,8 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QPainterPath>
+#include <QPointF>
+#include <QVector3D>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -82,6 +84,27 @@ QString fluteLengthWarning(const QString &type, const QJsonObject &toolpath);
 // through it. Both the plain and the tiled exporter go through this so the
 // guard cannot drift apart again.
 double documentSafeZ(const Document &doc);
+
+// Job zero: where the program's X0 Y0 Z0 is on the stock. Carbide Create's
+// .c2d has no key for it, so these are phobiCCCP's own params (kept by CC):
+//   phobic_zero_xy = lower_left (default) | centre | upper_left | upper_right | lower_right
+//   phobic_zero_z  = top (default) | bottom   (bottom = the spoilboard)
+// Design coordinates keep the stock's lower-left at 0,0 and its top at Z 0;
+// only the posted program is moved, so with the defaults it is unchanged.
+enum class ZeroXY { LowerLeft, Centre, UpperLeft, UpperRight, LowerRight };
+ZeroXY jobZeroXY(const Document &doc);
+bool jobZeroBottom(const Document &doc);
+QString zeroXYKey(ZeroXY z);           // the param value
+QString zeroXYLabel(ZeroXY z);         // "Lower left", "Centre", ...
+// The chosen zero in design coordinates (on the stock rectangle), X and Y.
+QPointF jobZeroPoint(const Document &doc);
+// Added to every design coordinate to get the program's: (-zx, -zy, +thickness or 0).
+QVector3D jobZeroShift(const Document &doc);
+bool jobZeroIsDefault(const Document &doc);
+// Moves Rapid / Feed / Arc targets by `shift` (arc I/J are relative and stay).
+void shiftOps(QVector<Op> &ops, const QVector3D &shift);
+// "centre of stock, top" - for the setup sheet and the machine notes.
+QString jobZeroText(const Document &doc);
 
 // Carbide Create writes some numbers as JSON strings ("0.500") and others as
 // numbers, and which is which varies by key and by build. QJsonValue::toDouble

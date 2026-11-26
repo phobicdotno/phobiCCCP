@@ -21,6 +21,9 @@
 #include "padlink.h"
 #include "sendtopaddialog.h"
 #include <QActionGroup>
+#include <QGridLayout>
+#include <QDialogButtonBox>
+#include <QButtonGroup>
 #include <QJsonDocument>
 #include <QUuid>
 #include <QRandomGenerator>
@@ -122,6 +125,10 @@
 #include <QPointer>
 
 namespace c2d {
+
+namespace {
+bool askJobZero(QWidget *parent, Document &doc);
+}
 
 // Simple flat tool icons drawn at runtime — no resource files needed.
 // The sketch-tool variants (Circle > 2-Point, ...): the shape in the normal
@@ -1134,6 +1141,22 @@ MainWindow::MainWindow(QWidget *parent)
     // pooled so each site is finished before the spindle moves on.
     m_tpBar->addSeparator();
     {
+        QAction *zero = m_tpBar->addAction(QStringLiteral("Job zero"));
+        zero->setToolTip(QStringLiteral("Where X0 Y0 Z0 of the program is: a corner or the centre "
+                                        "of the stock, at its top or on the spoilboard"));
+        connect(zero, &QAction::triggered, this, [this] {
+            if (!hasDocument() || !askJobZero(this, m_doc))
+                return;
+            m_dirty = true;
+            updateTitle();
+            statusBar()->showMessage(QStringLiteral("Zero: %1").arg(jobZeroText(m_doc)), 8000);
+            m_canvas->viewport()->update();
+            markIsoStale();
+            if (m_previewAct->isChecked())
+                refreshPreview();
+        });
+    }
+    {
         QAction *site = m_tpBar->addAction(QStringLiteral("Site order"));
         site->setCheckable(true);
         site->setChecked(QSettings().value(QStringLiteral("export/siteOrder"), false).toBool());
@@ -1916,9 +1939,11 @@ void MainWindow::onExportGcode()
         QMessageBox::warning(this, QStringLiteral("Export failed"), f.errorString());
         return;
     }
+    QVector<Op> program = r.ops;   // extents as posted, from the job zero
+    shiftOps(program, jobZeroShift(m_doc));
     QString msg = QStringLiteral("Exported %1 toolpath(s) to %2   [%3]")
                       .arg(QString::number(r.done.size()), path,
-                           statsSummary(computeStats(r.ops))
+                           statsSummary(computeStats(program))
                                .replace(QChar('\n'), QStringLiteral("  ·  ")));
     if (!r.skipped.isEmpty())
         msg += QStringLiteral("  (skipped: %1)").arg(r.skipped.join(QStringLiteral(", ")));
@@ -4001,6 +4026,64 @@ void MainWindow::refreshInfo()
 
     m_info->setPlainText(lines.join(QChar('\n')));
 }
+
+namespace {
+
+// Job zero: where X0 Y0 and Z0 of the program are on the stock. Two rows of
+// big buttons; true when the choice changed (and was written to the params).
+bool askJobZero(QWidget *parent, Document &doc)
+{
+    QDialog dlg(parent);
+    dlg.setWindowTitle(QStringLiteral("Job zero"));
+    auto *lay = new QVBoxLayout(&dlg);
+    auto *head = new QLabel(QStringLiteral("Where is zero on the stock? Set the machine's "
+                                           "work zero at this point before you run."), &dlg);
+    head->setWordWrap(true);
+    lay->addWidget(head);
+    auto row = [&](const QString &caption, const QStringList &labels, int current) {
+        lay->addWidget(new QLabel(caption, &dlg));
+        auto *grid = new QGridLayout;
+        auto *group = new QButtonGroup(&dlg);
+        for (int i = 0; i < labels.size(); ++i) {
+            auto *b = new QPushButton(labels.at(i), &dlg);
+            b->setCheckable(true);
+            b->setMinimumHeight(52);
+            b->setChecked(i == current);
+            group->addButton(b, i);
+            grid->addWidget(b, i / 3, i % 3);
+        }
+        lay->addLayout(grid);
+        return group;
+    };
+    const QList<ZeroXY> xyOrder{ZeroXY::LowerLeft, ZeroXY::Centre, ZeroXY::UpperLeft,
+                                ZeroXY::UpperRight, ZeroXY::LowerRight};
+    QStringList xyLabels;
+    for (ZeroXY z : xyOrder)
+        xyLabels << zeroXYLabel(z);
+    QButtonGroup *xy = row(QStringLiteral("X Y zero"), xyLabels, int(xyOrder.indexOf(jobZeroXY(doc))));
+    QButtonGroup *zz = row(QStringLiteral("Z zero"),
+                           {QStringLiteral("Top of stock"), QStringLiteral("Bottom (spoilboard)")},
+                           jobZeroBottom(doc) ? 1 : 0);
+    auto *note = new QLabel(QStringLiteral("Bottom: Z0 is the spoilboard, so a cut goes to "
+                                           "Z = thickness − depth. The surface map cannot be used then."), &dlg);
+    note->setWordWrap(true);
+    lay->addWidget(note);
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(bb);
+    if (dlg.exec() != QDialog::Accepted)
+        return false;
+    const ZeroXY newXY = xyOrder.value(qMax(0, xy->checkedId()), ZeroXY::LowerLeft);
+    const bool newBottom = zz->checkedId() == 1;
+    if (newXY == jobZeroXY(doc) && newBottom == jobZeroBottom(doc))
+        return false;
+    doc.setParam(QStringLiteral("phobic_zero_xy"), zeroXYKey(newXY));
+    doc.setParam(QStringLiteral("phobic_zero_z"), newBottom ? QStringLiteral("bottom") : QStringLiteral("top"));
+    return true;
+}
+
+} // namespace
 
 namespace {
 

@@ -455,6 +455,9 @@ endif()
 add_executable(test_exportjob tests/test_exportjob.cpp)
 target_link_libraries(test_exportjob PRIVATE phobicccp_ui)
 add_test(NAME exportjob COMMAND test_exportjob)
+add_executable(test_jobzero tests/test_jobzero.cpp)
+target_link_libraries(test_jobzero PRIVATE phobicccp_ui)
+add_test(NAME jobzero COMMAND test_jobzero)
 
 # Dust collector / coolant switched with the spindle in a job's program.
 add_executable(test_coolant tests/test_coolant.cpp)
