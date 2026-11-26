@@ -4,12 +4,20 @@
 #include <cmath>
 #include <numeric>
 
+#ifdef HAVE_CLIPPER2
 #include <clipper2/clipper.h>
 namespace C2 = Clipper2Lib;
+#else
+#include <QPainterPath>
+#include <QPainterPathStroker>
+#endif
 
 namespace c2d::nest {
 
 namespace {
+
+#ifdef HAVE_CLIPPER2
+using Shape = C2::PathsD;
 
 C2::PathD toPath(const QPolygonF &poly)
 {
@@ -20,33 +28,94 @@ C2::PathD toPath(const QPolygonF &poly)
     return p;
 }
 
-QRectF boundsOf(const C2::PathsD &paths)
+Shape shapeOf(const QPolygonF &poly) { return Shape{toPath(poly)}; }
+
+double areaOf(const QPolygonF &poly) { return std::fabs(C2::Area(toPath(poly))); }
+
+Shape grow(const Shape &one, double half)
+{
+    return half > 0 ? C2::InflatePaths(one, half, C2::JoinType::Round, C2::EndType::Polygon, 2.0, 4)
+                    : one;
+}
+
+Shape moved(const Shape &s, double dx, double dy) { return C2::TranslatePaths(s, dx, dy); }
+
+QRectF boundsOf(const Shape &paths)
 {
     const C2::RectD r = C2::GetBounds(paths);
     return QRectF(QPointF(r.left, r.top), QPointF(r.right, r.bottom)).normalized();
 }
+
+bool hits(const Shape &a, const Shape &b)
+{
+    return std::fabs(C2::Area(C2::Intersect(a, b, C2::FillRule::NonZero, 4))) > 1e-3;
+}
+#else
+// Without Clipper2: Qt's (approximate) path booleans.
+using Shape = QPainterPath;
+
+double areaOf(const QPolygonF &poly)
+{
+    double a = 0;
+    for (int i = 0; i < poly.size(); ++i) {
+        const QPointF &p = poly.at(i), &q = poly.at((i + 1) % poly.size());
+        a += p.x() * q.y() - q.x() * p.y();
+    }
+    return std::fabs(a) / 2;
+}
+
+Shape shapeOf(const QPolygonF &poly)
+{
+    Shape s;
+    s.addPolygon(poly);
+    s.closeSubpath();
+    return s;
+}
+
+Shape grow(const Shape &one, double half)
+{
+    if (half <= 0)
+        return one;
+    QPainterPathStroker st;
+    st.setWidth(2 * half);
+    st.setJoinStyle(Qt::RoundJoin);
+    st.setCapStyle(Qt::RoundCap);
+    return st.createStroke(one).united(one).simplified();
+}
+
+Shape moved(const Shape &s, double dx, double dy) { return s.translated(dx, dy); }
+
+QRectF boundsOf(const Shape &s) { return s.boundingRect(); }
+
+bool hits(const Shape &a, const Shape &b)
+{
+    double area = 0;
+    for (const QPolygonF &p : a.intersected(b).toFillPolygons())
+        area += areaOf(p);
+    return area > 1e-3;
+}
+#endif
 
 // One quarter turn of a part, the turn applied about the origin.
 struct Pose {
     double deg = 0;
     QTransform turn;
     QRectF raw;          // bounds of the turned outline
-    C2::PathsD grown;    // turned outline grown by spacing/2
+    Shape grown;         // turned outline grown by spacing/2
     QRectF grownBox;
 };
 
 struct Placed {
-    C2::PathsD grown;
+    Shape grown;
     QRectF box;
 };
 
-bool overlaps(const C2::PathsD &a, const QRectF &aBox, const QVector<Placed> &placed)
+bool overlaps(const Shape &a, const QRectF &aBox, const QVector<Placed> &placed)
 {
     for (const Placed &p : placed) {
         if (!aBox.intersects(p.box))
             continue;
-        const C2::PathsD hit = C2::Intersect(a, p.grown, C2::FillRule::NonZero, 4);
-        if (std::fabs(C2::Area(hit)) > 1e-3)
+        if (hits(a, p.grown))
             return true;
     }
     return false;
@@ -78,7 +147,7 @@ QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &s
     std::iota(order.begin(), order.end(), 0);
     QVector<double> areas(outlines.size());
     for (int i = 0; i < outlines.size(); ++i)
-        areas[i] = std::fabs(C2::Area(toPath(outlines.at(i))));
+        areas[i] = areaOf(outlines.at(i));
     std::stable_sort(order.begin(), order.end(),
                      [&](int a, int b) { return areas.at(a) > areas.at(b); });
 
@@ -86,11 +155,8 @@ QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &s
     for (const QPolygonF &poly : obstacles) {
         if (poly.size() < 3)
             continue;
-        const C2::PathsD one{toPath(poly)};
         Placed p;
-        p.grown = half > 0 ? C2::InflatePaths(one, half, C2::JoinType::Round,
-                                              C2::EndType::Polygon, 2.0, 4)
-                           : one;
+        p.grown = grow(shapeOf(poly), half);
         p.box = boundsOf(p.grown);
         placed.append(p);
     }
@@ -113,10 +179,7 @@ QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &s
             pose.raw = turned.boundingRect();
             if (pose.raw.width() > area.width() + 1e-9 || pose.raw.height() > area.height() + 1e-9)
                 continue;
-            const C2::PathsD one{toPath(turned)};
-            pose.grown = half > 0 ? C2::InflatePaths(one, half, C2::JoinType::Round,
-                                                     C2::EndType::Polygon, 2.0, 4)
-                                  : one;
+            pose.grown = grow(shapeOf(turned), half);
             pose.grownBox = boundsOf(pose.grown);
             // Positions are for the turned outline's bottom-left corner.
             const double size = std::min(pose.raw.width(), pose.raw.height());
@@ -146,8 +209,7 @@ QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &s
                     const double dx = x - pose.raw.left(), dy = y - pose.raw.top();
                     const QRectF box = pose.grownBox.translated(dx, dy);
                     // Cheap test first: no placed box near, nothing to clip.
-                    const C2::PathsD moved = C2::TranslatePaths(pose.grown, dx, dy);
-                    if (overlaps(moved, box, placed))
+                    if (overlaps(moved(pose.grown, dx, dy), box, placed))
                         continue;
                     const double top = y + pose.raw.height();
                     if (!found || y < bestY - 1e-9 || x < bestX - 1e-9
@@ -173,7 +235,7 @@ QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &s
         pl.rotation = best.deg;
         pl.transform = best.turn * QTransform::fromTranslate(bestAt.x(), bestAt.y());
         Placed p;
-        p.grown = C2::TranslatePaths(best.grown, bestAt.x(), bestAt.y());
+        p.grown = moved(best.grown, bestAt.x(), bestAt.y());
         p.box = best.grownBox.translated(bestAt);
         placed.append(p);
     }

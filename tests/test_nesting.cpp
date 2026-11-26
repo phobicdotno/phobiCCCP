@@ -4,8 +4,11 @@
 #include "../src/nesting.h"
 
 #include <QPainterPath>
+#include <QPainterPathStroker>
 
+#ifdef HAVE_CLIPPER2
 #include <clipper2/clipper.h>
+#endif
 
 #include <cmath>
 #include <cstdio>
@@ -49,6 +52,23 @@ static QVector<QPolygonF> placedOutlines(const QVector<QPolygonF> &in,
 static double gapBetween(const QPolygonF &a, const QPolygonF &b)
 {
     // Overlap area of the two shapes grown by 0.99 mm (just under 2 mm apart).
+#ifndef HAVE_CLIPPER2
+    auto grown = [](const QPolygonF &poly) {
+        QPainterPath s;
+        s.addPolygon(poly);
+        s.closeSubpath();
+        QPainterPathStroker st;
+        st.setWidth(1.98);
+        st.setJoinStyle(Qt::MiterJoin);
+        return st.createStroke(s).united(s);
+    };
+    double area = 0;
+    for (const QPolygonF &p : grown(a).intersected(grown(b)).toFillPolygons())
+        for (int i = 0; i < p.size(); ++i)
+            area += (p.at(i).x() * p.at((i + 1) % p.size()).y()
+                     - p.at((i + 1) % p.size()).x() * p.at(i).y()) / 2;
+    return std::fabs(area);
+#else
     Clipper2Lib::PathsD pa{{}}, pb{{}};
     for (const QPointF &p : a) pa[0].emplace_back(p.x(), p.y());
     for (const QPointF &p : b) pb[0].emplace_back(p.x(), p.y());
@@ -58,6 +78,7 @@ static double gapBetween(const QPolygonF &a, const QPolygonF &b)
                                    Clipper2Lib::EndType::Polygon);
     return std::fabs(Clipper2Lib::Area(
         Clipper2Lib::Intersect(pa, pb, Clipper2Lib::FillRule::NonZero)));
+#endif
 }
 
 static double boundsArea(const QVector<QPolygonF> &polys)
