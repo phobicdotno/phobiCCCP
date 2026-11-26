@@ -1,4 +1,5 @@
 #pragma once
+#include <QHash>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -47,6 +48,17 @@ struct JobStats {
 };
 JobStats computeStats(const QVector<Op> &ops);
 QString statsSummary(const JobStats &s);   // two lines: extents / lengths + time
+
+// computeStats' time split by toolpath: each toolpath's ops open with a
+// comment carrying its name, and every op up to the next comment is charged
+// to it (pooled toolpaths come in several runs, which add up). A run starts
+// where the machine is, so it pays its first travel but not a spin-up the
+// spindle already had. Keyed by the comment text (the toolpath's name).
+QHash<QString, double> timeByComment(const QVector<Op> &ops);
+
+// A time estimate in plain words for a list: "< 1 min", "≈ 4 min",
+// "≈ 1 h 12 min".
+QString roughDuration(double sec);
 
 // Dry-run rehearsal transform: every Z word lifted by `lift` mm (a constant
 // shift keeps modal Z words consistent) and all spindle lines dropped, so a

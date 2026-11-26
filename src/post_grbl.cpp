@@ -117,6 +117,59 @@ QString statsSummary(const JobStats &s)
         .arg(t / 60).arg(t % 60, 2, 10, QChar('0'));
 }
 
+QHash<QString, double> timeByComment(const QVector<Op> &ops)
+{
+    QHash<QString, double> secByName;
+    QVector<Op> prefix;   // where the machine is when a run starts
+    QString cur;
+    int start = 0, rpm = 0;
+    bool havePos = false;
+    Op pos = Op::rapid(0, 0, 0);
+    auto close = [&](int end) {
+        if (cur.isEmpty() || end <= start)
+            return;
+        QVector<Op> run = prefix;
+        run += ops.mid(start, end - start);
+        secByName[cur] += computeStats(run).timeSec - computeStats(prefix).timeSec;
+    };
+    for (int i = 0; i < ops.size(); ++i) {
+        const Op &op = ops.at(i);
+        if (op.kind == Op::Comment) {
+            close(i);
+            cur = op.text;
+            start = i;
+            // The machine's state carried in, so the run is charged for
+            // its first travel and not for a spin-up that never happens.
+            prefix.clear();
+            if (rpm > 0)
+                prefix.append(Op::spindle(rpm));
+            if (havePos)
+                prefix.append(pos);
+        } else if (op.kind == Op::Rapid || op.kind == Op::Feed || op.kind == Op::Arc) {
+            pos = Op::rapid(op.x, op.y, op.z);
+            havePos = true;
+        } else if (op.kind == Op::Spindle) {
+            rpm = op.ival;
+        } else if (op.kind == Op::Tool) {
+            rpm = 0;
+        }
+    }
+    close(ops.size());
+    return secByName;
+}
+
+QString roughDuration(double sec)
+{
+    const int m = int(std::lround(qMax(0.0, sec) / 60.0));
+    if (m < 1)
+        return QStringLiteral("< 1 min");
+    if (m < 60)
+        return QStringLiteral("\u2248 %1 min").arg(m);
+    if (m % 60 == 0)
+        return QStringLiteral("\u2248 %1 h").arg(m / 60);
+    return QStringLiteral("\u2248 %1 h %2 min").arg(m / 60).arg(m % 60);
+}
+
 QStringList airCutTransform(const QStringList &lines, double lift)
 {
     static const QRegularExpression zWord(QStringLiteral("Z(-?[0-9]+\\.?[0-9]*)"));

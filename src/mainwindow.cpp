@@ -2092,6 +2092,7 @@ void MainWindow::applyPreview(const GcodeResult &r, bool overlay)
     m_sim->setJob(r.ops, toolGeometry(m_doc), m_doc.boardWidth(), m_doc.boardHeight(),
                   m_doc.params().value("thickness").toDouble(), heightModelFor(m_doc));
     m_toolStrip->setJob(m_doc, r.ops);
+    m_tp->setTimeEstimates(timeByComment(r.ops));   // each card's cutting time
     m_isoStale = false;
     if (!overlay)
         return;
@@ -2193,6 +2194,7 @@ void MainWindow::markIsoStale()
     // current job (Preview was turned off, or another file opened).
     dropPreviewRequests();
     m_isoStale = true;
+    m_tp->clearTimeEstimates();       // the cards' times are for the old moves
     if (m_isoBusy)
         m_isoRerun = true;            // the program being built is for the old state
     if (m_mode != Mode::Simulate || m_isoQueued)

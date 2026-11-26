@@ -38,6 +38,12 @@ public:
 
 public slots:
     void refresh();               // re-read list + fields from the document
+    // Each card's cutting time and the ticked toolpaths' total, from the
+    // program as last built (keyed by toolpath name, see timeByComment).
+    // Set whenever the moves are rebuilt; cleared when they go stale, so a
+    // card never shows the time of settings it no longer has.
+    void setTimeEstimates(const QHash<QString, double> &secByName);
+    void clearTimeEstimates();
     void newToolpath(const QString &type);   // create of CC type / engrave_toolpath
     void duplicateCurrent();
     void deleteCurrent();
@@ -76,6 +82,8 @@ private:
     QPainterPath regionOf(const Toolpath &t) const;
     QPainterPath clearedAbove(const QString &uuid, bool *applies) const;
     void updateListHeight();
+    QString cardSubtitle(const Toolpath &t, const QString &flute, bool withTime) const;
+    void updateTimes();               // card subtitles + total, no rebuild
     QSet<QString> m_expanded;         // toolpaths whose shapes are shown
 
     QStringList m_selectedElements;   // last canvas selection, for markUsage
@@ -87,6 +95,9 @@ private:
     QTreeWidget *m_list;
     ToolpathForm *m_form;
     QLabel *m_hint;
+    QLabel *m_total;                  // "Ticked toolpaths: ≈ 1 h 12 min"
+    QHash<QString, double> m_estSec;  // last built program's time per name
+    bool m_haveEst = false;
     QToolButton *m_dupBtn, *m_delBtn, *m_upBtn, *m_downBtn;
     QString m_uuid;               // toolpath shown in the settings
     std::function<QIcon(const QString &)> m_typeIcon;

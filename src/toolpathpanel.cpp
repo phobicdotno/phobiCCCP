@@ -13,6 +13,7 @@
 #include "canvas.h"
 #include "c2ddocument.h"
 #include "gcodeexport.h"
+#include "post_grbl.h"
 #include "toollibrary.h"
 #include "toollibrarydialog.h"
 #include "toolpathcommands.h"
@@ -638,6 +639,14 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
     };
     m_list->setContextMenuPolicy(Qt::CustomContextMenu);
     lay->addWidget(m_list);
+    // The ticked toolpaths' cutting time, under the cards.
+    m_total = new QLabel(this);
+    m_total->setObjectName(QStringLiteral("tpTotalTime"));
+    m_total->setToolTip(QStringLiteral(
+        "Cutting time of the ticked toolpaths, from their feed rates and the program as last "
+        "built. Acceleration is not counted, so the real run is usually somewhat longer."));
+    m_total->hide();
+    lay->addWidget(m_total);
     connect(m_list, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *, QTreeWidgetItem *) { onCurrentChanged(); });
     connect(m_list, &QTreeWidget::itemChanged, this, &ToolpathPanel::onItemChanged);
@@ -1086,20 +1095,8 @@ void ToolpathPanel::refresh()
             if (m_typeIcon)
                 it->setData(0, Qt::DecorationRole, m_typeIcon(t.type));
             const QJsonArray refs = t.json.value("elements").toArray();
-            QString sub = QStringLiteral("%1 \u00b7 %2 vector%3").arg(toolpathLabel(t.type))
-                              .arg(refs.size()).arg(refs.size() == 1 ? "" : "s");
-            for (const char *k : {"end_depth", "cut_depth", "max_depth"}) {
-                const QJsonValue d = t.json.value(QLatin1String(k));
-                if (!d.isUndefined()) {
-                    const double v = std::fabs(d.isString() ? d.toString().toDouble() : d.toDouble());
-                    sub += QStringLiteral(" \u00b7 %1 mm deep").arg(v, 0, 'g', 4);
-                    break;
-                }
-            }
             const QString flute = fluteLengthWarning(t.type, t.json);
-            if (!flute.isEmpty())
-                sub += QStringLiteral(" \u00b7 \u26a0 deeper than the flutes");
-            it->setData(0, SubtitleRole, sub);
+            it->setData(0, SubtitleRole, cardSubtitle(t, flute, false));   // times: updateTimes
             const QJsonObject tool = t.json.value("tool").toObject();
             if (!tool.isEmpty()) {
                 const LibraryTool lt = toolpathBit(tool);
@@ -1127,6 +1124,7 @@ void ToolpathPanel::refresh()
     }
     m_loading = false;
     updateListHeight();
+    updateTimes();
     if (keepItem)
         m_list->setCurrentItem(keepItem);
     else if (m_list->topLevelItemCount() > 0)
@@ -1136,6 +1134,84 @@ void ToolpathPanel::refresh()
     // setCurrentItem on an unchanged current item does not signal; re-sync.
     onCurrentChanged();
     markUsage(m_selectedElements);
+}
+
+// The card's second line: kind, vectors, depth, the flute warning and, once
+// the program has been built, its cutting time.
+QString ToolpathPanel::cardSubtitle(const Toolpath &t, const QString &flute, bool withTime) const
+{
+    const QJsonArray refs = t.json.value("elements").toArray();
+    QString sub = QStringLiteral("%1 \u00b7 %2 vector%3").arg(toolpathLabel(t.type))
+                      .arg(refs.size()).arg(refs.size() == 1 ? "" : "s");
+    for (const char *k : {"end_depth", "cut_depth", "max_depth"}) {
+        const QJsonValue d = t.json.value(QLatin1String(k));
+        if (!d.isUndefined()) {
+            const double v = std::fabs(d.isString() ? d.toString().toDouble() : d.toDouble());
+            sub += QStringLiteral(" \u00b7 %1 mm deep").arg(v, 0, 'g', 4);
+            break;
+        }
+    }
+    if (!flute.isEmpty())
+        sub += QStringLiteral(" \u00b7 \u26a0 deeper than the flutes");
+    const QString name = t.json.value("name").toString();
+    if (withTime && m_haveEst && t.json.value("enabled").toBool(true) && m_estSec.contains(name))
+        sub += QStringLiteral(" \u00b7 ") + roughDuration(m_estSec.value(name));
+    return sub;
+}
+
+void ToolpathPanel::setTimeEstimates(const QHash<QString, double> &secByName)
+{
+    m_estSec = secByName;
+    m_haveEst = true;
+    updateTimes();
+}
+
+void ToolpathPanel::clearTimeEstimates()
+{
+    if (!m_haveEst)
+        return;
+    m_estSec.clear();
+    m_haveEst = false;
+    updateTimes();
+}
+
+// Only the subtitles and the total: a rebuild of the list would reset the
+// form being typed in.
+void ToolpathPanel::updateTimes()
+{
+    double total = 0;
+    bool any = false;
+    if (m_doc) {
+        // A name two toolpaths share cannot be split by the program's
+        // comments: those cards show no time.
+        QHash<QString, int> uses;
+        for (const Toolpath &t : m_doc->toolpaths())
+            if (t.json.value("enabled").toBool(true))
+                ++uses[t.json.value("name").toString()];
+        for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+            QTreeWidgetItem *it = m_list->topLevelItem(i);
+            const Toolpath *t = m_doc->toolpathByUuid(it->data(0, UuidRole).toString());
+            if (!t)
+                continue;
+            const QString name = t->json.value("name").toString();
+            const bool unique = uses.value(name) <= 1;
+            const QString sub = cardSubtitle(*t, fluteLengthWarning(t->type, t->json), unique);
+            if (it->data(0, SubtitleRole).toString() != sub) {
+                const bool was = m_loading;
+                m_loading = true;
+                it->setData(0, SubtitleRole, sub);
+                m_loading = was;
+            }
+            if (unique && m_haveEst && t->json.value("enabled").toBool(true)
+                && m_estSec.contains(name)) {
+                total += m_estSec.value(name);
+                any = true;
+            }
+        }
+    }
+    m_total->setVisible(any);
+    if (any)
+        m_total->setText(QStringLiteral("Ticked toolpaths: %1").arg(roughDuration(total)));
 }
 
 void ToolpathPanel::onCurrentChanged()

@@ -65,44 +65,7 @@ QString setupSheetHtml(const Document &doc, const QString &title)
     // leaves it out, because of the ones cut before it, and on its own it
     // never sees them. Each toolpath's ops open with a comment carrying its
     // name; pooled ring toolpaths come in several runs, which add up.
-    QHash<QString, double> secByName;
-    {
-        QVector<Op> prefix;   // where the machine is when a run starts
-        QString cur;
-        int start = 0, rpm = 0;
-        bool havePos = false;
-        Op pos = Op::rapid(0, 0, 0);
-        auto close = [&](int end) {
-            if (cur.isEmpty() || end <= start)
-                return;
-            QVector<Op> run = prefix;
-            run += whole.ops.mid(start, end - start);
-            secByName[cur] += computeStats(run).timeSec - computeStats(prefix).timeSec;
-        };
-        for (int i = 0; i < whole.ops.size(); ++i) {
-            const Op &op = whole.ops.at(i);
-            if (op.kind == Op::Comment) {
-                close(i);
-                cur = op.text;
-                start = i;
-                // The machine's state carried in, so the run is charged for
-                // its first travel and not for a spin-up that never happens.
-                prefix.clear();
-                if (rpm > 0)
-                    prefix.append(Op::spindle(rpm));
-                if (havePos)
-                    prefix.append(pos);
-            } else if (op.kind == Op::Rapid || op.kind == Op::Feed || op.kind == Op::Arc) {
-                pos = Op::rapid(op.x, op.y, op.z);
-                havePos = true;
-            } else if (op.kind == Op::Spindle) {
-                rpm = op.ival;
-            } else if (op.kind == Op::Tool) {
-                rpm = 0;
-            }
-        }
-        close(whole.ops.size());
-    }
+    const QHash<QString, double> secByName = timeByComment(whole.ops);
     // A name two toolpaths share cannot be split by the comments; those fall
     // back to exporting the toolpath alone.
     QHash<QString, int> nameUses;
