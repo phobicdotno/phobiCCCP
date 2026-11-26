@@ -381,9 +381,26 @@ class ToolpathSpec {
   /// profile only: tab height and width in mm; null: what the computer starts a contour with
   /// (its Settings > Tab height, 12 mm wide).
   final double? tabHeight, tabWidth;
+
+  /// Every other setting of the desktop's toolpath form, by its key there
+  /// ("stepover", "speeds.feedrate", ...): sent by the computer, edited in
+  /// "All settings" (toolpath_fields.dart) and put back within the form's
+  /// ranges. Made for the bit [setTool]: after a bit change here the
+  /// bit's own feeds and steps are left out ([copyWith]).
+  final Map<String, Object?> set;
+  final int? setTool;
   final Map<String, Object?> extra;
 
-  static const _known = {'name', 'type', 'shapes', 'tool', 'depth', 'side', 'enabled', 'tabs', 'tabHeight', 'tabWidth'};
+  /// The settings a bit gives a toolpath (toollibrary.cpp applyToToolpath,
+  /// padlink.cpp sizeToTool): dropped from [set] when the bit changes.
+  static const bitKeys = {
+    'speeds.feedrate', 'speeds.plungerate', 'speeds.rpm', 'stepdown', 'depth_per_pass', 'stepover',
+    'lead_radius', 'helix_diameter', 'rest_diameter',
+  };
+
+  static const _known = {
+    'name', 'type', 'shapes', 'tool', 'depth', 'side', 'enabled', 'tabs', 'tabHeight', 'tabWidth', 'set', 'setTool',
+  };
 
   const ToolpathSpec(
       {required this.name,
@@ -396,6 +413,8 @@ class ToolpathSpec {
       this.tabs = true,
       this.tabHeight,
       this.tabWidth,
+      this.set = const {},
+      this.setTool,
       this.extra = const {}});
 
   factory ToolpathSpec.fromJson(Map<String, Object?> j) => ToolpathSpec(
@@ -409,6 +428,8 @@ class ToolpathSpec {
         tabs: _b(j['tabs'], true),
         tabHeight: j['tabHeight'] is num ? _d(j['tabHeight']) : null,
         tabWidth: j['tabWidth'] is num ? _d(j['tabWidth']) : null,
+        set: j['set'] is Map ? Map<String, Object?>.from(j['set'] as Map) : const {},
+        setTool: j['setTool'] is num ? (j['setTool'] as num).toInt() : null,
         extra: _extra(j, _known),
       );
   Map<String, Object?> toJson() => {
@@ -424,6 +445,8 @@ class ToolpathSpec {
         if (!tabs) 'tabs': false,
         if (tabHeight != null) 'tabHeight': tabHeight,
         if (tabWidth != null) 'tabWidth': tabWidth,
+        if (set.isNotEmpty) 'set': set,
+        if (setTool != null) 'setTool': setTool,
       };
 
   ToolpathSpec copyWith(
@@ -436,8 +459,17 @@ class ToolpathSpec {
           bool? enabled,
           bool? tabs,
           double? tabHeight,
-          double? tabWidth}) =>
-      ToolpathSpec(
+          double? tabWidth,
+          Map<String, Object?>? set,
+          Map<String, Object?>? extra}) {
+    var s = set ?? this.set;
+    var st = setTool;
+    // Another bit: its own feeds and steps, not the ones made for the old one.
+    if (tool != null && tool != this.tool && s.isNotEmpty) {
+      s = {for (final e in s.entries) if (!bitKeys.contains(e.key)) e.key: e.value};
+      st = tool;
+    }
+    return ToolpathSpec(
         name: name ?? this.name,
         type: type ?? this.type,
         shapes: shapes ?? this.shapes,
@@ -448,11 +480,31 @@ class ToolpathSpec {
         tabs: tabs ?? this.tabs,
         tabHeight: tabHeight ?? this.tabHeight,
         tabWidth: tabWidth ?? this.tabWidth,
-        extra: extra,
+        set: s,
+        setTool: st,
+        extra: extra ?? this.extra,
       );
+  }
 
   static String typeLabel(String t) =>
-      const {'profile': 'Profile', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ?? t;
+      const {'profile': 'Profile', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ?? desktopTypeLabels[t] ?? t;
+
+  /// The computer's other toolpath types (toolpathfactory.cpp), carried with
+  /// their settings in [set]; made on the computer.
+  static const desktopTypeLabels = {
+    'texture_toolpath': 'Texture',
+    'advanced_vcarve_toolpath': 'V-Carve',
+    'keyhole_toolpath': 'Keyhole',
+    'cutout': 'Cutout',
+    'face_toolpath': 'Face',
+    'bore_toolpath': 'Bore',
+    'chamfer_toolpath': '2D Chamfer',
+    'adaptive_toolpath': 'Adaptive',
+    'thread_toolpath': 'Thread',
+    'slot_toolpath': '2D Slot',
+    'circular_toolpath': 'Circular',
+    'fluting_toolpath': 'Fluting',
+  };
 }
 
 class Design {

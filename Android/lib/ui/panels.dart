@@ -12,6 +12,7 @@ import '../model.dart';
 import 'canvas.dart';
 import 'icons.dart';
 import 'theme.dart';
+import 'toolpath_settings.dart';
 import 'widgets.dart';
 
 // ---- Design: Properties ------------------------------------------------------
@@ -338,7 +339,10 @@ String openPathsWords(int n) =>
 double newToolpathDepth(String type, double thickness) =>
     type == 'drill' ? thickness + 0.5 : type == 'engrave' ? 0.5 : 2.54;
 
-String tpTypeLabel(String t) => const {'profile': 'Contour', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ?? t;
+String tpTypeLabel(String t) =>
+    const {'profile': 'Contour', 'pocket': 'Pocket', 'drill': 'Drill', 'engrave': 'Engrave'}[t] ??
+    ToolpathSpec.desktopTypeLabels[t] ??
+    t;
 
 class ToolpathsPanel extends StatelessWidget {
   final Design design;
@@ -723,6 +727,8 @@ class ToolpathsPanel extends StatelessWidget {
               ],
             ]),
           ),
+        // Everything else the computer's form has for this toolpath.
+        ToolpathSettings(t, (n) => onChange(i, n)),
       ],
     );
   }
