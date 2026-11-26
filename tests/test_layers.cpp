@@ -90,6 +90,17 @@ int main(int argc, char **argv)
 
     // New shapes land on a shown, unlocked layer.
     check(c2d::layers::keyOf(d.defaultLayer()) == defKey, "new shapes go on a usable layer");
+    {
+        // Only a hidden blank-uuid DEFAULT layer: the fallback is a layer of its own.
+        c2d::Document h;
+        h.load(blank, &err);
+        QJsonObject def = h.defaultLayer();
+        def.insert("visible", false);
+        h.addElement(c2d::Element::makeRectangle({30, 30}, 20, 20, def));
+        const QJsonObject fb = h.defaultLayer();
+        check(c2d::layers::keyOf(fb) != c2d::layers::keyOf(def) && fb.value("visible").toBool(),
+              "fallback layer is not the hidden DEFAULT");
+    }
 
     // Show the hidden layer: one undo step, and undo hides it again.
     QUndoStack *undo = canvas->undoStack();
