@@ -1150,6 +1150,33 @@ int main(int argc, char *argv[])
         check(refs(jd, tp.uuid).size() == 1, "join: the toolpath gets only its own joined path");
         canvas->setDocument(&doc);
     }
+    // --- join: a 3D component gets only the result its own pieces went into ------
+    {
+        Document jd;
+        const Element a = Element::makePath({{0, 0}, {10, 0}}, false, layer);
+        const Element b = Element::makePath({{10, 0}, {10, 10}}, false, layer);
+        const Element c = Element::makePath({{50, 0}, {60, 0}}, false, layer);
+        const Element dd = Element::makePath({{60, 0}, {60, 10}}, false, layer);
+        for (const Element &e : {a, b, c, dd})
+            jd.addElement(e);
+        ModelStore store;
+        store.attach(&jd);
+        ModelComponent relief;
+        relief.id = Model3D::newId();
+        relief.vectorIds = {a.id};
+        store.model.components = {relief};
+        canvas->setDocument(&jd);
+        canvas->selectIds({a.id, b.id, c.id, dd.id});
+        va.joinVectors(0.1);
+        const QStringList got = store.model.components.at(0).vectorIds;
+        const Element *joined = got.size() == 1 ? jd.elementById(got.first()) : nullptr;
+        check(joined && joined->painterPath.boundingRect().right() < 20,
+              "join: the 3D component gets only its own joined path");
+        canvas->undoStack()->undo();
+        check(store.model.components.at(0).vectorIds == QStringList({a.id}),
+              "undo join gives the component its piece back");
+        canvas->setDocument(&doc);
+    }
 
     // --- text on path: one undo step, the text becomes vectors, the path stays ---
     {
@@ -1240,6 +1267,53 @@ int main(int argc, char *argv[])
         check(misfits.size() == 1 && wb.center() == QPointF(50, 15), "the wide part stays and is reported");
         check(QRectF(5, 5, 90, 90).contains(sb) && !sb.intersects(wb.adjusted(-5, -5, 5, 5)),
               "the square is nested clear of the part that stayed");
+    }
+
+    // --- nest on stock: a shape in the empty corner of an L is not part of it ------
+    {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        const Element ell = Element::makePath({{200, 200}, {240, 200}, {240, 210}, {210, 210},
+                                               {210, 240}, {200, 240}}, true, layer);
+        const Element dot = Element::makeCircle({230, 230}, 3, layer);
+        nd.addElement(ell);
+        nd.addElement(dot);
+        canvas->setDocument(&nd);
+        canvas->selectIds({ell.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        va.nestOnStock(opt, 1);
+        check(QRectF(5, 5, 90, 90).contains(nd.elementById(ell.id)->painterPath.boundingRect()),
+              "the L is nested");
+        check(nd.elementById(dot.id)->painterPath.boundingRect().center() == QPointF(230, 230),
+              "a shape in the L's empty corner stays where it was");
+    }
+    // --- nest on stock: only the stock's own outline is no obstacle ---------------
+    for (int k = 0; k < 2; ++k) {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        // k 0: the sheet's outline; k 1: a 90 x 90 frame of work round the inset sheet
+        const Element frame = k == 0 ? Element::makeRectangle({50, 50}, 100, 100, layer)
+                                     : Element::makeRectangle({50, 50}, 90, 90, layer);
+        const Element sq = Element::makeRectangle({300, 300}, 10, 10, layer);
+        nd.addElement(frame);
+        nd.addElement(sq);
+        canvas->setDocument(&nd);
+        canvas->selectIds({sq.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        const QStringList misfits = va.nestOnStock(opt, 1);
+        const QRectF sb = nd.elementById(sq.id)->painterPath.boundingRect();
+        if (k == 0)
+            check(misfits.isEmpty() && QRectF(5, 5, 90, 90).contains(sb),
+                  "a drawn outline of the stock is no obstacle");
+        else
+            check(misfits.size() == 1 && sb.center() == QPointF(300, 300),
+                  "a shape round the sheet that is not its outline stays an obstacle");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

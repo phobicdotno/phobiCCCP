@@ -91,7 +91,7 @@ public:
     ReplaceCmd(Canvas *c, Document *d, const QVector<Element> &inputs,
                const QVector<Element> &results, bool keepInputs, const QString &text,
                const QHash<QString, QString> &resultOf = {})
-        : m_c(c), m_d(d), m_results(results)
+        : m_c(c), m_d(d), m_results(results), m_resultOf(resultOf)
     {
         setText(text);
         if (!keepInputs) {
@@ -128,8 +128,22 @@ public:
             els.insert(at + i, m_results.at(i));
         for (const auto &p : m_tps)
             m_d->replaceToolpath(p.second);
-        // 3D components follow their vectors like toolpaths do.
-        m_model = retargetModelVectors(*m_d, m_removedIds, m_resultIds);
+        // 3D components follow their vectors like toolpaths do: with a
+        // known result per input, each input separately, so a component
+        // gets only the results of the vectors it used.
+        if (m_resultOf.isEmpty()) {
+            m_model = retargetModelVectors(*m_d, m_removedIds, m_resultIds);
+        } else {
+            m_model.clear();
+            for (const QString &id : std::as_const(m_removedIds)) {
+                const QString res = m_resultOf.value(id);
+                const ModelVectorRefs was = retargetModelVectors(
+                    *m_d, {id}, res.isEmpty() ? QStringList() : QStringList{res});
+                for (auto w = was.constBegin(); w != was.constEnd(); ++w)
+                    if (!m_model.contains(w.key()))   // the first is the one before the edit
+                        m_model.insert(w.key(), w.value());
+            }
+        }
         refresh(m_c, m_resultIds);
     }
     void undo() override
@@ -154,6 +168,7 @@ private:
     QVector<QPair<Toolpath, Toolpath>> m_tps;
     QStringList m_resultIds;
     QSet<QString> m_removedIds;
+    QHash<QString, QString> m_resultOf;
     ModelVectorRefs m_model;
 };
 
@@ -1121,19 +1136,29 @@ QPolygonF partOutline(const Element &e)
     double bestArea = -1;
     if (vec::isClosed(e) && e.geometryType != QLatin1String("text")) {
         const QList<QPolygonF> rings = e.painterPath.toSubpathPolygons();
-        for (const QPolygonF &p : rings) {
-            const QRectF b = p.boundingRect();
-            if (p.size() >= 3 && b.width() * b.height() > bestArea) {
+        int bestAt = -1;
+        for (int i = 0; i < rings.size(); ++i) {
+            const QRectF b = rings.at(i).boundingRect();
+            if (rings.at(i).size() >= 3 && b.width() * b.height() > bestArea) {
                 bestArea = b.width() * b.height();
-                best = p;
+                best = rings.at(i);
+                bestAt = i;
             }
         }
         QPainterPath fill;
         fill.addPolygon(best);
         fill.closeSubpath();
-        for (const QPolygonF &p : rings)
-            if (!fill.contains(p.boundingRect()))
+        // The other rings by their own shape: a box test fails inside a
+        // concave outline (an L's box covers its empty corner).
+        for (int i = 0; i < rings.size(); ++i) {
+            if (i == bestAt)
+                continue;
+            QPainterPath ring;
+            ring.addPolygon(rings.at(i));
+            ring.closeSubpath();
+            if (!fill.contains(ring))
                 return QPolygonF(e.painterPath.boundingRect());   // separate pieces
+        }
     }
     if (best.size() < 3)
         best = QPolygonF(e.painterPath.boundingRect());
@@ -1219,18 +1244,30 @@ QStringList VectorActions::nestOnStock(const nest::Options &opt, int copies)
         for (const Element &e : p.members)
             moving.insert(e.id);
     const QRectF stock(0, 0, d->boardWidth(), d->boardHeight());
-    const QRectF sheet = stock.adjusted(opt.margin + 1, opt.margin + 1, -opt.margin - 1,
-                                        -opt.margin - 1);
+    // The sheet's outline: a rectangle the size of the stock, give or take a
+    // little. Anything else around the sheet is work that stays.
+    const double tol = 0.5;
+    auto isStockOutline = [&](const QPolygonF &o) {
+        const QRectF b = o.boundingRect();
+        if (std::fabs(b.left() - stock.left()) > tol || std::fabs(b.top() - stock.top()) > tol
+            || std::fabs(b.right() - stock.right()) > tol
+            || std::fabs(b.bottom() - stock.bottom()) > tol)
+            return false;
+        double area = 0;
+        for (int i = 0; i < o.size(); ++i) {
+            const QPointF &p = o.at(i), &q = o.at((i + 1) % o.size());
+            area += p.x() * q.y() - q.x() * p.y();
+        }
+        return std::fabs(std::fabs(area) / 2 - b.width() * b.height())
+            <= tol * (b.width() + b.height()) * 2;
+    };
     QVector<QPolygonF> obstacles;
     for (const Element &e : d->elements()) {
         if (moving.contains(e.id) || Element::isConstruction(e) || Element::isPoint(e)
             || e.painterPath.isEmpty() || !e.painterPath.boundingRect().intersects(stock))
             continue;
         const QPolygonF outline = partOutline(e);
-        QPainterPath fill;
-        fill.addPolygon(outline);
-        fill.closeSubpath();
-        if (!fill.contains(sheet))   // a shape around the whole sheet is its outline
+        if (!isStockOutline(outline))
             obstacles.append(outline);
     }
     // A part locked with Fix stays put: its copies keep clear of it.
