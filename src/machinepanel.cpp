@@ -3359,6 +3359,17 @@ void MachinePanel::loadSettings()
     m_loading = true;                     // widget setters must not save back
     QSettings s;
     s.beginGroup(QStringLiteral("machine"));
+    // The time estimates plan with this machine's rates and accelerations,
+    // as its last $$ said (kept in the profile, so they hold offline).
+    {
+        MotionLimits m;
+        for (int i = 0; i < 3; ++i) {
+            m.rate[i] = s.value(QStringLiteral("motion/%1").arg(110 + i), m.rate[i]).toDouble();
+            m.accel[i] = s.value(QStringLiteral("motion/%1").arg(120 + i), m.accel[i]).toDouble();
+        }
+        m.junctionDev = s.value(QStringLiteral("motion/11"), m.junctionDev).toDouble();
+        setMotionLimits(m);
+    }
     m_bsEnabled->setChecked(s.value(QStringLiteral("bitsetter/enabled"), false).toBool());
     m_bsX->setValue(s.value(QStringLiteral("bitsetter/x"), -20.0).toDouble());
     m_bsY->setValue(s.value(QStringLiteral("bitsetter/y"), -20.0).toDouble());
@@ -3436,6 +3447,26 @@ void MachinePanel::onStatus(const MachineStatus &st)
 {
     m_machineState = st.state;
     ++m_statusSeq;
+    // A $$ listing came in: the estimates use the machine's own rates and
+    // accelerations from now on, and the profile keeps them for offline.
+    if (m_grbl->haveSettings()) {
+        const MotionLimits cur = motionLimits();
+        MotionLimits m = cur;
+        for (int i = 0; i < 3; ++i) {
+            m.rate[i] = m_grbl->setting(110 + i, cur.rate[i]);
+            m.accel[i] = m_grbl->setting(120 + i, cur.accel[i]);
+        }
+        m.junctionDev = m_grbl->setting(11, cur.junctionDev);
+        if (m != cur) {
+            setMotionLimits(m);
+            QSettings s;
+            for (int i = 0; i < 3; ++i) {
+                s.setValue(QStringLiteral("machine/motion/%1").arg(110 + i), m.rate[i]);
+                s.setValue(QStringLiteral("machine/motion/%1").arg(120 + i), m.accel[i]);
+            }
+            s.setValue(QStringLiteral("machine/motion/11"), m.junctionDev);
+        }
+    }
     // The pause button follows the machine: a hold stays until a report
     // shows it lifted (or it never took, e.g. `!` in Alarm).
     if (m_held) {

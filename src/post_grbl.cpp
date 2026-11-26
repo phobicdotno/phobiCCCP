@@ -33,10 +33,179 @@ QString block(std::initializer_list<QString> words) {
 }
 } // namespace
 
+namespace {
+MotionLimits g_limits;
+
+// The fastest an axis-limited quantity allows along unit direction u.
+double alongDir(const double lim[3], const double u[3])
+{
+    double v = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < 3; ++i)
+        if (std::abs(u[i]) > 1e-9)
+            v = qMin(v, lim[i] / std::abs(u[i]));
+    return v;
+}
+
+// One move's time from entry speed v0 to exit v1, cruising at most at vMax
+// with acceleration a over len: a trapezoid, or a triangle when short.
+double trapezoidSec(double len, double v0, double v1, double vMax, double a)
+{
+    if (len <= 0)
+        return 0;
+    if (a <= 0)
+        return len / qMax(vMax, 1e-9);
+    const double da = qMax(0.0, (vMax * vMax - v0 * v0) / (2 * a));
+    const double dd = qMax(0.0, (vMax * vMax - v1 * v1) / (2 * a));
+    if (da + dd <= len)
+        return (vMax - v0) / a + (vMax - v1) / a + (len - da - dd) / qMax(vMax, 1e-9);
+    const double vp = std::sqrt(qMax(qMax(v0 * v0, v1 * v1), (2 * a * len + v0 * v0 + v1 * v1) / 2));
+    return (vp - v0) / a + (vp - v1) / a;
+}
+} // namespace
+
+bool MotionLimits::operator==(const MotionLimits &o) const
+{
+    for (int i = 0; i < 3; ++i)
+        if (rate[i] != o.rate[i] || accel[i] != o.accel[i])
+            return false;
+    return junctionDev == o.junctionDev;
+}
+
+MotionLimits motionLimits() { return g_limits; }
+void setMotionLimits(const MotionLimits &m) { g_limits = m; }
+
+MotionPlanner::MotionPlanner(const MotionLimits &m) : m_lim(m)
+{
+    for (int i = 0; i < 3; ++i) {
+        if (m_lim.rate[i] <= 0)
+            m_lim.rate[i] = 5000;
+        if (m_lim.accel[i] <= 0)
+            m_lim.accel[i] = i == 2 ? 200 : 400;
+        m_lim.rate[i] /= 60.0;   // mm/s from here on
+    }
+    if (m_lim.junctionDev < 0)
+        m_lim.junctionDev = 0.010;
+}
+
+void MotionPlanner::stop()
+{
+    m_atRest = true;
+}
+
+int MotionPlanner::add(double len, const double u0[3], const double u1[3], double vMax, double acc)
+{
+    double entry = 0;
+    if (!m_atRest) {
+        // GRBL's junction deviation: the corner is taken at the speed a
+        // circle of radius-like deviation $11 allows with the acceleration
+        // along the change of direction.
+        const double cosT = -(m_prevDir[0] * u0[0] + m_prevDir[1] * u0[1] + m_prevDir[2] * u0[2]);
+        const double cap = qMin(vMax, m_prevVMax);
+        if (cosT > 0.999999) {
+            entry = 0;                   // a full reversal
+        } else if (cosT < -0.999999) {
+            entry = cap;                 // straight on
+        } else {
+            double j[3] = {u0[0] - m_prevDir[0], u0[1] - m_prevDir[1], u0[2] - m_prevDir[2]};
+            const double jl = std::sqrt(j[0] * j[0] + j[1] * j[1] + j[2] * j[2]);
+            for (double &c : j)
+                c /= jl;
+            const double aj = alongDir(m_lim.accel, j);
+            const double sinD2 = std::sqrt(0.5 * (1.0 - cosT));
+            entry = qMin(cap, std::sqrt(aj * m_lim.junctionDev * sinD2 / (1.0 - sinD2)));
+        }
+    }
+    m_len.push_back(len);
+    m_acc.push_back(acc);
+    m_vMax.push_back(vMax);
+    m_entryMax.push_back(entry);
+    for (int i = 0; i < 3; ++i)
+        m_prevDir[i] = u1[i];
+    m_prevVMax = vMax;
+    m_atRest = false;
+    return int(m_len.size()) - 1;
+}
+
+int MotionPlanner::line(double dx, double dy, double dz, double feed)
+{
+    const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 1e-9)
+        return -1;
+    const double u[3] = {dx / len, dy / len, dz / len};
+    double v = alongDir(m_lim.rate, u);
+    if (feed > 0)
+        v = qMin(v, feed / 60.0);
+    return add(len, u, u, v, alongDir(m_lim.accel, u));
+}
+
+int MotionPlanner::arc(double px, double py, double pz, double x, double y, double z,
+                       double ci, double cj, bool cw, double feed)
+{
+    const double kTau = 6.283185307179586;
+    const double cx = px + ci, cy = py + cj;
+    const double r = std::hypot(ci, cj);
+    if (r < 1e-9)
+        return line(x - px, y - py, z - pz, feed);
+    const double a0 = std::atan2(py - cy, px - cx);
+    const double a1 = std::atan2(y - cy, x - cx);
+    double sweep = cw ? a0 - a1 : a1 - a0;
+    while (sweep <= 1e-9) sweep += kTau;
+    while (sweep > kTau)  sweep -= kTau;
+    const double planar = r * sweep, dz = z - pz;
+    const double len = std::hypot(planar, dz);
+    if (len < 1e-9)
+        return -1;
+    // Tangents at both ends (the XY part turns with the arc, Z climbs evenly).
+    const double s = cw ? -1.0 : 1.0, kxy = planar / len, kz = dz / len;
+    const double u0[3] = {-s * std::sin(a0) * kxy, s * std::cos(a0) * kxy, kz};
+    const double u1[3] = {-s * std::sin(a1) * kxy, s * std::cos(a1) * kxy, kz};
+    const double aXY = qMin(m_lim.accel[0], m_lim.accel[1]);
+    const double up[3] = {0, 0, 1};
+    double acc = aXY;
+    if (std::abs(kz) > 1e-9)
+        acc = qMin(acc / qMax(kxy, 1e-9), alongDir(m_lim.accel, up) / std::abs(kz));
+    double v = qMin(m_lim.rate[0], m_lim.rate[1]) / qMax(kxy, 1e-9);
+    if (std::abs(kz) > 1e-9)
+        v = qMin(v, m_lim.rate[2] / std::abs(kz));
+    if (feed > 0)
+        v = qMin(v, feed / 60.0);
+    v = qMin(v, std::sqrt(aXY * r) / qMax(kxy, 1e-9));   // the axes' turn
+    return add(len, u0, u1, v, acc);
+}
+
+QVector<double> MotionPlanner::times() const
+{
+    const int n = size();
+    QVector<double> t(n, 0.0);
+    if (n == 0)
+        return t;
+    std::vector<double> entry(m_entryMax);
+    // Backward: every move can still stop by the end of the list.
+    double exitV = 0;
+    for (int i = n - 1; i >= 0; --i) {
+        entry[i] = qMin(entry[i], std::sqrt(exitV * exitV + 2 * m_acc[i] * m_len[i]));
+        exitV = entry[i];
+    }
+    // Forward: no move enters faster than the one before could speed up to.
+    for (int i = 0; i + 1 < n; ++i)
+        entry[i + 1] = qMin(entry[i + 1], std::sqrt(entry[i] * entry[i] + 2 * m_acc[i] * m_len[i]));
+    for (int i = 0; i < n; ++i)
+        t[i] = trapezoidSec(m_len[i], entry[i], i + 1 < n ? entry[i + 1] : 0.0, m_vMax[i], m_acc[i]);
+    return t;
+}
+
+double MotionPlanner::total() const
+{
+    double sum = 0;
+    for (double v : times())
+        sum += v;
+    return sum;
+}
+
 JobStats computeStats(const QVector<Op> &ops)
 {
     JobStats s;
-    const double kRapidFeed = 5000.0;   // mm/min, conservative for a Shapeoko
+    MotionPlanner plan;
     const double kTau = 6.283185307179586;
     double px = 0, py = 0, pz = 0;
     bool have = false;
@@ -54,6 +223,8 @@ JobStats computeStats(const QVector<Op> &ops)
     };
     bool spinning = false;
     for (const Op &op : ops) {
+        if (op.kind == Op::Dwell || op.kind == Op::Spindle || op.kind == Op::Tool)
+            plan.stop();   // GRBL finishes its moves before these
         if (op.kind == Op::Dwell)
             s.timeSec += qMax(0.0, op.feed);
         // The post's spin-up wait: every start from standstill, and a tool
@@ -88,18 +259,19 @@ JobStats computeStats(const QVector<Op> &ops)
             } else {
                 len = std::hypot(std::hypot(op.x - px, op.y - py), op.z - pz);
             }
-            if (op.kind == Op::Rapid) {
+            if (op.kind == Op::Rapid)
                 s.rapidLen += len;
-                s.timeSec += len / kRapidFeed * 60.0;
-            } else {
+            else
                 s.cutLen += len;
-                if (op.feed > 0)
-                    s.timeSec += len / op.feed * 60.0;
-            }
+            if (op.kind == Op::Arc && op.feed > 0)
+                plan.arc(px, py, pz, op.x, op.y, op.z, op.ci, op.cj, op.cw, op.feed);
+            else if (op.kind == Op::Rapid || (op.kind == Op::Feed && op.feed > 0))
+                plan.line(op.x - px, op.y - py, op.z - pz, op.kind == Op::Rapid ? 0.0 : op.feed);
         }
         px = op.x; py = op.y; pz = op.z;
         have = true;
     }
+    s.timeSec += plan.total();
     return s;
 }
 

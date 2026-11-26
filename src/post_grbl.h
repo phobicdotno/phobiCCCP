@@ -3,6 +3,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <vector>
 
 // A GRBL post-processor: turns an ordered list of CAM operations into plain
 // `.nc` g-code, matching the dialect Carbide Create's own "GRBL" post emits
@@ -42,10 +43,53 @@ struct Op {
 // machine so the operator can sanity-check envelope and duration.
 struct JobStats {
     double cutLen = 0, rapidLen = 0;   // mm
-    double timeSec = 0;                // rapids assumed 5000 mm/min, no accel model
+    double timeSec = 0;                // planned like GRBL: feeds, rapids, acceleration, corners
     double minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
     bool hasBounds = false;
 };
+// What the machine can do, as GRBL's $$ says: the time estimates plan the
+// moves with it the way GRBL's planner does. Unknown settings keep the
+// Shapeoko defaults the app assumes (rapids 5000 mm/min).
+struct MotionLimits {
+    double rate[3] = {5000, 5000, 5000};   // $110-$112, max rate per axis (mm/min)
+    double accel[3] = {400, 400, 200};     // $120-$122, acceleration per axis (mm/s²)
+    double junctionDev = 0.010;            // $11, junction deviation (mm)
+    bool operator==(const MotionLimits &o) const;
+    bool operator!=(const MotionLimits &o) const { return !(*this == o); }
+};
+// The limits every estimate uses: the machine's last $$ read, kept in the
+// machine profile so they hold offline too.
+MotionLimits motionLimits();
+void setMotionLimits(const MotionLimits &m);
+
+// GRBL-like time planner: moves are added in order, each runs at most at its
+// feed and the axes' max rates, speeds up and slows down with the axes'
+// acceleration, and takes corners at the junction-deviation speed. times()
+// plans the whole list (a backward and a forward pass, O(n)).
+class MotionPlanner {
+public:
+    explicit MotionPlanner(const MotionLimits &m = motionLimits());
+    // A straight move by (dx, dy, dz) mm at `feed` mm/min, a rapid when feed
+    // <= 0. Returns the move's index, -1 for a move of no length.
+    int line(double dx, double dy, double dz, double feed);
+    // G2/G3 from (px,py,pz) to (x,y,z) around the center (px+ci, py+cj).
+    // Run at most at sqrt(a*r), the speed the axes can turn it at.
+    int arc(double px, double py, double pz, double x, double y, double z,
+            double ci, double cj, bool cw, double feed);
+    void stop();                     // the machine comes to rest (dwell, spindle, M0)
+    int size() const { return int(m_len.size()); }
+    QVector<double> times() const;   // seconds per move
+    double total() const;
+
+private:
+    int add(double len, const double u0[3], const double u1[3], double vMax, double acc);
+    MotionLimits m_lim;
+    std::vector<double> m_len, m_acc, m_vMax, m_entryMax;
+    double m_prevDir[3] = {0, 0, 0};
+    double m_prevVMax = 0;
+    bool m_atRest = true;
+};
+
 JobStats computeStats(const QVector<Op> &ops);
 QString statsSummary(const JobStats &s);   // two lines: extents / lengths + time
 

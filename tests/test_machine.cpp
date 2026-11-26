@@ -280,9 +280,11 @@ int main(int argc, char **argv)
                   "plan: a pocket cut in two levels is two passes, at their floors");
             // Pass 1: plunge 6.5 mm at F300 (1.3 s) + 40 mm at F1000 (2.4 s); pass 2: 1.5 mm
             // plunge + the lap + the 8 mm retract rapid at 5000 that ends the toolpath (0.1 s).
-            check(a.passes.size() == 2 && std::abs(a.passes.at(0).estSec - 3.7) < 0.05
-                      && std::abs(a.passes.at(1).estSec - (2.7 + 8.0 / 5000 * 60)) < 0.05,
-                  "plan: pass times from feed and distance");
+            // Speeding up and slowing down at the corners adds a little on top.
+            check(a.passes.size() == 2 && a.passes.at(0).estSec > 3.7 && a.passes.at(0).estSec < 3.7 + 0.35
+                      && a.passes.at(1).estSec > 2.7 + 8.0 / 5000 * 60
+                      && a.passes.at(1).estSec < 2.7 + 8.0 / 5000 * 60 + 0.6,
+                  "plan: pass times from feed and distance, with acceleration");
             check(a.estSec > 3.7 + 2.7 + 2.9, "plan: the toolpath's own time counts the spin-up dwell too");
             check(tc.kind == c2d::JobSection::ToolChange && tc.detail.startsWith(QLatin1String("T2")), "plan: the tool change is its own step");
             check(b.name == QLatin1String("Drill B") && b.passes.size() == 1 && std::abs(b.passes.at(0).z + 2.0) < 1e-6,

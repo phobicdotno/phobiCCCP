@@ -35,7 +35,7 @@ struct JobPass {
     QString what;          // "to Z -6.0 mm", "Shape 2 of 5  ·  3 passes to Z -3 mm"...
     double z = 0;          // the floor it reaches (work Z)
     int qStart = 0, qEnd = 0;
-    double estSec = 0;     // feed-rate estimate, no acceleration model
+    double estSec = 0;     // planned like GRBL (feeds, acceleration, corners)
     QVector<JobLevel> levels;   // a shape's depth passes; empty for a plain pass
 };
 
@@ -72,7 +72,8 @@ struct JobPlan {
 // `ops` supplies the full toolpath names (the post truncates its comments to
 // 12 characters) and `doc` the toolpath type, tool and depth for the detail
 // line; both may be empty/null, the plan then says what the program says.
-// `rapidRate` in mm/min for the rapid moves' time.
+// Times from MotionPlanner with motionLimits(); `rapidRate` (mm/min) caps
+// the X/Y max rates on top.
 JobPlan planJob(const QStringList &lines, const QVector<Op> &ops, const Document *doc,
                 double rapidRate = 5000);
 
