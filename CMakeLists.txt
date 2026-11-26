@@ -77,6 +77,7 @@ add_library(phobicccp_core STATIC
     src/recovery.cpp
     src/machineprofiles.cpp
     src/padlink.cpp
+    src/toolpathfields.cpp
 )
 # The binary should be able to say which build it is (--version, --help);
 # PROJECT_VERSION is the single source of truth in this file. It reaches the

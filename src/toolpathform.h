@@ -1,4 +1,5 @@
 #pragma once
+#include "toolpathfields.h"
 #include <QHash>
 #include <QJsonObject>
 #include <QWidget>
@@ -36,7 +37,7 @@ public:
     // Number fields evaluate expressions against this document's parameters.
     void setDocument(const Document *doc) { m_doc = doc; }
 
-    struct Field;   // one designed field (toolpathform.cpp)
+    using Field = ToolpathField;   // one designed field (toolpathfields.h)
 
 signals:
     void edited(const QJsonObject &json);   // the whole payload, one change applied
