@@ -1146,6 +1146,9 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
         if (watch && watch->stop(j, work, QStringLiteral("3D pencil")))
             return QVector<Op>();
         for (int i = 0; i < nx; ++i) {
+            // A big reference bit makes each node slow: check per node too.
+            if (watch && i && watch->stop(j, work, QStringLiteral("3D pencil")))
+                return QVector<Op>();
             const QPointF q = pos(i, j);
             clThis[idx(i, j)] = compensatedZ(model, p.tool, q.x(), q.y());
             clRef[idx(i, j)] = compensatedZ(model, ref, q.x(), q.y());
@@ -1336,6 +1339,10 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
                     worst = k;
                 }
             }
+            // The chord must stay inside the boundary too, not only the
+            // steps it replaces: split it where it leaves.
+            if (worst < 0 && !segInside(QPointF(pts[a].x, pts[a].y), QPointF(pts[b].x, pts[b].y)))
+                worst = (a + b) / 2;
             if (worst < 0)
                 return;
             simplify(pts, a, worst, keep);
