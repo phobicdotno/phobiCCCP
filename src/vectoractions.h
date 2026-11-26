@@ -107,7 +107,8 @@ private:
                     bool joinToolpaths, const QString &text);
     void pushMoves(const QStringList &ids, const QVector<QPointF> &deltas, const QString &text);
     void pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
-                     bool keepInputs, const QString &text);
+                     bool keepInputs, const QString &text,
+                     const QHash<QString, QString> &resultOf = {});
 
     Canvas *m_canvas;
     QStringList m_order;               // selected ids, first-selected first

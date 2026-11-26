@@ -129,6 +129,11 @@ int main(int argc, char **argv)
     for (const BoxPanel &p : rr.panels) inside = inside && bounds(p.outline).right() <= 400;
     check(inside, "parts wrap to a new row inside the stock width");
 
+    BoxSpec narrow;
+    narrow.stockWidth = 100;
+    const BoxResult rn = makeFingerBox(narrow);
+    check(!rn.error.isEmpty() && rn.panels.isEmpty(), "a part wider than the stock is refused");
+
     BoxSpec tiny;
     tiny.width = 10; tiny.thickness = 6;
     check(!makeFingerBox(tiny).error.isEmpty(), "too small for the material is refused");

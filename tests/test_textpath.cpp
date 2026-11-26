@@ -87,6 +87,25 @@ int main(int argc, char **argv)
     check(out.boundingRect().center().y() < 0, "flipped text sits under the line");
     opt.flip = false;
 
+    // A horizontal stretch kept in the transform carries onto the path.
+    QJsonObject wide = text.raw;
+    wide.insert("transform", QJsonArray{2, 0, 0, 0, 1, 0, 30, 40, 1});
+    opt.startPercent = 0;
+    vec::textOnPathOutline(wide, line.painterPath, opt, &places);
+    check(near(places.at(1).arcPos, 2 * glyphs.at(1).cluster, 1e-6), "stretched text is wider on the path");
+    opt.startPercent = -1;
+    vec::textOnPathOutline(wide, line.painterPath, opt, &places);
+    check(near(places.at(0).arcPos, (100 - 2 * width) / 2 + 2 * glyphs.at(0).cluster, 1e-6),
+          "stretched text is centred by its stretched width");
+
+    // An open guide that comes back to its start runs on past its end.
+    const Element there = Element::makePath({QPointF(0, 0), QPointF(100, 0), QPointF(0, 0)}, false, layer);
+    opt.startPercent = 100;
+    opt.closed = 0;
+    vec::textOnPathOutline(text.raw, there.painterPath, opt, &places);
+    check(places.size() == 2 && places.at(1).at.x() < -1, "an open guide does not wrap round");
+    opt.closed = -1;
+
     // ---- circle (closed bezier), radius 50 about the origin ----
     const Element circle = Element::makeCircle(QPointF(0, 0), 50, layer);
     opt.startPercent = 10;

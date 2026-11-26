@@ -1,5 +1,6 @@
 #pragma once
 #include "element.h"
+#include <QHash>
 #include <QJsonObject>
 #include <QPainterPath>
 #include <QPolygonF>
@@ -172,6 +173,7 @@ struct JoinResult {
     QVector<Element> results;
     int joints = 0;   // piece ends welded together
     int closed = 0;   // chains (or single vectors) closed
+    QHash<QString, QString> resultOf;   // consumed id -> id of the result it went into
 };
 JoinResult joinElements(const QVector<Element> &els, double gap);
 
@@ -180,9 +182,10 @@ JoinResult joinElements(const QVector<Element> &els, double gap);
 // exact copies of an earlier element (the later copy is listed);
 // `zeroLength`: shapes with no length at all; `selfCrossing`: closed path
 // outlines that cross themselves (a figure 8), which pockets and profiles
-// read wrongly.
+// read wrongly. `notChecked`: outlines with too many points to check for
+// crossing (not a problem, so not in allIds()).
 struct VectorCheck {
-    QStringList open, duplicates, zeroLength, selfCrossing;
+    QStringList open, duplicates, zeroLength, selfCrossing, notChecked;
     QStringList allIds() const;   // every listed id once, in order
 };
 VectorCheck checkElements(const QVector<Element> &els);
@@ -202,6 +205,7 @@ struct TextOnPathOptions {
     double offset = 0;
     double startPercent = -1;
     bool flip = false;
+    int closed = -1;   // the guide's first subpath: 0 open, 1 closed, -1 judge by its ends
 };
 // Where each glyph of Element::textGlyphs landed: `arcPos` is the distance
 // along the path of its cluster's left edge, `at` the point that left edge's

@@ -170,6 +170,12 @@ BoxResult makeFingerBox(const BoxSpec &s)
     const double gap = std::max(2 * s.bitDiameter, 1.0);
     double x = gap, y = gap, rowH = 0;
     for (BoxPanel &p : r.panels) {
+        if (s.stockWidth > 0 && p.width + 2 * gap > s.stockWidth) {
+            r.error = QStringLiteral("The %1 (%2 mm wide) does not fit across the %3 mm stock.")
+                          .arg(p.name.toLower()).arg(p.width, 0, 'f', 1).arg(s.stockWidth, 0, 'f', 1);
+            r.panels.clear();
+            return r;
+        }
         if (s.stockWidth > 0 && x > gap && x + p.width + gap > s.stockWidth) {
             x = gap; y += rowH + gap; rowH = 0;
         }

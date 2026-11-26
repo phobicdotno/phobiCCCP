@@ -1160,6 +1160,8 @@ JoinResult joinElements(const QVector<Element> &els, double gap)
         const Element &first = els.at(members.first());
         out.results.append(members.size() == 1 ? Element::withPathModel(first, model)
                                                : Element::pieceOf(first, model));
+        for (int m : members)
+            out.resultOf.insert(els.at(m).id, out.results.last().id);
     }
     return out;
 }
@@ -1189,7 +1191,8 @@ static bool edgesCross(QPointF p1, QPointF p2, QPointF q1, QPointF q2)
         && ((d3 > eps && d4 < -eps) || (d3 < -eps && d4 > eps));
 }
 
-static bool ringCrossesItself(QPolygonF ring)
+// 1 crosses, 0 does not, -1 too many points to check.
+static int ringCrossesItself(QPolygonF ring)
 {
     QPolygonF r;
     for (const QPointF &p : ring)
@@ -1198,8 +1201,10 @@ static bool ringCrossesItself(QPolygonF ring)
     while (r.size() > 1 && ptDist(r.first(), r.last()) <= 1e-9)
         r.removeLast();
     const int n = r.size();
-    if (n < 4 || n > 20000)
-        return false;
+    if (n < 4)
+        return 0;
+    if (n > 20000)
+        return -1;
     QVector<QRectF> box(n);
     for (int i = 0; i < n; ++i)
         box[i] = QRectF(r.at(i), r.at((i + 1) % n)).normalized();
@@ -1211,9 +1216,9 @@ static bool ringCrossesItself(QPolygonF ring)
                 || box.at(i).bottom() < box.at(j).top() || box.at(j).bottom() < box.at(i).top())
                 continue;
             if (edgesCross(r.at(i), r.at((i + 1) % n), r.at(j), r.at((j + 1) % n)))
-                return true;
+                return 1;
         }
-    return false;
+    return 0;
 }
 
 VectorCheck checkElements(const QVector<Element> &els)
@@ -1242,7 +1247,7 @@ VectorCheck checkElements(const QVector<Element> &els)
         if (e.geometryType != QLatin1String("path") || Element::isPoint(e))
             continue;
         const PathModel model = Element::pathModel(e);
-        bool open = false, crosses = false;
+        bool open = false, crosses = false, unchecked = false;
         for (const SubPath &s : model.subs) {
             if (!s.closed) {
                 open = open || !Element::isConstruction(e);
@@ -1253,9 +1258,12 @@ VectorCheck checkElements(const QVector<Element> &els)
             PathModel one;
             one.subs.append(s);
             const QList<QPolygonF> polys = one.painterPath().toSubpathPolygons();
-            if (!polys.isEmpty() && ringCrossesItself(polys.first()))
-                crosses = true;
+            const int x = polys.isEmpty() ? 0 : ringCrossesItself(polys.first());
+            crosses = x > 0;
+            unchecked = unchecked || x < 0;
         }
+        if (unchecked && !crosses)
+            out.notChecked << e.id;
         if (open)
             out.open << e.id;
         if (crosses)
@@ -1273,9 +1281,25 @@ QPainterPath textOnPathOutline(const QJsonObject &textObj, const QPainterPath &p
     if (places)
         places->clear();
     double width = 0;
-    const QVector<TextGlyph> glyphs = Element::textGlyphs(textObj, &width);
+    QVector<TextGlyph> glyphs = Element::textGlyphs(textObj, &width);
     if (glyphs.isEmpty())
         return out;
+    // A stretch kept in the text's transform (a uniform scale is in its
+    // height already); its turn and place do not matter on the path.
+    const QJsonArray tf = textObj.value("transform").toArray();
+    if (tf.size() == 9) {
+        const double sx = std::hypot(tf.at(0).toDouble(), tf.at(1).toDouble());
+        const double sy = std::hypot(tf.at(3).toDouble(), tf.at(4).toDouble());
+        if (sx > 1e-12 && sy > 1e-12 && (std::fabs(sx - 1) > 1e-9 || std::fabs(sy - 1) > 1e-9)) {
+            const QTransform st = QTransform::fromScale(sx, sy);
+            for (TextGlyph &g : glyphs) {
+                g.path = st.map(g.path);
+                g.cluster *= sx;
+                g.advance *= sx;
+            }
+            width *= sx;
+        }
+    }
     // The first subpath, flattened finely so curves are measured by their
     // true length (Qt's own flattening is coarse at millimetre scale).
     const double k = 100.0;
@@ -1296,7 +1320,7 @@ QPainterPath textOnPathOutline(const QJsonObject &textObj, const QPainterPath &p
     const double total = acc.last();
     if (total < 1e-9)
         return out;
-    const bool closed = path.elementCount() > 0
+    const bool closed = opt.closed != 0 && path.elementCount() > 0
                         && QLineF(poly.first(), poly.last()).length() < 1e-6;
     // Point at arc length s: wrapped on a closed path, carried on along the
     // end direction past an open path's ends.
@@ -1345,7 +1369,11 @@ QVector<Element> textOnPathElements(const Element &text, const Element &path,
 {
     if (text.geometryType != QLatin1String("text"))
         return {};
-    const QPainterPath placed = textOnPathOutline(text.raw, path.painterPath, opt);
+    TextOnPathOptions o2 = opt;
+    const PathModel guide = Element::pathModel(path);
+    if (o2.closed < 0 && !guide.isEmpty())
+        o2.closed = guide.subs.first().closed ? 1 : 0;
+    const QPainterPath placed = textOnPathOutline(text.raw, path.painterPath, o2);
     if (placed.isEmpty())
         return {};
     // A text whose outlines are already where they belong (identity
