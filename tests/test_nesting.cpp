@@ -108,6 +108,18 @@ int main()
                   "parts keep the margin from the stock edge");
     }
 
+    // Work already on the stock is kept clear of.
+    {
+        QVector<QPolygonF> parts{rect(0, 0, 20, 20)};
+        nest::Options o;
+        o.spacing = 2;
+        o.margin = 0;
+        const auto pl = nest::nestParts(parts, stock, o, {rect(0, 0, 50, 50)});
+        check(pl.at(0).placed, "a part fits beside the work already there");
+        check(gapBetween(pl.at(0).transform.map(parts.at(0)), rect(0, 0, 50, 50)) < 1e-6,
+              "the part keeps the spacing from the work already there");
+    }
+
     // A part bigger than the stock does not fit and stays where it is.
     {
         QVector<QPolygonF> parts{rect(0, 0, 150, 20), rect(0, 0, 20, 20)};

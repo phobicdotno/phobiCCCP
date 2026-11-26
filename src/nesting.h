@@ -28,7 +28,10 @@ struct Placement {
 
 // One placement per outline, in input order. Outlines are closed polygons in
 // mm (Y up); `stock` is the sheet (usually 0,0 to width,height).
+// `obstacles` are shapes that stay where they are (other work already on the
+// stock): parts keep the spacing from them too.
 QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &stock,
-                             const Options &opt);
+                             const Options &opt,
+                             const QVector<QPolygonF> &obstacles = {});
 
 } // namespace c2d::nest

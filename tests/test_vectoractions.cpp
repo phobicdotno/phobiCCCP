@@ -1155,6 +1155,50 @@ int main(int argc, char *argv[])
               "undo brings the text back");
     }
 
+    // --- nest on stock: holes and text ride with their part, copies join toolpaths
+    {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        const Element plate = Element::makeRectangle({220, 215}, 40, 30, layer);
+        const Element bore = Element::makeCircle({215, 215}, 3, layer);
+        const Element big = Element::makeRectangle({400, 400}, 150, 20, layer);
+        nd.addElement(plate);
+        nd.addElement(bore);
+        nd.addElement(big);
+        Toolpath cut;
+        cut.uuid = QStringLiteral("{tp-cut}");
+        cut.type = QStringLiteral("cutout");
+        cut.json.insert("tool", QJsonObject{{"diameter", 3.0}});
+        cut.json.insert("elements", QJsonArray{QJsonObject{{"uuid", plate.id}}});
+        nd.addToolpath(cut);
+        canvas->setDocument(&nd);
+        check(std::fabs(va.defaultNestSpacing() - 6.0) < 1e-9,
+              "nest spacing defaults to twice the cutout bit");
+        const int at = undo->index();
+        canvas->selectIds({plate.id, big.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        const QStringList misfits = va.nestOnStock(opt, 2);
+        check(misfits.size() == 1, "the part bigger than the stock is reported");
+        check(undo->index() == at + 1, "nest is one undo step");
+        const QRectF pb = nd.elementById(plate.id)->painterPath.boundingRect();
+        const QRectF bb = nd.elementById(bore.id)->painterPath.boundingRect();
+        check(QRectF(5, 5, 90, 90).contains(pb), "the plate is nested inside the margin");
+        check(pb.contains(bb), "the hole moved with its plate");
+        check(nd.elementById(big.id)->painterPath.boundingRect().center() == QPointF(400, 400),
+              "the part that does not fit stays where it was");
+        check(nd.elements().size() == 5, "one copy of plate and hole added");
+        check(refs(nd, cut.uuid).size() == 2, "the copy is cut by the same toolpath");
+        undo->undo();
+        check(nd.elements().size() == 3
+                  && nd.elementById(plate.id)->painterPath.boundingRect().center()
+                         == QPointF(220, 215)
+                  && refs(nd, cut.uuid).size() == 1,
+              "undo puts everything back");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "nesting.h"
 #include "vectorops.h"
 #include <functional>
 #include <QObject>
@@ -67,6 +68,15 @@ public:
     // path stays. One undo step.
     void textOnPath(const vec::TextOnPathOptions &opt);
 
+    // Nest on stock, dialog-free: each selected shape not inside another
+    // selected one is a part; everything inside it (holes, text) moves with
+    // it. `copies` of each part are placed (copies join the originals'
+    // toolpaths). One undo step. Returns the parts that found no room (left
+    // where they were), described for the user.
+    QStringList nestOnStock(const nest::Options &opt, int copies = 1);
+    // Twice the bit of the first outside contour or cutout, else 6.35 mm.
+    double defaultNestSpacing() const;
+
     // Runs before every Vectors action: the window commits a number typed in
     // a panel (no Enter yet), or the action's refresh would drop it.
     std::function<void()> beforeAction;
@@ -85,6 +95,7 @@ private:
     void patternOnPathDialog();
     void rotateDialog();
     void scaleDialog();
+    void nestDialog();
     void moveCopyDialog();
     void cornersDialog(vec::CornerStyle style);
     void joinDialog();

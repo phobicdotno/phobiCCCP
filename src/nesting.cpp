@@ -66,7 +66,7 @@ QVector<double> candidates(QVector<double> v, double lo, double hi)
 } // namespace
 
 QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &stock,
-                             const Options &opt)
+                             const Options &opt, const QVector<QPolygonF> &obstacles)
 {
     QVector<Placement> out(outlines.size());
     const QRectF area = stock.normalized().adjusted(opt.margin, opt.margin, -opt.margin, -opt.margin);
@@ -83,6 +83,17 @@ QVector<Placement> nestParts(const QVector<QPolygonF> &outlines, const QRectF &s
                      [&](int a, int b) { return areas.at(a) > areas.at(b); });
 
     QVector<Placed> placed;
+    for (const QPolygonF &poly : obstacles) {
+        if (poly.size() < 3)
+            continue;
+        const C2::PathsD one{toPath(poly)};
+        Placed p;
+        p.grown = half > 0 ? C2::InflatePaths(one, half, C2::JoinType::Round,
+                                              C2::EndType::Polygon, 2.0, 4)
+                           : one;
+        p.box = boundsOf(p.grown);
+        placed.append(p);
+    }
     for (int idx : order) {
         const QPolygonF &poly = outlines.at(idx);
         if (poly.size() < 3)
