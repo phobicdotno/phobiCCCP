@@ -2,6 +2,7 @@
 #include "canvas.h"
 #include "model3d.h"
 #include "nesting.h"
+#include "parametric.h"
 #include "shopdialog.h"
 
 #include <QAction>
@@ -1103,20 +1104,27 @@ void VectorActions::corners(vec::CornerStyle style, double size)
 
 namespace {
 
-// The outline a part is packed by: a closed vector's biggest ring, anything
-// else its box.
+// The outline a part is packed by: a closed vector's biggest ring (when every
+// other ring lies inside it), anything else its box.
 QPolygonF partOutline(const Element &e)
 {
     QPolygonF best;
     double bestArea = -1;
     if (vec::isClosed(e) && e.geometryType != QLatin1String("text")) {
-        for (const QPolygonF &p : e.painterPath.toSubpathPolygons()) {
+        const QList<QPolygonF> rings = e.painterPath.toSubpathPolygons();
+        for (const QPolygonF &p : rings) {
             const QRectF b = p.boundingRect();
             if (p.size() >= 3 && b.width() * b.height() > bestArea) {
                 bestArea = b.width() * b.height();
                 best = p;
             }
         }
+        QPainterPath fill;
+        fill.addPolygon(best);
+        fill.closeSubpath();
+        for (const QPolygonF &p : rings)
+            if (!fill.contains(p.boundingRect()))
+                return QPolygonF(e.painterPath.boundingRect());   // separate pieces
     }
     if (best.size() < 3)
         best = QPolygonF(e.painterPath.boundingRect());
@@ -1161,7 +1169,8 @@ QStringList VectorActions::nestOnStock(const nest::Options &opt, int copies)
     std::stable_sort(cands.begin(), cands.end(), [&](const Element &a, const Element &b) {
         return boxArea(partOutline(a)) > boxArea(partOutline(b));
     });
-    struct Part { Element outer; QPolygonF outline; QPainterPath fill; QVector<Element> members; };
+    struct Part { Element outer; QPolygonF outline; QPainterPath fill; QVector<Element> members;
+                  bool stays = false, stuck = false; };
     QVector<Part> parts;
     QSet<QString> outerIds;
     for (const Element &e : cands) {
@@ -1204,25 +1213,71 @@ QStringList VectorActions::nestOnStock(const nest::Options &opt, int copies)
     const QRectF sheet = stock.adjusted(opt.margin + 1, opt.margin + 1, -opt.margin - 1,
                                         -opt.margin - 1);
     QVector<QPolygonF> obstacles;
-    for (const Element &e : d->elements())
-        if (!moving.contains(e.id) && !Element::isConstruction(e) && !Element::isPoint(e)
-            && !e.painterPath.isEmpty() && e.painterPath.boundingRect().intersects(stock)
-            && !e.painterPath.boundingRect().contains(sheet))
-            obstacles.append(partOutline(e));
+    for (const Element &e : d->elements()) {
+        if (moving.contains(e.id) || Element::isConstruction(e) || Element::isPoint(e)
+            || e.painterPath.isEmpty() || !e.painterPath.boundingRect().intersects(stock))
+            continue;
+        const QPolygonF outline = partOutline(e);
+        QPainterPath fill;
+        fill.addPolygon(outline);
+        fill.closeSubpath();
+        if (!fill.contains(sheet))   // a shape around the whole sheet is its outline
+            obstacles.append(outline);
+    }
+    // A part locked with Fix stays put: its copies keep clear of it.
+    const QSet<QString> locked = param::lockedElements(*d);
+    for (Part &p : parts) {
+        p.stays = locked.contains(p.outer.id);
+        for (const Element &e : p.members)
+            p.stays = p.stays || locked.contains(e.id);
+        if (p.stays)
+            obstacles.append(p.outline);
+    }
 
     QVector<QPolygonF> outlines;
     QVector<QPair<int, int>> which;   // (part, copy)
-    for (int c = 0; c < copies; ++c)
-        for (int i = 0; i < parts.size(); ++i) {
-            outlines.append(parts.at(i).outline);
-            which.append({i, c});
+    QVector<nest::Placement> pl;
+    // A part that finds no room stays where it is; when that is on the stock,
+    // pack again with it as an obstacle so nothing lands on it.
+    for (;;) {
+        outlines.clear();
+        which.clear();
+        for (int c = 0; c < copies; ++c)
+            for (int i = 0; i < parts.size(); ++i) {
+                if (c == 0 && (parts.at(i).stays || parts.at(i).stuck))
+                    continue;
+                outlines.append(parts.at(i).outline);
+                which.append({i, c});
+            }
+        pl = nest::nestParts(outlines, stock, opt, obstacles);
+        bool again = false;
+        for (int k = 0; k < pl.size(); ++k) {
+            Part &p = parts[which.at(k).first];
+            if (which.at(k).second == 0 && !pl.at(k).placed
+                && p.outline.boundingRect().intersects(stock)) {
+                p.stuck = true;
+                obstacles.append(p.outline);
+                again = true;
+            }
         }
-    const QVector<nest::Placement> pl = nest::nestParts(outlines, stock, opt, obstacles);
+        if (!again)
+            break;
+    }
 
     QVector<Element> before, after, added;
     QHash<QString, QStringList> copiesOf;
     int placedParts = 0, placedCopies = 0, lostCopies = 0;
     QSet<int> missing;   // parts that did not fit at all
+    auto misfit = [&](const Part &p) {
+        misfits << tr("%1 (%2 × %3 mm)").arg(p.outer.geometryType)
+                       .arg(p.outline.boundingRect().width(), 0, 'f', 1)
+                       .arg(p.outline.boundingRect().height(), 0, 'f', 1);
+    };
+    for (int i = 0; i < parts.size(); ++i)
+        if (parts.at(i).stuck) {
+            missing.insert(i);
+            misfit(parts.at(i));
+        }
     for (int k = 0; k < pl.size(); ++k) {
         const Part &p = parts.at(which.at(k).first);
         QVector<Element> group{p.outer};
@@ -1230,9 +1285,7 @@ QStringList VectorActions::nestOnStock(const nest::Options &opt, int copies)
         if (!pl.at(k).placed) {
             if (which.at(k).second == 0) {
                 missing.insert(which.at(k).first);
-                misfits << tr("%1 (%2 × %3 mm)").arg(p.outer.geometryType)
-                               .arg(p.outline.boundingRect().width(), 0, 'f', 1)
-                               .arg(p.outline.boundingRect().height(), 0, 'f', 1);
+                misfit(p);
             } else if (!missing.contains(which.at(k).first)) {
                 ++lostCopies;   // the part itself fit, this copy did not
             }
