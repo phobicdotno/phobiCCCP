@@ -128,13 +128,12 @@ void LayersPanel::reload()
     const Document *d = m_canvas->document();
     if (d) {
         const QVector<layers::Layer> all = layers::list(*d, m_extra);
-        // An added layer that has shapes now lives in the file.
-        QVector<QJsonObject> extra;
-        for (const QJsonObject &o : m_extra)
+        // An added layer keeps its definition (as its shapes have it now) so
+        // undoing the move that filled it brings it back empty, not gone.
+        for (QJsonObject &o : m_extra)
             for (const layers::Layer &l : all)
-                if (l.key == layers::keyOf(o) && l.count == 0)
-                    extra.append(o);
-        m_extra = extra;
+                if (l.key == layers::keyOf(o) && l.count > 0)
+                    o = l.obj;
         for (const layers::Layer &l : all) {
             auto *it = new QListWidgetItem(m_list);
             it->setData(Qt::UserRole, l.key);

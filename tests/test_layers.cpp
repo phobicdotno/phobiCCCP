@@ -11,6 +11,7 @@
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QTemporaryDir>
+#include <QListWidget>
 #include <QTest>
 #include <QUndoStack>
 #include <cstdio>
@@ -125,6 +126,20 @@ int main(int argc, char **argv)
     panel->renameLayer(newKey, QStringLiteral("Inlays"));
     check(d.elementById(a.id)->raw.value("layer").toObject().value("name").toString() == "Inlays",
           "rename layer");
+    {
+        // Undo the rename and the move: the added layer is back, empty.
+        undo->undo();
+        undo->undo();
+        auto *lw = panel->findChild<QListWidget *>();
+        bool listed = false;
+        for (int i = 0; lw && i < lw->count(); ++i)
+            listed = listed || lw->item(i)->data(Qt::UserRole).toString() == newKey;
+        check(c2d::layers::keyOf(*d.elementById(a.id)) == defKey && listed,
+              "undoing the move keeps the added layer, empty");
+        undo->redo();
+        undo->redo();
+        check(c2d::layers::keyOf(*d.elementById(a.id)) == newKey, "redo moves it back");
+    }
 
     // Lock / unlock through the panel.
     panel->setLocked(lckKey, false);
