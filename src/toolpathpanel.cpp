@@ -549,6 +549,11 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
             a->setToolTip(QStringLiteral(
                 "Circular: clear a round pocket, or a boss, on each selected circle "
                 "in full laps — phobiCCCP-only type; Carbide Create does not read it"));
+        } else if (k.type == QLatin1String("fluting_toolpath")) {
+            a->setToolTip(QStringLiteral(
+                "Fluting: a V-bit or ball-nose groove down each selected open vector, "
+                "ramping in from nothing to full depth and back out, so the ends taper — "
+                "phobiCCCP-only type; Carbide Create does not read it"));
         }
         const QString type = k.type;
         connect(a, &QAction::triggered, this, [this, type] { newToolpath(type); });

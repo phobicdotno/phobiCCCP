@@ -2835,9 +2835,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         const bool thread = (t.type == QLatin1String("thread_toolpath"));
         const bool slotTp = (t.type == QLatin1String("slot_toolpath"));
         const bool circular = (t.type == QLatin1String("circular_toolpath"));
+        const bool fluting = (t.type == QLatin1String("fluting_toolpath"));
         if (!contour && !pocket && !cutout && !drilling && !keyhole && !texture
             && !vcarve && !engrave && !rough3d && !finish3d && !face && !bore && !chamfer
-            && !adaptive && !thread && !slotTp && !circular) {
+            && !adaptive && !thread && !slotTp && !circular && !fluting) {
             res.skipped << QStringLiteral("%1 (%2 not supported yet)")
                                .arg(name, t.type);
             continue;
@@ -3433,6 +3434,131 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 }
                 em.retract();
                 lastPos = line.first();
+            }
+        } else if (fluting) {
+            // FLUTING (phobiCCCP type, VCarve's Fluting): a groove down each
+            // open vector with a V-bit or ball nose, from the start depth at
+            // the ends to end_depth between them. `ramp_ends` ("start",
+            // "end", "both") slope over `ramp_length` (`ramp_unit`
+            // "percent" of the vector or "mm"), straight or `ramp_shape`
+            // "smooth" (half a cosine). `passes` cut the whole profile at
+            // 1/n, 2/n ... of its depth. The ramps go out as short straight
+            // moves; only the level middle is fitted with arcs.
+            const QString ends = j.value("ramp_ends").toString(QStringLiteral("both"));
+            const bool rampStart = ends != QLatin1String("end");
+            const bool rampEnd = ends != QLatin1String("start");
+            const bool smooth = j.value("ramp_shape").toString() == QLatin1String("smooth");
+            const bool percent = j.value("ramp_unit").toString(QStringLiteral("percent")) != QLatin1String("mm");
+            const double rampVal = qMax(0.0, numOr(j.value("ramp_length"), 25.0));
+            const int nPasses = qBound(1, int(numOr(j.value("passes"), 1)), 20);
+            QList<QPolygonF> flutes;
+            int closedCount = 0;
+            for (const Element *e : elems) {
+                if (vec::isClosed(*e)) {
+                    ++closedCount;
+                    continue;
+                }
+                for (const QPolygonF &p : finePolygons(e->painterPath))
+                    if (p.size() >= 2 && perimeter(p) > 1e-6)
+                        flutes.append(p);
+            }
+            if (flutes.isEmpty()) {
+                res.skipped << (closedCount ? QStringLiteral("%1 (fluting is for open vectors; closed ones left out)").arg(name)
+                                            : QStringLiteral("%1 (no vectors)").arg(name));
+                continue;
+            }
+            if (closedCount)
+                res.notes << QStringLiteral("%1: %2 closed vector(s) left out (fluting is for open vectors)")
+                                 .arg(name, QString::number(closedCount));
+            QList<Job> order;
+            for (int i = 0; i < flutes.size(); ++i) {
+                Job k;
+                k.rings.append(QPolygonF() << flutes.at(i).first() << QPointF(i, 0));
+                order.append(k);
+            }
+            for (const Job &k : orderJobs(order, lastPos)) {
+                const QPolygonF &line = flutes.at(int(k.rings.first().at(1).x()));
+                QVector<double> at(1, 0.0);   // arc length at each vertex
+                for (int i = 1; i < line.size(); ++i)
+                    at.append(at.last() + QLineF(line.at(i - 1), line.at(i)).length());
+                const double L = at.last();
+                double ramp = percent ? L * rampVal / 100.0 : rampVal;
+                ramp = qMin(ramp, (rampStart && rampEnd) ? L / 2 : L);
+                const double s0 = rampStart ? ramp : 0.0;       // level part
+                const double s1 = rampEnd ? L - ramp : L;
+                auto shape = [&](double u) {
+                    u = qBound(0.0, u, 1.0);
+                    return smooth ? 0.5 - 0.5 * std::cos(M_PI * u) : u;
+                };
+                // Share of the full depth at `s` along the vector.
+                auto share = [&](double s) {
+                    double f = 1.0;
+                    if (rampStart && ramp > 1e-9 && s < s0)
+                        f = qMin(f, shape(s / ramp));
+                    if (rampEnd && ramp > 1e-9 && s > s1)
+                        f = qMin(f, shape((L - s) / ramp));
+                    return f;
+                };
+                // Positions along one ramp [a, b]: every vertex in it, and
+                // every 0.5 mm on a smooth one.
+                auto rampStops = [&](double a, double b) {
+                    QVector<double> st;
+                    if (smooth) {
+                        const int n = qMax(1, int(std::ceil((b - a) / 0.5)));
+                        for (int i = 0; i <= n; ++i)
+                            st.append(a + (b - a) * i / n);
+                    } else {
+                        st << a << b;
+                    }
+                    for (double v : at)
+                        if (v > a + 1e-9 && v < b - 1e-9)
+                            st.append(v);
+                    std::sort(st.begin(), st.end());
+                    return st;
+                };
+                for (int pass = 1; pass <= nPasses; ++pass) {
+                    const double full = (cp.zBot - cp.zTop) * pass / nPasses;
+                    auto zAt = [&](double s) { return cp.zTop + full * share(s); };
+                    double sNow = 0, zNow = zAt(0);
+                    em.rapidTo(line.first());
+                    em.plungeTo(line.first(), zNow);
+                    auto feedTo = [&](double s) {
+                        if (s <= sNow + 1e-9)
+                            return;
+                        const QPointF p = pointAtArc(line, s);
+                        const double z = zAt(s);
+                        const double dz = zNow - z;    // > 0 going down
+                        const double run = s - sNow;
+                        // Never sinking faster than the plunge rate.
+                        const double f = dz > 1e-9 ? qMin(feed, plunge * std::hypot(run, dz) / dz) : feed;
+                        em.feedAt(p, z, f);
+                        sNow = s;
+                        zNow = z;
+                    };
+                    if (rampStart)
+                        for (double s : rampStops(0, s0))
+                            feedTo(s);
+                    if (s1 > s0 + 1e-9) {
+                        // Level: the vertices between s0 and s1, arcs fitted.
+                        QPolygonF mid;
+                        mid << pointAtArc(line, s0);
+                        for (int i = 0; i < line.size(); ++i)
+                            if (at.at(i) > s0 + 1e-9 && at.at(i) < s1 - 1e-9)
+                                mid << line.at(i);
+                        mid << pointAtArc(line, s1);
+                        const double zLevel = cp.zTop + full;
+                        if (std::abs(zNow - zLevel) > 1e-9)
+                            em.feedAt(mid.first(), zLevel, plunge);
+                        em.followFitted(mid, zLevel);
+                        sNow = s1;
+                        zNow = zLevel;
+                    }
+                    if (rampEnd)
+                        for (double s : rampStops(s1, L))
+                            feedTo(s);
+                    em.retract();
+                }
+                lastPos = line.last();
             }
         } else if (circular) {
             // CIRCULAR (phobiCCCP type, Fusion's Circular): round pockets

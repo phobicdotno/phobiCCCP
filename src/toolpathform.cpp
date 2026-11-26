@@ -416,7 +416,11 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
 
     // Depth
     add(QStringLiteral("start_depth"), depth(QStringLiteral("Start"), QStringLiteral("Depth the first pass starts from")));
-    add(QStringLiteral("end_depth"), depth(QStringLiteral("End")));
+    if (type == QLatin1String("fluting_toolpath"))
+        add(QStringLiteral("end_depth"), depth(QStringLiteral("Flute depth"),
+                                               QStringLiteral("Depth of the groove between the ramps")));
+    else
+        add(QStringLiteral("end_depth"), depth(QStringLiteral("End")));
     add(QStringLiteral("cut_depth"), depth(QStringLiteral("Cut depth")));
     add(QStringLiteral("break_through"), depth(QStringLiteral("Break through"), QStringLiteral("Extra depth below the stock")));
     add(QStringLiteral("min_depth"), depth(QStringLiteral("Shallowest")));
@@ -496,6 +500,20 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
         f.min = 1; f.max = 20; add(QStringLiteral("passes"), f); // the export cuts at most 20
     }
     add(QStringLiteral("left_hand"), sw(QStringLiteral("cut"), QStringLiteral("Left-hand thread")));
+    // Fluting ramps
+    add(QStringLiteral("ramp_ends"), choice(QStringLiteral("entry"), QStringLiteral("Ramp"),
+        {{QStringLiteral("both"), QStringLiteral("Both ends")}, {QStringLiteral("start"), QStringLiteral("Start only")},
+         {QStringLiteral("end"), QStringLiteral("End only")}}));
+    {
+        F f; f.card = QStringLiteral("entry"); f.label = QStringLiteral("Ramp length"); f.kind = F::Number;
+        f.max = 1000; f.decimals = 2; f.step = 1;
+        f.tip = QStringLiteral("How long the groove takes to reach full depth, in mm or % of the vector");
+        add(QStringLiteral("ramp_length"), f);
+    }
+    add(QStringLiteral("ramp_unit"), choice(QStringLiteral("entry"), QStringLiteral("Ramp length in"),
+        {{QStringLiteral("percent"), QStringLiteral("% of the vector")}, {QStringLiteral("mm"), QStringLiteral("mm")}}));
+    add(QStringLiteral("ramp_shape"), choice(QStringLiteral("entry"), QStringLiteral("Ramp shape"),
+        {{QStringLiteral("linear"), QStringLiteral("Straight")}, {QStringLiteral("smooth"), QStringLiteral("Smooth (rounded)")}}));
     add(QStringLiteral("length"), mm(QStringLiteral("cut"), QStringLiteral("Slot length"), 500));
     add(QStringLiteral("angle"), deg(QStringLiteral("cut"), QStringLiteral("Angle"), -360, 360));
     add(QStringLiteral("line_spacing"), mm(QStringLiteral("cut"), QStringLiteral("Line spacing"), 50));
@@ -591,14 +609,16 @@ static bool unusedFor(const QString &type, const QString &k)
     if (k == QLatin1String("enable_ramping"))
         return is({"drilling_toolpath", "keyhole_toolpath", "advanced_vcarve_toolpath", "face_toolpath",
                    "bore_toolpath", "thread_toolpath", "slot_toolpath", "circular_toolpath",
-                   "adaptive_toolpath"});
+                   "adaptive_toolpath", "fluting_toolpath"});
     if (k == QLatin1String("ramp_angle"))
         return is({"cutout", "drilling_toolpath", "keyhole_toolpath", "advanced_vcarve_toolpath",
-                   "face_toolpath", "bore_toolpath", "thread_toolpath", "slot_toolpath"});
+                   "face_toolpath", "bore_toolpath", "thread_toolpath", "slot_toolpath",
+                   "fluting_toolpath"});
     if (k == QLatin1String("stock_to_leave"))
         return is({"cutout", "drilling_toolpath", "keyhole_toolpath", "advanced_vcarve_toolpath"});
     if (k == QLatin1String("stepdown"))
-        return is({"drilling_toolpath", "keyhole_toolpath", "thread_toolpath"});   // peck, pitch
+        return is({"drilling_toolpath", "keyhole_toolpath", "thread_toolpath",
+                   "fluting_toolpath"});   // peck, pitch; passes
     if (k == QLatin1String("stepover"))
         return is({"drilling_toolpath", "keyhole_toolpath"});
     if (k == QLatin1String("angle"))

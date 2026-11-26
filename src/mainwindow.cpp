@@ -1081,7 +1081,8 @@ MainWindow::MainWindow(QWidget *parent)
             {QStringLiteral("adaptive_toolpath"), QStringLiteral("Clear with a light, steady bite at a deep stepdown")},
             {QStringLiteral("thread_toolpath"), QStringLiteral("Mill a thread around each circle, inside or outside")},
             {QStringLiteral("slot_toolpath"), QStringLiteral("Ramp down the centreline of a slot")},
-            {QStringLiteral("circular_toolpath"), QStringLiteral("Round pocket or boss on each circle, in full laps")}};
+            {QStringLiteral("circular_toolpath"), QStringLiteral("Round pocket or boss on each circle, in full laps")},
+            {QStringLiteral("fluting_toolpath"), QStringLiteral("Tapered groove down each open vector, ramped in and out")}};
         for (const ToolpathKind &k : toolpathKinds()) {
             QAction *a = m_tpBar->addAction(toolpathIcon(k.type), k.label);
             a->setToolTip(QStringLiteral("%1 — %2  (for the selected vectors)")

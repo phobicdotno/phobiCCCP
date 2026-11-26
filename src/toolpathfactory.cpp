@@ -27,6 +27,7 @@ const QVector<ToolpathKind> &toolpathKinds()
         {QStringLiteral("thread_toolpath"), QStringLiteral("Thread")},
         {QStringLiteral("slot_toolpath"), QStringLiteral("2D Slot")},
         {QStringLiteral("circular_toolpath"), QStringLiteral("Circular")},
+        {QStringLiteral("fluting_toolpath"), QStringLiteral("Fluting")},
     };
     return kinds;
 }
@@ -240,7 +241,8 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
     const bool thread = type == QLatin1String("thread_toolpath");
     const bool slot = type == QLatin1String("slot_toolpath");
     const bool circular = type == QLatin1String("circular_toolpath");
-    const ToolPick tp = pickTool(doc, (vcarve || chamfer) ? VBit : engrave ? Engraver : Flat);
+    const bool fluting = type == QLatin1String("fluting_toolpath");
+    const ToolPick tp = pickTool(doc, (vcarve || chamfer || fluting) ? VBit : engrave ? Engraver : Flat);
 
     QJsonObject j;
     // Common keys (CC writes automatic_parameters on all but cutout).
@@ -466,6 +468,24 @@ Toolpath makeToolpath(const Document &doc, const QString &type,
         j.insert(QStringLiteral("climb"), true);
         j.insert(QStringLiteral("boss_clearance"), dia);
         j.insert(QStringLiteral("ramp_angle"), 3);
+    } else if (fluting) {
+        // Down each open vector with a V-bit or ball nose: from the start
+        // depth at the ends to end_depth between them, `ramp_ends` "start",
+        // "end" or "both" sloping over `ramp_length` (`ramp_unit` "percent"
+        // of the vector or "mm"), `ramp_shape` "linear" or "smooth"
+        // (cosine), in `passes` passes each a share of the whole profile.
+        // The groove's width follows its depth: tapered flute ends.
+        stem = QStringLiteral("Fluting");
+        j.insert(QStringLiteral("automatic_parameters"), false);
+        j.remove(QStringLiteral("enable_ramping"));
+        j.remove(QStringLiteral("ramp_angle"));
+        j.remove(QStringLiteral("stepdown"));
+        j.insert(QStringLiteral("end_depth"), depthString(doc, 3.0));
+        j.insert(QStringLiteral("ramp_ends"), QStringLiteral("both"));
+        j.insert(QStringLiteral("ramp_length"), 25.0);
+        j.insert(QStringLiteral("ramp_unit"), QStringLiteral("percent"));
+        j.insert(QStringLiteral("ramp_shape"), QStringLiteral("linear"));
+        j.insert(QStringLiteral("passes"), 1);
     }
     j.insert(QStringLiteral("name"), nextName(doc, type, stem));
 
