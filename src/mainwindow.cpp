@@ -1149,6 +1149,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (!hasDocument() || !askJobZero(this, m_doc))
                 return;
             m_dirty = true;
+            m_undoMarksSaved = false;   // job zero is not an undo step
             updateTitle();
             statusBar()->showMessage(QStringLiteral("Zero: %1").arg(jobZeroText(m_doc)), 8000);
             m_canvas->viewport()->update();
@@ -3250,8 +3251,13 @@ void MainWindow::onPadRequest(int id, const QJsonObject &req, const QString &pee
         QJsonObject design = req.value(QStringLiteral("design")).toObject();
         if (design.isEmpty())
             design = store.get(req.value(QStringLiteral("id")).toString());
-        reply = design.isEmpty() ? padError(QStringLiteral("no such design"))
-                                 : padlink::previewJson(design);
+        // Not while the machine works: the export runs on the thread that
+        // feeds GRBL (as autosave), and a pad's Hold or Stop would wait on it.
+        if (m_machine && m_machine->isBusy())
+            reply = padError(QStringLiteral("the machine is busy: no preview while it works"));
+        else
+            reply = design.isEmpty() ? padError(QStringLiteral("no such design"))
+                                     : padlink::previewJson(design);
     } else if (op == QLatin1String("put")) {
         QString err;
         padlink::Store::PutOutcome out;

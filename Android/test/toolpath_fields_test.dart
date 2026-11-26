@@ -80,4 +80,20 @@ void main() {
     expect(got?.set['helix_entry'], false);
     expect(got?.set['stepover'], 2.5);
   });
+
+  testWidgets('a negative raster angle shows and steps as negative', (t) async {
+    ToolpathSpec? got;
+    final neg = pocket.copyWith(extra: {'strategy': 'raster', 'rasterAngle': -30.0});
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(child: ToolpathSettings(neg, (n) => got = n, initiallyOpen: true)),
+      ),
+    ));
+    final row = find.ancestor(of: find.text('Raster angle'), matching: find.byType(Row)).first;
+    final up = find.descendant(of: row, matching: find.text('▲'));
+    await t.ensureVisible(up);
+    await t.tap(up);
+    await t.pump();
+    expect(got?.extra['rasterAngle'], lessThan(0));
+  });
 }

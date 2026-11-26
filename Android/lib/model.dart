@@ -795,8 +795,16 @@ class MachineStatus {
     return state.isEmpty ? 'Connected' : state;
   }
 
-  /// A job going or on hold: the pad offers Hold, Resume and Stop.
-  bool get jobRunning => connected && (streaming || held || state.startsWith('Hold'));
+  /// A job going or on hold, or the machine moving at all (the last streamed
+  /// move still runs after its line is answered): the pad offers Hold, Resume and Stop.
+  bool get jobRunning =>
+      connected &&
+      (streaming ||
+          held ||
+          state.startsWith('Hold') ||
+          state == 'Run' ||
+          state.startsWith('Jog') ||
+          state.startsWith('Home'));
 
   /// On hold, so Resume, not Hold.
   bool get onHold => held || state.startsWith('Hold');
