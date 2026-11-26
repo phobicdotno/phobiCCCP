@@ -1715,7 +1715,9 @@ void ToolpathPanel::saveTemplateDialog()
         auto *it = new QListWidgetItem(QStringLiteral("%1  (%2)").arg(
             t.json.value("name").toString(), toolpathLabel(t.type)), list);
         it->setData(Qt::UserRole, t.uuid);
-        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        // Not user-checkable: the row click below is the one toggle, so a tap
+        // on the box itself is not flipped twice.
+        it->setFlags(Qt::ItemIsEnabled);
         const bool on = oneRow ? t.uuid == m_uuid : t.json.value("enabled").toBool(true);
         it->setCheckState(on ? Qt::Checked : Qt::Unchecked);
     }
