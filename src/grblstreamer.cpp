@@ -1,5 +1,7 @@
 #include "grblstreamer.h"
 
+#include <cmath>
+
 #include <QRegularExpression>
 #ifdef HAVE_SERIALPORT
 #include <QSerialPort>
@@ -364,12 +366,12 @@ bool GrblStreamer::queueHoldPoint(const QStringList &lines)
     return true;
 }
 
-QStringList GrblStreamer::resumeLinesAfterHold() const
+QStringList GrblStreamer::resumeLinesAfterHold(double topWorkZ) const
 {
-    return resumeLinesFor(scanModal(m_queue, m_holdAt));
+    return resumeLinesFor(scanModal(m_queue, m_holdAt), topWorkZ);
 }
 
-QStringList GrblStreamer::resumeLinesFor(const Modal &m)
+QStringList GrblStreamer::resumeLinesFor(const Modal &m, double topWorkZ)
 {
     QStringList r;
     r << QStringLiteral("G90");
@@ -387,9 +389,16 @@ QStringList GrblStreamer::resumeLinesFor(const Modal &m)
         const double clear = m.inch ? 0.1 : 2.5;
         const double cap = m.inch ? 24.0 : 600.0;
         const int dp = m.inch ? 4 : 3;
-        const double above = qMax(m.z, 0.0) + clear;
-        r << QStringLiteral("G0Z%1").arg(above, 0, 'f', dp)
-          << QStringLiteral("G1Z%1F%2").arg(m.z, 0, 'f', dp)
+        double above = qMax(m.z, 0.0) + clear;
+        // Never above the top of Z (the switch clearance, in work Z): with
+        // the work zero high up, stock top + 2.5 can be past the Z switch -
+        // a hard-limit alarm and the job lost. The hold lifted to that top,
+        // so then there is no rapid at all, only the feed down.
+        if (std::isfinite(topWorkZ))
+            above = qMin(above, m.inch ? topWorkZ / 25.4 : topWorkZ);
+        if (above > m.z)
+            r << QStringLiteral("G0Z%1").arg(above, 0, 'f', dp);
+        r << QStringLiteral("G1Z%1F%2").arg(m.z, 0, 'f', dp)
                  .arg(qMin(m.haveFeed ? m.feed : cap, cap), 0, 'f', m.inch ? 1 : 0);
     }
     // The program's modal state: its feed and motion mode, as it left them.

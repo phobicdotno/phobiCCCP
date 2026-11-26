@@ -6,9 +6,11 @@
 #include "../src/stocksync.h"
 #include "../src/stockstamp.h"
 #include "../src/toolcollections.h"
+#include "../src/toollibrary.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
@@ -342,6 +344,89 @@ int main(int argc, char **argv)
         check(wholeTs(ap) > oldPeerTs, "A's stamp rises above the one the older copy holds");
         check(!B6.merge(ap) || wholeTs(B6.payload()) == wholeTs(ap), "B takes the stamp, not a new one");
         check(!A6.merge(B6.payload()) && !B6.merge(A6.payload()), "and the two stop there");
+    }
+
+    // 7. Big Collections and the stock split over packets: every packet fits,
+    //    the Collections always go (in full, or as the whole set when the
+    //    stamps do not fit), and a copy that hears all packets has the
+    //    Collections and every count. Grown step by step through: all in one
+    //    packet; Collections and some counts, the rest after; Collections
+    //    alone, all counts after; Collections without stamps.
+    {
+        c2d::ToolLibrary lib;
+        lib.loadDefault();
+        QList<int> numbers;
+        for (const c2d::LibraryTool &t : lib.tools())
+            if (t.number > 0)
+                numbers.append(t.number);
+        check(numbers.size() >= 10, "the library has bits to count");
+        const QString snd = tmp.path() + QStringLiteral("/snd.ini");
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        {
+            QSettings ss(snd, QSettings::IniFormat);
+            ss.clear();
+            for (int i = 0; i < numbers.size(); ++i) {
+                const QString base = QStringLiteral("toolStock/%1/").arg(numbers[i]);
+                ss.setValue(base + QStringLiteral("have"), numbers[i] % 7 + 1);
+                ss.setValue(base + QStringLiteral("broken"), 0);
+                ss.setValue(base + QStringLiteral("ts"), now - 10000 + i);
+            }
+            ss.setValue(QStringLiteral("tools/collectionsTs"), 5000);
+        }
+        c2d::StockSync S(snd, 0);
+        const QString quotes(6000, QLatin1Char('"'));   // escaped twice in a packet
+        bool allFit = true, neverEmpty = true, delivered = true;
+        bool sawMixed = false, sawCollOnly = false, sawSmall = false;
+        for (int pad = 11000; pad <= 14000 && !(sawMixed && sawCollOnly && sawSmall); pad += 7) {
+            const QString padName(pad, QLatin1Char('P'));
+            const QJsonArray list{QJsonObject{{QStringLiteral("name"), quotes}, {QStringLiteral("tools"), QJsonArray{201}}},
+                                  QJsonObject{{QStringLiteral("name"), padName}, {QStringLiteral("tools"), QJsonArray{102}}}};
+            {
+                QSettings ss(snd, QSettings::IniFormat);
+                ss.setValue(QStringLiteral("tools/collections"),
+                            QJsonDocument(QJsonObject{{QStringLiteral("collections"), list}}).toJson(QJsonDocument::Compact));
+                ss.sync();
+            }
+            const QList<QByteArray> ps = S.payloads();
+            for (const QByteArray &pk : ps)
+                allFit = allFit && pk.size() <= c2d::StockSync::kMaxDatagram;
+            if (ps.isEmpty()) {
+                neverEmpty = false;
+                continue;
+            }
+            const QJsonObject first = QJsonDocument::fromJson(ps.first()).object();
+            const QJsonObject coll = first.value(QStringLiteral("coll")).toObject();
+            const bool full = coll.contains(QStringLiteral("items"));
+            const bool small = coll.contains(QStringLiteral("json")) && !full;
+            neverEmpty = neverEmpty && (full || small);
+            const bool stock0 = !first.value(QStringLiteral("stock")).toObject().isEmpty();
+            bool *seen = nullptr;
+            if (small)
+                seen = &sawSmall;
+            else if (full && ps.size() >= 2)
+                seen = stock0 ? &sawMixed : &sawCollOnly;
+            if (!seen || *seen)
+                continue;
+            *seen = true;
+            // A copy with nothing hears every packet.
+            const QString rcv = tmp.path() + QStringLiteral("/rcv.ini");
+            QSettings(rcv, QSettings::IniFormat).clear();
+            c2d::StockSync R(rcv, 0);
+            for (const QByteArray &pk : ps)
+                R.merge(pk);
+            const c2d::ToolCollections got = collectionsIn(rcv);
+            bool ok = has(got, quotes, {201}) && has(got, padName, {102});
+            QSettings rs(rcv, QSettings::IniFormat);
+            for (int n : numbers)
+                ok = ok && rs.value(QStringLiteral("toolStock/%1/have").arg(n)).toInt() == n % 7 + 1;
+            delivered = delivered && ok;
+        }
+        check(allFit, "no packet is bigger than a datagram");
+        check(neverEmpty, "the Collections always go, in full or as the whole set");
+        check(sawMixed, "seen: Collections and some counts in the first packet, the rest after");
+        check(sawCollOnly, "seen: the Collections alone in the first packet, the counts after");
+        check(sawSmall, "seen: Collections too big with their stamps go without them");
+        check(delivered, "in each case a copy that hears the packets has the Collections and every count");
     }
 
     QSettings().clear();

@@ -69,6 +69,7 @@ int main(int argc, char **argv)
     layer.insert("name", QStringLiteral("DEFAULT"));
     layer.insert("uuid", QStringLiteral("{layer}"));
 
+#ifdef HAVE_CLIPPER2   // offsetElements needs Clipper2
     // --- G1: a shape and its exact duplicate offset as one shape ----------
     {
         const Element sq = Element::makeRectangle({10, 10}, 20, 20, layer);   // 0..20
@@ -122,6 +123,8 @@ int main(int argc, char **argv)
         check(vec::offsetElements(v, 1.0).size() == 252,
               "251 separate shapes + one hole offset as 250 squares and a ring");
     }
+
+#endif
 
     // --- G4: custom machine size is clamped / rejected ---------------------
     {

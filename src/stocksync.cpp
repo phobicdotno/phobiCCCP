@@ -5,6 +5,7 @@
 #include "toollibrary.h"
 
 #include <QDateTime>
+#include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -67,13 +68,21 @@ const QSet<int> &StockSync::knownTools() const
 {
     // Only bits of the tool library are taken (and sent): any packet on the
     // port could otherwise fill the settings with numbers 1..99999. The
-    // library changes only when ToolSync writes a new synced copy, which it
-    // finishes with index.json: read again as soon as that file changes.
-    const QFileInfo ix(ToolLibrary::cacheDir() + QStringLiteral("/index.json"));
-    const QString key = ix.exists() ? QStringLiteral("%1/%2")
-                                          .arg(ix.lastModified().toMSecsSinceEpoch())
-                                          .arg(ix.size())
-                                    : QString();
+    // library changes only when ToolSync writes into its synced copy: read
+    // again when index.json or any folder of it changes (a file put back
+    // with the index as it was changes its folder's time). A handful of
+    // stats per packet.
+    const QString dir = ToolLibrary::cacheDir();
+    QString key;
+    const QFileInfo ix(dir + QStringLiteral("/index.json"));
+    if (ix.exists())
+        key = QStringLiteral("%1/%2").arg(ix.lastModified().toMSecsSinceEpoch()).arg(ix.size());
+    const QFileInfo top(dir);
+    if (top.isDir()) {
+        key += QStringLiteral(";%1").arg(top.lastModified().toMSecsSinceEpoch());
+        for (const QFileInfo &d : QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+            key += QStringLiteral(";%1=%2").arg(d.fileName()).arg(d.lastModified().toMSecsSinceEpoch());
+    }
     if (!m_knownLoaded || key != m_knownIndex) {
         ToolLibrary lib;
         QSet<int> known;
@@ -105,7 +114,10 @@ static int jsonSize(const QJsonObject &o)
 // goes by, and the per-collection stamps and deletions a current one merges
 // with. A fresh copy sends no whole-set stamp (an older copy would take its
 // few lists over its own) and no deletions, and says it is fresh.
-static QJsonObject collectionsPayload(QSettings &s)
+// `small`: without the stamps, for when the full form does not fit in a
+// datagram. A current copy then takes it as an older copy's whole set, which
+// it is: our newest set at our whole-set stamp.
+static QJsonObject collectionsPayload(QSettings &s, bool small = false)
 {
     QJsonObject coll;
     const qint64 cts = s.value(QLatin1String(kCollTs), 0).toLongLong();
@@ -118,13 +130,19 @@ static QJsonObject collectionsPayload(QSettings &s)
     const QByteArray json = doc.toJson(QJsonDocument::Compact);
     if (json.size() >= 50000)
         return coll;
-    const CollectionStamps st = CollectionStamps::fromSettings(s);
+    const bool fresh = s.value(QLatin1String(kFresh), false).toBool();
     coll.insert(QStringLiteral("json"), QString::fromUtf8(json));
-    coll.insert(QStringLiteral("items"), stampsJson(st.ts));
-    if (s.value(QLatin1String(kFresh), false).toBool()) {
+    if (fresh) {
         coll.insert(QStringLiteral("fresh"), true);
-    } else {
-        coll.insert(QStringLiteral("ts"), static_cast<double>(cts));
+        // Pooling needs no stamps: an empty list keeps it a current-copy packet.
+        coll.insert(QStringLiteral("items"),
+                    small ? QJsonObject() : stampsJson(CollectionStamps::fromSettings(s).ts));
+        return coll;
+    }
+    coll.insert(QStringLiteral("ts"), static_cast<double>(cts));
+    if (!small) {
+        const CollectionStamps st = CollectionStamps::fromSettings(s);
+        coll.insert(QStringLiteral("items"), stampsJson(st.ts));
         coll.insert(QStringLiteral("gone"), stampsJson(st.gone));
     }
     return coll;
@@ -139,15 +157,29 @@ QList<QByteArray> StockSync::payloads() const
     root.insert(QStringLiteral("app"), QLatin1String(kApp));
     root.insert(QStringLiteral("v"), 1);
     root.insert(QStringLiteral("from"), m_self);
-    root.insert(QStringLiteral("coll"), collectionsPayload(*s));
-    // ,"stock":{} and ,"part":N with some to spare: each estimate is at
-    // least the size the entry takes in the compact JSON.
+    // ,"stock":{} and ,"part":N with some to spare: each estimate below is
+    // at least the size the entry takes in the compact JSON.
     constexpr int kStockFrame = 40;
+    // The Collections in the full form if that fits, else without the
+    // stamps; nothing only when neither fits.
+    root.insert(QStringLiteral("coll"), collectionsPayload(*s));
     if (jsonSize(root) + kStockFrame > kMaxDatagram)
-        root.insert(QStringLiteral("coll"), QJsonObject());   // cannot be sent: skipped
+        root.insert(QStringLiteral("coll"), collectionsPayload(*s, true));
+    if (jsonSize(root) + kStockFrame > kMaxDatagram)
+        root.insert(QStringLiteral("coll"), QJsonObject());
+
     QList<QByteArray> out;
     QJsonObject stock;
     int size = jsonSize(root) + kStockFrame;
+    auto flush = [&] {
+        QJsonObject full = root;
+        full.insert(QStringLiteral("part"), int(out.size()));
+        full.insert(QStringLiteral("stock"), stock);
+        out.append(QJsonDocument(full).toJson(QJsonDocument::Compact));
+        root.insert(QStringLiteral("coll"), QJsonObject());   // in the first one only
+        stock = QJsonObject();
+        size = jsonSize(root) + kStockFrame;
+    };
     s->beginGroup(QStringLiteral("toolStock"));
     for (const QString &n : s->childGroups()) {
         bool ok = false;
@@ -162,17 +194,12 @@ QList<QByteArray> StockSync::payloads() const
             o.insert(QStringLiteral("broken"), s->value(QStringLiteral("broken"), 0).toInt());
             o.insert(QStringLiteral("ts"), static_cast<double>(ts));
             const int add = int(n.size()) + 4 + jsonSize(o);   // "n":{...},
-            if (!stock.isEmpty() && size + add > kMaxDatagram) {
-                // Split: each part says so, and a receiver does not take
-                // the bits missing from one part as bits we lack.
-                QJsonObject full = root;
-                full.insert(QStringLiteral("part"), int(out.size()));
-                full.insert(QStringLiteral("stock"), stock);
-                out.append(QJsonDocument(full).toJson(QJsonDocument::Compact));
-                root.insert(QStringLiteral("coll"), QJsonObject());   // in the first one only
-                stock = QJsonObject();
-                size = jsonSize(root) + kStockFrame;
-            }
+            // Does not fit: this packet goes as it is (the first may hold
+            // only the Collections) and the entry starts the next one, where
+            // it always fits. Each part says it is one, so a receiver does
+            // not take bits missing from one part as bits we lack.
+            if (size + add > kMaxDatagram)
+                flush();
             stock.insert(n, o);
             size += add;
         }
@@ -183,7 +210,12 @@ QList<QByteArray> StockSync::payloads() const
         root.insert(QStringLiteral("part"), int(out.size()));
     root.insert(QStringLiteral("stock"), stock);
     out.append(QJsonDocument(root).toJson(QJsonDocument::Compact));
-    return out;
+    // The estimates above are upper bounds; this only guards the promise.
+    QList<QByteArray> sendable;
+    for (const QByteArray &p : out)
+        if (p.size() <= kMaxDatagram)
+            sendable.append(p);
+    return sendable;
 }
 
 QByteArray StockSync::payload() const
@@ -201,13 +233,16 @@ static void putCollection(ToolCollections &c, const ToolCollection &x)
     c.merge(one);
 }
 
-// Stamps from a packet: in range, and for names that are plausible.
-static QHash<QString, qint64> readStamps(const QJsonObject &o, qint64 limit, int max)
+// Deletion stamps from a packet: in range, at most as many as a sender keeps
+// (CollectionStamps::kMaxGone, which it prunes to before sending). Any name
+// the Collections reader takes is a name here too.
+static QHash<QString, qint64> readGone(const QJsonObject &o, qint64 limit)
 {
     QHash<QString, qint64> out;
-    for (auto it = o.constBegin(); it != o.constEnd() && out.size() < max; ++it) {
-        const qint64 t = static_cast<qint64>(it.value().toDouble());
-        if (it.key().trimmed().isEmpty() || it.key().size() > 200 || t <= 0 || t > limit)
+    for (auto it = o.constBegin(); it != o.constEnd() && out.size() < CollectionStamps::kMaxGone;
+         ++it) {
+        const qint64 t = jsonStamp(it.value());
+        if (it.key().isEmpty() || t <= 0 || t > limit)
             continue;
         out.insert(it.key(), t);
     }
@@ -250,7 +285,8 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
         return false;
     }
     const bool pfresh = coll.value(QStringLiteral("fresh")).toBool();
-    const qint64 pts = static_cast<qint64>(coll.value(QStringLiteral("ts")).toDouble());
+    // No "ts" (a fresh copy): 0. One that is not a sane stamp: refused.
+    const qint64 pts = coll.contains(QStringLiteral("ts")) ? jsonStamp(coll.value(QStringLiteral("ts"))) : 0;
     const QByteArray pj = coll.value(QStringLiteral("json")).toString().toUtf8();
     if (pj.size() >= 50000 || pts < 0 || pts > limit || (!pfresh && pts == 0))
         return false;
@@ -271,14 +307,16 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
     // sends its Collections as one, newer replacing all of ours.
     CollectionStamps theirs;
     if (coll.contains(QStringLiteral("items"))) {
-        const QHash<QString, qint64> items =
-            readStamps(coll.value(QStringLiteral("items")).toObject(), limit, 1000);
-        for (const ToolCollection &c : peer.all())
-            if (items.contains(c.name))
-                theirs.ts.insert(c.name, items.value(c.name));
+        // One stamp per collection in the list, looked up by its name: as
+        // many as the list holds, whatever the names.
+        const QJsonObject items = coll.value(QStringLiteral("items")).toObject();
+        for (const ToolCollection &c : peer.all()) {
+            const qint64 t = jsonStamp(items.value(c.name));
+            if (t > 0 && t <= limit)
+                theirs.ts.insert(c.name, t);
+        }
         if (!pfresh)
-            theirs.gone = readStamps(coll.value(QStringLiteral("gone")).toObject(), limit,
-                                     CollectionStamps::kMaxGone);
+            theirs.gone = readGone(coll.value(QStringLiteral("gone")).toObject(), limit);
     } else {
         if (!lfresh && lts > 0 && pts <= lts) {
             // An older copy takes only a strictly newer whole set.
@@ -300,7 +338,8 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
         if (pfresh)
             return false;
         s.setValue(QLatin1String(kCollKey), pj);
-        s.setValue(QLatin1String(kCollTs), static_cast<qint64>(pts));
+        // Never below a stamp kept: the next edit here is stamped after it.
+        s.setValue(QLatin1String(kCollTs), static_cast<qint64>(qMax(pts, theirs.latest())));
         theirs.toSettings(s);
         return true;
     }
@@ -308,7 +347,9 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
     ToolCollections result = local;
     CollectionStamps out = mine;
     bool changed = false;
-    const qint64 now = qMax(QDateTime::currentMSecsSinceEpoch(), qMax(lts, pts) + 1);
+    // Later than every stamp on either side (a peer's clock may run ahead).
+    const qint64 now = qMax(QDateTime::currentMSecsSinceEpoch(),
+                            qMax(qMax(lts, pts), qMax(mine.latest(), theirs.latest())) + 1);
     bool stamped = false;                  // something stamped `now` here
 
     if (lfresh || pfresh) {
@@ -363,6 +404,12 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
                 out.gone.remove(c.name);
             }
         }
+        // The peer's deletions of collections we do not have are kept, or
+        // a late announce from a copy that still has one brings it back
+        // once this copy goes by the newest edit.
+        for (auto it = theirs.gone.constBegin(); it != theirs.gone.constEnd(); ++it)
+            if (!result.byName(it.key()) && it.value() > out.gone.value(it.key(), 0))
+                out.gone.insert(it.key(), it.value());
         if (lfresh)
             s.setValue(QLatin1String(kFresh), false);
     } else {
@@ -428,7 +475,11 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
     // and would never take the peer's (older) one or ours at that stamp.
     // The next copy to merge this has nothing to change, so it stops there.
     const bool newer = stamped || (changed && (!sameSet(result, peer) || lts >= pts));
-    s.setValue(QLatin1String(kCollTs), static_cast<qint64>(newer ? now : qMax(lts, pts)));
+    // Never below a stamp kept (one adopted from a fresh packet, which has no
+    // whole-set stamp, or from a clock that runs ahead).
+    out.prune();
+    s.setValue(QLatin1String(kCollTs),
+               static_cast<qint64>(qMax(newer ? now : qMax(lts, pts), out.latest())));
     if (newer)
         *tell = true;
     out.prune();
@@ -460,7 +511,7 @@ bool StockSync::merge(const QByteArray &data)
         bool ok = false;
         const int number = it.key().toInt(&ok);
         const QJsonObject o = it.value().toObject();
-        const qint64 ts = static_cast<qint64>(o.value(QStringLiteral("ts")).toDouble());
+        const qint64 ts = jsonStamp(o.value(QStringLiteral("ts")));
         const int have = o.value(QStringLiteral("have")).toInt(-1);
         const int broken = o.value(QStringLiteral("broken")).toInt(-1);
         if (!ok || number < 1 || number > 99999 || !known.contains(number) || ts <= 0
@@ -487,7 +538,9 @@ bool StockSync::merge(const QByteArray &data)
     // Collections too big for a datagram are not sent: answering for them
     // would only repeat a packet without them, every 2 s for ever.
     if (collTell) {
-        const QJsonObject mineNow = collectionsPayload(*s);
+        QJsonObject mineNow = collectionsPayload(*s);
+        if (jsonSize(mineNow) + 256 > kMaxDatagram)
+            mineNow = collectionsPayload(*s, true);
         if (!mineNow.isEmpty() && jsonSize(mineNow) + 256 <= kMaxDatagram)
             tell = true;
     }

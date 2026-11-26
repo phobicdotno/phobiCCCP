@@ -5,8 +5,10 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QSettings>
 #include <algorithm>
+#include <cmath>
 #include <iterator>
 #include <utility>
 
@@ -38,6 +40,16 @@ void stampStock(int toolNumber)
         g_hook();
 }
 
+qint64 jsonStamp(const QJsonValue &v)
+{
+    if (!v.isDouble())
+        return -1;
+    const double d = v.toDouble();
+    if (!std::isfinite(d) || d < 0 || d > 9007199254740992.0 || d != std::floor(d))
+        return -1;
+    return static_cast<qint64>(d);
+}
+
 void stampCollections(const QStringList &changed, const QStringList &removed)
 {
     QSettings s;
@@ -45,7 +57,11 @@ void stampCollections(const QStringList &changed, const QStringList &removed)
     // Read before the new stamp: settings from before per-collection stamps
     // date every stored collection at the old whole-set stamp.
     CollectionStamps st = CollectionStamps::fromSettings(s);
-    const qint64 now = stamp(s, QLatin1String(kCollTs));
+    // Newer than the whole-set stamp and than every stamp kept (one taken
+    // from a peer whose clock runs ahead may be later than both): an edit
+    // stamped older than what it replaces lost to it everywhere.
+    const qint64 now = qMax(QDateTime::currentMSecsSinceEpoch(), qMax(was, st.latest()) + 1);
+    s.setValue(QLatin1String(kCollTs), now);
     if (was == 0)
         s.setValue(QLatin1String(kFreshKey), true);
     if (!changed.isEmpty() || !removed.isEmpty()) {
@@ -73,7 +89,7 @@ static QHash<QString, qint64> readMap(const QJsonObject &o)
 {
     QHash<QString, qint64> out;
     for (auto it = o.constBegin(); it != o.constEnd(); ++it) {
-        const qint64 t = static_cast<qint64>(it.value().toDouble());
+        const qint64 t = jsonStamp(it.value());
         if (t > 0 && !it.key().isEmpty())
             out.insert(it.key(), t);
     }
@@ -121,11 +137,36 @@ void CollectionStamps::prune()
     QList<qint64> times = gone.values();
     std::sort(times.begin(), times.end(), std::greater<qint64>());
     const qint64 cut = times.at(kMaxGone - 1);
-    for (auto it = gone.begin(); it != gone.end();)
-        it = (it.value() < cut) ? gone.erase(it) : std::next(it);
-    // Equal stamps at the cut can leave a few more; drop those too.
-    while (gone.size() > kMaxGone)
-        gone.erase(gone.begin());
+    // Everything older than the kMaxGone-th newest goes; of those stamped
+    // exactly at it, only as many as are over (never a newer one).
+    int keepAtCut = 0;
+    for (int i = 0; i < kMaxGone; ++i)
+        if (times.at(i) == cut)
+            ++keepAtCut;
+    for (auto it = gone.begin(); it != gone.end();) {
+        if (it.value() < cut) {
+            it = gone.erase(it);
+        } else if (it.value() == cut) {
+            if (keepAtCut > 0) {
+                --keepAtCut;
+                ++it;
+            } else {
+                it = gone.erase(it);
+            }
+        } else {
+            ++it;
+        }
+    }
+}
+
+qint64 CollectionStamps::latest() const
+{
+    qint64 t = 0;
+    for (auto it = ts.constBegin(); it != ts.constEnd(); ++it)
+        t = qMax(t, it.value());
+    for (auto it = gone.constBegin(); it != gone.constEnd(); ++it)
+        t = qMax(t, it.value());
+    return t;
 }
 
 } // namespace c2d

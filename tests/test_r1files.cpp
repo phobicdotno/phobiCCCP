@@ -58,8 +58,13 @@ int main(int argc, char **argv)
     const QString crashedJournal = crashed + QStringLiteral("-journal");
     const QString running = dest + QStringLiteral(".4343-12345678.phobisave");
     const QString otherFile = dir.filePath(QStringLiteral("other.c2d.1-00000000.phobisave"));
+    // Another document whose name only differs in case, and one whose name
+    // starts with this one's: their old staging files stay.
+    const QString upper = dir.filePath(QFileInfo(dest).fileName().toUpper() + QStringLiteral(".7-0badf00d.phobisave"));
+    const QString longer = dest + QStringLiteral(".backup.c2d.7-0badf00d.phobisave");
     check(touch(legacy, old) && touch(crashed, old) && touch(crashedJournal, old)
-              && touch(running, QDateTime::currentDateTime()) && touch(otherFile, old),
+              && touch(running, QDateTime::currentDateTime()) && touch(otherFile, old)
+              && touch(upper, old) && touch(longer, old),
           "stale and live staging files set up");
 
     doc.elementsRef().append(c2d::Element::makeCircle(QPointF(20, 20), 5, doc.defaultLayer()));
@@ -69,12 +74,29 @@ int main(int argc, char **argv)
           "a crashed save's staging file and journal are cleared");
     check(QFileInfo::exists(running), "a recent staging file (another save running) is left alone");
     check(QFileInfo::exists(otherFile), "another document's staging files are not touched");
+    check(QFileInfo::exists(upper), "nor those of a name differing only in case");
+    check(QFileInfo::exists(longer), "nor those of a name that starts with this one");
     QStringList left = staging(dir.path());
+    left.removeAll(QFileInfo(upper).fileName());
+    left.removeAll(QFileInfo(longer).fileName());
     left.removeAll(QFileInfo(running).fileName());
     left.removeAll(QFileInfo(otherFile).fileName());
     check(left.isEmpty(), "the save itself leaves nothing behind");
 
     c2d::Document back;
     check(back.load(dest, &err) && back.elements().size() == 2, "the saved file reads back");
+
+    // A file name near the 255-byte limit still saves (the staging name is
+    // a short hash, not the name plus a suffix).
+    {
+        const QString longDest = dir.filePath(QString(240, QLatin1Char('n')) + QStringLiteral(".c2d"));
+        check(back.save(longDest, &err), "a 244-character file name saves");
+        QStringList rest = staging(dir.path());
+        rest.removeAll(QFileInfo(running).fileName());
+        rest.removeAll(QFileInfo(otherFile).fileName());
+        rest.removeAll(QFileInfo(upper).fileName());
+        rest.removeAll(QFileInfo(longer).fileName());
+        check(rest.isEmpty(), "and leaves no staging file");
+    }
     return g_fail ? 1 : 0;
 }

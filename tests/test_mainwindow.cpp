@@ -378,6 +378,10 @@ int main(int argc, char *argv[])
             check(f.open(QIODevice::WriteOnly) && f.write("0\nEOF\n") > 0, "export DXF: a DXF already there");
             f.close();
             check(w.dxfSuggestion() == dxfDir.filePath("logo-export.dxf"), "export DXF: not over a file already there");
+            QFile f2(dxfDir.filePath("logo-export.dxf"));
+            check(f2.open(QIODevice::WriteOnly) && f2.write("0\nEOF\n") > 0, "export DXF: an earlier export there");
+            f2.close();
+            check(w.dxfSuggestion() == dxfDir.filePath("logo-export-2.dxf"), "export DXF: not over an earlier export");
         }
         w.m_untitled = wasUntitled;
         w.m_untitledFrom = wasFrom;

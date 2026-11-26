@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <functional>
 
+class QJsonValue;
 class QSettings;
 
 namespace c2d {
@@ -20,6 +21,11 @@ void stampStock(int toolNumber);
 void stampCollections(const QStringList &changed = {}, const QStringList &removed = {});
 void setStockChangedHook(std::function<void()> hook);
 
+// A stamp (ms since the epoch) from JSON: -1 unless it is a whole number from
+// 0 to 2^53. Converting any double to qint64 is undefined when it is out of
+// range, and these come from anyone on the network.
+qint64 jsonStamp(const QJsonValue &v);
+
 // Per-collection stamps kept beside tools/collections: when each collection
 // last changed (none: never changed, a built-in default) and when one was
 // deleted, so a copy that still has it drops it.
@@ -33,6 +39,7 @@ struct CollectionStamps {
     static CollectionStamps fromSettings(QSettings &s);
     void toSettings(QSettings &s) const;
     void prune();                     // keep the kMaxGone newest deletions
+    qint64 latest() const;            // the newest stamp of either kind, 0 if none
 };
 
 } // namespace c2d

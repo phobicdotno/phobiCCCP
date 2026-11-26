@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QStringList>
 
+#include <limits>
+
 class QSerialPort;
 class QTimer;
 
@@ -80,7 +82,9 @@ public:
     // A modal arc (G2/G3 named only on the first of its lines) is put back
     // by continueAfterHold() on the program's next line, as GRBL takes no
     // bare G2. Returns the number of lines put into the program.
-    QStringList resumeLinesAfterHold() const;
+    // `topWorkZ`: the highest work Z the approach may rapid to (the top of
+    // Z in work coordinates, mm); infinite when not known.
+    QStringList resumeLinesAfterHold(double topWorkZ = std::numeric_limits<double>::infinity()) const;
     int continueAfterHold(const QStringList &lines);
     // What the program has sent up to line `upTo`: the last motion mode (G0..G3),
     // feed, spindle command and speed, and work Z. `valid` is false when a
@@ -97,8 +101,10 @@ public:
     static Modal scanModal(const QStringList &lines, int upTo);
     // The way back for a program that left off in state `m`: spindle on,
     // a rapid to just above the stock and the hold Z, the rest at the feed
-    // (at most 600 mm/min), then the program's feed and motion mode.
-    static QStringList resumeLinesFor(const Modal &m);
+    // (at most 600 mm/min), then the program's feed and motion mode. The
+    // rapid never goes above `topWorkZ` (mm, work Z; see resumeLinesAfterHold).
+    static QStringList resumeLinesFor(const Modal &m,
+                                      double topWorkZ = std::numeric_limits<double>::infinity());
     // sendCommand() lines written but not yet answered. Continuous jog uses it
     // to stop queueing faster than the controller retires.
     int pendingCommands() const { return m_adhocPending; }

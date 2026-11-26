@@ -372,10 +372,24 @@ int main(int argc, char **argv)
         check(r.contains(QStringLiteral("G0Z7.500")) && r.contains(QStringLiteral("G1Z5.000F600"))
                   && !r.contains(QStringLiteral("G0Z5.000")),
               "resume: above the stock, not a rapid all the way to the hold Z");
+        // The approach stays under the top of Z (work Z): the work zero high
+        // up (WCO Z -8: top at work Z 5.5 with 2.5 clearance), hold at Z5.
+        r = GrblStreamer::resumeLinesFor(m, 5.5);
+        check(r.contains(QStringLiteral("G0Z5.500")) && !r.contains(QStringLiteral("G0Z7.500"))
+                  && r.contains(QStringLiteral("G1Z5.000F600")),
+              "resume: the rapid is clamped to the top of Z");
+        r = GrblStreamer::resumeLinesFor(m, 4.0);
+        bool rapid = false;
+        for (const QString &l : r)
+            rapid = rapid || l.startsWith(QStringLiteral("G0Z"));
+        check(!rapid && r.contains(QStringLiteral("G1Z5.000F600")),
+              "resume: top below the approach and the hold Z: no rapid down, never below the hold Z");
         m.z = -0.05; m.inch = true; m.feed = 40;
         r = GrblStreamer::resumeLinesFor(m);
         check(r.contains(QStringLiteral("G0Z0.1000")) && r.contains(QStringLiteral("G1Z-0.0500F24.0")),
               "resume: inch program, 0.1 in and 24 in/min");
+        r = GrblStreamer::resumeLinesFor(m, 1.27);       // top 1.27 mm = 0.05 in
+        check(r.contains(QStringLiteral("G0Z0.0500")), "resume: the top is converted to inches");
         check(GrblStreamer::scanModal({"G90G20", "G1Z-1F10"}, 2).inch
                   && !GrblStreamer::scanModal({"G90G20", "G21", "G1Z-1F10"}, 3).inch,
               "modal: G20 after G90 on one line is read");

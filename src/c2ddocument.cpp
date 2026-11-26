@@ -6,6 +6,8 @@
 #include <QDir>
 #include <QFile>
 #include <cstdio>
+#include <QCryptographicHash>
+#include <QRegularExpression>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -215,29 +217,31 @@ bool Document::save(const QString &destPath, QString *error)
     // copy. Staging files a crashed save left behind (this naming and the
     // old shared one) are cleared once they are an hour old, so a save still
     // running in another process keeps its own.
+    // A long file name gets a short stem instead (a hash of it), so the
+    // staging file and SQLite's "-journal" beside it stay within the 255
+    // bytes a file name may have.
+    const QFileInfo di(realDest);
+    QString stem = di.fileName();
+    if ((stem + QStringLiteral(".4294967295-ffffffff.phobisave-journal")).toUtf8().size() > 255)
+        stem = QStringLiteral(".phobi-")
+               + QString::fromLatin1(QCryptographicHash::hash(stem.toUtf8(), QCryptographicHash::Sha1).toHex().left(16));
     {
-        const QFileInfo di(realDest);
         const QDateTime stale = QDateTime::currentDateTimeUtc().addSecs(-3600);
-        QString base;                       // the file name, its wildcard characters literal
-        for (const QChar c : di.fileName()) {
-            const bool wild = c == QLatin1Char('[') || c == QLatin1Char('*') || c == QLatin1Char('?');
-            if (wild)
-                base += QLatin1Char('[');
-            base += c;
-            if (wild)
-                base += QLatin1Char(']');
-        }
+        // Exactly this file's staging names: the old shared one and
+        // <stem>.<pid>-<8 hex>.phobisave, with their journals. Matched
+        // case-sensitively and in full, so "Part.c2d" or
+        // "part.c2d.backup.c2d.1-0badf00d.phobisave" are not touched.
+        const QRegularExpression mine(QStringLiteral("^(%1\\.phobisave|%2\\.[0-9]+-[0-9a-f]{8}\\.phobisave)(-journal)?$")
+                                          .arg(QRegularExpression::escape(di.fileName()),
+                                               QRegularExpression::escape(stem)));
         const QFileInfoList old = di.absoluteDir().entryInfoList(
-            {base + QStringLiteral(".phobisave"),
-             base + QStringLiteral(".phobisave-journal"),
-             base + QStringLiteral(".*.phobisave"),
-             base + QStringLiteral(".*.phobisave-journal")},
-            QDir::Files | QDir::Hidden | QDir::System);
+            {QStringLiteral("*.phobisave"), QStringLiteral("*.phobisave-journal")},
+            QDir::Files | QDir::Hidden | QDir::System | QDir::CaseSensitive);
         for (const QFileInfo &f : old)
-            if (f.lastModified().toUTC() < stale)
+            if (mine.match(f.fileName()).hasMatch() && f.lastModified().toUTC() < stale)
                 QFile::remove(f.absoluteFilePath());
     }
-    const QString tmpPath = realDest
+    const QString tmpPath = di.absolutePath() + QLatin1Char('/') + stem
         + QStringLiteral(".%1-%2.phobisave")
               .arg(QCoreApplication::applicationPid())
               .arg(QRandomGenerator::global()->generate(), 8, 16, QLatin1Char('0'));

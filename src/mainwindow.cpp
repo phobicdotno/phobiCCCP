@@ -3164,9 +3164,14 @@ QString MainWindow::dxfSuggestion() const
         && QDir::cleanPath(QFileInfo(plain).absoluteFilePath()).compare(
                QDir::cleanPath(QFileInfo(m_untitledFrom).absoluteFilePath()), Qt::CaseInsensitive) == 0;
     // (not QFileInfo ==: two files that don't exist compare equal)
-    if (isSource || QFileInfo::exists(plain))
-        return base + QStringLiteral("-export.dxf");
-    return plain;
+    if (!isSource && !QFileInfo::exists(plain))
+        return plain;
+    // The first "-export" name not already there (a second export does
+    // not offer the first one's file either).
+    QString name = base + QStringLiteral("-export.dxf");
+    for (int n = 2; QFileInfo::exists(name) && n < 1000; ++n)
+        name = base + QStringLiteral("-export-%1.dxf").arg(n);
+    return name;
 }
 
 bool MainWindow::docHeld() const

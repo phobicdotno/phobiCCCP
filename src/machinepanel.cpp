@@ -1132,7 +1132,14 @@ MachinePanel::MachinePanel(QWidget *parent)
             }
             // Back down: spindle on and up to speed, to where the program
             // was, its feed and motion mode, then on with the cut.
-            const QStringList down = m_grbl->resumeLinesAfterHold();
+            // The approach rapid stays under the top of Z (switch clearance)
+            // in work Z: work Z = machine Z - (mz - wz), the offset with TLO.
+            double topWorkZ = std::numeric_limits<double>::infinity();
+            if (m_homed && m_grbl->status().valid) {
+                const MachineStatus &st = m_grbl->status();
+                topWorkZ = -switchClearance() - (st.mz - st.wz);
+            }
+            const QStringList down = m_grbl->resumeLinesAfterHold(topWorkZ);
             log(QStringLiteral("resume: spindle on, back down, then the program"));
             m_liftHold = false;
             setHeld(false);
@@ -2397,6 +2404,14 @@ void MachinePanel::bitZeroApply()
                     || m_grbl->isMacroRunning() || !m_grbl->canSendCommand()) {
                     log(QStringLiteral("!! BitZero: the machine is busy (a job or a move started while "
                                        "waiting for OK) - not moving to the wait spot"));
+                    return;
+                }
+                // A jog (the pad) still running or just sent: GRBL refuses the
+                // rise (error:9) and may then take the XY move at plate height.
+                if (!standingStill()) {
+                    log(QStringLiteral("!! BitZero: not moving to the wait spot: %1 - the head stays "
+                                       "where it is; jog it up clear of the plate yourself")
+                            .arg(stillMovingWhy()));
                     return;
                 }
                 moveOn({});
