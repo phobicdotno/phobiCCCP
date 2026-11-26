@@ -82,8 +82,11 @@ Cam3dParams cam3dParams(const QJsonObject &j, double safeZ, bool *ok)
                 : dir == QLatin1String("conventional") ? Cam3dParams::Conventional
                 : Cam3dParams::Zigzag;
     p.bothDirections = j.value("both_directions").toBool(false);
-    p.strategy = j.value("strategy").toString().toLower() == QLatin1String("waterline")
-                     ? Cam3dParams::Waterline : Cam3dParams::Raster;
+    const QString strat = j.value("strategy").toString().toLower();
+    p.strategy = strat == QLatin1String("waterline") ? Cam3dParams::Waterline
+               : strat == QLatin1String("pencil")    ? Cam3dParams::Pencil
+                                                     : Cam3dParams::Raster;
+    p.pencilRefDiameter = qMax(0.0, numOr(j.value("pencil_ref_diameter"), 0));
     return p;
 }
 
@@ -1092,9 +1095,322 @@ static QVector<Op> waterlineOps(const HeightModel &model, const Cam3dParams &p,
     return ops;
 }
 
+// ---- pencil -----------------------------------------------------------------
+// Creases only: where a bigger "reference" bit leaves material that this bit
+// takes. Both bits' cutter-location heights are computed on a grid; the
+// bottom of what each leaves at a node is the lowest its tool reaches there
+// from any nearby centre (min of CL + profile), less the surface. Where the
+// reference leaves more than kPencilMin over what this bit leaves, the node
+// is a crease. The
+// marked band is thinned to one-node-wide centre lines (Zhang-Suen), chained
+// into polylines and cut at this bit's CL height (+ stock to leave).
+static const double kPencilMin = 0.05;   // mm of difference that makes a crease
+
+static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
+                             const QPainterPath &boundary, int *passes,
+                             const ExportWatch *watch, QString *note)
+{
+    QVector<Op> ops;
+    const double r = p.tool.radius();
+    if (!(r > 1e-6))
+        return ops;
+    ToolGeom ref = p.tool;
+    ref.diameter = p.pencilRefDiameter > 0 ? p.pencilRefDiameter : 2 * p.tool.diameter;
+    if (ref.diameter <= p.tool.diameter + 1e-6) {
+        if (note)
+            *note = QStringLiteral("the reference bit must be bigger than this bit; nothing to cut");
+        return ops;
+    }
+    if (ref.kind == ToolGeom::Ball)
+        ref.cornerRadius = ref.radius();
+    const double R = ref.radius();
+
+    // Grid: a quarter of this bit's radius or the model's cell, the finer
+    // (coarser, the centres' scallops on a steep sampled wall read as false
+    // creases), at least 0.05 mm and not over ~2M nodes.
+    const QRectF bb = boundary.boundingRect();
+    double g = qMax(0.05, qMin(model.cell, r / 4));
+    const double pad = R + 2 * g;
+    while ((bb.width() + 2 * pad) * (bb.height() + 2 * pad) / (g * g) > 2.0e6)
+        g *= 1.5;
+    const double x0 = bb.left() - pad, y0 = bb.top() - pad;
+    const int nx = int(std::ceil((bb.width() + 2 * pad) / g)) + 1;
+    const int ny = int(std::ceil((bb.height() + 2 * pad) / g)) + 1;
+    auto idx = [nx](int i, int j) { return j * nx + i; };
+    auto pos = [&](int i, int j) { return QPointF(x0 + i * g, y0 + j * g); };
+
+    QVector<double> clThis(nx * ny), clRef(nx * ny);
+    QVector<char> inside(nx * ny, 0);
+    const int work = 2 * ny;
+    for (int j = 0; j < ny; ++j) {
+        if (watch && watch->stop(j, work, QStringLiteral("3D pencil")))
+            return QVector<Op>();
+        for (int i = 0; i < nx; ++i) {
+            const QPointF q = pos(i, j);
+            clThis[idx(i, j)] = compensatedZ(model, p.tool, q.x(), q.y());
+            clRef[idx(i, j)] = compensatedZ(model, ref, q.x(), q.y());
+            inside[idx(i, j)] = boundary.contains(q) ? 1 : 0;
+        }
+    }
+    // Neighbour offsets with each tool's profile height.
+    struct Off { int di, dj; double h; };
+    auto offsets = [&](const ToolGeom &t) {
+        QVector<Off> o;
+        const double tr = t.radius();
+        const int k = int(std::floor(tr / g));
+        for (int dj = -k; dj <= k; ++dj)
+            for (int di = -k; di <= k; ++di) {
+                const double d = std::hypot(di * g, dj * g);
+                if (d <= tr + 1e-9)
+                    o.append({di, dj, profileAt(t, d)});
+            }
+        return o;
+    };
+    const QVector<Off> offThis = offsets(p.tool), offRef = offsets(ref);
+    auto bottom = [&](const QVector<double> &cl, const QVector<Off> &off, int i, int j) {
+        double b = 1e30;
+        for (const Off &o : off) {
+            const int ii = i + o.di, jj = j + o.dj;
+            if (ii < 0 || jj < 0 || ii >= nx || jj >= ny)
+                continue;
+            b = qMin(b, cl.at(idx(ii, jj)) + o.h);
+        }
+        return b;
+    };
+    QVector<char> mask(nx * ny, 0);
+    int marked = 0;
+    // The last cell of the grid blends into the floor outside it, which
+    // makes a false crease at its corners.
+    const QRectF core = model.bounds().adjusted(model.cell, model.cell, -model.cell, -model.cell);
+    for (int j = 1; j < ny - 1; ++j) {
+        if (watch && watch->stop(ny + j, work, QStringLiteral("3D pencil")))
+            return QVector<Op>();
+        for (int i = 1; i < nx - 1; ++i) {
+            if (!inside.at(idx(i, j)))
+                continue;
+            // Material left above the surface; by the model's edge the
+            // envelope dips below the sampled surface, which is no crease.
+            const QPointF q = pos(i, j);
+            if (!core.contains(q))
+                continue;
+            const double surf = qMin(0.0, model.sample(q.x(), q.y()));
+            const double leftRef = qMax(0.0, bottom(clRef, offRef, i, j) - surf);
+            const double leftThis = qMax(0.0, bottom(clThis, offThis, i, j) - surf);
+            if (leftRef - leftThis > kPencilMin) {
+                mask[idx(i, j)] = 1;
+                ++marked;
+            }
+        }
+    }
+    if (!marked) {
+        if (note)
+            *note = QStringLiteral("no creases that a %1 mm bit would miss; nothing to cut")
+                        .arg(ref.diameter, 0, 'g', 4);
+        return ops;
+    }
+
+    // Zhang-Suen thinning. Neighbours P2..P9 clockwise from north.
+    static const int kDi[8] = {0, 1, 1, 1, 0, -1, -1, -1};
+    static const int kDj[8] = {1, 1, 0, -1, -1, -1, 0, 1};
+    auto at = [&](int i, int j) {
+        return i >= 0 && j >= 0 && i < nx && j < ny && mask.at(idx(i, j));
+    };
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (int step = 0; step < 2; ++step) {
+            QVector<int> del;
+            for (int j = 0; j < ny; ++j)
+                for (int i = 0; i < nx; ++i) {
+                    if (!mask.at(idx(i, j)))
+                        continue;
+                    bool n[8];
+                    int b = 0;
+                    for (int k = 0; k < 8; ++k)
+                        b += (n[k] = at(i + kDi[k], j + kDj[k]));
+                    if (b < 2 || b > 6)
+                        continue;
+                    int a = 0;
+                    for (int k = 0; k < 8; ++k)
+                        a += (!n[k] && n[(k + 1) % 8]);
+                    if (a != 1)
+                        continue;
+                    // P2,P4,P6 / P4,P6,P8 (first) and P2,P4,P8 / P2,P6,P8.
+                    const bool c1 = step == 0 ? !(n[0] && n[2] && n[4]) : !(n[0] && n[2] && n[6]);
+                    const bool c2 = step == 0 ? !(n[2] && n[4] && n[6]) : !(n[0] && n[4] && n[6]);
+                    if (c1 && c2)
+                        del.append(idx(i, j));
+                }
+            for (int k : del)
+                mask[k] = 0;
+            changed = changed || !del.isEmpty();
+        }
+    }
+
+    // Chain the centre-line nodes: start at loose ends first, walk to the
+    // unvisited neighbour that turns least.
+    QVector<char> seen(nx * ny, 0);
+    auto degree = [&](int i, int j) {
+        int b = 0;
+        for (int k = 0; k < 8; ++k)
+            b += at(i + kDi[k], j + kDj[k]);
+        return b;
+    };
+    QVector<QVector<QPoint>> chains;
+    auto walk = [&](int i, int j) {
+        QVector<QPoint> c{QPoint(i, j)};
+        seen[idx(i, j)] = 1;
+        int pdi = 0, pdj = 0;
+        for (;;) {
+            int best = -1;
+            double bestScore = -1e9;
+            for (int k = 0; k < 8; ++k) {
+                const int ii = i + kDi[k], jj = j + kDj[k];
+                if (!at(ii, jj) || seen.at(idx(ii, jj)))
+                    continue;
+                const double len = std::hypot(kDi[k], kDj[k]);
+                const double score = (pdi || pdj)
+                    ? (kDi[k] * pdi + kDj[k] * pdj) / (len * std::hypot(pdi, pdj))
+                    : -len;   // first step: a side neighbour before a diagonal
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = k;
+                }
+            }
+            if (best < 0)
+                break;
+            pdi = kDi[best];
+            pdj = kDj[best];
+            i += pdi;
+            j += pdj;
+            seen[idx(i, j)] = 1;
+            c.append(QPoint(i, j));
+        }
+        chains.append(c);
+    };
+    for (int pass = 0; pass < 2; ++pass)
+        for (int j = 0; j < ny; ++j)
+            for (int i = 0; i < nx; ++i)
+                if (at(i, j) && !seen.at(idx(i, j)) && (pass == 1 || degree(i, j) == 1))
+                    walk(i, j);
+
+    const double leave = p.stockToLeave;
+    auto zClamp = [&](double cl) { return qMin(0.0, qMax(cl + leave, p.maxDepth)); };
+    auto zAt = [&](double x, double y) { return zClamp(compensatedZ(model, p.tool, x, y)); };
+    // Simplify in XY (within 0.02 mm) and Z (gouge ≤ 0.005, leave ≤ 0.02).
+    std::function<void(const QVector<P3> &, int, int, QVector<int> &)> simplify =
+        [&](const QVector<P3> &pts, int a, int b, QVector<int> &keep) {
+            if (b - a < 2)
+                return;
+            const double sx = pts[b].x - pts[a].x, sy = pts[b].y - pts[a].y;
+            const double len2 = sx * sx + sy * sy;
+            int worst = -1;
+            double worstScore = 1.0;
+            for (int k = a + 1; k < b; ++k) {
+                const double t = len2 > 1e-18
+                    ? qBound(0.0, ((pts[k].x - pts[a].x) * sx + (pts[k].y - pts[a].y) * sy) / len2, 1.0)
+                    : 0.5;
+                const double dx = pts[a].x + sx * t - pts[k].x, dy = pts[a].y + sy * t - pts[k].y;
+                const double dev = pts[a].z + (pts[b].z - pts[a].z) * t - pts[k].z;
+                const double score = qMax(std::hypot(dx, dy) / 0.02,
+                                          dev >= 0 ? dev / 0.02 : -dev / 0.005);
+                if (score > worstScore) {
+                    worstScore = score;
+                    worst = k;
+                }
+            }
+            if (worst < 0)
+                return;
+            simplify(pts, a, worst, keep);
+            keep.append(worst);
+            simplify(pts, worst, b, keep);
+        };
+    QVector<QVector<P3>> runs;
+    for (const QVector<QPoint> &c : chains) {
+        double len = 0;
+        for (int k = 1; k < c.size(); ++k)
+            len += g * std::hypot(c[k].x() - c[k - 1].x(), c[k].y() - c[k - 1].y());
+        // A stub shorter than the bit's radius is a thinning spur or a
+        // crease too small to bother with.
+        if (c.size() < 2 || len < r)
+            continue;
+        QVector<P3> pts;
+        for (int k = 0; k < c.size(); ++k) {
+            const QPointF q = pos(c[k].x(), c[k].y());
+            const P3 pt{q.x(), q.y(), zClamp(clThis.at(idx(c[k].x(), c[k].y())))};
+            if (!pts.isEmpty()) {
+                // Between nodes the surface may stand above the chord.
+                const P3 &s = pts.last();
+                const double mx = (s.x + pt.x) / 2, my = (s.y + pt.y) / 2;
+                const double mz = zAt(mx, my);
+                if (mz > (s.z + pt.z) / 2 + 0.005)
+                    pts.append({mx, my, mz});
+            }
+            pts.append(pt);
+        }
+        QVector<int> keep{0};
+        simplify(pts, 0, pts.size() - 1, keep);
+        keep.append(pts.size() - 1);
+        std::sort(keep.begin(), keep.end());
+        QVector<P3> out;
+        for (int k : keep)
+            out.append(pts[k]);
+        runs.append(out);
+    }
+    if (runs.isEmpty()) {
+        if (note)
+            *note = QStringLiteral("the creases are too short to cut with this bit; nothing to cut");
+        return ops;
+    }
+
+    // Nearest-neighbour order, either way round; a short hop stays down.
+    QPointF cur(0, 0);
+    bool haveCur = false;
+    QVector<char> used(runs.size(), 0);
+    int n = 0;
+    for (int done = 0; done < runs.size(); ++done) {
+        int best = -1;
+        bool rev = false;
+        double bestD = 1e30;
+        for (int k = 0; k < runs.size(); ++k) {
+            if (used[k])
+                continue;
+            const double d0 = QLineF(cur, QPointF(runs[k].first().x, runs[k].first().y)).length();
+            const double d1 = QLineF(cur, QPointF(runs[k].last().x, runs[k].last().y)).length();
+            if (d0 < bestD) { bestD = d0; best = k; rev = false; }
+            if (d1 < bestD) { bestD = d1; best = k; rev = true; }
+        }
+        used[best] = 1;
+        QVector<P3> run = runs[best];
+        if (rev)
+            std::reverse(run.begin(), run.end());
+        const P3 &s = run.first();
+        if (haveCur && bestD <= 1.5 * g) {
+            const double mx = (cur.x() + s.x) / 2, my = (cur.y() + s.y) / 2;
+            const double mz = zAt(mx, my);
+            if (mz > (ops.last().z + s.z) / 2 + 0.005)
+                ops.append(Op::feedTo(mx, my, mz, p.feed));
+            ops.append(Op::feedTo(s.x, s.y, s.z, p.feed));
+        } else {
+            if (haveCur)
+                ops.append(Op::rapid(cur.x(), cur.y(), p.safeZ));
+            ops.append(Op::rapid(s.x, s.y, p.safeZ));
+            ops.append(Op::feedTo(s.x, s.y, s.z, p.plunge));
+        }
+        for (int k = 1; k < run.size(); ++k)
+            ops.append(Op::feedTo(run[k].x, run[k].y, run[k].z, p.feed));
+        cur = QPointF(run.last().x, run.last().y);
+        haveCur = true;
+        ++n;
+    }
+    ops.append(Op::rapid(cur.x(), cur.y(), p.safeZ));
+    if (passes)
+        *passes = n;
+    return ops;
+}
+
 QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
                       const QPainterPath &boundary, int *passes,
-                      const ExportWatch *watch)
+                      const ExportWatch *watch, QString *note)
 {
     QVector<Op> ops;
     int nPasses = 0;
@@ -1111,6 +1427,8 @@ QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
         return ops;
     if (p.strategy == Cam3dParams::Waterline)
         return waterlineOps(model, p, boundary, passes, watch);
+    if (p.strategy == Cam3dParams::Pencil)
+        return pencilOps(model, p, boundary, passes, watch, note);
 
     const double cell = model.cell;
     const double leave = p.stockToLeave;

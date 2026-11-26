@@ -461,10 +461,16 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     if (type == QLatin1String("3d_finish_toolpath")) {
         F f = choice(QStringLiteral("cut"), QStringLiteral("Strategy"),
             {{QStringLiteral("raster"), QStringLiteral("Raster")},
-             {QStringLiteral("waterline"), QStringLiteral("Waterline (Z-level)")}});
+             {QStringLiteral("waterline"), QStringLiteral("Waterline (Z-level)")},
+             {QStringLiteral("pencil"), QStringLiteral("Pencil (creases only)")}});
         f.tip = QStringLiteral("Raster: parallel passes over the surface. Waterline: one pass "
-                               "around every wall per stepdown");
+                               "around every wall per stepdown. Pencil: only the valleys and "
+                               "inside corners a bigger bit could not reach");
         add(QStringLiteral("strategy"), f);
+        F rd = mm(QStringLiteral("cut"), QStringLiteral("Bigger bit Ø"), 100,
+                  QStringLiteral("Pencil: cut only where this bigger bit (the one that did the "
+                                 "main finish) left material. 0 = twice this bit"));
+        add(QStringLiteral("pencil_ref_diameter"), rd);
         add(QStringLiteral("direction"), choice(QStringLiteral("cut"), QStringLiteral("Direction"),
             {{QStringLiteral("climb"), QStringLiteral("Climb")},
              {QStringLiteral("conventional"), QStringLiteral("Conventional")},
@@ -673,6 +679,9 @@ void ToolpathForm::setToolpath(const QString &uuid, const QString &type, const Q
     QJsonObject json = json_;
     if (type == QLatin1String("3d_finish_toolpath") && !json.contains(QStringLiteral("strategy")))
         json.insert(QStringLiteral("strategy"), QStringLiteral("raster"));
+    // Pencil's bigger bit: offered at 0 (twice this bit), shown with Pencil.
+    if (type == QLatin1String("3d_finish_toolpath") && !json.contains(QStringLiteral("pencil_ref_diameter")))
+        json.insert(QStringLiteral("pencil_ref_diameter"), 0.0);
     // Corner relief is a phobiCCCP key: offered as off on the toolpaths
     // that take it, written only when changed.
     if ((type == QLatin1String("contour") || type == QLatin1String("pocket_toolpath")
@@ -937,6 +946,12 @@ void ToolpathForm::rebuild()
             // The raster angle only means something for a raster pocket.
             if (kf.first == QLatin1String("raster_angle")
                 && m_json.value(QStringLiteral("pocket_strategy")).toString() != QLatin1String("raster")) {
+                designed.insert(kf.first);
+                continue;
+            }
+            // The bigger bit only means something for a pencil finish.
+            if (kf.first == QLatin1String("pencil_ref_diameter")
+                && m_json.value(QStringLiteral("strategy")).toString() != QLatin1String("pencil")) {
                 designed.insert(kf.first);
                 continue;
             }
@@ -1216,8 +1231,9 @@ void ToolpathForm::commit(const QString &key, const QJsonValue &v)
     flatSet(m_json, key, v);
     refreshEnabled();
     emit edited(m_json);
-    // Show or hide the raster angle: rebuilt once the combo's signal is done.
-    if (key == QLatin1String("pocket_strategy"))
+    // Show or hide the raster angle / pencil bigger bit: rebuilt once the combo's signal is done.
+    if (key == QLatin1String("pocket_strategy")
+        || (key == QLatin1String("strategy") && m_type == QLatin1String("3d_finish_toolpath")))
         QMetaObject::invokeMethod(this, [this] { rebuild(); }, Qt::QueuedConnection);
 }
 

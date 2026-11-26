@@ -1107,6 +1107,89 @@ int main()
         check(!gl.notes.filter(QStringLiteral("bigger previous bit")).isEmpty(), "rest rough: says it roughed everything");
     }
 
+
+    // ---- Pencil finish: creases only ---------------------------------------
+    {
+        // A 120° V valley along Y at x = 30: planes 30° off level, bottom at
+        // -10, meeting the stock top 17.3 mm either side.
+        c2d::HeightModel v;
+        v.cell = 0.25;
+        v.baseZ = -10;
+        v.resize(int(60 / v.cell), int(40 / v.cell));
+        const double slope = std::tan(30.0 * M_PI / 180.0);
+        for (int r = 0; r < v.rows; ++r)
+            for (int c = 0; c < v.cols; ++c) {
+                const double x = (c + 0.5) * v.cell;
+                v.ref(c, r) = float(std::fmin(0.0, -10 + slope * std::fabs(x - 30)));
+            }
+        const QJsonObject ball{{"number", 203}, {"diameter", 1.5875}, {"type", 1}, {"corner_radius", 0.79375}};
+        auto pencil = [&](const char *name) {
+            return toolpath("3d_finish_toolpath", ball,
+                            QJsonObject{{"strategy", "pencil"}, {"stepdown", 1.0}}, name);
+        };
+        c2d::Document doc;
+        addToolpath(doc, pencil("pencil"));
+        const c2d::Cam3dParams pp = c2d::cam3dParams(pencil("pp"), 5);
+        check(pp.strategy == c2d::Cam3dParams::Pencil, "pencil: strategy parsed");
+        const c2d::GcodeResult g = c2d::exportGcode(doc, nullptr, &v);
+        check(g.done.size() == 1, "pencil: V valley is cut");
+        c2d::ToolGeom tg = c2d::toolGeomFromJson(ball);
+        int feeds = 0, off = 0, badZ = 0;
+        double yMin = 1e9, yMax = -1e9;
+        for (const Op &o : g.ops) {
+            if (o.kind != Op::Feed)
+                continue;
+            ++feeds;
+            if (std::fabs(o.x - 30) > 1.0)
+                ++off;
+            if (std::fabs(o.z - c2d::compensatedZ(v, tg, o.x, o.y)) > 0.02)
+                ++badZ;
+            yMin = std::fmin(yMin, o.y);
+            yMax = std::fmax(yMax, o.y);
+        }
+        std::fprintf(stderr, "pencil: %d feeds, %d off the valley, %d off CL, y %.2f..%.2f\n",
+                     feeds, off, badZ, yMin, yMax);
+        check(feeds > 0, "pencil: cuts the valley");
+        check(off == 0, "pencil: every move within 1 mm of the valley line");
+        check(badZ == 0, "pencil: moves follow the ball's CL height");
+        check(yMax - yMin > 30, "pencil: runs along most of the valley");
+
+        // A dome on a floor: the crease is the ring where they meet.
+        const c2d::HeightModel dome = hemisphere(15, 0.5, 50);
+        c2d::Document ddoc;
+        addToolpath(ddoc, pencil("domepencil"));
+        const c2d::GcodeResult gd = c2d::exportGcode(ddoc, nullptr, &dome);
+        int dfeeds = 0, doff = 0;
+        double aMin = 1e9, aMax = -1e9;
+        for (const Op &o : gd.ops) {
+            if (o.kind != Op::Feed)
+                continue;
+            ++dfeeds;
+            const double rho = std::hypot(o.x - 25, o.y - 25);
+            if (rho < 14 || rho > 16.5)
+                ++doff;
+            const double a = std::atan2(o.y - 25, o.x - 25);
+            aMin = std::fmin(aMin, a);
+            aMax = std::fmax(aMax, a);
+        }
+        std::fprintf(stderr, "pencil dome: %d feeds, %d off the ring\n", dfeeds, doff);
+        check(dfeeds > 8 && doff == 0 && aMax - aMin > 5.5, "pencil: dome on a floor is cut round its foot only");
+
+        // Flat relief: no creases, no moves, a note.
+        c2d::HeightModel flat;
+        flat.cell = 0.5;
+        flat.baseZ = -5;
+        flat.resize(80, 80, -2.0f);
+        c2d::Document fdoc;
+        addToolpath(fdoc, pencil("flatpencil"));
+        const c2d::GcodeResult gf = c2d::exportGcode(fdoc, nullptr, &flat);
+        int ffeeds = 0;
+        for (const Op &o : gf.ops)
+            ffeeds += o.kind == Op::Feed;
+        check(ffeeds == 0 && gf.done.isEmpty(), "pencil: flat relief gives no moves");
+        check(!gf.notes.filter(QStringLiteral("no creases")).isEmpty(), "pencil: flat relief says why");
+    }
+
     std::printf("test_cam3d: %d checks OK\n", g_checks);
     return 0;
 }

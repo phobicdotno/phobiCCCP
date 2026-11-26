@@ -33,16 +33,18 @@
 // Rough only: enable_rest (cut only what a bigger end mill left, level by
 // level), rest_auto (that bit is the nearest 3D Rough above, default on) and
 // rest_diameter (its size otherwise); read in gcodeexport.cpp.
-// Finish only: strategy ("raster" | "waterline"; absent = raster),
+// Finish only: strategy ("raster" | "waterline" | "pencil"; absent = raster),
 // raster_angle (deg, 0 = along X, 90 = along Y), direction ("climb" |
 // "conventional" | "zigzag"; a waterline takes zigzag as "as traced"),
 // both_directions (second pass set at raster_angle + 90). A waterline steps
-// down by `stepdown` and ignores the raster keys.
+// down by `stepdown` and ignores the raster keys. A pencil finish cuts only
+// the creases (inside corners, valleys) a bigger bit would leave material in:
+// pencil_ref_diameter (mm; 0/absent = twice this bit) is that bigger bit.
 namespace c2d {
 
 struct Cam3dParams {
     enum Direction { Climb, Conventional, Zigzag };
-    enum Strategy { Raster, Waterline };
+    enum Strategy { Raster, Waterline, Pencil };
     ToolGeom tool;
     double stockToLeave = 0;
     double stepdown = 1.0;
@@ -53,6 +55,7 @@ struct Cam3dParams {
     Direction direction = Zigzag;
     bool bothDirections = false;
     Strategy strategy = Raster;   // finish only
+    double pencilRefDiameter = 0; // pencil: the bigger bit (mm); 0 = 2x this bit
     double safeZ = 2.54, feed = 500, plunge = 100;
 };
 
@@ -94,11 +97,13 @@ bool roughLinkClear(const HeightModel &model, const Cam3dParams &p,
 double compensatedZ(const HeightModel &model, const ToolGeom &tool, double x, double y);
 
 // Finishing passes as machine ops (rapids/feeds only — no tool/spindle/
-// comment framing): raster, or waterline per Cam3dParams::strategy.
-// `passes` receives the number of cutting passes (runs / loops) emitted.
+// comment framing): raster, waterline or pencil per Cam3dParams::strategy.
+// `passes` receives the number of cutting passes (runs / loops) emitted;
+// `note`, when given, a plain sentence on why nothing was cut (pencil: no
+// creases).
 QVector<Op> finishOps(const HeightModel &model, const Cam3dParams &p,
                       const QPainterPath &boundary, int *passes = nullptr,
-                      const ExportWatch *watch = nullptr);
+                      const ExportWatch *watch = nullptr, QString *note = nullptr);
 
 // ---- "New 3D toolpath" defaults for the Toolpaths panel --------------------
 QJsonObject defaultRoughToolpathJson();

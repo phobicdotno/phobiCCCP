@@ -3094,7 +3094,10 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         reach = R - c + std::sqrt(qMax(0.0, 2 * c * d - d * d));
                 }
                 const QPainterPath inside = belems.isEmpty() ? boundary : cam3dBoundary(*hm, boundary, -reach);
-                body = finishOps(*hm, p3, inside, nullptr, watch);
+                QString why;
+                body = finishOps(*hm, p3, inside, nullptr, watch, &why);
+                if (body.isEmpty() && !why.isEmpty())
+                    res.notes << QStringLiteral("%1: %2").arg(name, why);
                 for (int k = body.size() - 1; k >= 0; --k)
                     if (body.at(k).kind == Op::Feed) {
                         lastPos = QPointF(body.at(k).x, body.at(k).y);
