@@ -347,6 +347,35 @@ static bool queuedLine(const QString &l)
     return !s.isEmpty() && !s.startsWith(QChar('('));
 }
 
+// GRBL refuses a G2 or G3 block with no axis words (error:26), so a modal
+// arc cannot be put back as a line of its own: name it on the program's next
+// move that does not choose its own motion mode.
+static void armNextMove(QStringList &lines, int from, int motion)
+{
+    static const QRegularExpression motionWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*[0-3](?![0-9.])"));
+    static const QRegularExpression axisWord(QStringLiteral("(?:^|[^A-Z])[XYZ]-?[0-9.]"));
+    static const QRegularExpression axisCommand(QStringLiteral("G(?:53|28|30|92|10)(?![0-9.])"));
+    static const QRegularExpression pause(QStringLiteral("^M0*[01](?![0-9])"));
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
+    for (int i = qMax(0, from); i < lines.size(); ++i) {
+        QString l = lines.at(i);
+        const int c = l.indexOf(QChar(';'));
+        if (c >= 0) l.truncate(c);
+        l.remove(paren);
+        l = l.trimmed().toUpper();
+        if (l.isEmpty())
+            continue;
+        if (l.startsWith(kToolMarker) || l == kHoldMarker || pause.match(l).hasMatch()
+            || motionWord.match(l).hasMatch())
+            return;
+        if (!axisWord.match(l).hasMatch())
+            continue;
+        if (!axisCommand.match(l).hasMatch())
+            lines[i] = QStringLiteral("G%1 ").arg(motion) + lines.at(i).trimmed();
+        return;
+    }
+}
+
 int GrblStreamer::rawIndexOfQueued(const QStringList &lines, int q)
 {
     int n = 0;
@@ -446,9 +475,10 @@ QStringList GrblStreamer::startFromLines(const QStringList &lines, int fromQ, co
     r << QStringLiteral("G1 F%1").arg(m.feed, 0, 'f', 1);
     if (m.motion == 0)
         r << QStringLiteral("G0");
-    else if (m.motion == 2 || m.motion == 3)
-        r << QStringLiteral("G%1").arg(m.motion);   // an arc continued from the line before
-    return r + lines.mid(first);
+    QStringList rest = lines.mid(first);
+    if (m.motion == 2 || m.motion == 3)
+        armNextMove(rest, 0, m.motion);   // an arc continued from the line before
+    return r + rest;
 }
 
 bool GrblStreamer::canLiftHold() const
@@ -512,7 +542,7 @@ QStringList GrblStreamer::resumeLinesAfterHold() const
     if (m.motion == 0)
         r << QStringLiteral("G0");
     else if (m.motion >= 2)
-        r << QStringLiteral("G1");     // arcs always name their own G word
+        r << QStringLiteral("G1");     // the arc itself goes back on the next move (continueAfterHold)
     return r;
 }
 
@@ -520,12 +550,15 @@ void GrblStreamer::continueAfterHold(const QStringList &lines)
 {
     if (!m_streaming || !m_waitingHold)
         return;
+    const Modal before = scanModal(m_queue, m_holdAt);
     int at = m_nextIndex;
     for (const QString &l : lines) {
         const QString t = l.trimmed();
         if (!t.isEmpty())
             m_queue.insert(at++, t);
     }
+    if (before.valid && (before.motion == 2 || before.motion == 3))
+        armNextMove(m_queue, at, before.motion);
     m_waitingHold = false;
     m_holdQueued = false;
     m_ackClock.restart();
@@ -535,10 +568,10 @@ void GrblStreamer::continueAfterHold(const QStringList &lines)
     pump();
 }
 
-void GrblStreamer::continueAfterToolChange(const QStringList &first)
+int GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
-        return;
+        return 0;
     // The park travel or the BitSetter probe is still running. Resuming here
     // would put two writers on the line: pump() writes cutting moves while
     // pumpMacro() is still working through M5 / G53 moves, the macro branch
@@ -548,7 +581,7 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
     if (m_macroActive) {
         emit consoleLine(QStringLiteral("== still moving - wait for the tool "
                                         "measurement to finish =="));
-        return;
+        return 0;
     }
     // Lines to run before the program resumes (the rise to the top) go into
     // the program itself, so they are sent and acknowledged like any other
@@ -573,15 +606,19 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
             m_queue.insert(at++, across);
     }
     if (before.valid && before.haveFeed && before.motion >= 1)
-        m_queue.insert(at++, QStringLiteral("G%1 F%2").arg(before.motion).arg(before.feed, 0, 'f', 1));
+        m_queue.insert(at++, QStringLiteral("G1 F%1").arg(before.feed, 0, 'f', 1));
+    if (before.valid && (before.motion == 2 || before.motion == 3))
+        armNextMove(m_queue, at, before.motion);
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
-    if (at != m_nextIndex)
+    const int added = at - m_nextIndex;
+    if (added)
         emit progressChanged(m_ackedCount, m_queue.size());
     pump();
+    return added;
 }
 
 // Everything in flight is void after a controller reset we did not ask for.

@@ -2654,12 +2654,13 @@ void MachinePanel::continueAfterToolChange()
                                     : QStringLiteral("the tool-change spot (no position report)"))
                 .arg(x, 0, 'f', 3).arg(y, 0, 'f', 3));
     }
-    if (m_jobView) {
-        m_jobView->linesInserted(first.size());
+    if (m_jobView)
         m_jobView->setParked(false);
-    }
     setJobRunning(m_jobView && m_jobView->hasPlan());
-    m_grbl->continueAfterToolChange(first);
+    // The streamer adds its own crossing and feed lines: count what went in.
+    const int added = m_grbl->continueAfterToolChange(first);
+    if (m_jobView)
+        m_jobView->linesInserted(added);
 }
 
 // While a job streams the middle column shows the job view and the
