@@ -30,6 +30,9 @@
 // tool, speeds, stock_to_leave (mm), stepdown (mm), stepover (mm number, or a
 // "40%" string of the tool diameter), max_depth (depth string/number, positive
 // down like every other depth), boundary_offset (mm, + outward).
+// Rough only: enable_rest (cut only what a bigger end mill left, level by
+// level), rest_auto (that bit is the nearest 3D Rough above, default on) and
+// rest_diameter (its size otherwise); read in gcodeexport.cpp.
 // Finish only: strategy ("raster" | "waterline"; absent = raster),
 // raster_angle (deg, 0 = along X, 90 = along Y), direction ("climb" |
 // "conventional" | "zigzag"; a waterline takes zigzag as "as traced"),

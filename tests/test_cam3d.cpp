@@ -1023,6 +1023,90 @@ int main()
         check(g.done.size() == 1 && worst < 0.05, "V-bit waterline stays out of the model between contour crossings");
     }
 
+    // Rest roughing: a 30 mm square pocket and, beside it, a 4 mm wide
+    // slot, both 5 mm deep. A 6 mm rough cannot enter the slot; a 3 mm rest
+    // rough after it (bigger bit taken from the rough above) cuts the slot
+    // and the big pocket's corners only, and the two together leave no more
+    // than the 3 mm rough would alone.
+    {
+        c2d::HeightModel m;
+        m.cell = 0.25;
+        m.baseZ = -5;
+        m.resize(int(60 / m.cell), int(40 / m.cell));
+        for (int r = 0; r < m.rows; ++r)
+            for (int c = 0; c < m.cols; ++c) {
+                const double x = (c + 0.5) * m.cell, y = (r + 0.5) * m.cell;
+                const bool inY = y > 5 && y < 35;
+                const bool pocket = inY && x > 5 && x < 35, slot = inY && x > 40 && x < 44;
+                m.ref(c, r) = float(pocket || slot ? -5.0 : 0.0);
+            }
+        const QJsonObject flat6{{"number", 211}, {"diameter", 6.0}, {"type", 0}};
+        const QJsonObject flat3{{"number", 212}, {"diameter", 3.0}, {"type", 0}};
+        const QJsonObject common{{"stepdown", 2.5}, {"stock_to_leave", 0.0}, {"max_depth", "0.000"},
+                                 {"boundary_offset", 0.0}};
+        auto rough = [&](const QJsonObject &tool, const char *name, double stepover, bool rest) {
+            QJsonObject e = common;
+            e.insert("stepover", stepover);
+            e.insert("enable_rest", rest);
+            e.insert("rest_auto", true);
+            e.insert("rest_diameter", 0.0);
+            return toolpath("3d_rough_toolpath", tool, e, name);
+        };
+        c2d::Document both;
+        addToolpath(both, rough(flat6, "big", 2.4, false));
+        addToolpath(both, rough(flat3, "rest", 1.2, true));
+        const c2d::GcodeResult g = c2d::exportGcode(both, nullptr, &m);
+        check(g.done.size() == 2, "rest rough: both roughs cut");
+        bool inRest = false;
+        int restFeeds = 0, inSlot = 0, awayFromWalls = 0;
+        for (const Op &o : g.ops) {
+            if (o.kind == Op::Comment)
+                inRest = o.text == QLatin1String("rest");
+            if (!inRest || o.kind != Op::Feed || o.z > -0.05)
+                continue;
+            ++restFeeds;
+            if (o.x > 39.5 && o.x < 44.5)
+                ++inSlot;
+            if (o.x > 10 && o.x < 30 && o.y > 10 && o.y < 30)
+                ++awayFromWalls;
+        }
+        std::fprintf(stderr, "rest rough: %d cutting moves, %d in the slot, %d in the open pocket\n",
+                     restFeeds, inSlot, awayFromWalls);
+        check(inSlot > 0, "rest rough: cuts the slot the big bit could not enter");
+        check(awayFromWalls == 0, "rest rough: stays out of the open middle of the big pocket");
+
+        c2d::Document small;
+        addToolpath(small, rough(flat3, "small", 1.2, false));
+        const c2d::GcodeResult gs = c2d::exportGcode(small, nullptr, &m);
+        auto leftOver = [&](const c2d::GcodeResult &res, const c2d::Document &d) {
+            c2d::SimSettings ss = stock(60, 40, 10);
+            const c2d::SimResult sim = c2d::simulate(res.ops, c2d::toolGeometry(d), ss);
+            // Material left over the floors (the square corners keep a 3 mm
+            // bit's fillet either way), in mm³.
+            double vol = 0;
+            const double a = sim.map.cellSize() * sim.map.cellSize();
+            for (int iy = 0; iy < sim.map.height(); ++iy)
+                for (int ix = 0; ix < sim.map.width(); ++ix) {
+                    const double x = sim.map.cellCenterX(ix), y = sim.map.cellCenterY(iy);
+                    if (m.sample(x, y) < -4.99)
+                        vol += a * std::fmax(0.0, sim.map.at(ix, iy) - m.sample(x, y));
+                }
+            return vol;
+        };
+        const double leftBoth = leftOver(g, both), leftSmall = leftOver(gs, small);
+        std::fprintf(stderr, "rest rough: %.2f mm³ left on the floors (6 + 3 rest), %.2f mm³ (3 alone)\n",
+                     leftBoth, leftSmall);
+        check(leftBoth <= leftSmall * 1.02 + 2.0, "rest rough: 6 mm + 3 mm rest leaves no more than the 3 mm alone");
+
+        // No rough above and no bigger rest_diameter: a full rough, with a note.
+        c2d::Document lone;
+        addToolpath(lone, rough(flat3, "lone", 1.2, true));
+        const c2d::GcodeResult gl = c2d::exportGcode(lone, nullptr, &m);
+        check(gl.done.size() == 1 && feedLevels(gl.ops) == feedLevels(gs.ops),
+              "rest rough without a bigger bit roughs everything");
+        check(!gl.notes.filter(QStringLiteral("bigger previous bit")).isEmpty(), "rest rough: says it roughed everything");
+    }
+
     std::printf("test_cam3d: %d checks OK\n", g_checks);
     return 0;
 }

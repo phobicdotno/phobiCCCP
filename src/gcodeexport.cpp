@@ -392,8 +392,12 @@ static QPainterPath intersectRegion(const QPainterPath &a, const QPainterPath &b
 // channels the big tool could not enter, plus one tool radius of overlap into
 // the cleared floor so the two cuts blend. (Subtracting `cleared` itself
 // would leave the material within toolR of its rounded corners uncut.)
+//
+// With `overlap` > 0 (the 3D rest rough) the rest also takes the centres
+// within `overlap` of it, so a level's cut runs that much onto the floor the
+// big tool left; a cleared wall with nothing left on it stays out.
 static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
-                                       double prevR, double leave)
+                                       double prevR, double leave, double overlap = 0)
 {
     const QPainterPath mine = regionFromRings(insetRings(comp, toolR + leave));
     if (mine.isEmpty())
@@ -403,9 +407,16 @@ static QList<QPainterPath> restRegions(const QPainterPath &comp, double toolR,
         return components(mine);          // the big tool never fitted: all rest
     const QPainterPath cleared = regionFromRings(outsetRings(prevCentres, prevR));
     const QPainterPath skip = regionFromRings(insetRings(cleared, toolR));
-    const QPainterPath rest = skip.isEmpty() ? mine : subtractRegion(mine, skip);
+    QPainterPath rest = skip.isEmpty() ? mine : subtractRegion(mine, skip);
     if (rest.isEmpty())
         return {};
+    if (overlap > 0 && !skip.isEmpty()) {
+        // Slivers along walls both tools reach are offset round-off, not rest.
+        rest = regionFromRings(outsetRings(regionFromRings(insetRings(rest, 0.02)), 0.02 + overlap));
+        rest = rest.isEmpty() ? rest : intersectRegion(rest, mine);
+        if (rest.isEmpty())
+            return {};
+    }
     return components(rest);
 }
 
@@ -2996,10 +3007,46 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 Emitter em(body, safeZ, feed, plunge);
                 const double r = p3.tool.radius();
                 bool capped = false;
+                // Rest roughing (enable_rest): per level, only what a bigger
+                // end mill could not reach. Its size is the bit of the
+                // nearest 3D Rough above (rest_auto), else rest_diameter.
+                double prevR = 0;
+                if (j.value("enable_rest").toBool(false)) {
+                    if (j.value("rest_auto").toBool(true)) {
+                        const QVector<Toolpath> &all = doc.toolpaths();
+                        int k = int(&t - all.constData());
+                        if (k < 0 || k >= all.size())
+                            k = 0;
+                        for (--k; k >= 0; --k)
+                            if (all.at(k).type == QLatin1String("3d_rough_toolpath")
+                                && all.at(k).json.value("enabled").toBool(true)) {
+                                prevR = toolGeomOf(all.at(k).json.value("tool").toObject()).radius();
+                                break;
+                            }
+                    }
+                    if (prevR <= 0)
+                        prevR = numOr(j.value("rest_diameter"), 0) / 2.0;
+                    if (prevR <= r + 1e-6) {
+                        res.notes << QStringLiteral("%1: rest needs a bigger previous bit, "
+                                                    "roughing everything").arg(name);
+                        prevR = 0;
+                    }
+                }
                 for (const RoughLevel &lv : roughLevels(*hm, p3, boundary, watch)) {
                     QList<Job> jobs;
-                    for (const QPainterPath &comp : components(lv.region))
-                        capped |= !ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs, r);
+                    QList<QPainterPath> restCentres;
+                    for (const QPainterPath &comp : components(lv.region)) {
+                        if (prevR > 0) {
+                            for (const QPainterPath &rc : restRegions(comp, r, prevR, p3.stockToLeave, 0.2)) {
+                                capped |= !ringFillJob(rc, 0.0, p3.stepover, jobs, r);
+                                restCentres << rc;
+                            }
+                        } else {
+                            capped |= !ringFillJob(comp, r + p3.stockToLeave, p3.stepover, jobs, r);
+                        }
+                    }
+                    if (jobs.isEmpty())
+                        continue;
                     CutParams lcp = cp;
                     lcp.zTop = lv.z + p3.stepdown;
                     lcp.zBot = lv.z;
@@ -3009,7 +3056,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     // boundary is a keep-out the relief knows nothing of, so
                     // the link must also stay where the tool centre may go.
                     const auto inLevel = linkInside(
-                        regionFromRings(insetRings(lv.region, qMax(0.0, r - kLinkLeeway))));
+                        prevR > 0 ? unionRegions(restCentres)
+                                  : regionFromRings(insetRings(lv.region, qMax(0.0, r - kLinkLeeway))));
                     lcp.linkOk = [&, inLevel, z = lv.z](const QPointF &a, const QPointF &b) {
                         return inLevel(a, b) && roughLinkClear(*hm, p3, a, b, z);
                     };

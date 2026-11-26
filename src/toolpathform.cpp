@@ -568,6 +568,20 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
     add(QStringLiteral("tab_width"), mm(QStringLiteral("tabs"), QStringLiteral("Width"), 30));
 
     // Rest machining
+    if (type == QLatin1String("3d_rough_toolpath")) {
+        // Per level, only what a bigger end mill could not reach.
+        add(QStringLiteral("enable_rest"), sw(QStringLiteral("rest"), QStringLiteral("Rest: only what a bigger bit left"),
+                                              QStringLiteral("Cut only the corners and narrow spots a bigger "
+                                                             "3D Rough could not get into")));
+        add(QStringLiteral("rest_auto"), enabledBy(sw(QStringLiteral("rest"), QStringLiteral("Bigger bit: the 3D Rough above"),
+                                                      QStringLiteral("Use the bit of the nearest 3D Rough above this "
+                                                                     "one in the list")),
+                                                   QStringLiteral("enable_rest")));
+        add(QStringLiteral("rest_diameter"), enabledBy(mm(QStringLiteral("rest"), QStringLiteral("Previous bit Ø"), 100,
+                                                          QStringLiteral("Used when auto is off or there is no "
+                                                                         "3D Rough above")),
+                                                       QStringLiteral("enable_rest")));
+    }
     add(QStringLiteral("rest_auto"), sw(QStringLiteral("rest"), QStringLiteral("Skip what the toolpaths above cut")));
     add(QStringLiteral("rest_overlap"), enabledBy(mm(QStringLiteral("rest"), QStringLiteral("Overlap"), 50),
                                                   QStringLiteral("rest_auto")));
@@ -672,6 +686,16 @@ void ToolpathForm::setToolpath(const QString &uuid, const QString &type, const Q
             json.insert(QStringLiteral("pocket_strategy"), QStringLiteral("offset"));
         if (!json.contains(QStringLiteral("raster_angle")))
             json.insert(QStringLiteral("raster_angle"), 0.0);
+    }
+    // 3D Rough: rest roughing offered off, the bigger bit taken from the
+    // 3D Rough above; written only with the user's next edit.
+    if (type == QLatin1String("3d_rough_toolpath")) {
+        if (!json.contains(QStringLiteral("enable_rest")))
+            json.insert(QStringLiteral("enable_rest"), false);
+        if (!json.contains(QStringLiteral("rest_auto")))
+            json.insert(QStringLiteral("rest_auto"), true);
+        if (!json.contains(QStringLiteral("rest_diameter")))
+            json.insert(QStringLiteral("rest_diameter"), 6.35);
     }
     const QStringList keys = flatKeys(json);
     const bool same = uuid == m_uuid && type == m_type && keys == m_keys;

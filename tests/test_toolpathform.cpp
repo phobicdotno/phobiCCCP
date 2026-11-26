@@ -147,6 +147,22 @@ int main(int argc, char *argv[])
               "3D finish: choosing waterline writes strategy = waterline");
     }
 
+    // 3D rough: rest roughing offered (off, bigger bit from the rough above)
+    // on a toolpath saved before it existed; the bit size greyed while off.
+    {
+        QJsonObject r{{"type", "3d_rough_toolpath"}, {"uuid", "{r3d}"}, {"name", "3D Rough"},
+                      {"enabled", true}, {"stepdown", 2.0}, {"stepover", 2.5}, {"stock_to_leave", 0.5},
+                      {"speeds", speeds}, {"tool", tool}};
+        form.setToolpath("{r3d}", "3d_rough_toolpath", r);
+        app.processEvents();
+        auto *rest = editorFor<QAbstractButton>(&form, "enable_rest");
+        auto *autoBit = editorFor<QAbstractButton>(&form, "rest_auto");
+        auto *dia = editorFor<QDoubleSpinBox>(&form, "rest_diameter");
+        check(rest && !rest->isChecked() && autoBit && autoBit->isChecked() && dia,
+              "3D rough: rest offered off, bigger bit from the rough above");
+        check(!dia->isEnabled(), "3D rough: previous bit size greyed while rest is off");
+    }
+
     // Corner relief: offered as Sharp (off) on a pocket that has no key,
     // choosing T-bone writes corners = tbone.
     {

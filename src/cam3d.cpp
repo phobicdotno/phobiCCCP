@@ -1309,6 +1309,9 @@ QJsonObject defaultRoughToolpathJson()
     j.insert("stock_to_leave", 0.5);
     j.insert("stepdown", 2.0);
     j.insert("stepover", 2.54);
+    j.insert("enable_rest", false);
+    j.insert("rest_auto", true);
+    j.insert("rest_diameter", 6.35);
     return j;
 }
 
