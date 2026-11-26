@@ -871,6 +871,14 @@ int main(int argc, char **argv)
         spin(5000, [&] { return traced; });
         QObject::disconnect(c);
         check(seen.size() == 1 && grbl.count("G1 F") == 1, "hover: with the design as asked, it traces");
+        {
+            const int m5 = grbl.events.indexOf("M5");
+            int firstMove = -1;
+            for (int i = 0; i < grbl.events.size() && firstMove < 0; ++i)
+                if (grbl.events.at(i).startsWith("G0") || grbl.events.at(i).startsWith("G53"))
+                    firstMove = i;
+            check(m5 >= 0 && m5 < firstMove, "hover: M5 goes out before the first move (a hand-started spindle)");
+        }
         answer = [&](const Seen &) { return QStringLiteral("OK"); };
         grbl.wcoZ = wcoWas;
         wait(800);

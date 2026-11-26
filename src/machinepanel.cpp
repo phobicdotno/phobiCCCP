@@ -2157,7 +2157,7 @@ void MachinePanel::bitZeroBegin()
         startSurfaceMap();
         return;
     }
-    const MachineStatus st = m_grbl->status();
+    MachineStatus st = m_grbl->status();
     if (st.probePin) {
         log(QStringLiteral("!! the probe input is already closed — is the pin touching the "
                            "plate, or the magnet on the plate itself? Move clear and retry"));
@@ -2191,6 +2191,24 @@ void MachinePanel::bitZeroBegin()
             ask.defaultOk = false;
             if (!shopAsk(this, ask))
                 return;
+            // The question was open: a jog (gamepad), a disconnect or a job
+            // can have come in meanwhile. Check again and take the position
+            // the return moves start from now, not from before.
+            const bool streaming = m_grbl->isStreaming();
+            if (!m_grbl->isConnected() || needsInit()
+                || (streaming && !(mode == BitZeroPanel::ZOnly && zeroAllowed(false)))
+                || !requireHomed(QStringLiteral("BitZero probing")) || endRiseWaiting()
+                || (m_onIdle && !streaming) || (!streaming && movingStill(QStringLiteral("BitZero")))
+                || !m_grbl->canSendCommand() || m_mapper->isWaiting()
+                || m_bzPanel->mode() != mode) {
+                log(QStringLiteral("!! BitZero: the machine changed while the question was open — press again"));
+                return;
+            }
+            st = m_grbl->status();
+            if (st.probePin) {
+                log(QStringLiteral("!! the probe input is already closed — move clear and retry"));
+                return;
+            }
             log(QStringLiteral("BitZero: job zero is the %1, not the probed corner").arg(jobZeroText(*m_doc)));
         }
     }
@@ -2460,7 +2478,7 @@ void MachinePanel::bitZeroAfterCentre(Phase stage)
                                 .arg(boss ? QStringLiteral("taken off") : QStringLiteral("added"));
         log(QStringLiteral("%1 centre at machine X %2 Y %3. %4")
                 .arg(what).arg(c.x, 0, 'f', 3).arg(c.y, 0, 'f', 3).arg(res));
-        m_bzPanel->setCentreResult(QStringLiteral("Centre set as X0 Y0. ") + res);
+        m_bzPanel->setCentreResult(QStringLiteral("Centre found (X0 Y0 is set there next). ") + res);
         m_phase = Phase::BitZeroHome;
         m_grbl->startMacro({QStringLiteral("G90"),
                             QStringLiteral("G53 G0 X%1 Y%2").arg(m_bzCx, 0, 'f', 3).arg(m_bzCy, 0, 'f', 3)});
@@ -4244,6 +4262,7 @@ void MachinePanel::endWarmup(const QString &why)
         return;
     m_warmTimer->stop();
     m_warmStep = -1;
+    m_warmHeld = false;
     if (!why.isEmpty())
         log(why);
     updateSpindleButtons();
@@ -4283,6 +4302,18 @@ void MachinePanel::warmupStep()
         endWarmup(QStringLiteral("warm-up ended: a job is running"));
         return;
     }
+    // A macro (or an error's reset) owns the controller for now: the next
+    // speed or the final M5 would be refused, so hold this step and try
+    // again on the next tick instead of losing the spindle-off.
+    if (m_grbl->isConnected() && !m_grbl->canSendCommand()) {
+        if (!m_warmHeld)
+            log(QStringLiteral("warm-up: controller busy, the spindle change waits for it"));
+        m_warmHeld = true;
+        m_warmLeft = 1;
+        updateSpindleButtons();
+        return;
+    }
+    m_warmHeld = false;
     const int next = m_warmStep + 1;
     if (next >= 3) {
         m_warmTimer->stop();
@@ -4629,7 +4660,11 @@ void MachinePanel::hoverDryRun()
         || needsInit() || !requireHomed(QStringLiteral("Hover dry run")) || movingStill(QStringLiteral("Hover dry run"))
         || !travelOk())
         return;
-    QStringList lines = riseToTop();
+    // A spindle started by hand (or a warm-up) keeps running at Idle: the
+    // trace promises the spindle off, so stop it before the first move.
+    endWarmup(QStringLiteral("warm-up ended: hover dry run"));
+    QStringList lines{QStringLiteral("M5")};
+    lines += riseToTop();
     lines << QStringLiteral("G21") << QStringLiteral("G90")
           << QStringLiteral("G0 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y0, 0, 'f', 3)
           << QStringLiteral("G0 Z%1").arg(hoverZ, 0, 'f', 3)
@@ -5617,6 +5652,10 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     lines = safeRapidsTransform(lines);
     {
         QStringList head{QStringLiteral("G21")};
+        // Air cut drops the program's M3, but a spindle started by hand
+        // keeps running at Idle: stop it before the first move.
+        if (air)
+            head << QStringLiteral("M5");
         head += riseToTop();
         // A Z-only first rapid would come down wherever the spindle stands.
         const QString across = GrblStreamer::crossToFirstCut(lines, 0);

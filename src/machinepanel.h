@@ -493,6 +493,7 @@ private:
     QList<int> m_warmSecs;               // step lengths, read when it starts
     int m_warmStep = -1;                 // -1: not warming up
     int m_warmLeft = 0;                  // seconds left in this step
+    bool m_warmHeld = false;             // step change waiting for a busy controller
     bool m_rpmRangeSet = false;          // $30/$31 applied to the field
     bool m_held = false;
     // m_held stays until a report shows the machine out of Hold (seen in
