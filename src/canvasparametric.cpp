@@ -501,6 +501,7 @@ void Canvas::refreshParametricState()
 
 void Canvas::setConstraintType(Constraint::Type t)
 {
+    m_deferredPress.valid = false;
     m_conType = t;
     if (m_tool == Constrain)
         resetPicks();
@@ -554,6 +555,7 @@ void Canvas::selectConstraint(const QString &uid)
 
 void Canvas::resetPicks()
 {
+    m_deferredPress.valid = false;
     m_picks.clear();
     m_dimPlacing = false;
     m_hasHover = false;

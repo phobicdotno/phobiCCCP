@@ -5,6 +5,7 @@
 // leaves a recent one alone, which may be another process's save in progress.
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
+#include "../src/recovery.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -97,6 +98,27 @@ int main(int argc, char **argv)
         rest.removeAll(QFileInfo(upper).fileName());
         rest.removeAll(QFileInfo(longer).fileName());
         check(rest.isEmpty(), "and leaves no staging file");
+    }
+    // A recovery copy offered to two windows: one opened it (holds its lock);
+    // the other's "No" must not delete it, nor its "Yes" take it.
+    {
+        QTemporaryDir rdir;
+        const QString copy = rdir.filePath(QStringLiteral("r1.c2d"));
+        check(QFile::copy(dest, copy), "a recovery copy");
+        {
+            c2d::Recovery holder(rdir.path());
+            holder.adopt(copy);
+            check(holder.current() == copy, "one window opens it and holds it");
+            check(!c2d::Recovery::isFree(copy), "it is not free for another");
+            check(!c2d::Recovery::removeIfFree(copy) && QFileInfo::exists(copy),
+                  "removeIfFree leaves a copy another session holds");
+            c2d::Recovery other(rdir.path());
+            other.adopt(copy);
+            check(other.current().isEmpty(), "and a second window cannot take it");
+        }
+        check(c2d::Recovery::isFree(copy), "once that window lets go it is free");
+        check(c2d::Recovery::removeIfFree(copy) && !QFileInfo::exists(copy), "and removeIfFree deletes it");
+        check(!c2d::Recovery::isFree(copy), "a copy that is gone is not free");
     }
     return g_fail ? 1 : 0;
 }

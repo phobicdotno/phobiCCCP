@@ -763,8 +763,10 @@ int main(int argc, char **argv)
         wait(600);
         grbl.events.clear();
         seen.clear();
+        int tcField = -2;
         answer = [&](const Seen &v) {
             std::printf("prompt: %s\n", qPrintable(v.headline));
+            tcField = panel.statusJson().value("toolChange").toInt(-2);
             return QStringLiteral("Measure and continue");
         };
         panel.m_endOfJobPending = true;
@@ -774,6 +776,8 @@ int main(int argc, char **argv)
         wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         check(seen.size() == 1, "tc: one prompt");
+        check(tcField == 2, "tc: the pad is told the tool change wants T2 while parked");
+        check(panel.statusJson().value("toolChange").toInt(-2) == -1, "tc: and -1 once the job runs on");
         check(!s->isStreaming(), "tc: job finished");
         check(grbl.indexOf("G43.1 Z2") >= 0, "tc: offset applied");
         check(grbl.indexOf("G1X6") > grbl.indexOf("G43.1 Z2"), "tc: rest after offset");
@@ -1959,6 +1963,8 @@ int main(int argc, char **argv)
         wait(300);
         check(panel.m_liftHold && s->isHoldQueued() && !s->isHeldAtPoint(),
               "lift: queued behind the lines GRBL has, not reached");
+        check(!panel.statusJson().value("held").toBool() && panel.statusJson().value("lifting").toBool(),
+              "lift: queued behind running lines, the pad is told lifting, not held");
         check(grbl.count("!") == 0 && panel.m_pauseBtn->text().contains(QLatin1String("Hold here now"))
                   && !panel.m_pauseBtn->toolTip().isEmpty(),
               "lift: first press, no feed hold, the button says Hold here now (not Resume) and why");
@@ -1967,6 +1973,8 @@ int main(int argc, char **argv)
             wait(300);
             check(grbl.count("!") == 1 && panel.m_held,
                   "liftdouble: the second press is a feed hold at once");
+            check(panel.statusJson().value("held").toBool() && !panel.statusJson().value("lifting").toBool(),
+                  "liftdouble: feed-held, the pad is told held");
             check(panel.m_console->toPlainText().contains(QLatin1String("stopping at once")),
                   "liftdouble: the log says it stops at once");
             check(panel.m_pauseBtn->text().contains(QLatin1String("Resume")),

@@ -2796,7 +2796,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // full-height tab is what holds the part.
             bool thickOk = false;
             const double thick = std::abs(doc.params().value(QStringLiteral("thickness")).toDouble(&thickOk));
-            tabsThrough = thickOk && thick > 0 && -floor >= thick - 1e-6;
+            // Through means the cut's deepest Z (a cutout's break-through
+            // included) reaches the stock bottom, give or take 0.2 mm: stock
+            // re-measured a little thicker than the depth it was drawn for
+            // is still cut through, and needs its tabs most.
+            const double reach = -qMin(floor, cp.zBot);
+            tabsThrough = thickOk && thick > 0 && reach >= thick - 0.2;
             if (!tabsThrough && cp.tabTop >= cp.zTop - 1e-9) {
                 cp.tabTop = -1e9;
                 cp.tabWidth = 0;
@@ -2964,8 +2969,14 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         }
 
         QVector<const Element *> elems = referenced(doc, j);
-        // Facing works on the stock when it has no vectors of its own.
+        // Facing works on the stock when it has no vectors of its own -
+        // unless it had some and lost them (deleted, or used up by Subtract
+        // or Offset): skimming the whole board then is not what was set up.
         const QRectF stock(0, 0, doc.boardWidth(), doc.boardHeight());
+        if (elems.isEmpty() && face && j.value("vectors_removed").toBool(false)) {
+            res.skipped << QStringLiteral("%1 (its vectors were removed; pick vectors again)").arg(name);
+            continue;
+        }
         if (elems.isEmpty() && !(face && stock.width() > 0 && stock.height() > 0)) {
             res.skipped << QStringLiteral("%1 (no vectors)").arg(name);
             continue;

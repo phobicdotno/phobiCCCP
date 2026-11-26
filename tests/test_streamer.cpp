@@ -564,6 +564,43 @@ int main(int argc, char **argv)
         grbl.positional = false;
     }
 
+    // R4-MC-3: a feed hold does not stop GRBL answering lines, so the stream
+    // used to run on to a tool marker and park with the machine held in the
+    // cut. The marker now waits until the hold ends.
+    {
+        QList<int> parks;
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parks << t; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T4"),
+                       QStringLiteral("G0Z5")});
+        s.pauseStream();
+        spin(800, [] { return false; });
+        check(parks.isEmpty() && s.isFeedHeld(), "feed hold: the tool marker is not crossed while held");
+        check(s.resumeStream(), "feed hold: resume goes out");
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 4 && !s.isFeedHeld(),
+              "feed hold: after Resume the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+    }
+
+    // A zero (G10) leaves the held work offset stale until a report after
+    // its answer brings the new one: travel checks must not use the old one.
+    {
+        grbl.positional = true;
+        spin(1000, [&] { return s.workOffsetFresh(); });
+        check(s.hasWorkOffset() && s.workOffsetFresh(), "wco: fresh from the reports");
+        s.sendCommand(QStringLiteral("G10 L20 P1 Z0"));
+        check(s.hasWorkOffset() && !s.workOffsetFresh(), "wco: a zero sent makes the held offset stale");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: fresh again from a report after the zero's answer");
+        s.sendCommand(QStringLiteral("G92.1"));
+        check(!s.workOffsetFresh(), "wco: G92 too");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        grbl.positional = false;
+    }
+
     s.disconnectPort();
     ::close(slave);
     ::close(master);

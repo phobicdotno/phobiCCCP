@@ -112,6 +112,7 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     m_settings.clear();
     m_wcoX = m_wcoY = m_wcoZ = 0;
     m_haveWco = false;
+    m_wcoStale = false;
     m_statusTimer->start();
     emit connected(portName);
     return true;
@@ -134,6 +135,7 @@ void GrblStreamer::disconnectPort()
         m_waitingTool = -1;
         m_waitingHold = false;
         m_holdQueued = false;
+        m_feedHeld = false;
         m_macroActive = false;
         m_macroInflight = false;
         m_macroSkipAck = false;
@@ -164,9 +166,20 @@ bool GrblStreamer::canSendCommand() const
            && !m_needsReset && (!m_streaming || m_waitingTool >= 0);
 }
 
+// A line that changes the work offset (G10 L2/L20, G92, a G54..G59
+// switch): the WCO we hold is stale until a report after its answer.
+void GrblStreamer::noteOffsetLine(const QString &line)
+{
+    static const QRegularExpression offset(
+        QStringLiteral("(?<![A-Z0-9.])G0*(10|92|5[4-9])(?![0-9])"));
+    if (offset.match(line.toUpper()).hasMatch())
+        m_wcoStale = true;
+}
+
 void GrblStreamer::writeLine(const QString &line)
 {
     const QByteArray data = line.trimmed().toLatin1() + '\n';
+    noteOffsetLine(line);
     m_port->write(data);
     emit consoleLine(QStringLiteral("> %1").arg(line.trimmed()));
 }
@@ -213,6 +226,37 @@ void GrblStreamer::sendRealtime(char c)
         return;
     if (isConnected())
         m_port->write(&c, 1);
+    if (c == '!' || c == '~')
+        noteFeedHold(c == '!');
+}
+
+// A feed hold only stops motion: GRBL keeps answering the lines it is
+// sent, so the stream would run on through a tool marker and park (the
+// prompt, the park move queued behind the held cut, the pre-park position
+// read mid-cut) with the machine still holding in the cut. The stream keeps
+// filling the buffer, but does not cross a tool marker until the hold ends:
+// a Resume, or a report out of Hold (it never took, or ended elsewhere).
+void GrblStreamer::noteFeedHold(bool held)
+{
+    if (held) {
+        if (!m_streaming)
+            return;
+        m_feedHeld = true;
+        m_feedHeldSeen = false;
+        m_feedHeldNoted = false;
+        m_feedHeldClock.start();
+        return;
+    }
+    if (!m_feedHeld)
+        return;
+    m_feedHeld = false;
+    // From the event loop: a tool marker crossed now would emit
+    // toolChangeRequested (and its prompt) inside the caller's resume,
+    // before it has noted that the hold ended.
+    QTimer::singleShot(0, this, [this] {
+        if (m_streaming && !m_feedHeld)
+            pump();
+    });
 }
 
 void GrblStreamer::jogCancel()
@@ -243,6 +287,7 @@ void GrblStreamer::startStream(const QStringList &lines)
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_toolChanges = 0;
     m_streaming = !m_queue.isEmpty();
     m_ackClock.start();
@@ -524,6 +569,7 @@ void GrblStreamer::abortAfterReset()
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -544,8 +590,10 @@ void GrblStreamer::abortAfterReset()
 
 void GrblStreamer::pauseStream()
 {
-    if (isConnected())
+    if (isConnected()) {
         m_port->write("!", 1);
+        noteFeedHold(true);
+    }
 }
 
 bool GrblStreamer::resumeStream()
@@ -558,6 +606,7 @@ bool GrblStreamer::resumeStream()
     if (!isConnected())
         return false;
     m_port->write("~", 1);
+    noteFeedHold(false);
     return true;
 }
 
@@ -580,6 +629,7 @@ void GrblStreamer::abortStream(const QString &why, bool holdMachine)
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -627,6 +677,7 @@ void GrblStreamer::stopStream()
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -687,6 +738,15 @@ void GrblStreamer::pump()
             // the operator (and the probe macro) find the machine idle.
             if (!m_inflightSizes.isEmpty())
                 break;
+            // ...and not while a feed hold keeps it standing in the cut.
+            if (m_feedHeld) {
+                if (!m_feedHeldNoted) {
+                    m_feedHeldNoted = true;
+                    emit consoleLine(QStringLiteral("== tool change waits: the machine is held - "
+                                                    "Resume first =="));
+                }
+                break;
+            }
             m_waitingTool = line.mid(kToolMarker.size()).toInt();
             ++m_nextIndex;
             ++m_ackedCount;                      // the marker counts as done
@@ -710,6 +770,7 @@ void GrblStreamer::pump()
         } else if (m_inflightBytes + data.size() > RX_BUFFER) {
             break;
         }
+        noteOffsetLine(line);
         m_port->write(data);
         if (m_conservative)
             emit consoleLine(QStringLiteral(">> %1").arg(line));
@@ -912,6 +973,12 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     m_wcoZ = c.at(2).toDouble();   // raw: scaled on use
                     m_tloAtWco = m_tlo;            // what this WCO Z carries, if G43.1 was sent
                     m_haveWco = true;
+                    // Fresh once every line is answered: a report read after
+                    // the offset line's ok was made after GRBL applied it
+                    // (and GRBL sends WCO on the first report after a change).
+                    if (m_wcoStale && m_adhocPending == 0 && !m_macroInflight
+                        && m_inflightSizes.isEmpty())
+                        m_wcoStale = false;
                 }
             } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
                 const QList<QByteArray> c = p.mid(5).split(',');
@@ -984,6 +1051,14 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
+        // The feed hold ended without our ~ (or never took, e.g. `!` in
+        // Alarm): the stream may go on to a tool marker again.
+        if (m_feedHeld) {
+            if (st.state.startsWith(QLatin1String("Hold")) || st.state.startsWith(QLatin1String("Door")))
+                m_feedHeldSeen = true;
+            else if (!st.state.isEmpty() && (m_feedHeldSeen || m_feedHeldClock.elapsed() > 2000))
+                noteFeedHold(false);
+        }
         // Waiting to reset after an error: do it on the report that shows
         // the hold at rest, not on the next poll, so a Resume can't slip in.
         if (m_errorResetTimer->isActive())

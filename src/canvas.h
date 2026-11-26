@@ -270,6 +270,8 @@ private:
     struct TouchPress {
         bool valid = false;
         int clicks = 0, tanLines = 0, penNodes = 0, splinePts = 0;
+        QStringList selection;      // what was selected: a pinch puts it back
+        bool emptyPending = false;  // a tap on empty board says so at its release
     } m_touchPress;
     void pinchStarted();
     // A touch press that would add a shape or a constraint at once (a point,
@@ -282,7 +284,7 @@ private:
         Qt::KeyboardModifiers mods;
     } m_deferredPress;
     bool m_replaying = false;
-    bool commitsOnPress(const QMouseEvent *event) const;
+    bool commitsOnPress(const QPoint &viewportPos) const;   // a left press there
     void cancelDimDrag();   // a dimension label being dragged goes back
     // Select band (viewport coords). Dragged left to right it is a window
     // (only what lies wholly inside); right to left a crossing (whatever

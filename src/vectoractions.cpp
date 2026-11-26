@@ -48,8 +48,11 @@ using Lineage = QHash<QString, QStringList>;
 // results *that input became* (`from`) instead - so a pocket on two circles
 // becomes a pocket on their weld, but a drill on the cut-outs of a Subtract
 // does not become a drill on the plate. A toolpath left with no vectors
-// stays, empty, the way deleting its shapes leaves it; `emptied` counts
-// those. Returns (before, after) pairs for the toolpaths that change.
+// stays, empty, the way deleting its shapes leaves it, and is marked
+// "vectors_removed" so the export can tell it from one that never had any
+// (an empty Facing would otherwise face the whole stock); `emptied` counts
+// those. Returns (before, after) pairs for the toolpaths that change; undo
+// puts the before (unmarked) copy back.
 QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QString> &removed,
                                                      const QVector<Element> &added,
                                                      const Lineage &from, int *emptied)
@@ -80,39 +83,16 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
                 kept.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
                 seen.insert(e.id);
             }
-        if (kept.isEmpty() && emptied)
-            ++*emptied;
         Toolpath after = t;
         after.json.insert(QStringLiteral("elements"), kept);
+        if (kept.isEmpty()) {
+            after.json.insert(QStringLiteral("vectors_removed"), true);
+            if (emptied)
+                ++*emptied;
+        }
         out.append({t, after});
     }
     return out;
-}
-
-// Every input became every result: Union welds them all, and an Intersect
-// result is the area common to all inputs, so it lies inside each of them.
-Lineage everyResult(const QVector<Element> &inputs, const QVector<Element> &results)
-{
-    QStringList ids;
-    for (const Element &e : results)
-        ids << e.id;
-    Lineage from;
-    for (const Element &e : inputs)
-        from.insert(e.id, ids);
-    return from;
-}
-
-// Subtract: the results are what is left of the first input; the others
-// are cut away (consumed) and become nothing.
-Lineage subtractLineage(const QVector<Element> &inputs, const QVector<Element> &results)
-{
-    Lineage from;
-    if (inputs.isEmpty())
-        return from;
-    from = everyResult({inputs.first()}, results);
-    for (int i = 1; i < inputs.size(); ++i)
-        from.insert(inputs.at(i).id, QStringList());
-    return from;
 }
 
 // A path flattened finely: QPainterPath flattens curves to within half a
@@ -137,41 +117,188 @@ double segDist2(const QPointF &p, const QPointF &a, const QPointF &b)
     return QPointF::dotProduct(q, q);
 }
 
-// Whether a vertex of `ring` lies within `reach` of the outline `polys`
-// (closed subpaths also get their closing side).
+// Squared distance from `v` to the outline `polys` (closed subpaths also
+// get their closing side), or `cap2` when it is no nearer than that.
+double outlineDist2(const QPointF &v, const QVector<QPolygonF> &polys, bool closed, double cap2)
+{
+    double best = cap2;
+    for (const QPolygonF &poly : polys) {
+        const int n = poly.size();
+        if (n == 0)
+            continue;
+        const QRectF b = poly.boundingRect();
+        const double dx = qMax(0.0, qMax(b.left() - v.x(), v.x() - b.right()));
+        const double dy = qMax(0.0, qMax(b.top() - v.y(), v.y() - b.bottom()));
+        if (dx * dx + dy * dy >= best)
+            continue;
+        if (n == 1)
+            best = qMin(best, segDist2(v, poly.first(), poly.first()));
+        for (int i = 1; i < n; ++i)
+            best = qMin(best, segDist2(v, poly.at(i - 1), poly.at(i)));
+        if (closed && n > 2 && poly.first() != poly.last())
+            best = qMin(best, segDist2(v, poly.last(), poly.first()));
+    }
+    return best;
+}
+
+// Whether a vertex of `ring` lies within `reach` of the outline `polys`.
 bool ringNear(const QVector<QPolygonF> &ring, const QVector<QPolygonF> &polys, bool closed,
               double reach)
 {
     const double r2 = reach * reach;
-    for (const QPolygonF &poly : polys) {
-        if (poly.isEmpty())
-            continue;
-        const QRectF zone = poly.boundingRect().adjusted(-reach, -reach, reach, reach);
-        const int n = poly.size();
-        const bool wrap = closed && n > 2 && poly.first() != poly.last();
-        for (const QPolygonF &rp : ring)
-            for (const QPointF &v : rp) {
-                if (!zone.contains(v))
-                    continue;
-                if (n == 1 && segDist2(v, poly.first(), poly.first()) <= r2)
-                    return true;
-                for (int i = 1; i < n; ++i)
-                    if (segDist2(v, poly.at(i - 1), poly.at(i)) <= r2)
+    for (const QPolygonF &rp : ring)
+        for (const QPointF &v : rp)
+            if (outlineDist2(v, polys, closed, r2 * 1.0000001) <= r2)
+                return true;
+    return false;
+}
+
+// Whether the outline of `ring` crosses the outline `polys`.
+bool outlinesCross(const QVector<QPolygonF> &ring, const QVector<QPolygonF> &polys, bool closed)
+{
+    auto sides = [](const QPolygonF &p, bool wrap) {
+        QVector<QLineF> s;
+        for (int i = 1; i < p.size(); ++i)
+            s.append(QLineF(p.at(i - 1), p.at(i)));
+        if (wrap && p.size() > 2 && p.first() != p.last())
+            s.append(QLineF(p.last(), p.first()));
+        return s;
+    };
+    for (const QPolygonF &rp : ring) {
+        const QVector<QLineF> rs = sides(rp, true);
+        for (const QPolygonF &poly : polys) {
+            if (!rp.boundingRect().intersects(poly.boundingRect()))
+                continue;
+            for (const QLineF &b : sides(poly, closed))
+                for (const QLineF &a : rs)
+                    if (a.intersects(b) == QLineF::BoundedIntersection)
                         return true;
-                if (wrap && segDist2(v, poly.last(), poly.first()) <= r2)
-                    return true;
-            }
+        }
     }
     return false;
 }
 
+// How the result rings nest: for each, the smallest other ring around it
+// (-1 for none) and whether it is a hole (inside an odd number of rings).
+struct Nesting {
+    QVector<int> parent;
+    QVector<bool> hole;
+};
+
+Nesting nestRings(const QVector<Element> &rings)
+{
+    Nesting n;
+    const int k = rings.size();
+    n.parent.fill(-1, k);
+    n.hole.fill(false, k);
+    QVector<QRectF> box;
+    for (const Element &r : rings)
+        box.append(r.painterPath.boundingRect());
+    for (int i = 0; i < k; ++i) {
+        const QPainterPath &p = rings.at(i).painterPath;
+        if (p.elementCount() == 0)
+            continue;
+        const QPointF at(p.elementAt(0).x, p.elementAt(0).y);
+        int depth = 0;
+        double smallest = 0;
+        for (int j = 0; j < k; ++j) {
+            if (j == i || !box.at(j).contains(box.at(i)) || !rings.at(j).painterPath.contains(at))
+                continue;
+            ++depth;
+            const double area = box.at(j).width() * box.at(j).height();
+            if (n.parent.at(i) < 0 || area < smallest) {
+                n.parent[i] = j;
+                smallest = area;
+            }
+        }
+        n.hole[i] = depth % 2 == 1;
+    }
+    return n;
+}
+
+// Intersect: the result is the area common to all inputs, so it lies
+// inside each of them - every input became every result.
+Lineage everyResult(const QVector<Element> &inputs, const QVector<Element> &results)
+{
+    QStringList ids;
+    for (const Element &e : results)
+        ids << e.id;
+    Lineage from;
+    for (const Element &e : inputs)
+        from.insert(e.id, ids);
+    return from;
+}
+
+// Union: an input became the welded outlines its area overlaps (each
+// outline's region less its own holes), and those outlines' holes. Inputs
+// that do not touch keep only their own outline.
+Lineage unionLineage(const QVector<Element> &inputs, const QVector<Element> &results)
+{
+    const Nesting nest = nestRings(results);
+    Lineage from;
+    for (const Element &e : inputs)
+        from.insert(e.id, QStringList());
+    for (int i = 0; i < results.size(); ++i) {
+        if (nest.hole.at(i))
+            continue;
+        QPainterPath region = results.at(i).painterPath;
+        QStringList mine{results.at(i).id};
+        for (int j = 0; j < results.size(); ++j)
+            if (nest.hole.at(j) && nest.parent.at(j) == i) {
+                region.addPath(results.at(j).painterPath);
+                mine << results.at(j).id;
+            }
+        region.setFillRule(Qt::OddEvenFill);
+        const QRectF box = region.boundingRect();
+        for (const Element &e : inputs)
+            if (box.intersects(e.painterPath.boundingRect()) && region.intersects(e.painterPath))
+                from[e.id] << mine;
+    }
+    // Not expected (every input lies in the weld), but never lose one.
+    const Lineage all = everyResult(inputs, results);
+    for (const Element &e : inputs)
+        if (from.value(e.id).isEmpty())
+            from[e.id] = all.value(e.id);
+    return from;
+}
+
+// Subtract: the results are what is left of the first input. A cut-away
+// input that left a hole in it becomes that hole (a drill or pocket on the
+// cut-outs keeps machining them); one that only notched the outline, or
+// missed it, becomes nothing.
+Lineage subtractLineage(const QVector<Element> &inputs, const QVector<Element> &results)
+{
+    Lineage from;
+    if (inputs.isEmpty())
+        return from;
+    from = everyResult({inputs.first()}, results);
+    const Nesting nest = nestRings(results);
+    for (int i = 1; i < inputs.size(); ++i) {
+        const Element &c = inputs.at(i);
+        const QVector<QPolygonF> outline = fineOutline(c.painterPath);
+        const QRectF zone = c.painterPath.boundingRect().adjusted(-0.02, -0.02, 0.02, 0.02);
+        QStringList mine;
+        for (int j = 0; j < results.size(); ++j) {
+            if (!nest.hole.at(j) || !zone.intersects(results.at(j).painterPath.boundingRect()))
+                continue;
+            if (ringNear(results.at(j).painterPath.toSubpathPolygons(), outline,
+                         vec::isClosed(c), 0.02))
+                mine << results.at(j).id;
+        }
+        from.insert(c.id, mine);
+    }
+    return from;
+}
+
 // Offset: every input is offset in one region, so one result ring can come
 // from several inputs (outlines that grew into each other) and several
-// rings from one (a plate and its hole). A ring is the offset of the inputs
-// whose outline it runs at |delta| from - and it is at least |delta| from
-// every outline, so "within |delta| plus a little" picks exactly those. An
-// input matched by no ring (its offset swallowed by a neighbour's) gets the
-// rings it overlaps; a ring matched by no input goes to all of them.
+// rings from one (a plate and its hole). Each ring runs at |delta| from the
+// outlines it was grown from and no nearer to any, so each of its vertices
+// is credited to the input outline nearest it, when that is within |delta|
+// plus a little: a neighbour just past the reach never takes it. An input
+// credited with no ring (its offset swallowed by a neighbour's) gets the
+// rings whose outline crosses or touches it or that lie inside its area; a
+// ring credited to no input goes to all of them.
 Lineage offsetLineage(const QVector<Element> &inputs, const QVector<Element> &results,
                       double delta)
 {
@@ -179,35 +306,67 @@ Lineage offsetLineage(const QVector<Element> &inputs, const QVector<Element> &re
     for (const Element &e : inputs)
         from.insert(e.id, QStringList());
     const double reach = std::fabs(delta) * 1.01 + 0.02;
+    const double reach2 = reach * reach;
     QVector<QVector<QPolygonF>> outlines;
     QVector<QRectF> zones;
+    QVector<bool> closed;
     for (const Element &e : inputs) {
         outlines.append(fineOutline(e.painterPath));
         zones.append(e.painterPath.boundingRect().adjusted(-reach, -reach, reach, reach));
+        closed.append(vec::isClosed(e));
     }
     for (const Element &r : results) {
         const QVector<QPolygonF> ring = r.painterPath.toSubpathPolygons();
         const QRectF box = r.painterPath.boundingRect();
-        bool any = false;
-        for (int i = 0; i < inputs.size(); ++i) {
-            if (!zones.at(i).intersects(box) && !zones.at(i).contains(box))
-                continue;
-            if (ringNear(ring, outlines.at(i), vec::isClosed(inputs.at(i)), reach)) {
-                from[inputs.at(i).id] << r.id;
-                any = true;
+        QVector<int> near;
+        for (int i = 0; i < inputs.size(); ++i)
+            if (zones.at(i).intersects(box) || zones.at(i).contains(box))
+                near.append(i);
+        QSet<int> credited;
+        QVector<double> d2(near.size());
+        for (const QPolygonF &rp : ring)
+            for (const QPointF &v : rp) {
+                double best = reach2 * 1.0000001;
+                for (int k = 0; k < near.size(); ++k) {
+                    const int i = near.at(k);
+                    d2[k] = zones.at(i).contains(v)
+                                ? outlineDist2(v, outlines.at(i), closed.at(i), reach2 * 1.0000001)
+                                : reach2 * 1.0000001;
+                    best = qMin(best, d2.at(k));
+                }
+                if (best > reach2)
+                    continue;
+                // Ties (an input selected with its exact copy) all count.
+                const double tie = std::pow(std::sqrt(best) + 1e-4, 2);
+                for (int k = 0; k < near.size(); ++k)
+                    if (d2.at(k) <= tie)
+                        credited.insert(near.at(k));
             }
-        }
-        if (!any)
+        for (int i = 0; i < inputs.size(); ++i)
+            if (credited.contains(i))
+                from[inputs.at(i).id] << r.id;
+        if (credited.isEmpty())
             for (const Element &e : inputs)
                 from[e.id] << r.id;
     }
-    for (const Element &e : inputs) {
+    for (int i = 0; i < inputs.size(); ++i) {
+        const Element &e = inputs.at(i);
         QStringList &mine = from[e.id];
         if (!mine.isEmpty())
             continue;
-        for (const Element &r : results)
-            if (r.painterPath.intersects(e.painterPath))
+        const QRectF ebox = e.painterPath.boundingRect().adjusted(-0.02, -0.02, 0.02, 0.02);
+        for (const Element &r : results) {
+            if (!ebox.intersects(r.painterPath.boundingRect()))
+                continue;
+            const QVector<QPolygonF> ring = r.painterPath.toSubpathPolygons();
+            bool inside = closed.at(i);
+            for (const QPolygonF &rp : ring)
+                for (const QPointF &v : rp)
+                    inside = inside && e.painterPath.contains(v);
+            if (inside || ringNear(ring, outlines.at(i), closed.at(i), 0.02)
+                || outlinesCross(ring, outlines.at(i), closed.at(i)))
                 mine << r.id;
+        }
     }
     return from;
 }
@@ -792,8 +951,11 @@ void VectorActions::boolean(vec::BoolOp op)
         return;
     }
     // Subtract leaves only what is left of the first vector; the others are
-    // cut away, and a toolpath on them must not move onto the base.
+    // cut away, and a toolpath on them follows only the holes they left,
+    // never onto the base. Union: each input follows the outline it welded
+    // into, not a disjoint neighbour's.
     const Lineage from = op == vec::BoolOp::Subtract ? subtractLineage(closedInputs, results)
+                       : op == vec::BoolOp::Union    ? unionLineage(closedInputs, results)
                                                      : everyResult(closedInputs, results);
     const int emptied = pushReplace(closedInputs, results, false,
                                     tr("%1 %2 vectors").arg(name).arg(closedInputs.size()), from);
@@ -855,10 +1017,13 @@ void VectorActions::offsetBy(double delta, bool keepInputs)
     }
     // Each toolpath follows only the outlines grown (or shrunk) from its own
     // vectors: Offset runs on the whole selection as one region.
-    pushReplace(inputs, results, keepInputs,
+    const int emptied = pushReplace(inputs, results, keepInputs,
                 tr("offset %1 vector(s) by %2 mm").arg(inputs.size()).arg(delta),
                 keepInputs ? Lineage() : offsetLineage(inputs, results, delta));
-    reportDone(tr("Offset by %1 mm: %2 closed path(s)").arg(delta).arg(results.size()));
+    QString msg = tr("Offset by %1 mm: %2 closed path(s)").arg(delta).arg(results.size());
+    if (emptied)
+        msg += tr("; %1 toolpath(s) on the cut-away vectors have no vectors left").arg(emptied);
+    reportDone(msg);
 }
 
 static QVector<QRectF> boxesOf(const QVector<Element> &els)

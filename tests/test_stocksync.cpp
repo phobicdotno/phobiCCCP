@@ -429,6 +429,71 @@ int main(int argc, char **argv)
         check(delivered, "in each case a copy that hears the packets has the Collections and every count");
     }
 
+    // 8. A fresh announce heard again after the first exchange (late or
+    //    replayed) does not bring back a bit removed since.
+    {
+        const QString r8 = tmp.path() + QStringLiteral("/r8.ini"), f8 = tmp.path() + QStringLiteral("/f8.ini");
+        putIni(r8, "{\"collections\":[{\"name\":\"My Tools\",\"tools\":[201,102]}]}", 1000);
+        putFresh(f8, "{\"collections\":[{\"name\":\"My Tools\",\"tools\":[112]},{\"name\":\"Unused\",\"tools\":[]}]}",
+                 2000, "{\"ts\":{\"My Tools\":2000},\"gone\":{}}");
+        c2d::StockSync R8(r8, 0), F8(f8, 0);
+        const QByteArray freshPacket = F8.payload();
+        check(R8.merge(freshPacket) && has(collectionsIn(r8), QStringLiteral("My Tools"), {201, 102, 112}),
+              "the first exchange pools F's #112");
+        check(F8.merge(R8.payload()), "F settles with R");
+        // R then takes #112 out of My Tools.
+        {
+            QSettings rs(r8, QSettings::IniFormat);
+            c2d::ToolCollections rc = collectionsIn(rs);
+            rc.removeTool(QStringLiteral("My Tools"), 112);
+            QJsonObject st = QJsonDocument::fromJson(rs.value(QStringLiteral("tools/collectionsStamps")).toByteArray()).object();
+            const qint64 t = QDateTime::currentMSecsSinceEpoch() + 10;
+            QJsonObject ts = st.value(QStringLiteral("ts")).toObject();
+            ts.insert(QStringLiteral("My Tools"), double(t));
+            st.insert(QStringLiteral("ts"), ts);
+            rs.setValue(QStringLiteral("tools/collections"), rc.toJson());
+            rs.setValue(QStringLiteral("tools/collectionsStamps"), QJsonDocument(st).toJson(QJsonDocument::Compact));
+            rs.setValue(QStringLiteral("tools/collectionsTs"), t);
+            rs.sync();
+        }
+        R8.merge(freshPacket);
+        const c2d::ToolCollections after = collectionsIn(r8);
+        check(has(after, QStringLiteral("My Tools"), {201, 102}) && !after.byName(QStringLiteral("My Tools"))->tools.contains(112),
+              "the same fresh packet again does not put #112 back");
+    }
+
+    // 9. A peer adds no collection names past kMaxCollections; names we
+    //    have still update.
+    {
+        const QString x = tmp.path() + QStringLiteral("/x9.ini");
+        putIni(x, "{\"collections\":[{\"name\":\"Mine\",\"tools\":[201]}]}", 1000,
+               "{\"ts\":{\"Mine\":1000},\"gone\":{}}");
+        c2d::StockSync X(x, 0);
+        QJsonArray list;
+        QJsonObject items;
+        list.append(QJsonObject{{QStringLiteral("name"), QStringLiteral("Mine")}, {QStringLiteral("tools"), QJsonArray{201, 102}}});
+        items.insert(QStringLiteral("Mine"), 3000.0);
+        for (int i = 0; i < 600; ++i) {
+            const QString n = QStringLiteral("n%1").arg(i);
+            list.append(QJsonObject{{QStringLiteral("name"), n}, {QStringLiteral("tools"), QJsonArray()}});
+            items.insert(n, 3000.0);
+        }
+        const QJsonObject coll{{QStringLiteral("json"), QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("collections"), list}})
+                                                                              .toJson(QJsonDocument::Compact))},
+                               {QStringLiteral("ts"), 3000.0},
+                               {QStringLiteral("items"), items},
+                               {QStringLiteral("gone"), QJsonObject()}};
+        const QByteArray flood = QJsonDocument(QJsonObject{{QStringLiteral("app"), QStringLiteral("phobiCCCP-stock")},
+                                                           {QStringLiteral("v"), 1},
+                                                           {QStringLiteral("coll"), coll}})
+                                     .toJson(QJsonDocument::Compact);
+        check(flood.size() <= c2d::StockSync::kMaxDatagram, "the flood fits in one packet");
+        X.merge(flood);
+        const c2d::ToolCollections got = collectionsIn(x);
+        check(got.all().size() <= c2d::StockSync::kMaxCollections, "no more than kMaxCollections collections");
+        check(has(got, QStringLiteral("Mine"), {201, 102}), "a name we had still takes the newer edit");
+    }
+
     QSettings().clear();
     return g_fail ? 1 : 0;
 }

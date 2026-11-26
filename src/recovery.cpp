@@ -7,6 +7,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QLockFile>
+#include <QScopeGuard>
 #include <QMutex>
 #include <QSet>
 #include <QStandardPaths>
@@ -185,6 +186,27 @@ void Recovery::remove(const QString &copy)
     QFile::remove(sidecar(copy));
 }
 
+bool Recovery::isFree(const QString &copy)
+{
+    if (!QFileInfo::exists(copy))
+        return false;
+    std::unique_ptr<QLockFile> lock = takeLock(copy);
+    if (!lock)
+        return false;
+    releaseLock(lock);
+    return true;
+}
+
+bool Recovery::removeIfFree(const QString &copy)
+{
+    std::unique_ptr<QLockFile> lock = takeLock(copy);
+    if (!lock)
+        return false;                // another window opened it: it is that one's
+    remove(copy);
+    releaseLock(lock);
+    return true;
+}
+
 QVector<Recovery::Entry> Recovery::pending() const
 {
     QVector<Entry> out;
@@ -193,10 +215,11 @@ QVector<Recovery::Entry> Recovery::pending() const
         const QString copy = fi.absoluteFilePath();
         if (copy == m_current)
             continue;
+        // Held while this copy is looked at (and deleted, if stale).
         std::unique_ptr<QLockFile> lock = takeLock(copy);
         if (!lock)
             continue;                // its session is still running
-        releaseLock(lock);
+        const auto release = qScopeGuard([&lock] { releaseLock(lock); });
         QFile side(sidecar(copy));
         if (!side.open(QIODevice::ReadOnly)) {
             remove(copy);            // no record of what it belongs to

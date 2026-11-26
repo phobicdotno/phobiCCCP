@@ -182,4 +182,29 @@ void main() {
       expect(old.words(), 'Cutting Sign');
     });
   });
+
+  group('MachineStatus lifting and tool change', () {
+    const base = {'connected': true, 'homed': true, 'busy': true, 'streaming': true, 'state': 'Run', 'job': 'Sign'};
+    test('older computer: defaults, cutting', () {
+      final s = MachineStatus.fromJson(base);
+      expect(s.lifting, isFalse);
+      expect(s.toolChange, -1);
+      expect(s.words(), 'Cutting Sign');
+    });
+    test('lifting', () {
+      expect(MachineStatus.fromJson({...base, 'lifting': true}).words(), 'Finishing the sent moves, then lifting — still cutting');
+    });
+    test('held wins over lifting', () {
+      expect(MachineStatus.fromJson({...base, 'lifting': true, 'held': true}).words(), 'Held — press Resume at the computer');
+    });
+    test('tool change wins over all', () {
+      final s = MachineStatus.fromJson({...base, 'toolChange': 3, 'held': true, 'lifting': true});
+      expect(s.toolChange, 3);
+      expect(s.words(), 'Tool change: T3 — answer at the computer');
+    });
+    test('toolChange -1 or not a number: none', () {
+      expect(MachineStatus.fromJson({...base, 'toolChange': -1}).words(), 'Cutting Sign');
+      expect(MachineStatus.fromJson({...base, 'toolChange': '3'}).toolChange, -1);
+    });
+  });
 }

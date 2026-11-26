@@ -1134,48 +1134,74 @@ int main(int argc, char *argv[])
         const QMetaObject::Connection hintConn =
             QObject::connect(canvas, &Canvas::statusHint, [&hint](const QString &m) { hint = m; });
 
-        // Subtract: plate minus two hole circles.
+        auto flagged = [](const Document &d, const QString &uuid) {
+            for (const Toolpath &t : d.toolpaths())
+                if (t.uuid == uuid)
+                    return t.json.value("vectors_removed").toBool(false);
+            return false;
+        };
+
+        // Subtract: plate minus two hole circles and a notch on its edge.
         {
             Document sd;
             const Element plate = Element::makeRectangle({50, 50}, 60, 40, layer);   // 20..80 x 30..70
             const Element h1 = Element::makeCircle({35, 50}, 3, layer);
             const Element h2 = Element::makeCircle({65, 50}, 3, layer);
+            const Element notch = Element::makeCircle({80, 40}, 3, layer);          // over the right edge
             const Element far = Element::makeCircle({200, 200}, 3, layer);
-            for (const Element &e : {plate, h1, h2, far})
+            for (const Element &e : {plate, h1, h2, notch, far})
                 sd.addElement(e);
             sd.addToolpath(tp("{tp-holes}", {h1.id, h2.id}));
+            sd.addToolpath(tp("{tp-h2}", {h2.id}));
+            sd.addToolpath(tp("{tp-notch}", {notch.id}));
             sd.addToolpath(tp("{tp-plate}", {plate.id}));
-            sd.addToolpath(tp("{tp-mixed}", {far.id, h1.id, plate.id}));
+            sd.addToolpath(tp("{tp-mixed}", {far.id, notch.id, plate.id}));
             sd.addToolpath(tp("{tp-far}", {far.id}));
             canvas->setDocument(&sd);
             QUndoStack *su = canvas->undoStack();
             const QStringList before = idsNow(sd);
+            auto holeAt = [&](const QStringList &res, const QPointF &c) {
+                for (const QString &id : res)
+                    if (nearRect(sd.elementById(id)->painterPath.boundingRect(),
+                                 QRectF(c - QPointF(3, 3), QSizeF(6, 6)), 0.05))
+                        return id;
+                return QString();
+            };
 
-            canvas->selectIds({plate.id, h1.id, h2.id});   // the plate is first (biggest)
+            canvas->selectIds({plate.id, h1.id, h2.id, notch.id});   // the plate is first (biggest)
             hint.clear();
             va.boolean(vec::BoolOp::Subtract);
             const QStringList res = added(sd, before);
-            check(res.size() == 3, "subtract: plate with two holes is three rings");
-            check(refs(sd, "{tp-holes}").isEmpty(),
-                  "subtract: a drill on the cut-out circles does not move onto the plate");
-            check(sd.toolpaths().size() == 4, "subtract: the emptied toolpath is kept, like a delete");
+            check(res.size() == 3, "subtract: notched plate with two holes is three rings");
+            const QString r1 = holeAt(res, {35, 50}), r2 = holeAt(res, {65, 50});
+            check(!r1.isEmpty() && !r2.isEmpty(), "subtract: the holes sit where the circles were");
+            check(sorted(refs(sd, "{tp-holes}")) == sorted({r1, r2}),
+                  "subtract: a drill on the cut-out circles follows the holes they left, not the plate");
+            check(refs(sd, "{tp-h2}") == QStringList{r2}, "subtract: each circle's toolpath gets its own hole");
+            check(!flagged(sd, "{tp-holes}"), "subtract: a toolpath that kept vectors is not flagged");
+            check(refs(sd, "{tp-notch}").isEmpty() && flagged(sd, "{tp-notch}"),
+                  "subtract: a notch leaves no hole: its toolpath is emptied and marked vectors_removed");
+            check(sd.toolpaths().size() == 6, "subtract: the emptied toolpath is kept, like a delete");
             check(sorted(refs(sd, "{tp-plate}")) == sorted(res),
                   "subtract: the plate's toolpath machines the plate-with-holes");
             const QStringList mixed = refs(sd, "{tp-mixed}");
             check(!mixed.isEmpty() && mixed.first() == far.id && sorted(mixed.mid(1)) == sorted(res),
-                  "subtract: a toolpath on plate and hole keeps its other vector, gains the result, "
-                  "loses the hole");
+                  "subtract: a toolpath on plate and notch keeps its other vector, gains the result, "
+                  "loses the notch");
             check(refs(sd, "{tp-far}") == QStringList{far.id}, "subtract: unrelated toolpath untouched");
             check(hint.contains(QLatin1String("1 toolpath")), "subtract: the emptied toolpath is reported");
             su->undo();
             check(refs(sd, "{tp-holes}") == QStringList({h1.id, h2.id}) &&
+                  refs(sd, "{tp-notch}") == QStringList{notch.id} &&
                   refs(sd, "{tp-plate}") == QStringList{plate.id} &&
-                  refs(sd, "{tp-mixed}") == QStringList({far.id, h1.id, plate.id}),
+                  refs(sd, "{tp-mixed}") == QStringList({far.id, notch.id, plate.id}),
                   "subtract: undo restores every toolpath's vectors exactly");
+            check(!flagged(sd, "{tp-notch}"), "subtract: undo takes the vectors_removed mark off");
             check(idsNow(sd) == before, "subtract: undo restores the elements");
             su->redo();
-            check(refs(sd, "{tp-holes}").isEmpty() && sorted(refs(sd, "{tp-plate}")) == sorted(res),
-                  "subtract: redo retargets the same way");
+            check(refs(sd, "{tp-notch}").isEmpty() && flagged(sd, "{tp-notch}") &&
+                  sorted(refs(sd, "{tp-plate}")) == sorted(res),
+                  "subtract: redo retargets and marks the same way");
             su->undo();
             canvas->setDocument(&doc);
         }
@@ -1246,6 +1272,60 @@ int main(int argc, char *argv[])
             canvas->setDocument(&doc);
         }
 
+        // Offset: an island in a hole, inward; and two parts just over 2*delta apart.
+        {
+            Document od;
+            const Element plate = Element::makeRectangle({50, 150}, 60, 40, layer); // 20..80 x 130..170
+            const Element hole = Element::makeCircle({50, 150}, 12, layer);
+            const Element island = Element::makeCircle({50, 150}, 5, layer);
+            const Element a = Element::makeRectangle({50, 250}, 20, 20, layer);     // 40..60
+            const Element b = Element::makeRectangle({72.01, 250}, 20, 20, layer);  // 62.01..82.01
+            for (const Element &e : {plate, hole, island, a, b})
+                od.addElement(e);
+            od.addToolpath(tp("{tp-plate}", {plate.id}));
+            od.addToolpath(tp("{tp-hole}", {hole.id}));
+            od.addToolpath(tp("{tp-island}", {island.id}));
+            od.addToolpath(tp("{tp-a}", {a.id}));
+            od.addToolpath(tp("{tp-b}", {b.id}));
+            canvas->setDocument(&od);
+            QUndoStack *ou = canvas->undoStack();
+            const QStringList before = idsNow(od);
+            auto resultNear = [&](const QStringList &res, const QRectF &box) {
+                for (const QString &id : res)
+                    if (nearRect(od.elementById(id)->painterPath.boundingRect(), box, 0.05))
+                        return id;
+                return QString();
+            };
+
+            canvas->selectIds({plate.id, hole.id, island.id});
+            va.offsetBy(-1, false);
+            QStringList res = added(od, before);
+            check(res.size() == 3, "inward offset: plate, hole and island give three rings");
+            const QString po = resultNear(res, QRectF(21, 131, 58, 38));
+            const QString ho = resultNear(res, QRectF(37, 137, 26, 26));
+            const QString io = resultNear(res, QRectF(46, 146, 8, 8));
+            check(!po.isEmpty() && !ho.isEmpty() && !io.isEmpty(),
+                  "inward offset: the plate shrinks, the hole grows, the island shrinks");
+            check(refs(od, "{tp-plate}") == QStringList{po} && refs(od, "{tp-hole}") == QStringList{ho}
+                  && refs(od, "{tp-island}") == QStringList{io},
+                  "inward offset: plate, hole and island toolpaths each follow their own ring");
+            ou->undo();
+            check(refs(od, "{tp-island}") == QStringList{island.id}, "inward offset: undo exact");
+
+            canvas->selectIds({a.id, b.id});
+            va.offsetBy(1, false);
+            res = added(od, before);
+            check(res.size() == 2, "offset: parts 2*delta + 0.01 apart stay two outlines");
+            const QString ga = resultNear(res, QRectF(39, 239, 22, 22));
+            const QString gb = resultNear(res, QRectF(61.01, 239, 22, 22));
+            check(!ga.isEmpty() && !gb.isEmpty(), "offset: both close parts grow by 1 mm");
+            check(refs(od, "{tp-a}") == QStringList{ga} && refs(od, "{tp-b}") == QStringList{gb},
+                  "offset: a neighbour just past the reach does not take the other part's outline");
+            check(!flagged(od, "{tp-a}") && !flagged(od, "{tp-b}"), "offset: nothing emptied, nothing marked");
+            ou->undo();
+            canvas->setDocument(&doc);
+        }
+
         // Union welds everything: every toolpath on an input gets the weld.
         {
             Document ud;
@@ -1271,6 +1351,47 @@ int main(int argc, char *argv[])
             uu->undo();
             check(refs(ud, "{tp-a}") == QStringList{a.id} &&
                   refs(ud, "{tp-b}") == QStringList({c.id, b.id}), "union: undo restores the refs");
+            canvas->setDocument(&doc);
+        }
+
+        // Union of disjoint inputs: each keeps only the outline it welded into;
+        // a weld's hole goes with its outline.
+        {
+            Document ud;
+            const Element top = Element::makeRectangle({50, 70}, 40, 4, layer);     // a square frame of
+            const Element bottom = Element::makeRectangle({50, 30}, 40, 4, layer);  // four bars: 30..70 x
+            const Element left = Element::makeRectangle({32, 50}, 4, 44, layer);    // 28..72, hole 34..66
+            const Element right = Element::makeRectangle({68, 50}, 4, 44, layer);   // x 32..68
+            const Element c = Element::makeCircle({200, 50}, 5, layer);
+            for (const Element &e : {top, bottom, left, right, c})
+                ud.addElement(e);
+            ud.addToolpath(tp("{tp-top}", {top.id}));
+            ud.addToolpath(tp("{tp-c}", {c.id}));
+            ud.addToolpath(tp("{tp-left-c}", {left.id, c.id}));
+            canvas->setDocument(&ud);
+            QUndoStack *uu = canvas->undoStack();
+            const QStringList before = idsNow(ud);
+            canvas->selectIds({top.id, bottom.id, left.id, right.id, c.id});
+            va.boolean(vec::BoolOp::Union);
+            const QStringList res = added(ud, before);
+            check(res.size() == 3, "union of a frame and a circle: outline, hole, circle");
+            QString outer, hole, circle;
+            for (const QString &id : res) {
+                const QRectF bx = ud.elementById(id)->painterPath.boundingRect();
+                if (nearRect(bx, QRectF(30, 28, 40, 44), 0.05)) outer = id;
+                if (nearRect(bx, QRectF(34, 32, 32, 36), 0.05)) hole = id;
+                if (nearRect(bx, QRectF(195, 45, 10, 10), 0.05)) circle = id;
+            }
+            check(!outer.isEmpty() && !hole.isEmpty() && !circle.isEmpty(), "union: rings where expected");
+            check(sorted(refs(ud, "{tp-top}")) == sorted({outer, hole}),
+                  "union: a bar's toolpath gets the frame and its hole, not the disjoint circle");
+            check(refs(ud, "{tp-c}") == QStringList{circle},
+                  "union: the disjoint circle's toolpath keeps only its own ring");
+            check(sorted(refs(ud, "{tp-left-c}")) == sorted({outer, hole, circle}),
+                  "union: a toolpath on both gets both");
+            uu->undo();
+            check(refs(ud, "{tp-top}") == QStringList{top.id} &&
+                  refs(ud, "{tp-left-c}") == QStringList({left.id, c.id}), "union disjoint: undo exact");
             canvas->setDocument(&doc);
         }
         QObject::disconnect(hintConn);

@@ -2463,9 +2463,11 @@ void MachinePanel::startSurfaceMap()
     // the travel (an end stop, the position lost). Check the four corners.
     {
         const MachineStatus &st = m_grbl->status();
-        if (!st.valid || !m_grbl->hasWorkOffset()) {
-            log(QStringLiteral("!! surface map: the work offset has not been reported yet - try again "
-                               "in a moment"));
+        if (!st.valid || !m_grbl->workOffsetFresh()) {
+            m_grbl->requestStatus();
+            log(QStringLiteral("!! surface map: waiting for the %1work offset from the controller - "
+                               "try again in a moment")
+                    .arg(m_grbl->hasWorkOffset() ? QStringLiteral("new ") : QString()));
             return;
         }
         const double ox = st.mx - st.wx, oy = st.my - st.wy;
@@ -3920,9 +3922,13 @@ void MachinePanel::goToXY0()
     // A zero set before homing, or left from another machine, can be off the
     // travel, and the G0 there would run into an end stop.
     const MachineStatus &st = m_grbl->status();
-    if (!st.valid || !m_grbl->hasWorkOffset()) {
-        log(QStringLiteral("!! Go to X0 Y0: the work offset has not been reported yet - try again "
-                           "in a moment"));
+    if (!st.valid || !m_grbl->workOffsetFresh()) {
+        // Just zeroed (G10): the offset held is the old one until a report
+        // after the zero's ok brings the new one.
+        m_grbl->requestStatus();
+        log(QStringLiteral("!! Go to X0 Y0: waiting for the %1work offset from the controller - "
+                           "try again in a moment")
+                .arg(m_grbl->hasWorkOffset() ? QStringLiteral("new ") : QString()));
         return;
     }
     const double zx = st.mx - st.wx, zy = st.my - st.wy;
@@ -4792,10 +4798,14 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("homed"), m_grbl->isConnected() && m_homed);
     o.insert(QStringLiteral("busy"), isBusy());
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
-    // Held (a feed hold, a lift-hold queued or standing at its point): the
-    // pad says so instead of "Cutting".
-    o.insert(QStringLiteral("held"), m_grbl->isConnected()
-                                         && (m_held || m_liftHold || m_grbl->isHeldAtPoint()));
+    // Held (a feed hold, or a lift-hold standing at its point): the pad says
+    // so instead of "Cutting". A lift-hold still queued behind lines GRBL
+    // runs is not held yet: "lifting".
+    const bool atPoint = m_grbl->isHeldAtPoint();
+    o.insert(QStringLiteral("held"), m_grbl->isConnected() && (m_held || atPoint));
+    o.insert(QStringLiteral("lifting"), m_grbl->isConnected() && m_liftHold && !m_held && !atPoint);
+    // Parked at a tool change: the tool the program wants, else -1.
+    o.insert(QStringLiteral("toolChange"), m_grbl->isParkedForTool() ? m_pendingTool : -1);
     o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());
     // The running job's steps, for the pad's job list.

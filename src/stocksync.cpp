@@ -335,7 +335,7 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
     // Nothing of our own yet: theirs as they are (a fresh peer's stay its own
     // until it has merged with another copy).
     if (lts == 0) {
-        if (pfresh)
+        if (pfresh || peer.all().size() > StockSync::kMaxCollections)
             return false;
         s.setValue(QLatin1String(kCollKey), pj);
         // Never below a stamp kept: the next edit here is stamped after it.
@@ -358,10 +358,17 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
         // side: from then on the newest edit wins and deletions stick.
         for (const ToolCollection &p : peer.all()) {
             if (result.byName(p.name)) {
-                for (int n : p.tools)
-                    result.addTool(p.name, n);
+                // A copy that has settled pools a fresh peer's bits only
+                // into collections it has not changed since the peer did:
+                // a fresh announce heard again later (a late or replayed
+                // packet) does not bring back a bit removed here since.
+                if (lfresh || theirs.ts.value(p.name, 0) > mine.ts.value(p.name, 0))
+                    for (int n : p.tools)
+                        result.addTool(p.name, n);
             } else if (p.tools.isEmpty() && theirs.ts.value(p.name, 0) == 0) {
                 continue;                  // an untouched built-in default adds nothing
+            } else if (result.all().size() >= StockSync::kMaxCollections) {
+                continue;                  // no new names past the cap
             } else if (lfresh || mine.gone.value(p.name, -1) < theirs.ts.value(p.name, 0)) {
                 putCollection(result, p);
             }
@@ -423,7 +430,8 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
                     }
                     out.ts.insert(p.name, t);
                 }
-            } else if (t > out.gone.value(p.name, -1)) {
+            } else if (t > out.gone.value(p.name, -1)
+                       && result.all().size() < StockSync::kMaxCollections) {
                 putCollection(result, p);
                 if (t > 0)
                     out.ts.insert(p.name, t);

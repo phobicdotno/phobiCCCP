@@ -441,6 +441,31 @@ int main(int argc, char *argv[])
               "a through cut in thin stock keeps its tabs");
     }
 
+    // --- a break-through counts toward "through": 2.1 mm sheet, cut 2.0
+    // plus 0.3 break-through goes through it and needs its tabs.
+    {
+        Rig r;
+        r.doc.setParam(QStringLiteral("thickness"), QStringLiteral("2.100"));
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 2.0}, {"break_through", 0.3},
+                                 {"tab_height", 3.0}, {"ignore_tabs", false}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.gcode.contains(QLatin1String("Z1.000")),
+              "a through cut counting its break-through keeps its tabs");
+    }
+    // --- stock re-measured a little thicker than the cut depth is still
+    // treated as through (2.15 mm sheet, 2.0 mm cut, no break-through).
+    {
+        Rig r;
+        r.doc.setParam(QStringLiteral("thickness"), QStringLiteral("2.150"));
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 2.0}, {"tab_height", 3.0},
+                                 {"ignore_tabs", false}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.gcode.contains(QLatin1String("Z1.000")),
+              "a cut within 0.2 mm of the stock bottom keeps its tabs");
+    }
+
     // --- a ramp into a short last pass starts from the floor already cut,
     // not a full step-down above it (it fed up inside the slot first).
     {
@@ -1489,6 +1514,20 @@ int main(int argc, char *argv[])
             }
         }
         check(plungesOff, "face plunges beside the stock");
+    }
+    // A face whose vectors were removed (deleted, or used up by Subtract or
+    // Offset) is skipped, not turned into a skim of the whole board.
+    {
+        Rig r;
+        r.doc.setParam("width", "100");
+        r.doc.setParam("height", "50");
+        r.addToolpath("face_toolpath",
+                      {{"end_depth", "1.000"}, {"stepdown", 0.5}, {"stepover", 4.0},
+                       {"elements", QJsonArray()}, {"vectors_removed", true}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.isEmpty() && g.skipped.size() == 1
+                  && g.skipped.first().contains(QLatin1String("removed")),
+              "a face that lost its vectors is skipped, not run over the whole stock");
     }
     // Face over selected vectors: the box around them, the tool inside it.
     {

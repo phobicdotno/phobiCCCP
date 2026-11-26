@@ -28,6 +28,7 @@ public:
     static constexpr quint16 kPort = 47233;
     static constexpr int kMaxDatagram = 60000;   // bigger packets are neither sent nor read
     static constexpr int kMaxStockEntries = 2000; // bits looked at per packet
+    static constexpr int kMaxCollections = 500;   // a peer adds no names beyond this many
     // settingsFile empty: the app's own settings. Tests pass an .ini path and a
     // target of their own so two copies can talk inside one process.
     explicit StockSync(const QString &settingsFile = QString(), quint16 listenPort = kPort,

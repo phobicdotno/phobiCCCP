@@ -2771,8 +2771,18 @@ void MainWindow::offerRecovery()
                            "has changes that were never saved.\n\nOpen it? (No deletes it.)")
                 .arg(what, QLocale().toString(e.saved, QLocale::ShortFormat)),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        // Another window may have been offered the same copy and opened it
+        // while this box was up: it is that window's now, neither deleted
+        // nor opened a second time here.
         if (r != QMessageBox::Yes) {
-            Recovery::remove(e.copy);
+            if (!Recovery::removeIfFree(e.copy) && QFileInfo::exists(e.copy))
+                statusBar()->showMessage(QStringLiteral("The recovery copy of %1 is open in another "
+                                                        "window; left to it").arg(what), 10000);
+            continue;
+        }
+        if (!Recovery::isFree(e.copy)) {
+            statusBar()->showMessage(QStringLiteral("The recovery copy of %1 is open in another "
+                                                    "window").arg(what), 10000);
             continue;
         }
         if (!confirmDiscard(QStringLiteral("Save before opening the recovered design?")))
