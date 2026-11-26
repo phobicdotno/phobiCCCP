@@ -1322,7 +1322,7 @@ MachinePanel::MachinePanel(QWidget *parent)
             m_grbl->continueAfterHold(down);
         } else if (!m_held && m_homed && !riseToTop().isEmpty() && m_grbl->canLiftHold()) {
             // Z to the top, then the spindle off; XY stays where it is.
-            QStringList up = riseToTop();
+            QStringList up = QStringList{QStringLiteral("G21")} + riseToTop();
             up << QStringLiteral("M5");
             if (m_grbl->queueHoldPoint(up)) {
                 if (m_jobView)
@@ -1628,7 +1628,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         // own summary.
         const int stopCode = m_stopCode;
         m_stopCode = 0;
-        if (!rehearsal) {
+        // Finished and parking: every line is answered, but the machine
+        // still cuts the last of them. The history waits for it to stand
+        // still (a Cancel or Stop before that is what it records).
+        if (!rehearsal && !endJob) {
             recordJobEnd(ok ? QStringLiteral("finished")
                          : m_hist.cancelled ? QStringLiteral("cancelled")
                          : stopCode > 0 ? QStringLiteral("alarm")
@@ -1661,9 +1664,11 @@ MachinePanel::MachinePanel(QWidget *parent)
             m_endRisePending = true;
             whenIdle([this, runSaved] {
                 m_endRisePending = false;
+                recordJobEnd(QStringLiteral("finished"), 0);
+                jobhistory::chime(this);
                 if (runSaved)
                     clearResumePoint();
-                m_grbl->startMacro(endOfJobMoves());
+                startMoves(endOfJobMoves());
             });
         }
     });
@@ -1873,7 +1878,7 @@ bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
                                "Initialize (home) to turn the limits on."));
             m_limitWarned = true;
         }
-        if (!m_grbl->sendCommand(QStringLiteral("$J=G91 %1%2 F%3")
+        if (!m_grbl->sendCommand(QStringLiteral("$J=G21 G91 %1%2 F%3")
                                      .arg(QChar::fromLatin1(axis)).arg(delta, 0, 'f', 3).arg(feed)))
             return false;
         m_moveFreshAfter = m_statusSeq + 2;
@@ -1917,7 +1922,7 @@ bool MachinePanel::jogBy(char axis, double delta, double feed, bool defer)
         return false;
     }
     // Refused (a macro owns the line): the plan stays where the machine is.
-    if (!m_grbl->sendCommand(QStringLiteral("$J=G53 G90 %1%2 F%3")
+    if (!m_grbl->sendCommand(QStringLiteral("$J=G21 G53 G90 %1%2 F%3")
                                  .arg(QChar::fromLatin1(axis)).arg(to, 0, 'f', 3).arg(feed))) {
         forgetJogPlan();
         return false;
@@ -2369,7 +2374,7 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
         whenIdle([this, z, x, y, resets] {
             if (resets != m_resets || !m_homed)
                 return;
-            m_grbl->startMacro({QStringLiteral("G90"),
+            startMoves({QStringLiteral("G90"),
                                 QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
                                 QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
         });
@@ -2412,7 +2417,7 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
             bitZeroStage(Phase::BitZeroY, toCentre);
         else {
             m_phase = Phase::BitZeroHome;
-            m_grbl->startMacro(QStringList{QStringLiteral("G90")} + toCentre);
+            startMoves(QStringList{QStringLiteral("G90")} + toCentre);
         }
         return;
     }
@@ -2437,7 +2442,7 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
             bitZeroStage(Phase::BitZeroZ, over);
         } else {
             m_phase = Phase::BitZeroHome;
-            m_grbl->startMacro(QStringList{QStringLiteral("G90")} + toCentre);
+            startMoves(QStringList{QStringLiteral("G90")} + toCentre);
         }
         return;
     }
@@ -2459,7 +2464,7 @@ void MachinePanel::bitZeroAfter(Phase stage, bool ok)
             // at the height the plate probe left (a couple of mm over the
             // plate) skims the pin over the plate, its lip and the magnet.
             m_phase = Phase::BitZeroHome;
-            m_grbl->startMacro(riseToTop()
+            startMoves(riseToTop()
                                + QStringList{QStringLiteral("G90"),
                                              QStringLiteral("G53 G0 X%1 Y%2").arg(m_bzCx, 0, 'f', 3)
                                                                              .arg(m_bzCy, 0, 'f', 3)});
@@ -2530,7 +2535,7 @@ void MachinePanel::bitZeroAfterCentre(Phase stage)
                 .arg(what).arg(c.x, 0, 'f', 3).arg(c.y, 0, 'f', 3).arg(res));
         m_bzPanel->setCentreResult(QStringLiteral("Centre found (X0 Y0 is set there next). ") + res);
         m_phase = Phase::BitZeroHome;
-        m_grbl->startMacro({QStringLiteral("G90"),
+        startMoves({QStringLiteral("G90"),
                             QStringLiteral("G53 G0 X%1 Y%2").arg(m_bzCx, 0, 'f', 3).arg(m_bzCy, 0, 'f', 3)});
         return;
     }
@@ -2629,6 +2634,13 @@ void MachinePanel::bitZeroAfterV1(Phase stage)
 // All the way up in Z, before any sideways move after probing. Homed, that
 // is machine Z just under the switch (the jog limit); not homed, machine
 // coordinates mean nothing, so a fixed lift instead.
+// The app's own moves are in millimetres: a G20 typed on the command line
+// (or left by a program) must not turn them into inches, 25.4 times as far.
+void MachinePanel::startMoves(const QStringList &lines)
+{
+    m_grbl->startMacro(QStringList{QStringLiteral("G21")} + lines);
+}
+
 QStringList MachinePanel::riseToTop() const
 {
     if (m_homed)
@@ -2663,7 +2675,7 @@ void MachinePanel::continueAfterToolChange()
     m_toolStretch = m_pendingStretch;
     m_toolStretchSeq = m_docSeq;
     m_toolStretchNc = m_ncPath;
-    QStringList first = m_homed ? riseToTop() : QStringList{};
+    QStringList first = m_homed ? QStringList{QStringLiteral("G21")} + riseToTop() : QStringList{};
     // After the measurement the spindle stands over the BitSetter, and the
     // program's first line is a retract to ITS safe height in work Z: with
     // the stock top below the button that is a rapid down into the button
@@ -2757,7 +2769,7 @@ void MachinePanel::bitZeroApply()
 {
     whenIdle([this] {
         const MachineStatus st = m_grbl->status();
-        QStringList cmds;
+        QStringList cmds{QStringLiteral("G21")};   // its numbers are mm
         QString g10 = QStringLiteral("G10 L20 P1");
         if (m_bzWantX)
             g10 += QStringLiteral(" X%1").arg(st.mx - m_bzCx, 0, 'f', 3);
@@ -3382,7 +3394,7 @@ void MachinePanel::cancelJob()
                 return;
             const QStringList up = riseToTop();
             if (!up.isEmpty() && m_grbl->canSendCommand())
-                m_grbl->startMacro(up);
+                startMoves(up);
         });
     });
 }
@@ -3471,6 +3483,11 @@ void MachinePanel::resetFlow()
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_rehearsal = false;
+    // A finished job's last moves were still running (its history waits for
+    // Idle): stopped or cancelled in them, that is how it ended.
+    if (m_endRisePending && m_onIdle && m_hist.active)
+        recordJobEnd(m_hist.cancelled ? QStringLiteral("cancelled") : QStringLiteral("stopped"), 0);
+    m_endRisePending = false;
     m_onIdle = nullptr;
     // Taps held back for a fresh report would go out on the first Idle
     // report after the reset: a jog after Stop.
@@ -4815,7 +4832,7 @@ void MachinePanel::park(bool afterHoming)
     parkSpot(x, y);
     const double z = riseZ();
     log(QStringLiteral("parking front right (X%1 Y%2, machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
-    m_grbl->startMacro({QStringLiteral("G90"),
+    startMoves({QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(z, 0, 'f', 3),
                         QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3)});
 }
@@ -5061,7 +5078,7 @@ void MachinePanel::zero(const QString &axes)
                 .arg(stillMovingWhy()));
         return;
     }
-    QStringList cmds;
+    QStringList cmds{QStringLiteral("G21")};   // its numbers are mm
     const bool zeroZ = axes.contains(QChar('Z'));
     // With the BitSetter on, a Z zero measures the reference there: checked
     // before any zero goes out, as Measure bit checks it.
@@ -5142,7 +5159,7 @@ void MachinePanel::goToXY0()
     if (movingStill(QStringLiteral("Go to X0 Y0")))
         return;
     m_phase = Phase::GoToZero;
-    m_grbl->startMacro({QStringLiteral("G90"),
+    startMoves({QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
                         QStringLiteral("G0 X0 Y0")});
 }
@@ -5254,7 +5271,7 @@ void MachinePanel::quickMoveTo(int col, int row)
         macro << QStringLiteral("G53 G0 Z%1").arg(top, 0, 'f', 3);
     macro << QStringLiteral("G53 G0 X%1 Y%2").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3);
     log(QStringLiteral("quick move to X%1 Y%2 (machine)").arg(x, 0, 'f', 1).arg(y, 0, 'f', 1));
-    m_grbl->startMacro(macro);
+    startMoves(macro);
 }
 
 // ---- BitSetter / tool change -------------------------------------------------
@@ -5331,7 +5348,7 @@ void MachinePanel::parkForTool()
     // the collet. The top, not safe Z: the position reported at the pause
     // can be from before the program's last retract, and room to swap the
     // bit is what this park is for.
-    m_grbl->startMacro({QStringLiteral("M5"), QStringLiteral("G90"),
+    startMoves({QStringLiteral("M5"), QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(-switchClearance(), 0, 'f', 3),
                         QStringLiteral("G53 G0 X%1 Y%2")
                             .arg(m_tcX->value(), 0, 'f', 3).arg(m_tcY->value(), 0, 'f', 3)});
@@ -5367,9 +5384,9 @@ void MachinePanel::onMacroFinished(bool ok)
 
     case Phase::MeasureForRef:
         // Zeroed by hand at a tool change with the BitSetter on: the macro
-        // starts with G49 and the G10, so Z belongs to the new bit once those
-        // two were answered, measured or not; Continue need not warn.
-        if (m_manualZero && m_grbl->isParkedForTool() && (ok || m_grbl->macroLinesDone() >= 2))
+        // starts with G21, G49 and the G10, so Z belongs to the new bit once all
+        // three were answered, measured or not; Continue need not warn.
+        if (m_manualZero && m_grbl->isParkedForTool() && (ok || m_grbl->macroLinesDone() >= 3))
             m_zeroedForTool = true;
         if (ok && m_grbl->lastProbeOk()) {
             m_haveRef = true;
@@ -6222,6 +6239,7 @@ void MachinePanel::updateContinueOffer()
     const QString path = set.value(QStringLiteral("resume/path")).toString();
     const bool show = !path.isEmpty() && m_doc && m_ncPath.isEmpty() && m_doc->filePath() == path
                       && !m_docHash.isEmpty() && set.value(QStringLiteral("resume/hash")).toString() == m_docHash
+                      && !(m_unsaved && m_unsaved())   // edited since: the saved point is for the file
                       && m_homed && m_grbl->isConnected() && !m_grbl->isStreaming() && !isBusy() && !m_held
                       && m_machineState == QLatin1String("Idle");
     if (show)
@@ -6241,6 +6259,14 @@ void MachinePanel::continueWhereStopped()
     f.row = set.value(QStringLiteral("resume/row")).toString();
     if (f.title.isEmpty() || isBusy() || m_grbl->isStreaming() || m_held)
         return;
+    // The point is for the saved design; edits since then (a toolpath before
+    // it changed) would be skipped or cut wrong.
+    if (m_unsaved && m_unsaved()) {
+        log(QStringLiteral("!! continue refused: the design was changed and not saved — "
+                           "save it, or start the job again"));
+        updateContinueOffer();
+        return;
+    }
     runProgram(nullptr, &f);
 }
 

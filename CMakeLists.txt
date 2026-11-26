@@ -526,7 +526,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")
     endforeach()
     # The command line under the log and the operator's macro buttons.
-    foreach(mode mdi mdihome macro mdistream)
+    foreach(mode mdi mdihome macro mdistream inchpark histtail)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

@@ -1210,8 +1210,7 @@ QStringList VectorActions::nestOnStock(const nest::Options &opt, int copies)
     for (const Element &e : cands) {
         bool inside = false;
         for (const Part &p : parts)
-            if (p.fill.contains(e.painterPath.boundingRect())
-                && p.fill.contains(e.painterPath)) { inside = true; break; }
+            if (p.fill.contains(e.painterPath)) { inside = true; break; }   // the path, not its box: an L in an L
         if (inside)
             continue;
         Part p;
@@ -1229,8 +1228,7 @@ QStringList VectorActions::nestOnStock(const nest::Options &opt, int copies)
             continue;
         int best = -1;
         for (int i = 0; i < parts.size(); ++i)
-            if (parts.at(i).fill.contains(e.painterPath.boundingRect())
-                && parts.at(i).fill.contains(e.painterPath)
+            if (parts.at(i).fill.contains(e.painterPath)
                 && (best < 0 || boxArea(parts.at(i).outline) < boxArea(parts.at(best).outline)))
                 best = i;
         if (best >= 0)

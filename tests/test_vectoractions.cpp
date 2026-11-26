@@ -1290,6 +1290,31 @@ int main(int argc, char *argv[])
         check(nd.elementById(dot.id)->painterPath.boundingRect().center() == QPointF(230, 230),
               "a shape in the L's empty corner stays where it was");
     }
+    // --- nest on stock: an L inside an L rides along, though its box crosses the corner
+    for (int sel = 0; sel < 2; ++sel) {
+        Document nd;
+        nd.setParam("width", "100");
+        nd.setParam("height", "100");
+        const Element ell = Element::makePath({{200, 200}, {240, 200}, {240, 210}, {210, 210},
+                                               {210, 240}, {200, 240}}, true, layer);
+        const Element in = Element::makePath({{202, 202}, {238, 202}, {238, 208}, {208, 208},
+                                              {208, 238}, {202, 238}}, true, layer);
+        nd.addElement(ell);
+        nd.addElement(in);
+        canvas->setDocument(&nd);
+        canvas->selectIds(sel ? QStringList{ell.id, in.id} : QStringList{ell.id});
+        nest::Options opt;
+        opt.spacing = 6;
+        opt.margin = 5;
+        va.nestOnStock(opt, 1);
+        const QRectF eb = nd.elementById(ell.id)->painterPath.boundingRect();
+        const QRectF ib = nd.elementById(in.id)->painterPath.boundingRect();
+        check(QRectF(5, 5, 90, 90).contains(eb), "the outer L is nested");
+        check(std::fabs(ib.width() - 36) < 1e-6 && eb.contains(ib)
+                  && nd.elementById(ell.id)->painterPath.contains(nd.elementById(in.id)->painterPath),
+              sel ? "a selected L inside the L moves with it" : "an L inside the L moves with it");
+        check(nd.elements().size() == 2, "the inner L is no part of its own");
+    }
     // --- nest on stock: only the stock's own outline is no obstacle ---------------
     for (int k = 0; k < 2; ++k) {
         Document nd;

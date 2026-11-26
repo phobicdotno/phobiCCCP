@@ -337,7 +337,7 @@ void SurfaceMapProber::moveToCurrent()
 {
     const GridPoint &p = m_order.at(m_current);
     m_stage = Stage::Moving;
-    m_grbl->startMacro(surfaceMapMoveLines(m_plan, p.x, p.y));
+    m_grbl->startMacro(QStringList{QStringLiteral("G21")} + surfaceMapMoveLines(m_plan, p.x, p.y));   // mm
 }
 
 void SurfaceMapProber::probeNext()
@@ -371,7 +371,7 @@ void SurfaceMapProber::probeNext()
     m_hitValid = false;
     m_stage = Stage::Probing;
     emit probing(m_current + 1, m_order.size());
-    m_grbl->startMacro(surfaceMapProbeLines(m_plan));
+    m_grbl->startMacro(QStringList{QStringLiteral("G21")} + surfaceMapProbeLines(m_plan));   // mm
 }
 
 void SurfaceMapProber::cancel()
