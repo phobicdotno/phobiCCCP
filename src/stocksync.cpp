@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkDatagram>
@@ -114,9 +115,12 @@ static int jsonSize(const QJsonObject &o)
 // goes by, and the per-collection stamps and deletions a current one merges
 // with. A fresh copy sends no whole-set stamp (an older copy would take its
 // few lists over its own) and no deletions, and says it is fresh.
-// `small`: without the stamps, for when the full form does not fit in a
-// datagram. A current copy then takes it as an older copy's whole set, which
-// it is: our newest set at our whole-set stamp.
+// `small`: only the list and the whole-set stamp, for older copies when the
+// full form does not fit in a datagram. It is marked "snapshot": a current
+// copy ignores it (it has no stamps per collection, and taken as an older
+// copy's whole set it overwrote newer collections and deleted others) and
+// merges the stamped parts of collectionParts() instead. A fresh copy has no
+// small form: older copies ignore fresh packets anyway.
 static QJsonObject collectionsPayload(QSettings &s, bool small = false)
 {
     QJsonObject coll;
@@ -131,21 +135,95 @@ static QJsonObject collectionsPayload(QSettings &s, bool small = false)
     if (json.size() >= 50000)
         return coll;
     const bool fresh = s.value(QLatin1String(kFresh), false).toBool();
+    if (small && fresh)
+        return coll;
     coll.insert(QStringLiteral("json"), QString::fromUtf8(json));
     if (fresh) {
         coll.insert(QStringLiteral("fresh"), true);
-        // Pooling needs no stamps: an empty list keeps it a current-copy packet.
-        coll.insert(QStringLiteral("items"),
-                    small ? QJsonObject() : stampsJson(CollectionStamps::fromSettings(s).ts));
+        coll.insert(QStringLiteral("items"), stampsJson(CollectionStamps::fromSettings(s).ts));
         return coll;
     }
     coll.insert(QStringLiteral("ts"), static_cast<double>(cts));
-    if (!small) {
+    if (small) {
+        coll.insert(QStringLiteral("snapshot"), true);
+    } else {
         const CollectionStamps st = CollectionStamps::fromSettings(s);
         coll.insert(QStringLiteral("items"), stampsJson(st.ts));
         coll.insert(QStringLiteral("gone"), stampsJson(st.gone));
     }
     return coll;
+}
+
+// The Collections for current copies in parts that each fit in `budget`
+// bytes, each with the stamps of its own collections, when the full form does
+// not fit in one datagram. A part is "partial": a receiver merges what it
+// holds collection by collection and takes nothing missing from it as
+// deleted (deletions travel as stamps, in a part of their own). The
+// whole-set stamp goes as "wts", not "ts": an older copy reads "ts" and would
+// take one part as the whole set. A collection too big for any part alone is
+// not sent.
+static QList<QJsonObject> collectionParts(QSettings &s, int budget)
+{
+    QList<QJsonObject> parts;
+    const qint64 cts = s.value(QLatin1String(kCollTs), 0).toLongLong();
+    ToolCollections all;
+    if (cts <= 0 || !ToolCollections::fromJson(s.value(QLatin1String(kCollKey)).toByteArray(), &all))
+        return parts;
+    const bool fresh = s.value(QLatin1String(kFresh), false).toBool();
+    const CollectionStamps st = CollectionStamps::fromSettings(s);
+    QJsonObject head{{QStringLiteral("partial"), true}};
+    if (fresh)
+        head.insert(QStringLiteral("fresh"), true);
+    else
+        head.insert(QStringLiteral("wts"), static_cast<double>(cts));
+
+    auto part = [&head](const QJsonArray &list, const QJsonObject &items, const QJsonObject &gone) {
+        QJsonObject c = head;
+        c.insert(QStringLiteral("json"),
+                 QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("collections"), list}})
+                                       .toJson(QJsonDocument::Compact)));
+        c.insert(QStringLiteral("items"), items);
+        c.insert(QStringLiteral("gone"), gone);
+        return c;
+    };
+    auto add = [&](const QJsonObject &c) {
+        if (jsonSize(c) <= budget)          // the estimates are upper bounds; this guards them
+            parts.append(c);
+    };
+    if (!fresh && !st.gone.isEmpty())
+        add(part(QJsonArray(), QJsonObject(), stampsJson(st.gone)));
+
+    const int empty = jsonSize(part(QJsonArray(), QJsonObject(), QJsonObject()));
+    QJsonArray list;
+    QJsonObject items;
+    int size = empty;
+    for (const ToolCollection &c : all.all()) {
+        QJsonArray tools;
+        for (int n : c.tools)
+            tools.append(n);
+        const QJsonObject one{{QStringLiteral("name"), c.name}, {QStringLiteral("tools"), tools}};
+        // Its text as it sits in the part's escaped "json" string, its stamp
+        // in "items", and commas.
+        const QByteArray text = QJsonDocument(one).toJson(QJsonDocument::Compact);
+        const qint64 t = st.ts.value(c.name, 0);
+        const int cost = jsonSize(QJsonObject{{QStringLiteral("j"), QString::fromUtf8(text)}})
+            + (t > 0 ? jsonSize(QJsonObject{{c.name, static_cast<double>(t)}}) : 0) + 4;
+        if (empty + cost > budget)
+            continue;                       // cannot go in any part
+        if (size + cost > budget && !list.isEmpty()) {
+            add(part(list, items, QJsonObject()));
+            list = QJsonArray();
+            items = QJsonObject();
+            size = empty;
+        }
+        list.append(one);
+        if (t > 0)
+            items.insert(c.name, static_cast<double>(t));
+        size += cost;
+    }
+    if (!list.isEmpty())
+        add(part(list, items, QJsonObject()));
+    return parts;
 }
 
 QList<QByteArray> StockSync::payloads() const
@@ -160,22 +238,33 @@ QList<QByteArray> StockSync::payloads() const
     // ,"stock":{} and ,"part":N with some to spare: each estimate below is
     // at least the size the entry takes in the compact JSON.
     constexpr int kStockFrame = 40;
-    // The Collections in the full form if that fits, else without the
-    // stamps; nothing only when neither fits.
+    // The Collections in the full form if that fits. If not: the whole set
+    // without stamps for older copies (when that fits) and, for current
+    // copies, stamped parts in packets of their own.
+    QList<QJsonObject> extra;
     root.insert(QStringLiteral("coll"), collectionsPayload(*s));
-    if (jsonSize(root) + kStockFrame > kMaxDatagram)
+    if (jsonSize(root) + kStockFrame > kMaxDatagram) {
         root.insert(QStringLiteral("coll"), collectionsPayload(*s, true));
-    if (jsonSize(root) + kStockFrame > kMaxDatagram)
-        root.insert(QStringLiteral("coll"), QJsonObject());
+        if (jsonSize(root) + kStockFrame > kMaxDatagram)
+            root.insert(QStringLiteral("coll"), QJsonObject());
+        QJsonObject bare = root;
+        bare.insert(QStringLiteral("coll"), QJsonObject());
+        const int budget = kMaxDatagram - jsonSize(bare) - kStockFrame;
+        for (const QJsonObject &c : collectionParts(*s, budget)) {
+            QJsonObject pk = bare;
+            pk.insert(QStringLiteral("coll"), c);
+            pk.insert(QStringLiteral("stock"), QJsonObject());
+            extra.append(pk);
+        }
+    }
 
-    QList<QByteArray> out;
+    QList<QJsonObject> packets;
     QJsonObject stock;
     int size = jsonSize(root) + kStockFrame;
     auto flush = [&] {
         QJsonObject full = root;
-        full.insert(QStringLiteral("part"), int(out.size()));
         full.insert(QStringLiteral("stock"), stock);
-        out.append(QJsonDocument(full).toJson(QJsonDocument::Compact));
+        packets.append(full);
         root.insert(QStringLiteral("coll"), QJsonObject());   // in the first one only
         stock = QJsonObject();
         size = jsonSize(root) + kStockFrame;
@@ -196,8 +285,7 @@ QList<QByteArray> StockSync::payloads() const
             const int add = int(n.size()) + 4 + jsonSize(o);   // "n":{...},
             // Does not fit: this packet goes as it is (the first may hold
             // only the Collections) and the entry starts the next one, where
-            // it always fits. Each part says it is one, so a receiver does
-            // not take bits missing from one part as bits we lack.
+            // it always fits.
             if (size + add > kMaxDatagram)
                 flush();
             stock.insert(n, o);
@@ -206,16 +294,20 @@ QList<QByteArray> StockSync::payloads() const
         s->endGroup();
     }
     s->endGroup();
-    if (!out.isEmpty())
-        root.insert(QStringLiteral("part"), int(out.size()));
-    root.insert(QStringLiteral("stock"), stock);
-    out.append(QJsonDocument(root).toJson(QJsonDocument::Compact));
-    // The estimates above are upper bounds; this only guards the promise.
-    QList<QByteArray> sendable;
-    for (const QByteArray &p : out)
-        if (p.size() <= kMaxDatagram)
-            sendable.append(p);
-    return sendable;
+    flush();
+    packets.append(extra);
+    // More than one: each says which part it is, so a receiver does not
+    // take bits or collections missing from one part as missing.
+    QList<QByteArray> out;
+    for (int i = 0; i < packets.size(); ++i) {
+        QJsonObject pk = packets[i];
+        if (packets.size() > 1)
+            pk.insert(QStringLiteral("part"), i);
+        const QByteArray b = QJsonDocument(pk).toJson(QJsonDocument::Compact);
+        if (b.size() <= kMaxDatagram)       // the estimates above are upper bounds
+            out.append(b);
+    }
+    return out;
 }
 
 QByteArray StockSync::payload() const
@@ -284,9 +376,20 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
             *tell = true;
         return false;
     }
+    // A current copy's whole set without stamps, sent for older copies when
+    // the full form does not fit: its stamped parts follow, and only those
+    // count here (taken whole, it overwrote newer collections and deleted
+    // ours it does not hold).
+    if (coll.value(QStringLiteral("snapshot")).toBool())
+        return false;
     const bool pfresh = coll.value(QStringLiteral("fresh")).toBool();
-    // No "ts" (a fresh copy): 0. One that is not a sane stamp: refused.
-    const qint64 pts = coll.contains(QStringLiteral("ts")) ? jsonStamp(coll.value(QStringLiteral("ts"))) : 0;
+    // Some of a current copy's collections, with their stamps: merged one by
+    // one, and none missing from it is taken as deleted.
+    const bool partial = coll.value(QStringLiteral("partial")).toBool();
+    // No whole-set stamp (a fresh copy): 0. One that is not a sane stamp:
+    // refused. A part carries it as "wts", which older copies do not read.
+    const QString tsKey = partial ? QStringLiteral("wts") : QStringLiteral("ts");
+    const qint64 pts = coll.contains(tsKey) ? jsonStamp(coll.value(tsKey)) : 0;
     const QByteArray pj = coll.value(QStringLiteral("json")).toString().toUtf8();
     if (pj.size() >= 50000 || pts < 0 || pts > limit || (!pfresh && pts == 0))
         return false;
@@ -334,7 +437,7 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
 
     // Nothing of our own yet: theirs as they are (a fresh peer's stay its own
     // until it has merged with another copy).
-    if (lts == 0) {
+    if (lts == 0 && (pfresh || !partial)) {
         if (pfresh || peer.all().size() > StockSync::kMaxCollections)
             return false;
         s.setValue(QLatin1String(kCollKey), pj);
@@ -376,7 +479,7 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
         // Ours that the peer deleted after we last touched them go, and so do
         // built-in defaults never touched here that it does not have: a fresh
         // install's empty "Unused" does not come back everywhere.
-        if (lfresh)
+        if (lfresh && !partial)
             for (const ToolCollection &c : local.all()) {
                 if (peer.byName(c.name))
                     continue;
@@ -417,7 +520,9 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
         for (auto it = theirs.gone.constBegin(); it != theirs.gone.constEnd(); ++it)
             if (!result.byName(it.key()) && it.value() > out.gone.value(it.key(), 0))
                 out.gone.insert(it.key(), it.value());
-        if (lfresh)
+        // (A part is not all of the peer's set: still fresh until a whole
+        // one has been pooled.)
+        if (lfresh && !partial)
             s.setValue(QLatin1String(kFresh), false);
     } else {
         for (const ToolCollection &p : peer.all()) {
@@ -460,7 +565,8 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
     for (const ToolCollection &c : result.all()) {
         const ToolCollection *their = peer.byName(c.name);
         const qint64 t = out.ts.value(c.name, 0);
-        if ((!their || !sameBits(their->tools, c.tools)) && t > theirs.ts.value(c.name, 0)
+        // (One missing from a part may well be in another.)
+        if ((their ? !sameBits(their->tools, c.tools) : !partial) && t > theirs.ts.value(c.name, 0)
             && t > theirs.gone.value(c.name, 0))
             *tell = true;
     }
@@ -482,7 +588,9 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
     // below its own: an older copy may hold our old content at our stamp,
     // and would never take the peer's (older) one or ours at that stamp.
     // The next copy to merge this has nothing to change, so it stops there.
-    const bool newer = stamped || (changed && (!sameSet(result, peer) || lts >= pts));
+    // A part says nothing of the peer's whole set: any change counts.
+    const bool newer = stamped
+        || (changed && (partial || !sameSet(result, peer) || lts >= pts));
     // Never below a stamp kept (one adopted from a fresh packet, which has no
     // whole-set stamp, or from a clock that runs ahead).
     out.prune();

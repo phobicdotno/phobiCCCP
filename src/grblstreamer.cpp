@@ -171,8 +171,11 @@ bool GrblStreamer::canSendCommand() const
 void GrblStreamer::noteOffsetLine(const QString &line)
 {
     static const QRegularExpression offset(
-        QStringLiteral("(?<![A-Z0-9.])G0*(10|92|5[4-9])(?![0-9])"));
-    if (offset.match(line.toUpper()).hasMatch())
+        QStringLiteral("(?<![A-Z])G0*(10|92|5[4-9])(?![0-9])"));
+    // Compact lines too ("G90G10L20P1X0", "N20G92X0Y0", "G21G55"), and $RST
+    // (it can wipe the stored offsets).
+    const QString u = line.trimmed().toUpper();
+    if (offset.match(u).hasMatch() || u.startsWith(QLatin1String("$RST")))
         m_wcoStale = true;
 }
 
@@ -459,10 +462,14 @@ QStringList GrblStreamer::resumeLinesFor(const Modal &m, double topWorkZ)
 
 // The program's next line after `at` that moves without naming its motion
 // mode gets `motion` (G2/G3) in front, so a modal arc after a hold is still
-// an arc. Stops at the first line that names one itself.
-static void restoreMotionMode(QStringList &q, int at, int motion)
+// an arc. Lines whose axis words are not a move in the mode (G10 L2 X0,
+// G43.1 Z0, G92 X0, G28/G30 points, G53) are left alone and the scan goes
+// on; it stops at the first line that selects a motion mode itself (G0..G3,
+// G38.x, G80), or at a marker.
+void GrblStreamer::restoreMotionMode(QStringList &q, int at, int motion)
 {
-    static const QRegularExpression gWord(QStringLiteral("(?<![A-Z])G0*([0-9]+)(?![0-9.])"));
+    static const QRegularExpression gWord(
+        QStringLiteral("(?<![A-Z])G0*([0-9]+)(?:\\.([0-9]+))?(?![0-9.])"));
     static const QRegularExpression axis(QStringLiteral("(?<![A-Z])[XYZIJR]\\s*-?[0-9.]"));
     static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
     for (int i = at; i < q.size(); ++i) {
@@ -474,14 +481,18 @@ static void restoreMotionMode(QStringList &q, int at, int motion)
         l = l.toUpper();
         bool other = false;
         for (auto it = gWord.globalMatch(l); it.hasNext();) {
-            const int g = it.next().captured(1).toInt();
-            if (g <= 3)
-                return;                  // names its own mode
-            if (g == 10 || g == 28 || g == 30 || g == 43 || g == 53 || g == 92)
-                other = true;            // axis words that are not a move in the mode
+            const QRegularExpressionMatch g = it.next();
+            const int n = g.captured(1).toInt();
+            const bool decimal = !g.captured(2).isEmpty();
+            if ((!decimal && n <= 3) || n == 38 || n == 80)
+                return;                  // selects its own motion mode
+            // Axis words that are not a move in the mode: G10 L2/L20, G28 /
+            // G30 (and .1), G43.1, G53, G92 (and .1).
+            if (n == 10 || n == 28 || n == 30 || n == 43 || n == 53 || n == 92)
+                other = true;
         }
         if (other)
-            return;
+            continue;                    // left as it is; the arc comes later
         if (axis.match(l).hasMatch()) {
             q[i] = QStringLiteral("G%1").arg(motion) + q.at(i);
             return;
@@ -564,6 +575,9 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
 // ended - unsuccessfully.
 void GrblStreamer::abortAfterReset()
 {
+    // A reset (and a reboot) can leave another offset (G92 is gone): the
+    // held WCO waits for the next report.
+    m_wcoStale = m_haveWco;
     const bool wasProgram = m_streaming, wasMacro = m_macroActive;
     m_streaming = false;
     m_waitingTool = -1;
@@ -671,6 +685,7 @@ void GrblStreamer::stopStream()
     m_afterReset.clear();                       // a reset of its own: no $H after it
     const char reset = 0x18;                    // ctrl-X: GRBL soft reset
     m_port->write(&reset, 1);
+    m_wcoStale = m_haveWco;                     // G92 is gone after a reset: wait for a report
     m_errorResetTimer->stop();                  // this is the reset it waited for
     const bool wasProgram = m_streaming;
     m_streaming = false;
@@ -1053,11 +1068,19 @@ void GrblStreamer::handleLine(const QByteArray &line)
         emit statusChanged(st);
         // The feed hold ended without our ~ (or never took, e.g. `!` in
         // Alarm): the stream may go on to a tool marker again.
+        const bool holdState = st.state.startsWith(QLatin1String("Hold"))
+                               || st.state.startsWith(QLatin1String("Door"));
         if (m_feedHeld) {
-            if (st.state.startsWith(QLatin1String("Hold")) || st.state.startsWith(QLatin1String("Door")))
+            if (holdState)
                 m_feedHeldSeen = true;
             else if (!st.state.isEmpty() && (m_feedHeldSeen || m_feedHeldClock.elapsed() > 2000))
                 noteFeedHold(false);
+        } else if (m_streaming && holdState) {
+            // Held by something other than our `!`: the machine's hold
+            // button, a door switch. GRBL keeps answering lines, so the same
+            // rule applies: no tool marker is crossed until the hold ends.
+            noteFeedHold(true);
+            m_feedHeldSeen = true;
         }
         // Waiting to reset after an error: do it on the report that shows
         // the hold at rest, not on the next poll, so a Resume can't slip in.

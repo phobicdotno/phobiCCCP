@@ -33,6 +33,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
 #include <QContextMenuEvent>
 #include <QListWidgetItem>
 #include <QMenu>
@@ -1969,6 +1970,20 @@ int main(int argc, char *argv[])
                 closed = closed || pt.toInt() == 4;
         check(gdoc.elements().size() == before + 1 && closed && gc.m_penNodes.isEmpty(),
               "double tap: the path is closed, and no new one is started");
+
+        // A finger that went down on the start and slid a little off it
+        // before lifting still closes the path (it went down to close it).
+        click(&gc, {10, 10});
+        click(&gc, {60, 10});
+        click(&gc, {60, 60});
+        touch(QEvent::MouseButtonPress, {10, 10});
+        touch(QEvent::MouseMove, {13.5, 10});
+        touch(QEvent::MouseButtonRelease, {13.5, 10});
+        bool closed2 = false;
+        if (gdoc.elements().size() == before + 2)
+            for (const auto &pt : gdoc.elements().last().raw.value("point_type").toArray())
+                closed2 = closed2 || pt.toInt() == 4;
+        check(closed2 && gc.m_penNodes.isEmpty(), "slide: a close tap that slid off the start still closes");
         gc.setTool(c2d::Canvas::Select);
     }
 
@@ -2067,6 +2082,44 @@ int main(int argc, char *argv[])
         QTest::mouseRelease(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {90, 15}));
         check(ddoc.parametric().constraints.first().label == label0 && dc.undoStack()->index() == 0,
               "dimension drag: and the release adds no step");
+        // Undo of a step that is not about the label, during a drag: the
+        // label goes back from where the drag left it (no step records it).
+        dc.setParametricVisible(true);
+        dc.duplicateElements({l.id});
+        const int stepAt = dc.undoStack()->index();
+        dc.viewport()->repaint();
+        QTest::mousePress(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {70, 35}));
+        QTest::mouseMove(dc.viewport(), vp(&dc, {80, 25}));
+        check(ddoc.parametric().constraints.first().label != label0, "dimension drag: under way again");
+        dc.undoStack()->undo();
+        check(ddoc.parametric().constraints.first().label == label0,
+              "dimension drag: an undo of another step puts the dragged label back");
+        QTest::mouseRelease(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {80, 25}));
+        check(ddoc.parametric().constraints.first().label == label0 && dc.undoStack()->index() == stepAt - 1,
+              "dimension drag: and the release records nothing");
+
+        // A double tap on a dimension with the Dimension tool edits it, as a
+        // double-click does (the tap's press waits for its release).
+        {
+            QPointingDevice *finger = QTest::createTouchDevice();
+            auto touchDim = [&](QEvent::Type t, QPointF mm) {
+                const QPoint p = vp(&dc, mm);
+                QMouseEvent e(t, QPointF(p), QPointF(dc.viewport()->mapToGlobal(p)), Qt::LeftButton,
+                              t == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier,
+                              finger);
+                QApplication::sendEvent(dc.viewport(), &e);
+            };
+            dc.setTool(c2d::Canvas::Dimension);
+            dc.viewport()->repaint();
+            touchDim(QEvent::MouseButtonPress, {70, 35});
+            touchDim(QEvent::MouseButtonRelease, {70, 35});
+            touchDim(QEvent::MouseButtonPress, {70, 35});
+            touchDim(QEvent::MouseButtonDblClick, {70, 35});
+            check(!(dc.m_dimEdit && dc.m_dimEdit->isVisible()), "double tap: nothing before the finger lifts");
+            touchDim(QEvent::MouseButtonRelease, {70, 35});
+            check(dc.m_dimEdit && dc.m_dimEdit->isVisible(), "double tap: the dimension's value editor opens");
+            dc.setTool(c2d::Canvas::Select);
+        }
     }
 
     // --- The element menu offers Edit nodes on the Design page only ------------------

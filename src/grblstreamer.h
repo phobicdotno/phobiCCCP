@@ -105,6 +105,10 @@ public:
     // a rapid to just above the stock and the hold Z, the rest at the feed
     // (at most 600 mm/min), then the program's feed and motion mode. The
     // rapid never goes above `topWorkZ` (mm, work Z; see resumeLinesAfterHold).
+    // Puts `motion` (G2/G3) in front of the first line from `at` on that
+    // moves in the modal motion mode without naming it (see
+    // continueAfterHold()); lines that are not such a move stay as they are.
+    static void restoreMotionMode(QStringList &lines, int at, int motion);
     static QStringList resumeLinesFor(const Modal &m,
                                       double topWorkZ = std::numeric_limits<double>::infinity());
     // sendCommand() lines written but not yet answered. Continuous jog uses it

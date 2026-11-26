@@ -2797,11 +2797,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             bool thickOk = false;
             const double thick = std::abs(doc.params().value(QStringLiteral("thickness")).toDouble(&thickOk));
             // Through means the cut's deepest Z (a cutout's break-through
-            // included) reaches the stock bottom, give or take 0.2 mm: stock
-            // re-measured a little thicker than the depth it was drawn for
-            // is still cut through, and needs its tabs most.
+            // included) reaches the stock bottom. No tolerance: a cut that
+            // stops short leaves a skin, and full-height tabs on it would
+            // leave solid bridges standing under the skin.
             const double reach = -qMin(floor, cp.zBot);
-            tabsThrough = thickOk && thick > 0 && reach >= thick - 0.2;
+            tabsThrough = thickOk && thick > 0 && reach >= thick - 1e-3;
             if (!tabsThrough && cp.tabTop >= cp.zTop - 1e-9) {
                 cp.tabTop = -1e9;
                 cp.tabWidth = 0;

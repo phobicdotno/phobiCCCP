@@ -369,7 +369,10 @@ const QStringList &ignoredToolpathKeys()
                                   QStringLiteral("tool"),
                                   // set false by a library pick, true on a new
                                   // toolpath here; nothing reads it
-                                  QStringLiteral("automatic_parameters")};
+                                  QStringLiteral("automatic_parameters"),
+                                  // set here when Delete/Subtract/Offset took
+                                  // all its vectors; the pad has no such mark
+                                  QStringLiteral("vectors_removed")};
     return k;
 }
 

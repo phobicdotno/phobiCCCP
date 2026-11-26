@@ -28,9 +28,12 @@
 - **Hold on the pad:** while the lift waits for the moves already sent, the pad says "still cutting" instead of Held; during a tool change it says which tool to put in. A tool change no longer starts while the machine is held: it waits for Resume.
 - **Zeroing:** Go to X0 Y0 and Surface map wait for the controller's new work offset after a zero before checking the travel.
 - **Facing:** a facing toolpath whose shapes were deleted or used up by Subtract or Offset is skipped (with a note) instead of skimming the whole board.
-- **Tabs:** a cutout through the stock keeps its tabs when its break-through makes it reach the bottom, or when the stock was measured up to 0.2 mm thicker than the cut.
+- **Tabs:** a cutout through the stock keeps its tabs when its break-through makes it reach the bottom.
 - **Union, Subtract, Offset:** Union of shapes that do not touch keeps each toolpath on its own shape; holes made by Subtract keep the toolpath that was on them; Offset no longer gives a part its neighbour's outline.
 - **Touch:** a pinch's first finger no longer trims, extends or breaks, and no longer changes the selection. A finger tap that was moved before lifting places where the preview showed. A double tap that closes a path closes it once; Esc drops a pending tap.
+- **Resume after Hold** also restores an arc's mode past setup lines (G10, G92, tool length) and leaves those lines as they were.
+- **BitZero:** stopping or leaving the "Remove the magnet" box after a Z zero forgets the old tool length, so the next job measures it again.
+- **Machine hold button or door:** a hold from the machine itself also keeps a tool change from starting until it is released.
 - **Recovery:** with two windows open, answering No no longer deletes the recovery copy the other window just opened.
 - **Collections sync:** an old announcement repeated on the network can no longer bring back a bit removed since, and a copy takes at most 500 collections from the network.
 - **Received projects:** a long file name keeps its extension, so it still imports. With more than 400 shapes, picking in the shape strip keeps the selected shapes it has no tile for.

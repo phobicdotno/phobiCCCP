@@ -376,7 +376,7 @@ int main(int argc, char **argv)
         c2d::StockSync S(snd, 0);
         const QString quotes(6000, QLatin1Char('"'));   // escaped twice in a packet
         bool allFit = true, neverEmpty = true, delivered = true;
-        bool sawMixed = false, sawCollOnly = false, sawSmall = false;
+        bool sawMixed = false, sawCollOnly = false, sawSmall = false, establishedKept = false;
         for (int pad = 11000; pad <= 14000 && !(sawMixed && sawCollOnly && sawSmall); pad += 7) {
             const QString padName(pad, QLatin1Char('P'));
             const QJsonArray list{QJsonObject{{QStringLiteral("name"), quotes}, {QStringLiteral("tools"), QJsonArray{201}}},
@@ -385,6 +385,10 @@ int main(int argc, char **argv)
                 QSettings ss(snd, QSettings::IniFormat);
                 ss.setValue(QStringLiteral("tools/collections"),
                             QJsonDocument(QJsonObject{{QStringLiteral("collections"), list}}).toJson(QJsonDocument::Compact));
+                // Each collection last changed at 1000, the set as a whole at 5000.
+                const QJsonObject st{{QStringLiteral("ts"), QJsonObject{{quotes, 1000.0}, {padName, 1000.0}}},
+                                     {QStringLiteral("gone"), QJsonObject()}};
+                ss.setValue(QStringLiteral("tools/collectionsStamps"), QJsonDocument(st).toJson(QJsonDocument::Compact));
                 ss.sync();
             }
             const QList<QByteArray> ps = S.payloads();
@@ -420,6 +424,28 @@ int main(int argc, char **argv)
             for (int n : numbers)
                 ok = ok && rs.value(QStringLiteral("toolStock/%1/have").arg(n)).toInt() == n % 7 + 1;
             delivered = delivered && ok;
+            if (!small)
+                continue;
+            // The whole set without stamps goes for older copies only: a
+            // current copy with newer edits of its own (the quotes one at
+            // 3000) and a collection only it has keeps both, and takes the
+            // stamped parts (the padding one).
+            const QString est = tmp.path() + QStringLiteral("/est.ini");
+            {
+                const QJsonArray elist{QJsonObject{{QStringLiteral("name"), quotes}, {QStringLiteral("tools"), QJsonArray{301}}},
+                                       QJsonObject{{QStringLiteral("name"), QStringLiteral("EOnly")}, {QStringLiteral("tools"), QJsonArray{251}}}};
+                const QJsonObject estStamps{{QStringLiteral("ts"), QJsonObject{{quotes, 3000.0}, {QStringLiteral("EOnly"), 3000.0}}},
+                                      {QStringLiteral("gone"), QJsonObject()}};
+                putIni(est, QJsonDocument(QJsonObject{{QStringLiteral("collections"), elist}}).toJson(QJsonDocument::Compact),
+                       3000, QJsonDocument(estStamps).toJson(QJsonDocument::Compact));
+            }
+            c2d::StockSync E(est, 0);
+            for (const QByteArray &pk : ps)
+                E.merge(pk);
+            const c2d::ToolCollections eg = collectionsIn(est);
+            const c2d::ToolCollection *eq = eg.byName(quotes);
+            establishedKept = eq && eq->tools.contains(301) && !eq->tools.contains(201)
+                && has(eg, QStringLiteral("EOnly"), {251}) && has(eg, padName, {102});
         }
         check(allFit, "no packet is bigger than a datagram");
         check(neverEmpty, "the Collections always go, in full or as the whole set");
@@ -427,6 +453,8 @@ int main(int argc, char **argv)
         check(sawCollOnly, "seen: the Collections alone in the first packet, the counts after");
         check(sawSmall, "seen: Collections too big with their stamps go without them");
         check(delivered, "in each case a copy that hears the packets has the Collections and every count");
+        check(establishedKept, "too big for one packet: a current copy keeps its newer edit and its own "
+                               "collection, and takes the sender's older one it lacked");
     }
 
     // 8. A fresh announce heard again after the first exchange (late or

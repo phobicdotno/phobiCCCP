@@ -20,6 +20,7 @@
 #include <QJsonArray>
 #include <QLineEdit>
 #include <QScrollBar>
+#include <QScopeGuard>
 #include <QSet>
 #include <QKeyEvent>
 #include <QResizeEvent>
@@ -522,7 +523,19 @@ Canvas::Canvas(QWidget *parent)
     // An undo, redo or new step replaces the design's state under a
     // dimension label being dragged: the drag is dropped without putting
     // its label back, or "back" would undo the undo with no step of its own.
-    connect(m_undo, &QUndoStack::indexChanged, this, [this] { m_dragDim.clear(); });
+    // A step that did not touch the label (not a parametric one) leaves it
+    // where the drag last put it: that goes back, as no step will record it.
+    connect(m_undo, &QUndoStack::indexChanged, this, [this] {
+        if (m_dragDim.isEmpty())
+            return;
+        if (m_doc) {
+            const int i = m_doc->parametric().indexOfUid(m_dragDim);
+            if (i >= 0 && m_doc->parametric().constraints.at(i).label == m_dragDimLast)
+                m_doc->parametricRef().constraints[i].label = m_dragDimLabel0;
+        }
+        m_dragDim.clear();
+        viewport()->update();
+    });
 
     // Zoom out / in and the zoom % + cursor position, bottom right on the
     // canvas, where they sit with the drawing instead of under the panels.
@@ -1041,6 +1054,13 @@ void Canvas::editToolpath(const QString &uuid, const QJsonObject &newJson)
         return;
     Toolpath after = *t;
     after.json = newJson;
+    // Picking its vectors again (or taking the last one off on purpose)
+    // is the user's choice: the "lost its vectors" mark that keeps an
+    // emptied Facing from skimming the whole board no longer applies.
+    if (newJson.value(QStringLiteral("elements")) != t->json.value(QStringLiteral("elements")))
+        after.json.remove(QStringLiteral("vectors_removed"));
+    if (t->json == after.json)
+        return;
     m_undo->push(new TpEditCmd(this, m_doc, *t, after));
 }
 
@@ -2638,7 +2658,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
     m_deferredPress.valid = false;   // a press whose release never came
     if (!m_replaying && fromTouch(event) && event->button() == Qt::LeftButton
         && commitsOnPress(event->pos())) {
-        m_deferredPress = {true, event->position(), event->globalPosition(), event->modifiers()};
+        m_deferredPress = {true, event->position(), event->globalPosition(), event->modifiers(), false};
         event->accept();
         return;
     }
@@ -2854,7 +2874,22 @@ void Canvas::mousePressEvent(QMouseEvent *event)
             m_cyclePress = event->pos();
         }
     }
-    QGraphicsView::mousePressEvent(event);
+    // A finger on empty board (Select, no Ctrl) leaves the selection as it
+    // is until the band it starts says otherwise: it may be the first finger
+    // of a pinch, which must not change the selection. A mouse press there
+    // clears it at once, as ever.
+    bool touchOnEmpty = false;
+    if (fromTouch(event) && m_tool == Select && event->button() == Qt::LeftButton
+        && !(event->modifiers() & Qt::ControlModifier)) {
+        touchOnEmpty = true;
+        for (QGraphicsItem *it : items(event->pos()))
+            if (it->data(0).isValid() && (it->flags() & QGraphicsItem::ItemIsSelectable)) {
+                touchOnEmpty = false;
+                break;
+            }
+    }
+    if (!touchOnEmpty)
+        QGraphicsView::mousePressEvent(event);
     pressedEmpty(event);
 }
 
@@ -3037,6 +3072,12 @@ void Canvas::mouseMoveEvent(QMouseEvent *event)
 
 void Canvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    // A finger lifted: what its press noted is done with, whichever way
+    // this release goes.
+    const auto done = qScopeGuard([this, touch = fromTouch(event)] {
+        if (touch)
+            m_touchPress = TouchPress();
+    });
     if (m_pinching && fromTouch(event)) {
         // The pinch's last finger up: the next touch is a tap or drag again.
         m_pinching = false;
@@ -3047,25 +3088,40 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
         // A finger on empty board lets go of the toolpath when it lifts (not
         // at once: it may be the first finger of a pinch, which keeps it).
         m_touchPress.emptyPending = false;
+        // A tap (no band drawn): it lets go of the shapes too, as a mouse
+        // press there does. A band drawn picks its own selection.
+        if (QLineF(m_bandStart, m_bandEnd).length() < pxToMm(4))
+            m_scene->clearSelection();
         emit emptyPressed();
     }
     if (m_deferredPress.valid && fromTouch(event) && event->button() == Qt::LeftButton) {
         // The finger came up without a pinch: the tap does now what a mouse
         // press does at once. Where the finger went down, unless it moved on
-        // (the preview followed it): then where it came up, as drawn.
+        // (the preview followed it): then where it came up, as drawn. A
+        // finger that slid off the start a path closes at still closes it.
         const DeferredPress d = m_deferredPress;
         m_deferredPress.valid = false;
         const bool moved = QLineF(mapToScene(d.pos.toPoint()), mapToScene(event->pos())).length() > pxToMm(4);
-        const QPointF at = moved ? event->position() : d.pos;
-        const QPointF atGlobal = moved ? event->globalPosition() : d.globalPos;
+        QPointF at = d.pos, atGlobal = d.globalPos;
+        if (moved && commitsOnPress(event->pos())) {
+            at = event->position();
+            atGlobal = event->globalPosition();
+        }
         // Only if it still commits there: a double tap may have finished the
-        // shape meanwhile, or the finger left the start a path closes at.
+        // shape meanwhile.
         if (commitsOnPress(at.toPoint())) {
             QMouseEvent press(QEvent::MouseButtonPress, at, atGlobal, Qt::LeftButton, Qt::LeftButton,
                               d.mods, event->pointingDevice());
             m_replaying = true;
             mousePressEvent(&press);
             m_replaying = false;
+            if (d.dbl) {
+                // The double tap's double-click, after its press as with a
+                // mouse (edit a dimension, ...).
+                QMouseEvent dbl(QEvent::MouseButtonDblClick, at, atGlobal, Qt::LeftButton, Qt::LeftButton,
+                                d.mods, event->pointingDevice());
+                mouseDoubleClickEvent(&dbl);
+            }
         }
         event->accept();
         return;
@@ -3251,6 +3307,7 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent *event)
     // A double tap's second press waits for its release like the first: the
     // double-click must not act before that press has (see m_deferredPress).
     if (fromTouch(event) && m_deferredPress.valid) {
+        m_deferredPress.dbl = true;   // run at the release, after the press
         event->accept();
         return;
     }
@@ -3609,7 +3666,10 @@ void Canvas::pinchStarted()
             it->setPos(0, 0);
     // The finger's press cleared or replaced the selection (or picked the
     // node-edit target): what was selected before it is selected again.
-    if (press.valid && selectedElementIds() != press.selection) {
+    QStringList now = selectedElementIds(), was = press.selection;
+    now.sort();
+    was.sort();
+    if (press.valid && now != was) {
         selectElements(press.selection);
         if (m_tool == NodeEdit) {
             syncEditTarget();

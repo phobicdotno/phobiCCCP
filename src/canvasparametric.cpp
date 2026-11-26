@@ -1867,6 +1867,7 @@ bool Canvas::parametricPress(QMouseEvent *event)
         m_dragDim = uid;
         m_dragDimFrom = pos;
         m_dragDimLabel0 = m_doc->parametric().constraints.at(i).label;
+        m_dragDimLast = m_dragDimLabel0;
     }
     const Constraint &c = m_doc->parametric().constraints.at(i);
     emit statusHint(c.isDimension()
@@ -1885,6 +1886,7 @@ bool Canvas::parametricMove(QMouseEvent *event)
         const int i = m_doc->parametric().indexOfUid(m_dragDim);
         if (i >= 0) {
             m_doc->parametricRef().constraints[i].label = m_dragDimLabel0 + (pos - m_dragDimFrom);
+            m_dragDimLast = m_doc->parametric().constraints.at(i).label;
             viewport()->update();
         }
         event->accept();

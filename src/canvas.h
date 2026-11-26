@@ -282,6 +282,7 @@ private:
         bool valid = false;
         QPointF pos, globalPos;
         Qt::KeyboardModifiers mods;
+        bool dbl = false;   // a double-click came for it: run that too after it
     } m_deferredPress;
     bool m_replaying = false;
     bool commitsOnPress(const QPoint &viewportPos) const;   // a left press there
@@ -393,6 +394,7 @@ private:
     QString m_dragDim;                            // dimension label being dragged
     QPointF m_dragDimFrom;
     QPointF m_dragDimLabel0;
+    QPointF m_dragDimLast;      // the label the drag last wrote into the design
     bool m_showConstraints = true, m_parametricVisible = true;
     QSet<QString> m_full;
     int m_dof = 0;

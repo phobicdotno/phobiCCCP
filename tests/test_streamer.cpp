@@ -51,6 +51,15 @@ struct FakeGrbl {
     // offset 10, 20, 0), follow absolute G0 X/Y moves, answer each G38.2 with
     // a touch at Z -7 where the head stands.
     bool positional = false;
+    // While set, oks are held back (counted) until releaseAcks().
+    bool deferAcks = false;
+    int deferred = 0;
+    void releaseAcks()
+    {
+        deferAcks = false;
+        for (; deferred > 0; --deferred)
+            send("ok\r\n");
+    }
     double x = 0, y = 0;
     bool relative = false;
 
@@ -93,6 +102,8 @@ struct FakeGrbl {
                           : "<Run|MPos:0.000,0.000,0.000|FS:500,18000|Ov:120,100,90>\r\n");
             } else if (c == '!') {
                 held = true;
+            } else if (c == '~') {
+                held = false;                // cycle start: out of the hold
             } else if (c == 0x18) {
                 reset = true;
                 resetWhileHeld = held;
@@ -105,7 +116,9 @@ struct FakeGrbl {
                 seen << line;
                 if (positional)
                     follow(line);
-                if (!line.contains("HANG"))
+                if (deferAcks && !line.contains("HANG"))
+                    ++deferred;
+                else if (!line.contains("HANG"))
                     send(line.contains("BAD") ? "error:20\r\n" : "ok\r\n");
                 line.clear();
             } else if (c != '\r') {
@@ -400,6 +413,32 @@ int main(int argc, char **argv)
                   "resume: no bare G2 line (GRBL refuses it)");
     }
 
+    // The arc mode put back past lines that are not moves in it: a G10 L2
+    // with axis words, a G43.1 (a decimal G word, its Z no move), G92.1, a
+    // dwell. They stay as they are; the next modal arc line gets the G2/G3.
+    {
+        using c2d::GrblStreamer;
+        QStringList q = {QStringLiteral("G10L2P2X0"), QStringLiteral("G43.1Z0"), QStringLiteral("G92.1"),
+                         QStringLiteral("G4P0.5"), QStringLiteral("X5.000Y1.000I0.500J0.000"),
+                         QStringLiteral("X6.000Y1.000I0.500J0.000")};
+        GrblStreamer::restoreMotionMode(q, 0, 3);
+        check(q.at(0) == QLatin1String("G10L2P2X0") && q.at(1) == QLatin1String("G43.1Z0")
+                  && q.at(2) == QLatin1String("G92.1") && q.at(3) == QLatin1String("G4P0.5"),
+              "arc mode: non-motion lines are left as they are (no G3G43.1Z0)");
+        check(q.at(4) == QLatin1String("G3X5.000Y1.000I0.500J0.000")
+                  && q.at(5) == QLatin1String("X6.000Y1.000I0.500J0.000"),
+              "arc mode: the next modal arc line gets the G3, once");
+        QStringList r = {QStringLiteral("G43.1Z0"), QStringLiteral("G1X5F300"), QStringLiteral("X6")};
+        GrblStreamer::restoreMotionMode(r, 0, 2);
+        check(r.at(0) == QLatin1String("G43.1Z0") && r.at(1) == QLatin1String("G1X5F300")
+                  && r.at(2) == QLatin1String("X6"),
+              "arc mode: a line selecting its own mode ends the scan");
+        QStringList p = {QStringLiteral("G38.2Z-5F50"), QStringLiteral("X1Y1I1J0")};
+        GrblStreamer::restoreMotionMode(p, 0, 2);
+        check(p.at(0) == QLatin1String("G38.2Z-5F50") && p.at(1) == QLatin1String("X1Y1I1J0"),
+              "arc mode: G38.2 selects its own mode, nothing changed");
+    }
+
     // Hold between two modal arcs: the post names G2 only on the first arc
     // line. After the way back down (G1 to go down), the program's next line
     // must be an arc again, not a straight G1 with stray I/J.
@@ -582,6 +621,25 @@ int main(int argc, char **argv)
               "feed hold: after Resume the tool change follows");
         s.stopStream();
         spin(300, [] { return false; });
+
+        // Held by the machine (its hold button, a door), not by us: a report
+        // showing Hold is enough to keep the marker uncrossed.
+        parks.clear();
+        grbl.held = true;
+        grbl.deferAcks = true;
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T5"),
+                       QStringLiteral("G0Z5")});
+        spin(1500, [&] { return s.isFeedHeld(); });
+        check(s.isFeedHeld(), "machine hold: a Hold report while streaming counts as held");
+        grbl.releaseAcks();
+        spin(600, [] { return false; });
+        check(parks.isEmpty(), "machine hold: the tool marker is not crossed while the machine holds");
+        grbl.held = false;                   // released at the machine
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 5 && !s.isFeedHeld(),
+              "machine hold: out of Hold, the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
     }
 
@@ -598,6 +656,18 @@ int main(int argc, char **argv)
         s.sendCommand(QStringLiteral("G92.1"));
         check(!s.workOffsetFresh(), "wco: G92 too");
         spin(2000, [&] { return s.workOffsetFresh(); });
+        for (const char *l : {"G90G10L20P1Z0", "N20G92Z0", "G21G55", "$RST=#"}) {
+            check(s.workOffsetFresh(), "wco: fresh before the next line");
+            s.sendCommand(QString::fromLatin1(l));
+            if (s.workOffsetFresh())
+                std::fprintf(stderr, "not stale after: %s\n", l);
+            check(!s.workOffsetFresh(), "wco: compact offset lines and $RST make it stale");
+            spin(2000, [&] { return s.workOffsetFresh(); });
+        }
+        s.stopStream();                      // a soft reset: G92 is gone
+        check(!s.workOffsetFresh(), "wco: stale after a reset");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: fresh after the reset's next report");
         grbl.positional = false;
     }
 

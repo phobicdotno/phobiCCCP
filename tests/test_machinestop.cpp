@@ -2068,6 +2068,24 @@ int main(int argc, char **argv)
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         check(boxes == 2 && s->isStreaming() && grbl.indexOf("G53 G0") < 0,
               "bzwait: no rise into a job started while the box was open");
+        s->stopStream();
+        wait(800);
+        grbl.hangDwell = false;
+        // The same with Z: the G10 Z zero is already set when the box opens;
+        // a way out that skips the move must still drop the BitSetter
+        // reference from before the zero.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        panel.m_bzWantZ = true;
+        panel.m_bzStockZ = -70;
+        grbl.events.clear();
+        panel.bitZeroApply();
+        spin(3000, [&] { return boxes == 3 && !QApplication::activeModalWidget(); });
+        wait(800);
+        check(boxes == 3 && grbl.indexOf("G10 L20") >= 0 && grbl.indexOf("G38.2") < 0,
+              "bzwait: Z zero set, nothing measured into the job started meanwhile");
+        check(!panel.m_haveRef, "bzwait: the stale BitSetter reference is dropped");
         boxer.stop();
         s->stopStream();
         wait(500);

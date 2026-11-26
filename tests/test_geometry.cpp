@@ -453,17 +453,17 @@ int main(int argc, char *argv[])
         check(g.done.size() == 1 && g.gcode.contains(QLatin1String("Z1.000")),
               "a through cut counting its break-through keeps its tabs");
     }
-    // --- stock re-measured a little thicker than the cut depth is still
-    // treated as through (2.15 mm sheet, 2.0 mm cut, no break-through).
+    // --- a cut that stops short of the bottom (a skin left) drops the
+    // full-height tabs: they would stand as solid bridges under the skin.
     {
         Rig r;
-        r.doc.setParam(QStringLiteral("thickness"), QStringLiteral("2.150"));
+        r.doc.setParam(QStringLiteral("thickness"), QStringLiteral("3.000"));
         r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
-        r.addToolpath("cutout", {{"cut_depth", 2.0}, {"tab_height", 3.0},
+        r.addToolpath("cutout", {{"cut_depth", 2.85}, {"tab_height", 3.0},
                                  {"ignore_tabs", false}});
         const c2d::GcodeResult g = c2d::exportGcode(r.doc);
-        check(g.done.size() == 1 && g.gcode.contains(QLatin1String("Z1.000")),
-              "a cut within 0.2 mm of the stock bottom keeps its tabs");
+        check(g.done.size() == 1 && !g.gcode.contains(QLatin1String("Z0.150")),
+              "a cut leaving a skin drops full-height tabs");
     }
 
     // --- a ramp into a short last pass starts from the floor already cut,

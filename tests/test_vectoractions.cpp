@@ -1394,6 +1394,75 @@ int main(int argc, char *argv[])
                   refs(ud, "{tp-left-c}") == QStringList({left.id, c.id}), "union disjoint: undo exact");
             canvas->setDocument(&doc);
         }
+        // Union whose hole touches its outline at a corner: two L shapes that
+        // meet at one point, (4, 36), which is both a corner of the hole and of
+        // the notch cut into the outline. Whichever way Clipper hands the rings
+        // back, each L's toolpath gets all of them - a pocket on the weld
+        // without its hole would clear the hole.
+        {
+            Document ud;
+            const Element l1 = Element::makePath({{0, 0}, {40, 0}, {40, 4}, {4, 4}, {4, 36}, {0, 36}},
+                                                 true, layer);
+            const Element l2 = Element::makePath({{36, 0}, {40, 0}, {40, 40}, {4, 40}, {4, 36}, {36, 36}},
+                                                 true, layer);
+            ud.addElement(l1);
+            ud.addElement(l2);
+            Toolpath t1 = tp("{tp-l1}", {l1.id});
+            t1.json.insert("vectors_removed", true);    // left from an earlier edit
+            ud.addToolpath(t1);
+            ud.addToolpath(tp("{tp-l2}", {l2.id}));
+            canvas->setDocument(&ud);
+            QUndoStack *uu = canvas->undoStack();
+            const QStringList before = idsNow(ud);
+            canvas->selectIds({l1.id, l2.id});
+            va.boolean(vec::BoolOp::Union);
+            const QStringList res = added(ud, before);
+            check(!res.isEmpty(), "touching hole: the Ls weld");
+            check(sorted(refs(ud, "{tp-l1}")) == sorted(res) && sorted(refs(ud, "{tp-l2}")) == sorted(res),
+                  "touching hole: each L's toolpath gets the outline and the hole");
+            check(!flagged(ud, "{tp-l1}"), "a toolpath given vectors again loses its vectors_removed mark");
+            uu->undo();
+            check(flagged(ud, "{tp-l1}") && refs(ud, "{tp-l1}") == QStringList{l1.id},
+                  "touching hole: undo restores the toolpath as it was, mark and all");
+            canvas->setDocument(&doc);
+        }
+
+        // Timing: 300 overlapping circles welded and offset stay quick.
+        {
+            Document ud;
+            QStringList ids;
+            for (int i = 0; i < 300; ++i) {
+                const Element e = Element::makeCircle({10 + 3.0 * i, 400.0 + (i % 2)}, 2, layer);
+                ud.addElement(e);
+                ids << e.id;
+            }
+            ud.addToolpath(tp("{tp-first}", {ids.first()}));
+            ud.addToolpath(tp("{tp-last}", {ids.last()}));
+            canvas->setDocument(&ud);
+            QUndoStack *uu = canvas->undoStack();
+            const QStringList before = idsNow(ud);
+            canvas->selectIds(ids);
+            QElapsedTimer clock;
+            clock.start();
+            va.boolean(vec::BoolOp::Union);
+            const qint64 unionMs = clock.elapsed();
+            QStringList res = added(ud, before);
+            check(res.size() == 1, "300 circles: one weld");
+            check(refs(ud, "{tp-first}") == res && refs(ud, "{tp-last}") == res,
+                  "300 circles: both ends' toolpaths get the weld");
+            check(unionMs < 4000, "300 circles: union lineage is not quadratic in the weld");
+            uu->undo();
+            canvas->selectIds(ids);
+            clock.restart();
+            va.offsetBy(0.5, false);
+            const qint64 offsetMs = clock.elapsed();
+            res = added(ud, before);
+            check(res.size() == 1 && refs(ud, "{tp-first}") == res && refs(ud, "{tp-last}") == res,
+                  "300 circles: the merged offset goes to both ends' toolpaths");
+            check(offsetMs < 4000, "300 circles: offset lineage stays quick on a big merged ring");
+            uu->undo();
+            canvas->setDocument(&doc);
+        }
         QObject::disconnect(hintConn);
     }
 
