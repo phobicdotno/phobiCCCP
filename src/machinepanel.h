@@ -414,6 +414,7 @@ private:
     // cleared, the card showing the toolpaths ticked now, ready for Run.
     void clearJob();
     QStringList riseToTop() const;
+    void startMoves(const QStringList &lines);   // a built-in macro, in mm (G21 first)
     void continueAfterToolChange();      // with the rise to the top in front
     void forgetJogPlan();
     double m_jogPlan[3] = {0, 0, 0};

@@ -519,7 +519,8 @@ QStringList GrblStreamer::resumeLinesAfterHold() const
 {
     const Modal m = scanModal(m_queue, m_holdAt);
     QStringList r;
-    r << QStringLiteral("G90");
+    // The rise was in mm (G21): an inch program gets its units back first.
+    r << (m.inches ? QStringLiteral("G20") : QStringLiteral("G21")) << QStringLiteral("G90");
     if ((m.spindle == QChar('3') || m.spindle == QChar('4')) && m.haveSpeed) {
         r << QStringLiteral("M0%1S%2").arg(m.spindle).arg(m.speed, 0, 'f', 0)
           << QStringLiteral("G4P3.00");                // the post's own spin-up wait
@@ -597,6 +598,10 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
         if (!t.isEmpty() && !t.startsWith(QChar('(')))
             m_queue.insert(at++, t);
     }
+    // The park, the measurement and the rise are in mm (G21); a program in
+    // inches gets its own units back before its next move.
+    if (before.valid && before.inches)
+        m_queue.insert(at++, QStringLiteral("G20"));
     // The resume can start with a rapid down in work Z (the post's retract),
     // and the spindle may be standing over the BitSetter still: cross to the
     // first cut at the top before the program may come down.
@@ -898,6 +903,7 @@ QStringList GrblStreamer::measureToolLines(const BitSetterConfig &cfg, bool retu
     // of a G38.2 until the probe cycle ends, so the macro naturally waits.
     QStringList m;
     m << QStringLiteral("M5")
+      << QStringLiteral("G21")                 // mm, whatever was typed before
       << QStringLiteral("G90")
       << QStringLiteral("G53 G0 Z%1").arg(cfg.safeZ, 0, 'f', 3)
       << QStringLiteral("G53 G0 X%1 Y%2").arg(cfg.x, 0, 'f', 3).arg(cfg.y, 0, 'f', 3)

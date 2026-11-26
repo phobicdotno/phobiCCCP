@@ -743,6 +743,28 @@ int main(int argc, char **argv)
         check(grbl.count("$$") >= 1, "mdi: $$ sent as a line");
     }
 
+    if (mode == "inchpark") {
+        // A G20 typed on the command line: Park's millimetre targets would be
+        // read as inches (25.4x as far). Park and a jog go out in G21.
+        grbl.events.clear();
+        check(panel.sendTyped(QStringLiteral("G20")), "inchpark: G20 is sent");
+        wait(400);
+        panel.park();
+        wait(1500);
+        const int i20 = grbl.indexOf("G20"), ip = grbl.indexOf("G53 G0");
+        int i21 = -1;
+        for (int i = 0; i < grbl.events.size(); ++i)
+            if (grbl.events.at(i) == "G21" && i > i20) { i21 = i; break; }
+        check(i20 >= 0 && ip > i20 && i21 > i20 && i21 < ip, "inchpark: Park sends G21 before its first move");
+        grbl.events.clear();
+        panel.jogStep('X', 1);
+        wait(600);
+        bool jogMm = false, jog = false;
+        for (const QByteArray &e : grbl.events)
+            if (e.startsWith("$J=")) { jog = true; jogMm = e.startsWith("$J=G21 "); }
+        check(jog && jogMm, "inchpark: a jog names G21");
+    }
+
     if (mode == "mdihome") {
         // $H typed goes through Initialize: homing, then the park after it.
         grbl.events.clear();
