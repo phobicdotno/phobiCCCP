@@ -29,6 +29,7 @@
 #include <QPushButton>
 #include <QSettings>
 #include <QSocketNotifier>
+#include <QSpinBox>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QToolButton>
@@ -664,6 +665,76 @@ int main(int argc, char **argv)
         QLabel *ov = panel.findChild<QLabel *>(QStringLiteral("ovLabel"));
         wait(400);
         check(ov && ov->text() == QLatin1String("feed 100 %"), "overrides: all back to 100 % on the readout");
+    }
+
+    // Spindle by hand in the "More" fold: On sends M3 at the field's speed
+    // (kept under the top speed), after asking when Z is not up; Off sends
+    // M5. Warm-up steps through half, three quarters and full speed, then M5
+    // (step lengths from machine/warmupSeconds, here 1 s each).
+    {
+        spin(1500, [&] { return !panel.isBusy() && s->pendingCommands() == 0
+                                && panel.statusJson().value("state").toString() == "Idle"; });
+        wait(500);
+        QSpinBox *rpm = nullptr;
+        for (QSpinBox *b : panel.findChildren<QSpinBox *>())
+            if (b->suffix() == QLatin1String(" rpm"))
+                rpm = b;
+        check(rpm && rpm->value() == 10000, "spindle: the speed field starts at the top speed");
+        rpm->setValue(50000);
+        check(rpm->value() == 10000, "spindle: the speed field stays under the top speed");
+        rpm->setValue(8000);
+        answer = [](const Seen &v) {
+            return v.headline.contains(QStringLiteral("clear of the work")) ? QStringLiteral("Spin up")
+                                                                             : QString();
+        };
+        seen.clear();
+        grbl.events.clear();
+        QPushButton *on = button(QStringLiteral("On"), QStringLiteral("M3"));
+        check(on->isEnabled(), "spindle: On is ready on an idle, homed machine");
+        on->click();
+        spin(1500, [&] { return grbl.count("M3") > 0; });
+        check(grbl.events.contains("M3 S8000"), "spindle: On sends M3 at the field's speed");
+        check(seen.size() == 1, "spindle: with Z down it asks whether the bit is clear");
+        button(QStringLiteral("Off"), QStringLiteral("M5"))->click();
+        spin(1500, [&] { return grbl.count("M5") > 0; });
+        check(grbl.count("M5") == 1, "spindle: Off sends M5");
+
+        const double zWas = grbl.mz;
+        grbl.mz = -1.5;                       // up at the top: no question
+        wait(600);
+        QSettings().setValue(QStringLiteral("machine/warmupSeconds"),
+                             QStringList{QStringLiteral("1"), QStringLiteral("1"), QStringLiteral("1")});
+        seen.clear();
+        grbl.events.clear();
+        QPushButton *warm = button(QStringLiteral("Warm-up"));
+        warm->click();
+        spin(500, [&] { return grbl.count("M3") > 0; });
+        check(warm->text().startsWith(QStringLiteral("Stop")), "warm-up: the button counts down and stops it");
+        spin(8000, [&] { return grbl.count("M5") > 0; });
+        QList<QByteArray> sent;
+        for (const QByteArray &e : grbl.events)
+            if (e.startsWith("M3") || e.startsWith("M5"))
+                sent << e;
+        check(sent == QList<QByteArray>({"M3 S5000", "M3 S7500", "M3 S10000", "M5"}),
+              "warm-up: half, three quarters, full speed, then off");
+        check(seen.isEmpty(), "warm-up: Z at the top, no question");
+        wait(300);
+        check(warm->text() == QLatin1String("Warm-up"), "warm-up: the button is back when done");
+
+        // Stopped early with the same button: M5 at once.
+        grbl.events.clear();
+        QSettings().setValue(QStringLiteral("machine/warmupSeconds"),
+                             QStringList{QStringLiteral("60"), QStringLiteral("60"), QStringLiteral("60")});
+        warm->click();
+        spin(500, [&] { return grbl.count("M3") > 0; });
+        warm->click();
+        spin(1000, [&] { return grbl.count("M5") > 0; });
+        check(grbl.count("M3") == 1 && grbl.count("M5") == 1 && warm->text() == QLatin1String("Warm-up"),
+              "warm-up: pressed again, the spindle stops");
+        QSettings().remove(QStringLiteral("machine/warmupSeconds"));
+        grbl.mz = zWas;
+        answer = [](const Seen &) { return QString(); };
+        wait(500);
     }
 
     // A pad's Zero X/Y or Zero Z bumped while a question of this page is

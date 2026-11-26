@@ -17,6 +17,7 @@ class QDialog;
 class QStackedWidget;
 class QComboBox;
 class QDoubleSpinBox;
+class QSpinBox;
 class QGroupBox;
 class QLabel;
 class QPlainTextEdit;
@@ -307,6 +308,19 @@ private:
     bool needsInit();            // true (and says so in the log) while in Alarm
     void initializeMachine();    // $H, then park()
     void park(bool afterHoming = false);   // safe Z, then the tool-change XY
+    // Manual spindle ("More" fold): on at the RPM field, off, and a timed
+    // warm-up ramp (50 %, 75 %, 100 % of the top speed; the step lengths in
+    // seconds come from machine/warmupSeconds, default 120,120,60). Only
+    // idle, homed, no job; the spindle is left as it is when the page is
+    // left or the port drops (Stop and Cancel still stop it).
+    double spindleMaxRpm() const;
+    bool spindleClear();                 // Z up, or the operator says the bit is clear
+    void spindleOn();
+    void spindleOff();
+    void toggleWarmup();
+    void warmupStep();                   // the next speed, or M5 after the last
+    void updateSpindleButtons();
+    void endWarmup(const QString &why);  // timer stopped, button back, no M5
     void hoverDryRun();   // trace the job outline 50 mm up, spindle off
     void parkSpot(double &x, double &y) const;   // where Park goes (machine)
     // Quick move: a 5 x 5 grid over the whole table, the outer ring at the
@@ -402,6 +416,13 @@ private:
     QCheckBox *m_airCut;                 // rehearse: spindle stripped, Z lifted
     QDoubleSpinBox *m_airLift;           // air-cut Z lift (mm)
     QPushButton *m_runBtn, *m_pauseBtn, *m_stopBtn;
+    QSpinBox *m_rpmSpin = nullptr;
+    QPushButton *m_spinOnBtn = nullptr, *m_spinOffBtn = nullptr, *m_warmBtn = nullptr;
+    QTimer *m_warmTimer = nullptr;       // 1 s ticks while warming up
+    QList<int> m_warmSecs;               // step lengths, read when it starts
+    int m_warmStep = -1;                 // -1: not warming up
+    int m_warmLeft = 0;                  // seconds left in this step
+    bool m_rpmRangeSet = false;          // $30/$31 applied to the field
     bool m_held = false;
     // m_held stays until a report shows the machine out of Hold (seen in
     // Hold before, or never in Hold within 2 s: the hold did not take).

@@ -37,6 +37,8 @@
 #include <QStackedWidget>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <cmath>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -816,6 +818,48 @@ MachinePanel::MachinePanel(QWidget *parent)
     ovBtn(QStringLiteral("100%"), char(0x95), QStringLiteral("Rapid moves back to 100 %"));
     rapidRow->addStretch(1);
     mv->addLayout(rapidRow);
+    // Spindle by hand: check runout, warm the bearings. Idle and homed only.
+    auto *spRow = new QHBoxLayout;
+    ovTo = spRow;
+    ovName(QStringLiteral("spindle"));
+    m_rpmSpin = new QSpinBox(more);
+    m_rpmSpin->setRange(0, 100000);
+    m_rpmSpin->setSingleStep(1000);
+    m_rpmSpin->setSuffix(QStringLiteral(" rpm"));
+    m_rpmSpin->setMinimumSize(130, 44);
+    m_rpmSpin->setValue(int(spindleMaxRpm()));
+    m_rpmSpin->setToolTip(QStringLiteral("Speed for On, kept between the controller's "
+                                         "lowest and highest spindle speed ($31, $30)"));
+    spRow->addWidget(m_rpmSpin);
+    m_spinOnBtn = new QPushButton(QStringLiteral("On"), more);
+    m_spinOnBtn->setMinimumSize(70, 44);
+    m_spinOnBtn->setToolTip(QStringLiteral("Spindle on at this speed (M3). Only when the "
+                                           "machine stands still and no job runs"));
+    m_spinOffBtn = new QPushButton(QStringLiteral("Off"), more);
+    m_spinOffBtn->setMinimumSize(70, 44);
+    m_spinOffBtn->setToolTip(QStringLiteral("Spindle off (M5); ends a warm-up too"));
+    m_warmBtn = new QPushButton(QStringLiteral("Warm-up"), more);
+    m_warmBtn->setMinimumSize(150, 44);
+    m_warmBtn->setToolTip(QStringLiteral("Warm the bearings: half speed 2 min, three "
+                                         "quarters 2 min, full speed 1 min, then off. "
+                                         "Press again to stop"));
+    spRow->addWidget(m_spinOnBtn);
+    spRow->addWidget(m_spinOffBtn);
+    spRow->addWidget(m_warmBtn);
+    spRow->addStretch(1);
+    mv->addLayout(spRow);
+    m_warmTimer = new QTimer(this);
+    m_warmTimer->setInterval(1000);
+    connect(m_warmTimer, &QTimer::timeout, this, [this] {
+        if (--m_warmLeft <= 0)
+            warmupStep();
+        else
+            updateSpindleButtons();
+    });
+    connect(m_spinOnBtn, &QPushButton::clicked, this, [this] { spindleOn(); });
+    connect(m_spinOffBtn, &QPushButton::clicked, this, [this] { spindleOff(); });
+    connect(m_warmBtn, &QPushButton::clicked, this, [this] { toggleWarmup(); });
+    updateSpindleButtons();              // off until connected, homed and idle
     auto *airRow = new QHBoxLayout;
     m_airCut = new QCheckBox(QStringLiteral("Air cut"), more);
     m_airCut->setToolTip(QStringLiteral(
@@ -1192,6 +1236,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     });
     connect(m_stopBtn, &QPushButton::clicked, this, [this] {
         ++m_stopSeq;
+        endWarmup(QStringLiteral("warm-up ended by Stop (the reset stops the spindle)"));
         resetFlow();
         m_grbl->stopStream();
     });
@@ -1251,6 +1296,10 @@ MachinePanel::MachinePanel(QWidget *parent)
     });
     connect(m_grbl, &GrblStreamer::disconnected, this, [this] {
         ++m_stopSeq;
+        // Nothing more can be sent; the spindle stays as the controller has it.
+        endWarmup(QStringLiteral("warm-up ended: not connected any more (the spindle was not "
+                                 "told to stop)"));
+        m_rpmRangeSet = false;
         resetFlow();
         stopHoldJog();
         m_deferredJogs.clear();
@@ -3322,6 +3371,7 @@ void MachinePanel::onStatus(const MachineStatus &st)
             : QStringLiteral("font-size: 16px; font-weight: 600; padding-left: 8px; color: #f0a830;"));
     }
     emit livePosition(st.wx, st.wy, st.wz, true);
+    updateSpindleButtons();
 
     // Deferred actions wait for two consecutive Idle reports: the `ok` of a
     // G0 arrives before the move starts, so a single Idle can be stale.
@@ -3357,6 +3407,147 @@ bool MachinePanel::needsInit()
         return false;
     log(QStringLiteral("!! machine is in Alarm — press \"Initialize machine\" (home) first"));
     return true;
+}
+
+// ---- Spindle by hand ------------------------------------------------------
+
+double MachinePanel::spindleMaxRpm() const
+{
+    const double fromController = m_grbl->haveSettings() ? m_grbl->setting(30, 0) : 0;
+    if (fromController > 0)
+        return fromController;
+    const double own = QSettings().value(QStringLiteral("machine/spindleMaxRpm"), 10000).toDouble();
+    return own > 0 ? own : 10000;
+}
+
+void MachinePanel::updateSpindleButtons()
+{
+    if (!m_rpmSpin)
+        return;
+    if (!m_rpmRangeSet && m_grbl->haveSettings()) {
+        m_rpmRangeSet = true;
+        const int hi = int(spindleMaxRpm());
+        const int lo = qBound(0, int(m_grbl->setting(31, 0)), hi);
+        const bool atDefault = m_rpmSpin->value() == 10000
+                               || m_rpmSpin->value() > hi || m_rpmSpin->value() < lo;
+        m_rpmSpin->setRange(lo, hi);
+        if (atDefault)
+            m_rpmSpin->setValue(hi);
+    }
+    const bool connected = m_grbl->isConnected();
+    const bool idle = connected && m_homed && m_machineState == QLatin1String("Idle")
+                      && m_grbl->canSendCommand() && !m_grbl->isStreaming() && !isBusy();
+    const bool warming = m_warmStep >= 0;
+    m_spinOnBtn->setEnabled(idle && !warming);
+    m_spinOffBtn->setEnabled(connected && m_grbl->canSendCommand() && !m_grbl->isStreaming());
+    m_warmBtn->setEnabled(warming || idle);
+    if (warming) {
+        static const int share[] = {50, 75, 100};
+        m_warmBtn->setText(QStringLiteral("Stop %1:%2 (%3 %)")
+                               .arg(m_warmLeft / 60)
+                               .arg(m_warmLeft % 60, 2, 10, QLatin1Char('0'))
+                               .arg(share[qBound(0, m_warmStep, 2)]));
+    } else {
+        m_warmBtn->setText(QStringLiteral("Warm-up"));
+    }
+}
+
+// Z near the top (homed), or the operator says the bit is clear of the work.
+bool MachinePanel::spindleClear()
+{
+    const MachineStatus &st = m_grbl->status();
+    if (m_homed && st.valid && st.mz >= -switchClearance() - 5.0)
+        return true;
+    ShopAsk a;
+    a.title = QStringLiteral("Spindle");
+    a.headline = QStringLiteral("Spindle on: is the bit clear of the work?");
+    a.body = QStringLiteral("Z is not up at the top. Check that the bit touches nothing, "
+                            "the collet is tight and nothing loose lies under it.");
+    a.okText = QStringLiteral("Spin up");
+    a.cancelText = QStringLiteral("Not yet");
+    a.defaultOk = false;
+    return shopAsk(this, a);
+}
+
+void MachinePanel::spindleOn()
+{
+    if (!m_spinOnBtn->isEnabled() || m_grbl->isStreaming() || isBusy()) {
+        log(QStringLiteral("spindle on refused: only when the machine stands still and no job runs"));
+        return;
+    }
+    if (!spindleClear() || !m_spinOnBtn->isEnabled())
+        return;
+    const int rpm = m_rpmSpin->value();
+    if (m_grbl->sendCommand(QStringLiteral("M3 S%1").arg(rpm)))
+        log(QStringLiteral("spindle on at %1 rpm").arg(rpm));
+}
+
+void MachinePanel::spindleOff()
+{
+    endWarmup(QString());
+    if (m_grbl->sendCommand(QStringLiteral("M5")))
+        log(QStringLiteral("spindle off"));
+    updateSpindleButtons();
+}
+
+void MachinePanel::endWarmup(const QString &why)
+{
+    if (m_warmStep < 0)
+        return;
+    m_warmTimer->stop();
+    m_warmStep = -1;
+    if (!why.isEmpty())
+        log(why);
+    updateSpindleButtons();
+}
+
+void MachinePanel::toggleWarmup()
+{
+    if (m_warmStep >= 0) {
+        spindleOff();
+        log(QStringLiteral("warm-up stopped"));
+        return;
+    }
+    if (!m_warmBtn->isEnabled() || m_grbl->isStreaming() || isBusy()) {
+        log(QStringLiteral("warm-up refused: only when the machine stands still and no job runs"));
+        return;
+    }
+    if (!spindleClear() || !m_warmBtn->isEnabled())
+        return;
+    m_warmSecs.clear();
+    const QStringList secs = QSettings().value(QStringLiteral("machine/warmupSeconds"),
+                                               QStringList{QStringLiteral("120"), QStringLiteral("120"),
+                                                           QStringLiteral("60")}).toStringList();
+    for (int i = 0; i < 3; ++i)
+        m_warmSecs << qMax(1, i < secs.size() ? secs.at(i).trimmed().toInt() : 60);
+    log(QStringLiteral("warm-up: %1 s at 50 %, %2 s at 75 %, %3 s at full speed, then off")
+            .arg(m_warmSecs.at(0)).arg(m_warmSecs.at(1)).arg(m_warmSecs.at(2)));
+    m_warmStep = -1;                     // warmupStep() moves on to step 0
+    warmupStep();
+}
+
+void MachinePanel::warmupStep()
+{
+    static const double share[] = {0.5, 0.75, 1.0};
+    const int next = m_warmStep + 1;
+    if (next >= 3) {
+        m_warmTimer->stop();
+        m_warmStep = -1;
+        if (m_grbl->sendCommand(QStringLiteral("M5")))
+            log(QStringLiteral("warm-up done: spindle off"));
+        updateSpindleButtons();
+        return;
+    }
+    const int rpm = int(std::lround(spindleMaxRpm() * share[next]));
+    if (!m_grbl->sendCommand(QStringLiteral("M3 S%1").arg(rpm))) {
+        endWarmup(QStringLiteral("warm-up ended: the controller would not take the next speed"));
+        return;
+    }
+    log(QStringLiteral("warm-up: %1 rpm for %2 s").arg(rpm).arg(m_warmSecs.at(next)));
+    m_warmStep = next;
+    m_warmLeft = m_warmSecs.at(next);
+    m_warmTimer->start();
+    updateSpindleButtons();
 }
 
 bool MachinePanel::isBusy() const
