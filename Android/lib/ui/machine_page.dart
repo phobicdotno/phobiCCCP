@@ -4,9 +4,9 @@
 
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app_state.dart';
 import '../model.dart';
@@ -34,11 +34,6 @@ class _MachinePageState extends State<MachinePage> {
   bool _controlBusy = false;
   AppState get app => widget.app;
 
-  @override
-  void dispose() {
-    _stopDisarm?.cancel();
-    super.dispose();
-  }
 
   Future<void> _control(Computer c, String op) async {
     _stopDisarm?.cancel();
@@ -129,6 +124,45 @@ class _MachinePageState extends State<MachinePage> {
         ),
       const SizedBox(height: 10),
     ]);
+  }
+
+  // How each computer's last job ended, as last seen: a change to finished
+  // or stopped gets a banner and a sound here, once.
+  final Map<String, String> _jobEnds = {};
+
+  @override
+  void initState() {
+    super.initState();
+    app.addListener(_watchJobEnd);
+    _watchJobEnd();
+  }
+
+  @override
+  void dispose() {
+    app.removeListener(_watchJobEnd);
+    _stopDisarm?.cancel();
+    super.dispose();
+  }
+
+  void _watchJobEnd() {
+    for (final c in app.computers) {
+      final info = c.info;
+      if (info == null) continue;
+      final id = c.desktop.id;
+      final end = info.status.streaming ? '' : info.status.jobEnd;
+      final before = _jobEnds[id];
+      _jobEnds[id] = end;
+      if (before == null || before == end || end.isEmpty || !mounted) continue;
+      SystemSound.play(SystemSoundType.alert);
+      final job = info.status.job.isEmpty ? 'The job' : info.status.job;
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+        content: Text(end == 'finished' ? '✓ $job finished on ${c.name}' : '$job stopped on ${c.name}',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black)),
+        backgroundColor: end == 'finished' ? C.preview : C.amber,
+        duration: const Duration(seconds: 8),
+        behavior: SnackBarBehavior.floating,
+      ));
+    }
   }
 
   List<Computer> _reach() => app.computers.where((c) => c.reachable(app.now)).toList();
@@ -235,7 +269,7 @@ class _MachinePageState extends State<MachinePage> {
             const SizedBox(width: 10),
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(c.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                Text(c.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: Colors.black)),
                 Text(
                     [
                       if (c.desktop.address != c.name) c.desktop.address,
