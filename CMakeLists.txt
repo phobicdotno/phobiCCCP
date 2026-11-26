@@ -152,7 +152,21 @@ endif()
 
 # True medial-axis v-carve needs the (header-only) Boost.Polygon Voronoi
 # builder; without it the exporter falls back to depth-graded inset rings.
-find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
+# Header-only, so a cross build (the pad) may take the build machine's copy:
+# the find root of an NDK build would otherwise look only inside the NDK.
+if(ANDROID)
+    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp NO_CMAKE_FIND_ROOT_PATH)
+else()
+    find_path(BOOST_VORONOI_INC boost/polygon/voronoi.hpp)
+endif()
+if(BOOST_VORONOI_INC AND ANDROID)
+    # /usr/include is an implicit directory that CMake drops from -I, and
+    # putting it on the NDK's path would shadow the sysroot: link only boost/.
+    set(_boost_link ${CMAKE_BINARY_DIR}/boost-inc)
+    file(MAKE_DIRECTORY ${_boost_link})
+    file(CREATE_LINK ${BOOST_VORONOI_INC}/boost ${_boost_link}/boost SYMBOLIC)
+    set(BOOST_VORONOI_INC ${_boost_link})
+endif()
 if(BOOST_VORONOI_INC)
     target_include_directories(phobicccp_core PRIVATE ${BOOST_VORONOI_INC})
     target_compile_definitions(phobicccp_core PUBLIC HAVE_BOOST_VORONOI)

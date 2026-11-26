@@ -12,7 +12,31 @@ permissions:
   contents: write
 
 jobs:
+  # The release itself, empty: the two APK jobs below add their file to it,
+  # each on its own, so one failing does not hold back the other.
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="$(cat VERSION)"; fi
+          echo "V=$v" >> "$GITHUB_ENV"
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "v$V" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 && exit 0
+          gh release create "v$V" --target "$GITHUB_SHA" \
+            --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "phobiCCCP $V" \
+            --notes "PhobiCCCP for pads: download an .apk on the tablet and open it to install (allow installing from your browser if Android asks). PhobiCCCP-desktop-$V.apk is the desktop program itself on the pad; PhobiCCCP-$V.apk is the older, smaller pad app. Both are the same app to Android: installing one replaces the other, either way round, and keeps its designs. A newer version always installs over an older one; an older one cannot go over a newer one."
+
   apk:
+    needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
@@ -36,6 +60,11 @@ jobs:
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v="$(cat ../VERSION)"; fi
           echo "V=$v" >> "$GITHUB_ENV"
+          # The same Android version code as the desktop program's APK
+          # (CMakeLists.txt: major*10000 + minor*100 + patch), so the two
+          # can replace each other either way round.
+          IFS=. read -r ma mi pa <<< "$v"
+          echo "CODE=$((ma * 10000 + mi * 100 + pa))" >> "$GITHUB_ENV"
 
       - name: Release signing key
         env:
@@ -56,23 +85,20 @@ jobs:
       - name: Build APK
         run: |
           flutter pub get
-          flutter build apk --release
+          flutter build apk --release --build-name "$V" --build-number "$CODE"
           cp build/app/outputs/flutter-apk/app-release.apk "PhobiCCCP-$V.apk"
 
-      - name: Publish release
+      - name: Add to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "v$V" "PhobiCCCP-$V.apk" --target "$GITHUB_SHA" \
-            --repo "$GITHUB_REPOSITORY" --prerelease \
-            --title "phobiCCCP $V" \
-            --notes "PhobiCCCP for pads: download an .apk on the tablet and open it to install (allow installing from your browser if Android asks). PhobiCCCP-$V.apk is the pad app; PhobiCCCP-desktop-$V.apk is the desktop program itself on the pad (added a few minutes later). Both are the same app to Android, so installing one replaces the other."
+        run: gh release upload "v$V" "PhobiCCCP-$V.apk" --repo "$GITHUB_REPOSITORY" --clobber
 
   # The desktop program built for the pad (Qt), added to the same release as
-  # PhobiCCCP-desktop-<version>.apk. Same app id and key as the pad app above,
-  # so installing it replaces that one, and either can go back over the other.
+  # PhobiCCCP-desktop-<version>.apk. Same app id, key and version code as the
+  # pad app above, so installing it replaces that one, and either can go back
+  # over the other.
   desktop-apk:
-    needs: apk
+    needs: release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -100,7 +126,7 @@ jobs:
 
       - name: Android SDK parts
         run: |
-          sudo apt-get install -y --no-install-recommends ninja-build
+          sudo apt-get install -y --no-install-recommends ninja-build libboost-dev   # Boost.Polygon (true V-carve): headers only
           yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
             "ndk;26.1.10909125" "platforms;android-34" "build-tools;34.0.0" > /dev/null
