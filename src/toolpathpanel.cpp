@@ -12,6 +12,7 @@
 #include <QPointer>
 #include "canvas.h"
 #include "c2ddocument.h"
+#include "gcodeexport.h"
 #include "toollibrary.h"
 #include "toollibrarydialog.h"
 #include "toolpathcommands.h"
@@ -1095,6 +1096,9 @@ void ToolpathPanel::refresh()
                     break;
                 }
             }
+            const QString flute = fluteLengthWarning(t.type, t.json);
+            if (!flute.isEmpty())
+                sub += QStringLiteral(" \u00b7 \u26a0 deeper than the flutes");
             it->setData(0, SubtitleRole, sub);
             const QJsonObject tool = t.json.value("tool").toObject();
             if (!tool.isEmpty()) {
@@ -1105,9 +1109,11 @@ void ToolpathPanel::refresh()
             QStringList vids;
             for (const QJsonValue &v : refs)
                 vids << v.toObject().value("uuid").toString();
-            it->setToolTip(0, QStringLiteral("T%1  %2\n%3")
+            it->setToolTip(0, QStringLiteral("T%1  %2\n%3%4")
                                   .arg(int(tool.value("number").toDouble()))
-                                  .arg(tool.value("name").toString(), describeVectors(vids, byId)));
+                                  .arg(tool.value("name").toString(), describeVectors(vids, byId),
+                                       flute.isEmpty() ? QString()
+                                                       : QStringLiteral("\n\u26a0 This toolpath ") + flute));
             it->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable
                          | Qt::ItemIsDragEnabled);
             it->setData(0, AreaIdsRole, vids);

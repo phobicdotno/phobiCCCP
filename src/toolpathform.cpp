@@ -1,5 +1,6 @@
 #include "toolpathform.h"
 #include "c2ddocument.h"
+#include "gcodeexport.h"
 #include "tooldiagram.h"
 #include "toollibrary.h"
 
@@ -951,6 +952,10 @@ void ToolpathForm::updateValues()
             s += QStringLiteral(" · %1 fl").arg(t.flutes);
         if (!t.name.isEmpty())
             s += QStringLiteral("<br><span style='color:#8b93a1'>%1</span>").arg(t.name.toHtmlEscaped());
+        if (const QString w = fluteLengthWarning(m_type, m_json);
+            !w.isEmpty())
+            s += QStringLiteral("<br><span style='color:#f0b429'>\u26a0 This toolpath %1</span>")
+                     .arg(w.toHtmlEscaped());
         m_toolText->setText(s);
     }
     for (auto it = m_editors.constBegin(); it != m_editors.constEnd(); ++it) {

@@ -4463,6 +4463,12 @@ bool MachinePanel::runProgram(QString *remoteWhy)
                                  : QString());
     if (const QString w = toolReuseWarning(ops); !w.isEmpty())
         ask.body += QStringLiteral("\n\n\u26a0 ") + w;
+    // Not a refusal: the flute length in the tool library may be a guess.
+    for (const Toolpath &t : m_doc->toolpaths())
+        if (r.doneIds.contains(t.uuid))
+            if (const QString w = fluteLengthWarning(t.type, t.json); !w.isEmpty())
+                ask.body += QStringLiteral("\n\n\u26a0 %1 %2")
+                                .arg(t.json.value(QStringLiteral("name")).toString(), w);
     if (!r.skipped.isEmpty())
         ask.body += QStringLiteral("\n\n\u26a0 Left out (not cut): %1").arg(r.skipped.join(QStringLiteral(", ")));
     if (useMap) {

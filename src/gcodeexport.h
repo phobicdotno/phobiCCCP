@@ -64,6 +64,15 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch = nullptr,
 // fine; otherwise one sentence for the operator.
 QString toolReuseWarning(const QVector<Op> &ops);
 
+// A toolpath that cuts deeper than its bit's flutes (the embedded tool's
+// `length`): past them the smooth shank rubs the wall, burns and can snap
+// the bit. Depth is the deepest the toolpath goes below the stock top: end
+// depth, a cutout's cut depth plus its break-through, or a 3D toolpath's
+// start plus its max depth. Empty when it fits, when the length is not
+// known (0 or missing), and for V-bits and V-carve / chamfer / texture,
+// whose cone has its own check. `type` is Toolpath::type.
+QString fluteLengthWarning(const QString &type, const QJsonObject &toolpath);
+
 // The document's retract height, as every exporter must read it. `retract`
 // comes verbatim out of the params table and QString::toDouble returns 0 for
 // anything it cannot parse (an empty value, a comma decimal from another

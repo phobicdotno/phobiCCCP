@@ -2605,6 +2605,36 @@ QString toolReuseWarning(const QVector<Op> &ops)
         .arg(seq.size() - 1).arg(distinct.size() - 1).arg(again.join(QStringLiteral(", ")));
 }
 
+QString fluteLengthWarning(const QString &type, const QJsonObject &toolpath)
+{
+    if (type == QLatin1String("advanced_vcarve_toolpath") || type == QLatin1String("chamfer_toolpath")
+        || type == QLatin1String("texture_toolpath"))
+        return QString();
+    const QJsonObject tool = toolpath.value("tool").toObject();
+    const double flutes = numOr(tool.value("length"), 0);
+    if (!(flutes > 0) || toolGeomOf(tool).kind == ToolGeom::VBit)
+        return QString();
+    bool ok = true;
+    auto deep = [&](const char *key) {
+        bool one = true;
+        const double z = depthToZ(toolpath.value(QLatin1String(key)), &one);
+        ok = ok && one;
+        return -z;
+    };
+    double d = 0;
+    if (type == QLatin1String("cutout"))
+        d = deep("cut_depth") + deep("break_through");
+    else if (type == QLatin1String("3d_rough_toolpath") || type == QLatin1String("3d_finish_toolpath"))
+        d = deep("start_depth") + deep("max_depth");
+    else
+        d = deep("end_depth");
+    if (!ok || !(d > flutes + 0.01))
+        return QString();
+    return QStringLiteral("cuts %1 mm deep, but T%2 has only %3 mm of flutes. Past them the "
+                          "shank rubs the wall: use a bit with longer flutes or cut less deep.")
+        .arg(d, 0, 'f', 1).arg(int(numOr(tool.value("number"), 0))).arg(flutes, 0, 'f', 1);
+}
+
 double documentSafeZ(const Document &doc)
 {
     const double z = doc.params().value(QStringLiteral("retract"),
@@ -2825,6 +2855,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             res.skipped << QStringLiteral("%1 (cut depth needs too many passes)").arg(name);
             continue;
         }
+        if (const QString w = fluteLengthWarning(t.type, j); !w.isEmpty())
+            res.notes << QStringLiteral("%1: %2").arg(name, w);
 
         if (rough3d || finish3d) {
             // 3D toolpaths over the modeller's relief (cam3d.cpp). Emitted on
