@@ -185,6 +185,7 @@ private:
     void recordJobEnd(const QString &how, int code);
     QPushButton *m_openNcBtn = nullptr, *m_backToDesignBtn = nullptr;
     void openProgramFile();               // the file dialog
+    void openSurfacing();                 // flatten a spoilboard or slab, no design
     void refreshJobInfo();
     // The right-hand card of the Machine page: the job, or one of the pages
     // that used to be pop-ups (BitZero probing, BitSetter settings).

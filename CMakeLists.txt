@@ -110,6 +110,7 @@ add_library(phobicccp_ui STATIC
     src/tooldiagram.cpp
     src/toolstrip.cpp
     src/machinepanel.cpp src/ncprogram.cpp src/machinemacros.cpp
+    src/machinepanel.cpp src/ncprogram.cpp src/surfacing.cpp
     src/jobview.cpp src/jobhistory.cpp
     src/shopdialog.cpp
     src/grblcodes.cpp
@@ -466,6 +467,11 @@ add_test(NAME jobzero COMMAND test_jobzero)
 add_executable(test_coolant tests/test_coolant.cpp)
 target_link_libraries(test_coolant PRIVATE phobicccp_ui)
 add_test(NAME coolant COMMAND test_coolant)
+
+# Surfacing from the Machine page: zigzag lines, depth passes, travel check.
+add_executable(test_surfacing tests/test_surfacing.cpp)
+target_link_libraries(test_surfacing PRIVATE phobicccp_ui)
+add_test(NAME surfacing COMMAND test_surfacing)
 
 # The gamepad reader, driven through a fifo carrying synthetic joystick events
 # so it can be tested with no controller plugged in.

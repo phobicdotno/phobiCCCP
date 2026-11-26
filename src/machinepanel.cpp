@@ -17,6 +17,7 @@
 #include "post_grbl.h"
 #include "tiling.h"
 #include "ncprogram.h"
+#include "surfacing.h"
 #include "jobhistory.h"
 #include "machineprofiles.h"
 
@@ -734,11 +735,16 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_backToDesignBtn->setVisible(false);
         connect(m_openNcBtn, &QPushButton::clicked, this, [this] { openProgramFile(); });
         connect(m_backToDesignBtn, &QPushButton::clicked, this, [this] { backToDesign(); });
+        auto *surfBtn = bigBtn(new QPushButton(QStringLiteral("Surfacing…"), jobCard), 52);
+        surfBtn->setToolTip(QStringLiteral("Flatten a spoilboard or a slab: a rectangle cut in "
+                                           "zigzag lines, no design needed"));
+        connect(surfBtn, &QPushButton::clicked, this, [this] { openSurfacing(); });
         auto *historyBtn = bigBtn(new QPushButton(QStringLiteral("History"), jobCard), 52);
         historyBtn->setToolTip(QStringLiteral("The last jobs: when, how long, how they ended"));
         connect(historyBtn, &QPushButton::clicked, this, [this] { jobhistory::showDialog(this); });
         fileRow->addWidget(m_openNcBtn);
         fileRow->addWidget(m_backToDesignBtn);
+        fileRow->addWidget(surfBtn);
         fileRow->addWidget(historyBtn);
         bv->addLayout(fileRow);
     }
@@ -2733,6 +2739,238 @@ bool MachinePanel::loadProgramFile(const QString &path, QString *why)
     log(QStringLiteral("G-code file loaded: %1 (%2 lines)").arg(QFileInfo(path).fileName()).arg(p.lines.size()));
     refreshJobInfo();
     return true;
+}
+
+// Surfacing: a program made here from a few numbers (area, bit, depth),
+// then loaded like an opened G-code file, so Start runs it through the same
+// checks, job list, Hold/Stop and end park.
+void MachinePanel::openSurfacing()
+{
+    if (isBusy() || m_grbl->isParkedForTool()) {
+        shopTell(this, QStringLiteral("Surfacing"), QStringLiteral("The machine is busy."),
+                 QStringLiteral("Set up surfacing when the job has ended."));
+        return;
+    }
+    if (!requireHomed(QStringLiteral("Surfacing")))
+        return;
+    // The travel the bit's centre may use, machine coordinates (X0 right,
+    // Y0 back), as for Quick move.
+    QSettings st;
+    const auto machine = appsettings::machine(st);
+    const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
+    const double ty = qMin(machine.height, m_grbl->setting(131, machine.height));
+    const double clear = switchClearance();
+    const double right = -clear, left = -(tx - 1.0);
+    const double back = -clear, front = -(ty - 1.0);
+    constexpr double kMargin = 5.0;
+    const MachineStatus &ms = m_grbl->status();
+    const double wcoX = ms.mx - ms.wx, wcoY = ms.my - ms.wy;
+
+    ToolLibrary lib;
+    lib.loadDefault();
+    QVector<const LibraryTool *> bits;
+    for (const LibraryTool &t : lib.tools())
+        if (t.ccType() == 0 && t.diameter > 0)
+            bits << &t;
+    std::sort(bits.begin(), bits.end(), [](const LibraryTool *a, const LibraryTool *b) {
+        return a->diameter > b->diameter;
+    });
+    int surfBit = -1;
+    for (int i = 0; i < bits.size(); ++i) {
+        const QString n = (bits.at(i)->name + QLatin1Char(' ') + bits.at(i)->kind).toLower();
+        if (n.contains(QLatin1String("surfac")) || n.contains(QLatin1String("fly")) || n.contains(QLatin1String("spoilboard"))) {
+            surfBit = i;
+            break;
+        }
+    }
+
+    QDialog dlg(this);
+    dlg.setObjectName(QStringLiteral("surfacing"));
+    dlg.setWindowTitle(QStringLiteral("Surfacing"));
+    auto *lay = new QVBoxLayout(&dlg);
+    auto *hint = new QLabel(QStringLiteral("Flattens a rectangle in zigzag lines. Set Z zero on the top "
+                                           "of the board first: the cut goes down from there. The bit "
+                                           "runs one radius past every edge."), &dlg);
+    hint->setWordWrap(true);
+    hint->setStyleSheet(QStringLiteral("color: #c5cad3; font-size: 15px;"));
+    lay->addWidget(hint);
+    auto *form = new QFormLayout;
+    form->setVerticalSpacing(8);
+    auto big = [](QWidget *w) { w->setMinimumHeight(44); return w; };
+
+    auto *bitBox = new QComboBox(&dlg);
+    bitBox->addItem(QStringLiteral("My own bit (diameter below)"), -1);
+    for (int i = 0; i < bits.size(); ++i)
+        bitBox->addItem(QStringLiteral("%1 (Ø %2 mm)").arg(bits.at(i)->name).arg(bits.at(i)->diameter), i);
+    auto *matBox = new QComboBox(&dlg);
+    for (const LibraryMaterial &m : lib.materials())
+        matBox->addItem(m.name, m.id);
+    const int mdf = matBox->findData(QStringLiteral("mdf"));
+    matBox->setCurrentIndex(qMax(0, st.value(QStringLiteral("machine/surf/material")).isValid()
+                                        ? matBox->findData(st.value(QStringLiteral("machine/surf/material")))
+                                        : mdf));
+    auto *dia = mmSpin(&dlg, 1, 100, st.value(QStringLiteral("machine/surf/dia"), 22.0).toDouble(), 2);
+    const double defDia = surfBit >= 0 ? bits.at(surfBit)->diameter : dia->value();
+    auto *w = mmSpin(&dlg, 1, 5000, std::floor(tx - 1.0 - clear - 2 * kMargin - defDia), 1);
+    auto *h = mmSpin(&dlg, 1, 5000, std::floor(ty - 1.0 - clear - 2 * kMargin - defDia), 1);
+    w->setToolTip(QStringLiteral("Width along X. The default is the machine's travel, less 5 mm "
+                                 "each side and the bit"));
+    h->setToolTip(QStringLiteral("Length along Y"));
+    auto *corner = new QComboBox(&dlg);
+    corner->addItem(QStringLiteral("At the X/Y zero (front-left corner of the area)"));
+    corner->addItem(QStringLiteral("Front-left of the machine"));
+    corner->setCurrentIndex(st.value(QStringLiteral("machine/surf/corner"), 1).toInt() == 0 ? 0 : 1);
+    auto *stepover = mmSpin(&dlg, 5, 95, st.value(QStringLiteral("machine/surf/stepover"), 40.0).toDouble(), 0,
+                            QStringLiteral(" %"));
+    auto *stepdown = mmSpin(&dlg, 0.05, 20, st.value(QStringLiteral("machine/surf/stepdown"), 0.5).toDouble(), 2);
+    auto *depth = mmSpin(&dlg, 0.05, 50, st.value(QStringLiteral("machine/surf/depth"), 0.5).toDouble(), 2);
+    auto *feed = mmSpin(&dlg, 10, 20000, 2000, 0, QStringLiteral(" mm/min"));
+    auto *plunge = mmSpin(&dlg, 10, 10000, 500, 0, QStringLiteral(" mm/min"));
+    auto *rpm = new QSpinBox(&dlg);
+    rpm->setRange(1000, 60000);
+    rpm->setSingleStep(500);
+    rpm->setValue(18000);
+    rpm->setSuffix(QStringLiteral(" rpm"));
+    auto *dir = new QComboBox(&dlg);
+    dir->addItem(QStringLiteral("Lines along X (left - right)"));
+    dir->addItem(QStringLiteral("Lines along Y (front - back)"));
+    dir->setCurrentIndex(st.value(QStringLiteral("machine/surf/alongY"), false).toBool() ? 1 : 0);
+    auto *finish = new QCheckBox(QStringLiteral("Finish pass: climb all round"), &dlg);
+    finish->setToolTip(QStringLiteral("One more pass at the full depth round the edge of the area, "
+                                      "climb cut, for a clean wall"));
+    finish->setChecked(st.value(QStringLiteral("machine/surf/finish"), false).toBool());
+
+    form->addRow(QStringLiteral("Bit"), big(bitBox));
+    form->addRow(QStringLiteral("Material (feeds)"), big(matBox));
+    form->addRow(QStringLiteral("Bit diameter"), big(dia));
+    form->addRow(QStringLiteral("Area X"), big(w));
+    form->addRow(QStringLiteral("Area Y"), big(h));
+    form->addRow(QStringLiteral("Start corner"), big(corner));
+    form->addRow(QStringLiteral("Stepover"), big(stepover));
+    form->addRow(QStringLiteral("Depth per pass"), big(stepdown));
+    form->addRow(QStringLiteral("Total depth"), big(depth));
+    form->addRow(QStringLiteral("Feed"), big(feed));
+    form->addRow(QStringLiteral("Plunge"), big(plunge));
+    form->addRow(QStringLiteral("Spindle"), big(rpm));
+    form->addRow(QStringLiteral("Direction"), big(dir));
+    form->addRow(QString(), big(finish));
+    lay->addLayout(form);
+    auto *preview = new QLabel(&dlg);
+    preview->setWordWrap(true);
+    preview->setStyleSheet(QStringLiteral("font-size: 16px; font-weight: 600;"));
+    lay->addWidget(preview);
+
+    // A library bit fills its diameter and, for the material, its feeds.
+    auto fromLibrary = [&] {
+        const int i = bitBox->currentData().toInt();
+        dia->setEnabled(i < 0);
+        if (i < 0 || i >= bits.size())
+            return;
+        const LibraryTool *t = bits.at(i);
+        dia->setValue(t->diameter);
+        if (const ToolFeeds *f = t->feedsFor(matBox->currentData().toString()); f && f->valid()) {
+            feed->setValue(f->feed);
+            if (f->plunge > 0)
+                plunge->setValue(f->plunge);
+            rpm->setValue(int(f->rpm));
+        }
+    };
+    auto params = [&] {
+        SurfacingParams p;
+        p.toolDia = dia->value();
+        p.width = w->value();
+        p.height = h->value();
+        p.stepoverPct = stepover->value();
+        p.stepdown = stepdown->value();
+        p.depth = depth->value();
+        p.feed = feed->value();
+        p.plunge = plunge->value();
+        p.rpm = rpm->value();
+        p.alongX = dir->currentIndex() == 0;
+        p.finishClimb = finish->isChecked();
+        p.safeZ = 5;
+        if (corner->currentIndex() == 1) {
+            // The area's corner one radius (plus a margin) in from the
+            // front-left end of the travel, as work coordinates.
+            p.x0 = left + kMargin + p.toolDia / 2 - wcoX;
+            p.y0 = front + kMargin + p.toolDia / 2 - wcoY;
+        }
+        return p;
+    };
+    auto *bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    bb->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Load as the job"));
+    bb->button(QDialogButtonBox::Ok)->setMinimumHeight(52);
+    bb->button(QDialogButtonBox::Cancel)->setMinimumHeight(52);
+    auto update = [&] {
+        const SurfacingPlan plan = planSurfacing(params());
+        QString why = plan.error;
+        if (why.isEmpty())
+            why = surfacingFitProblem(plan, wcoX, wcoY, left, right, front, back);
+        bb->button(QDialogButtonBox::Ok)->setEnabled(why.isEmpty());
+        if (!why.isEmpty()) {
+            preview->setStyleSheet(QStringLiteral("font-size: 16px; font-weight: 600; color: #ff6b6b;"));
+            preview->setText(why);
+            return;
+        }
+        preview->setStyleSheet(QStringLiteral("font-size: 16px; font-weight: 600; color: #e6e9ef;"));
+        preview->setText(QStringLiteral("%1, %2 lines × %3 pass%4")
+                             .arg(roughDuration(computeStats(plan.ops).timeSec))
+                             .arg(plan.lines).arg(plan.passes)
+                             .arg(plan.passes == 1 ? QString() : QStringLiteral("es")));
+    };
+    if (surfBit >= 0)
+        bitBox->setCurrentIndex(surfBit + 1);
+    fromLibrary();
+    update();
+    connect(bitBox, &QComboBox::currentIndexChanged, &dlg, [&] { fromLibrary(); update(); });
+    connect(matBox, &QComboBox::currentIndexChanged, &dlg, [&] { fromLibrary(); update(); });
+    for (QDoubleSpinBox *s : {dia, w, h, stepover, stepdown, depth, feed, plunge})
+        connect(s, &QDoubleSpinBox::valueChanged, &dlg, [&] { update(); });
+    connect(rpm, &QSpinBox::valueChanged, &dlg, [&] { update(); });
+    connect(corner, &QComboBox::currentIndexChanged, &dlg, [&] { update(); });
+    connect(dir, &QComboBox::currentIndexChanged, &dlg, [&] { update(); });
+    connect(finish, &QCheckBox::toggled, &dlg, [&] { update(); });
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(bb);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    st.setValue(QStringLiteral("machine/surf/material"), matBox->currentData());
+    st.setValue(QStringLiteral("machine/surf/dia"), dia->value());
+    st.setValue(QStringLiteral("machine/surf/corner"), corner->currentIndex());
+    st.setValue(QStringLiteral("machine/surf/stepover"), stepover->value());
+    st.setValue(QStringLiteral("machine/surf/stepdown"), stepdown->value());
+    st.setValue(QStringLiteral("machine/surf/depth"), depth->value());
+    st.setValue(QStringLiteral("machine/surf/alongY"), dir->currentIndex() == 1);
+    st.setValue(QStringLiteral("machine/surf/finish"), finish->isChecked());
+
+    const SurfacingParams p = params();
+    const SurfacingPlan plan = planSurfacing(p);
+    // Checked again: the machine may have moved its zero while the dialog was open.
+    const MachineStatus &now = m_grbl->status();
+    QString why = plan.error;
+    if (why.isEmpty())
+        why = surfacingFitProblem(plan, now.mx - now.wx, now.my - now.wy, left, right, front, back);
+    if (isBusy() || m_grbl->isParkedForTool())
+        why = QStringLiteral("The machine is busy.");
+    if (!why.isEmpty()) {
+        shopTell(this, QStringLiteral("Surfacing"), QStringLiteral("Surfacing cannot run here."), why);
+        return;
+    }
+    const NcProgram nc = readNcProgram(GrblPost().generate(plan.ops));
+    if (!nc.ok()) {
+        shopTell(this, QStringLiteral("Surfacing"), QStringLiteral("Surfacing cannot run here."), nc.error);
+        return;
+    }
+    m_ncPath = QStringLiteral("Surfacing %1 × %2 mm").arg(p.width).arg(p.height);
+    m_ncLines = nc.lines;
+    m_ncOps = nc.ops;
+    log(QStringLiteral("surfacing loaded: %1 × %2 mm, Ø %3 bit, %4 lines × %5 passes to Z-%6")
+            .arg(p.width).arg(p.height).arg(p.toolDia).arg(plan.lines).arg(plan.passes).arg(p.depth));
+    if (m_rightStack)
+        m_rightStack->setCurrentWidget(m_jobPage);
+    refreshJobInfo();
 }
 
 void MachinePanel::backToDesign()
