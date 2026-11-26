@@ -21,6 +21,7 @@
 #include "jobhistory.h"
 #include "machineprofiles.h"
 #include "grblsettingsdialog.h"
+#include "machinecounters.h"
 
 #include <QApplication>
 #include <QButtonGroup>
@@ -430,6 +431,13 @@ MachinePanel::MachinePanel(QWidget *parent)
     initLay->addWidget(m_initBtn);
     m_initBanner->hide();
     lay->addWidget(m_initBanner);
+    // A service that is due: one amber line, never in the way of a job.
+    m_dueLabel = new QLabel(body);
+    m_dueLabel->setObjectName(QStringLiteral("serviceDue"));
+    m_dueLabel->setStyleSheet(QStringLiteral("color: #f2a536; font-weight: bold;"));
+    m_dueLabel->setToolTip(QStringLiteral("Service reminder: open Counters… to mark it done"));
+    m_dueLabel->hide();
+    lay->addWidget(m_dueLabel);
     connect(m_initBtn, &QPushButton::clicked, this, [this] { initializeMachine(); });
 
     auto *cols = new QHBoxLayout;
@@ -747,6 +755,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         fileRow->addWidget(m_backToDesignBtn);
         fileRow->addWidget(surfBtn);
         fileRow->addWidget(historyBtn);
+        auto *countersBtn = bigBtn(new QPushButton(QStringLiteral("Counters…"), jobCard), 52);
+        countersBtn->setToolTip(QStringLiteral("Spindle and moving hours, time per bit, and service reminders"));
+        connect(countersBtn, &QPushButton::clicked, this, [this] { openCounters(); });
+        fileRow->addWidget(countersBtn);
         bv->addLayout(fileRow);
     }
     auto *runRow = new QHBoxLayout;
@@ -1399,6 +1411,8 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_grbl, &GrblStreamer::settingsListed, this, [this] { autoBackupSettings(); });
     connect(m_grbl, &GrblStreamer::disconnected, this, [this] {
         ++m_stopSeq;
+        flushCounters();
+        m_counterClock.invalidate();
         // Nothing more can be sent; the spindle stays as the controller has it.
         endWarmup(QStringLiteral("warm-up ended: not connected any more (the spindle was not "
                                  "told to stop)"));
@@ -1636,6 +1650,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     connect(m_holdRepeat, &QTimer::timeout, this, [this] { jogIncrement(); });
 
     loadSettings();
+    loadCounters();
     {
         const SurfaceMap saved = SurfaceMap::fromJson(
             QSettings().value(QStringLiteral("machine/heightmap/map")).toString());
@@ -1675,6 +1690,7 @@ MachinePanel::MachinePanel(QWidget *parent)
 
 MachinePanel::~MachinePanel()
 {
+    flushCounters();
     disconnect(m_grbl, nullptr, this, nullptr);
     // The streamer closes the port as it is deleted, after this panel's own
     // members are gone. A surface map still probing hears that and reports
@@ -3697,6 +3713,7 @@ void MachinePanel::setStatePill(const QString &text, const QString &border)
 
 void MachinePanel::onStatus(const MachineStatus &st)
 {
+    countStatus(st);
     m_machineState = st.state;
     ++m_statusSeq;
     // A $$ listing came in: the estimates use the machine's own rates and
@@ -5744,6 +5761,96 @@ bool MachinePanel::stopFromRemote(const QString &who, QString *why)
     return true;
 }
 
+// ---- run-time counters ---------------------------------------------------------
+
+void MachinePanel::loadCounters()
+{
+    QSettings s;
+    m_countersId = machineprofiles::activeId(s);
+    m_counters = machinecounters::load(s, m_countersId);
+    m_counterClock.invalidate();
+    m_counterFlush.start();
+    showDue();
+}
+
+void MachinePanel::flushCounters()
+{
+    if (m_countersId.isEmpty())
+        return;
+    QSettings s;
+    machinecounters::save(s, m_countersId, m_counters);
+    m_counterFlush.start();
+}
+
+// The bit as the tool library knows it: its id when a library bit has the
+// same model (or name and diameter), else its name.
+QString MachinePanel::bitKey(const LibraryTool &bit)
+{
+    const QString cacheKey = QStringLiteral("%1|%2|%3").arg(bit.model, bit.name).arg(bit.diameter);
+    auto hit = m_bitKeys.constFind(cacheKey);
+    if (hit != m_bitKeys.cend())
+        return hit.value();
+    QString key = bit.name.isEmpty() ? bit.model : bit.name;
+    ToolLibrary lib;
+    if (lib.loadDefault()) {
+        for (const LibraryTool &lt : lib.tools()) {
+            const bool sameModel = !bit.model.isEmpty() && lt.model == bit.model;
+            const bool sameName = !bit.name.isEmpty() && lt.name == bit.name
+                                  && std::abs(lt.diameter - bit.diameter) < 1e-3;
+            if (sameModel || sameName) {
+                key = lt.id;
+                break;
+            }
+        }
+    }
+    m_bitKeys.insert(cacheKey, key);
+    return key;
+}
+
+void MachinePanel::countStatus(const MachineStatus &st)
+{
+    if (!st.valid)
+        return;
+    // The time since the last report goes to what this one says is running.
+    const double dt = m_counterClock.isValid() ? m_counterClock.restart() / 1000.0 : 0.0;
+    if (!m_counterClock.isValid())
+        m_counterClock.start();
+    machinecounters::Sample smp;
+    smp.state = st.state;
+    smp.spindleRpm = st.spindle;
+    smp.spindleReported = st.spindleReported;
+    const JobSection *sec = m_jobView ? m_jobView->runningSection() : nullptr;
+    const bool cutting = sec && sec->kind == JobSection::Toolpath && m_grbl->isStreaming();
+    smp.jobSpindleOn = cutting && st.state == QLatin1String("Run");
+    if (cutting && (!sec->bit.name.isEmpty() || !sec->bit.model.isEmpty())) {
+        smp.bitId = bitKey(sec->bit);
+        smp.bitName = sec->bit.name.isEmpty() ? sec->bit.model : sec->bit.name;
+    }
+    const QString dueBefore = machinecounters::dueLine(m_counters);
+    machinecounters::accumulate(m_counters, dt, smp);
+    if (machinecounters::dueLine(m_counters) != dueBefore)
+        showDue();
+    if (!m_counterFlush.isValid() || m_counterFlush.elapsed() > 60000)
+        flushCounters();
+}
+
+void MachinePanel::showDue()
+{
+    if (!m_dueLabel)
+        return;
+    const QString line = machinecounters::dueLine(m_counters);
+    m_dueLabel->setText(line);
+    m_dueLabel->setVisible(!line.isEmpty());
+}
+
+void MachinePanel::openCounters()
+{
+    QSettings s;
+    if (machinecounters::showDialog(this, m_counters, machineprofiles::nameOf(s, m_countersId)))
+        flushCounters();
+    showDue();
+}
+
 bool MachinePanel::reloadMachine(QString *why)
 {
     if (isBusy()) {
@@ -5758,6 +5865,8 @@ bool MachinePanel::reloadMachine(QString *why)
     m_grbl->applyToolLengthOffset(0);
     resetFlow();
     m_savedHomedAt.clear();
+    flushCounters();                     // to the machine they were counted on
+    loadCounters();
     // A machine with no port yet must not inherit the last one's.
     const QString port = QSettings().value(QStringLiteral("machine/port")).toString();
     if (port.isEmpty())

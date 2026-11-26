@@ -256,6 +256,8 @@ LibraryTool toolpathBit(const QJsonObject &tool)
     lt.kind = ty == 1 ? QStringLiteral("ball")
             : (ty == 2 || lt.angle > 0) ? QStringLiteral("vbit") : QStringLiteral("endmill");
     lt.name = tool.value(QStringLiteral("name")).toString();
+    lt.model = tool.value(QStringLiteral("model")).toString();
+    lt.number = tool.value(QStringLiteral("number")).toInt();
     return lt;
 }
 

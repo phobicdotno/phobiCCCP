@@ -3,6 +3,7 @@
 #include "grblstreamer.h"
 #include "post_grbl.h"
 #include "surfacemap.h"
+#include "machinecounters.h"
 #include <QVector>
 #include <QHash>
 #include <QJsonObject>
@@ -31,6 +32,7 @@ class QShowEvent;
 namespace c2d {
 
 class Gamepad;
+struct LibraryTool;
 
 class Document;
 
@@ -403,6 +405,21 @@ private:
     bool m_holdChecked = false;          // a hold left from before cleared
     QElapsedTimer m_settingsAsked;       // last $$ sent; asked again until answered
     QElapsedTimer m_busyClock;           // throttles the busy file
+    // Run-time counters and service reminders of the active machine profile
+    // (machinecounters.h): every status report adds the time since the last
+    // one; saved every 60 s, at disconnect, a machine switch and quit.
+    machinecounters::Counters m_counters;
+    QString m_countersId;                // the profile they belong to
+    QElapsedTimer m_counterClock;        // since the last status report
+    QElapsedTimer m_counterFlush;        // since the last save
+    QHash<QString, QString> m_bitKeys;   // "model|name|dia" -> tool library id (or the name)
+    QLabel *m_dueLabel = nullptr;        // amber "Due: router brushes (52 h)"
+    void loadCounters();
+    void flushCounters();
+    void countStatus(const MachineStatus &st);
+    QString bitKey(const LibraryTool &bit);
+    void showDue();
+    void openCounters();
     QVariantList m_savedHomedAt;         // last homed position written to settings
     bool requireHomed(const QString &what);
     bool insideTravel(double x, double y) const;

@@ -874,6 +874,7 @@ void GrblStreamer::handleLine(const QByteArray &line)
                 if (c.size() >= 2) {
                     st.feed = c.at(0).toDouble() * k;   // inch/min with $13=1
                     st.spindle = c.at(1).toDouble();
+                    st.spindleReported = true;
                 }
             } else if (p.startsWith("Ov:")) {
                 const QList<QByteArray> c = p.mid(3).split(',');

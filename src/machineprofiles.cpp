@@ -126,6 +126,7 @@ bool remove(QSettings &s, const QString &id)
     all.removeAll(id);
     s.setValue(QStringLiteral("profiles/ids"), all);
     s.remove(QStringLiteral("profiles/%1").arg(id));
+    s.remove(QStringLiteral("counters/%1").arg(id));   // machinecounters.h
     return true;
 }
 

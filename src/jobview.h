@@ -115,6 +115,13 @@ public:
     // preview as a base64 PNG. Empty without a plan.
     QJsonArray stepsJson() const;
     int running() const { return m_running; }      // section index, -1 before start
+    // The section being run (a toolpath, or a tool change), null before the
+    // start, after a stop or at the end.
+    const JobSection *runningSection() const
+    {
+        return (m_stopped || m_running < 0 || m_running >= m_plan.sections.size())
+                   ? nullptr : &m_plan.sections.at(m_running);
+    }
 
 private:
     void refresh();

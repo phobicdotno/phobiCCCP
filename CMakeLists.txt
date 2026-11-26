@@ -112,6 +112,8 @@ add_library(phobicccp_ui STATIC
     src/machinepanel.cpp src/ncprogram.cpp src/machinemacros.cpp
     src/machinepanel.cpp src/ncprogram.cpp src/surfacing.cpp
     src/jobview.cpp src/jobhistory.cpp
+    src/machinepanel.cpp src/ncprogram.cpp
+    src/jobview.cpp src/jobhistory.cpp src/machinecounters.cpp
     src/shopdialog.cpp
     src/grblcodes.cpp
     src/popuplook.cpp
@@ -479,6 +481,10 @@ if(Qt6Test_FOUND)
     target_link_libraries(test_grblsettings PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME grblsettings COMMAND test_grblsettings)
 endif()
+# Run-time counters and service reminders, fed scripted status deltas.
+add_executable(test_counters tests/test_counters.cpp)
+target_link_libraries(test_counters PRIVATE phobicccp_ui)
+add_test(NAME counters COMMAND test_counters)
 
 # The gamepad reader, driven through a fifo carrying synthetic joystick events
 # so it can be tested with no controller plugged in.

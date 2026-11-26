@@ -17,6 +17,7 @@ struct MachineStatus {
     double mx = 0, my = 0, mz = 0;       // machine coordinates
     double wx = 0, wy = 0, wz = 0;       // work coordinates (G54 + TLO applied)
     double feed = 0, spindle = 0;        // FS: field
+    bool spindleReported = false;        // FS: (not F:) - a variable spindle reports its speed
     // Ov: field - feed / rapid / spindle override, percent. GRBL sends it
     // only every few reports and after a change, so the last seen stays.
     int ovFeed = 100, ovRapid = 100, ovSpindle = 100;
