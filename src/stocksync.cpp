@@ -5,6 +5,7 @@
 #include "toollibrary.h"
 
 #include <QDateTime>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkDatagram>
@@ -60,10 +61,15 @@ bool StockSync::start()
 const QSet<int> &StockSync::knownTools() const
 {
     // Only bits of the tool library are taken (and sent): any packet on the
-    // port could otherwise fill the settings with numbers 1..99999. Reread
-    // now and then, so bits a library sync brought in count too.
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (m_knownAt == 0 || now - m_knownAt > 60000 || now < m_knownAt) {
+    // port could otherwise fill the settings with numbers 1..99999. The
+    // library changes only when ToolSync writes a new synced copy, which it
+    // finishes with index.json: read again as soon as that file changes.
+    const QFileInfo ix(ToolLibrary::cacheDir() + QStringLiteral("/index.json"));
+    const QString key = ix.exists() ? QStringLiteral("%1/%2")
+                                          .arg(ix.lastModified().toMSecsSinceEpoch())
+                                          .arg(ix.size())
+                                    : QString();
+    if (!m_knownLoaded || key != m_knownIndex) {
         ToolLibrary lib;
         QSet<int> known;
         if (lib.loadDefault())
@@ -71,7 +77,8 @@ const QSet<int> &StockSync::knownTools() const
                 if (t.number > 0)
                     known.insert(t.number);
         m_known = known;
-        m_knownAt = now;
+        m_knownIndex = key;
+        m_knownLoaded = true;
     }
     return m_known;
 }
@@ -128,9 +135,9 @@ QList<QByteArray> StockSync::payloads() const
     root.insert(QStringLiteral("v"), 1);
     root.insert(QStringLiteral("from"), m_self);
     root.insert(QStringLiteral("coll"), collectionsPayload(*s));
-    // ,"stock":{} and a little to spare: each estimate is at least the size
-    // the entry takes in the compact JSON.
-    constexpr int kStockFrame = 16;
+    // ,"stock":{} and ,"part":N with some to spare: each estimate is at
+    // least the size the entry takes in the compact JSON.
+    constexpr int kStockFrame = 40;
     if (jsonSize(root) + kStockFrame > kMaxDatagram)
         root.insert(QStringLiteral("coll"), QJsonObject());   // cannot be sent: skipped
     QList<QByteArray> out;
@@ -151,7 +158,10 @@ QList<QByteArray> StockSync::payloads() const
             o.insert(QStringLiteral("ts"), static_cast<double>(ts));
             const int add = int(n.size()) + 4 + jsonSize(o);   // "n":{...},
             if (!stock.isEmpty() && size + add > kMaxDatagram) {
+                // Split: each part says so, and a receiver does not take
+                // the bits missing from one part as bits we lack.
                 QJsonObject full = root;
+                full.insert(QStringLiteral("part"), int(out.size()));
                 full.insert(QStringLiteral("stock"), stock);
                 out.append(QJsonDocument(full).toJson(QJsonDocument::Compact));
                 root.insert(QStringLiteral("coll"), QJsonObject());   // in the first one only
@@ -164,6 +174,8 @@ QList<QByteArray> StockSync::payloads() const
         s->endGroup();
     }
     s->endGroup();
+    if (!out.isEmpty())
+        root.insert(QStringLiteral("part"), int(out.size()));
     root.insert(QStringLiteral("stock"), stock);
     out.append(QJsonDocument(root).toJson(QJsonDocument::Compact));
     return out;
@@ -197,12 +209,41 @@ static QHash<QString, qint64> readStamps(const QJsonObject &o, qint64 limit, int
     return out;
 }
 
-// A peer's Collections into ours (settings `s`). True when ours changed;
-// *tell when the peer lacks something we have now.
-static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit, bool *tell)
+// The same bits, in whatever order.
+static bool sameBits(const QList<int> &a, const QList<int> &b)
 {
-    if (coll.isEmpty())
+    return a.size() == b.size()
+        && QSet<int>(a.cbegin(), a.cend()) == QSet<int>(b.cbegin(), b.cend());
+}
+
+// The same collections with the same bits (order aside).
+static bool sameSet(const ToolCollections &a, const ToolCollections &b)
+{
+    if (a.all().size() != b.all().size())
         return false;
+    for (const ToolCollection &c : a.all()) {
+        const ToolCollection *o = b.byName(c.name);
+        if (!o || !sameBits(c.tools, o->tools))
+            return false;
+    }
+    return true;
+}
+
+// A peer's Collections into ours (settings `s`). True when ours changed.
+// *tell when the peer is behind: it would take something of ours (by the
+// rules it merges with), so it is worth answering.
+static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, qint64 limit,
+                             bool *tell)
+{
+    const qint64 lts = s.value(QLatin1String(kCollTs), 0).toLongLong();
+    const bool lfresh = lts > 0 && s.value(QLatin1String(kFresh), false).toBool();
+    if (coll.isEmpty()) {
+        // A packet with all a copy has and no Collections: it has none yet,
+        // and takes a set with history whole.
+        if (whole && lts > 0 && !lfresh)
+            *tell = true;
+        return false;
+    }
     const bool pfresh = coll.value(QStringLiteral("fresh")).toBool();
     const qint64 pts = static_cast<qint64>(coll.value(QStringLiteral("ts")).toDouble());
     const QByteArray pj = coll.value(QStringLiteral("json")).toString().toUtf8();
@@ -215,8 +256,6 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
     if (!ToolCollections::fromJson(pj, &peer))
         return false;
 
-    const qint64 lts = s.value(QLatin1String(kCollTs), 0).toLongLong();
-    const bool lfresh = lts > 0 && s.value(QLatin1String(kFresh), false).toBool();
     const QByteArray lj = s.value(QLatin1String(kCollKey)).toByteArray();
     ToolCollections local;
     if (lj.isEmpty() || !ToolCollections::fromJson(lj, &local))
@@ -236,8 +275,12 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
             theirs.gone = readStamps(coll.value(QStringLiteral("gone")).toObject(), limit,
                                      CollectionStamps::kMaxGone);
     } else {
-        if (!lfresh && lts > 0 && pts <= lts)
+        if (!lfresh && lts > 0 && pts <= lts) {
+            // An older copy takes only a strictly newer whole set.
+            if (pts < lts)
+                *tell = true;
             return false;
+        }
         for (const ToolCollection &c : peer.all())
             theirs.ts.insert(c.name, pts);
         if (!lfresh)
@@ -247,7 +290,7 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
     }
 
     // Nothing of our own yet: theirs as they are (a fresh peer's stay its own
-    // until it has merged with a copy that has history).
+    // until it has merged with another copy).
     if (lts == 0) {
         if (pfresh)
             return false;
@@ -260,13 +303,13 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
     ToolCollections result = local;
     CollectionStamps out = mine;
     bool changed = false;
-    qint64 newTs = 0;                      // set when something is stamped here and now
+    const qint64 now = qMax(QDateTime::currentMSecsSinceEpoch(), qMax(lts, pts) + 1);
+    bool stamped = false;                  // something stamped `now` here
 
     if (lfresh || pfresh) {
-        // A fresh install meets a set it has never seen: neither side's lists
-        // replace the other's, the bits and collections are pooled.
-        newTs = qMax(QDateTime::currentMSecsSinceEpoch(), qMax(lts, pts) + 1);
-        bool stamped = false;
+        // A fresh install meets another copy: neither side's lists replace
+        // the other's, the bits and collections are pooled. Once, on this
+        // side: from then on the newest edit wins and deletions stick.
         for (const ToolCollection &p : peer.all()) {
             if (result.byName(p.name)) {
                 for (int n : p.tools)
@@ -280,7 +323,7 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
         // Ours that the peer deleted after we last touched them go, and so do
         // built-in defaults never touched here that it does not have: a fresh
         // install's empty "Unused" does not come back everywhere.
-        if (lfresh && !pfresh)
+        if (lfresh)
             for (const ToolCollection &c : local.all()) {
                 if (peer.byName(c.name))
                     continue;
@@ -299,16 +342,13 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
             const ToolCollection *was = local.byName(c.name);
             const ToolCollection *their = peer.byName(c.name);
             const bool here = !was || was->tools != c.tools;
-            // The same bits in another order are nothing the peer lacks.
-            const bool there = !their || their->tools.size() != c.tools.size()
-                               || QSet<int>(their->tools.cbegin(), their->tools.cend())
-                                      != QSet<int>(c.tools.cbegin(), c.tools.cend());
+            const bool there = !their || !sameBits(their->tools, c.tools);
+            const bool untouchedDefault = c.tools.isEmpty() && out.ts.value(c.name, 0) == 0;
             changed = changed || here;
-            if (there)
-                *tell = true;
-            if (there && (here || (lfresh && !pfresh))) {
-                // New here, or ours to give: stamped now so the peer takes it.
-                out.ts.insert(c.name, newTs);
+            if (there && !untouchedDefault && (here || lfresh)) {
+                // Pooled here, or a fresh copy's own to give: stamped now
+                // so the peer takes it.
+                out.ts.insert(c.name, now);
                 out.gone.remove(c.name);
                 stamped = true;
             } else if (!there) {
@@ -318,10 +358,7 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
                 out.gone.remove(c.name);
             }
         }
-        if (!stamped)
-            newTs = 0;
-        // Met a copy with history: from now on the newest edit wins.
-        if (lfresh && !pfresh)
+        if (lfresh)
             s.setValue(QLatin1String(kFresh), false);
     } else {
         for (const ToolCollection &p : peer.all()) {
@@ -356,12 +393,35 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, qint64 limit
         }
     }
 
+    // Is the peer behind? Only what it would take counts: a collection of
+    // ours that differs from its copy and is stamped later than its copy and
+    // its deletion of it, or a deletion of ours later than its copy. (Not an
+    // untouched default, stamped never: that went back and forth for ever.)
+    for (const ToolCollection &c : result.all()) {
+        const ToolCollection *their = peer.byName(c.name);
+        const qint64 t = out.ts.value(c.name, 0);
+        if ((!their || !sameBits(their->tools, c.tools)) && t > theirs.ts.value(c.name, 0)
+            && t > theirs.gone.value(c.name, 0))
+            *tell = true;
+    }
+    for (auto it = out.gone.constBegin(); it != out.gone.constEnd(); ++it)
+        if (peer.byName(it.key()) && it.value() > theirs.ts.value(it.key(), 0))
+            *tell = true;
+
     const bool restamped = out.ts != mine.ts || out.gone != mine.gone;
-    if (!changed && !restamped && newTs == 0)
+    if (!changed && !restamped && !stamped && !lfresh)
         return false;
     if (changed)
         s.setValue(QLatin1String(kCollKey), result.toJson());
-    s.setValue(QLatin1String(kCollTs), static_cast<qint64>(qMax(qMax(lts, pts), newTs)));
+    // The whole-set stamp: older copies go by it alone. A merge that leaves
+    // us with a set the peer does not have is newer than both, or an older
+    // copy that already took the peer's set at that stamp never takes ours.
+    // A copy that merges this next ends with the same set as ours and does
+    // not raise it again.
+    const bool newer = stamped || (changed && !sameSet(result, peer));
+    s.setValue(QLatin1String(kCollTs), static_cast<qint64>(newer ? now : qMax(lts, pts)));
+    if (newer)
+        *tell = true;
     out.prune();
     out.toSettings(s);
     return changed;
@@ -381,6 +441,9 @@ bool StockSync::merge(const QByteArray &data)
     std::unique_ptr<QSettings> s(open());
     s->sync();
     bool changed = false;
+    bool tell = false;
+    // A split announce: each part holds only some of the sender's bits.
+    const bool split = root.contains(QStringLiteral("part"));
     const QJsonObject stock = root.value(QStringLiteral("stock")).toObject();
     int seen = 0;
     for (auto it = stock.constBegin(); it != stock.constEnd() && seen < kMaxStockEntries;
@@ -395,15 +458,34 @@ bool StockSync::merge(const QByteArray &data)
             || ts > limit || have < 0 || have > 9999 || broken < 0 || broken > 9999)
             continue;
         const QString base = QStringLiteral("toolStock/%1/").arg(number);
-        if (ts <= s->value(base + QStringLiteral("ts"), 0).toLongLong())
+        const qint64 ours = s->value(base + QStringLiteral("ts"), 0).toLongLong();
+        if (ts < ours)
+            tell = true;                   // the sender has older counts
+        if (ts <= ours)
             continue;
         s->setValue(base + QStringLiteral("have"), have);
         s->setValue(base + QStringLiteral("broken"), broken);
         s->setValue(base + QStringLiteral("ts"), ts);
         changed = true;
     }
-    bool tell = false;
-    if (mergeCollections(*s, root.value(QStringLiteral("coll")).toObject(), limit, &tell))
+    // Bits we have counts for and the sender (all of whose bits are here)
+    // has none: it is behind.
+    if (!split && !tell) {
+        s->beginGroup(QStringLiteral("toolStock"));
+        const QStringList ours = s->childGroups();
+        for (const QString &n : ours) {
+            bool ok = false;
+            const int number = n.toInt(&ok);
+            if (ok && known.contains(number) && !stock.contains(n)
+                && s->value(n + QStringLiteral("/ts"), 0).toLongLong() > 0) {
+                tell = true;
+                break;
+            }
+        }
+        s->endGroup();
+    }
+    const bool whole = !split || root.value(QStringLiteral("part")).toInt(-1) == 0;
+    if (mergeCollections(*s, root.value(QStringLiteral("coll")).toObject(), whole, limit, &tell))
         changed = true;
     m_tellPeers = tell;
     s->sync();
@@ -456,12 +538,11 @@ void StockSync::incoming()
         const bool changed = merge(data);
         if (changed)
             emit this->changed();
-        // The sender may be behind: tell it what we have, at most every 2 s
-        // (at once when pooling a fresh install's Collections left it so).
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (m_tellPeers) {
-            announceSoon();
-        } else if (!changed && now - m_lastReply > 2000) {
+        // Only when the sender is behind (it would take something of ours),
+        // and at most every 2 s: answering every packet had two copies
+        // answer each other for ever.
+        if (m_tellPeers && now - m_lastReply > 2000) {
             m_lastReply = now;
             announceSoon();
         }

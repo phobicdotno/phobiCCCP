@@ -61,9 +61,10 @@ private:
     QTimer *m_soon = nullptr;
     QString m_self;
     qint64 m_lastReply = 0;
-    bool m_tellPeers = false;              // the last merge left us with news for the sender
-    mutable QSet<int> m_known;             // tool numbers of the library, reread every minute
-    mutable qint64 m_knownAt = 0;
+    bool m_tellPeers = false;              // the last merge saw the sender is behind us
+    mutable QSet<int> m_known;             // tool numbers of the library
+    mutable bool m_knownLoaded = false;
+    mutable QString m_knownIndex;          // the synced index.json it was read with (time, size)
 };
 
 } // namespace c2d

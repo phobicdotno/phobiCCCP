@@ -938,9 +938,11 @@ MainWindow::MainWindow(QWidget *parent)
     palette->setIconSize(QSize(24, 24));
     addToolBar(Qt::TopToolBarArea, palette);
     auto *grp = new QActionGroup(this);
+    auto toolActs = std::make_shared<QHash<int, QAction *>>();
     auto addTool = [&](const QString &name, const QString &icon, Canvas::Tool t,
                        Qt::Key key, const QString &tip) {
         QAction *a = palette->addAction(toolIcon(icon), name);
+        toolActs->insert(int(t), a);
         a->setObjectName(icon);           // ToolbarOrder saves the order by name
         a->setCheckable(true);
         a->setShortcut(key);
@@ -1068,6 +1070,13 @@ MainWindow::MainWindow(QWidget *parent)
     (new ToolbarOrder(palette, QStringLiteral("ui/toolOrder")))->restore();
 
     m_palette = palette;
+    // The canvas also changes tool by itself (the menu's Edit nodes, back to
+    // Select when Constrain is hidden): the palette ticks the tool in use.
+    connect(m_canvas, &Canvas::toolChanged, this, [toolActs](Canvas::Tool t) {
+        if (QAction *a = toolActs->value(int(t)))
+            if (!a->isChecked())
+                a->setChecked(true);
+    });
 
     // Toolpaths mode swaps the drawing tools for one button per toolpath
     // kind: icon, name, and a one-line explanation as its tooltip. Pressing
@@ -3152,7 +3161,9 @@ QString MainWindow::dxfSuggestion() const
     // file, and one Yes to "replace?" wrote over the original drawing. Not
     // the source, and not any file that is already there.
     const bool isSource = m_untitled && !m_untitledFrom.isEmpty()
-        && QFileInfo(plain) == QFileInfo(m_untitledFrom);
+        && QDir::cleanPath(QFileInfo(plain).absoluteFilePath()).compare(
+               QDir::cleanPath(QFileInfo(m_untitledFrom).absoluteFilePath()), Qt::CaseInsensitive) == 0;
+    // (not QFileInfo ==: two files that don't exist compare equal)
     if (isSource || QFileInfo::exists(plain))
         return base + QStringLiteral("-export.dxf");
     return plain;
@@ -4005,14 +4016,19 @@ public:
         Parametric par;
         QString stockW, stockH;   // the stock turns with the design
     };
+    // Where a component or the background lies, and how big it is: one
+    // resized after the turn but not moved is not "untouched" (its old
+    // corner would not fit its new size).
     struct Place {
         double x = 0, y = 0, rot = 0;
         int turns = 0;
         bool userChanged = false;
+        QSizeF size;               // footprint / rectMm size, mm
+        double w = 0, w2 = 0;      // component width and tile width; background scale
         bool operator==(const Place &o) const
         {
             return x == o.x && y == o.y && rot == o.rot && turns == o.turns
-                && userChanged == o.userChanged;
+                && userChanged == o.userChanged && size == o.size && w == o.w && w2 == o.w2;
         }
     };
     RotateJobCmd(Canvas *c, Document *d, ModelPanel *m, BackgroundImage *bg, bool *modelByUndo,
@@ -4036,9 +4052,12 @@ public:
 private:
     static Place placeOf(const BackgroundImage &b)
     {
-        return {b.x, b.y, b.rotationDeg, 0, b.userChanged};
+        return {b.x, b.y, b.rotationDeg, 0, b.userChanged, b.rectMm().size(), b.scale, 0};
     }
-    static Place placeOf(const ModelComponent &c) { return {c.x, c.y, 0, c.turns, false}; }
+    static Place placeOf(const ModelComponent &c)
+    {
+        return {c.x, c.y, 0, c.turns, false, c.footprint().size(), c.width, c.tileWidth};
+    }
     // A quarter turn clockwise, or (back) three of them, which is the turn
     // undone: q turns about a fixed point, four times is no turn.
     void turnModel(Model3D &m, bool forward) const

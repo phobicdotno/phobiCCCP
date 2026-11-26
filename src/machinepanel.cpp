@@ -1107,14 +1107,15 @@ MachinePanel::MachinePanel(QWidget *parent)
         if (m_liftHold) {
             // Stopped at once by a second press (below) while the lift was
             // still queued: let the program finish what it took, then the
-            // lift. The button keeps saying Resume for the way back down.
+            // lift. The button reads Stop now until the hold point, then
+            // Resume for the way back down (updatePauseButton()).
             if (m_held) {
                 if (m_resetPending) {
                     log(QStringLiteral("resume refused: the job is being cancelled"));
                 } else if (m_grbl->resumeStream()) {
                     setHeld(false);
                     log(QStringLiteral("resume: carrying on to the lift (Z up, spindle off); "
-                                       "press Resume again there to go back down"));
+                                       "Resume there goes back down"));
                 }
                 return;
             }
@@ -1124,7 +1125,7 @@ MachinePanel::MachinePanel(QWidget *parent)
             if (!m_grbl->isHeldAtPoint()) {
                 m_grbl->pauseStream();
                 setHeld(true);
-                log(QStringLiteral("hold: pressed again while the lift waits its turn - stopping at "
+                log(QStringLiteral("hold: Stop now pressed while the lift waits its turn - stopping at "
                                    "once (feed hold, spindle still on). Resume carries on to the "
                                    "lift"));
                 return;
@@ -1146,8 +1147,9 @@ MachinePanel::MachinePanel(QWidget *parent)
                 if (m_jobView)
                     m_jobView->linesInserted(int(up.size()) + 1);
                 m_liftHold = true;
-                m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
-                log(QStringLiteral("hold: finishing the lines already sent, then Z up and spindle off"));
+                updatePauseButton();
+                log(QStringLiteral("hold: finishing the lines already sent, then Z up and spindle off. "
+                                   "Press Stop now (or the pad's hold again) to stop at once instead"));
             }
         } else if (!m_held) {
             m_grbl->pauseStream();
@@ -1240,6 +1242,8 @@ MachinePanel::MachinePanel(QWidget *parent)
         emit livePosition(0, 0, 0, false);
     });
     connect(m_grbl, &GrblStreamer::statusChanged, this, [this](const MachineStatus &st) { onStatus(st); });
+    // At the lift-hold's point "Stop now" turns into Resume.
+    connect(m_grbl, &GrblStreamer::holdPointReached, this, [this] { updatePauseButton(); });
     connect(m_grbl, &GrblStreamer::progressChanged, this, [this](int a, int t) {
         m_progress->setMaximum(qMax(1, t));
         m_progress->setValue(a);
@@ -2726,11 +2730,34 @@ void MachinePanel::setHeld(bool held)
     m_held = held;
     m_holdSeen = false;
     m_heldClock.restart();
-    // A lift-hold (queued or standing at its point) still wants Resume to
-    // go back down, whatever lifted a feed hold meanwhile (Keep running in
-    // Cancel job, a report out of Hold): a "Hold" there would run the way
-    // back down on the next press.
-    m_pauseBtn->setText(held || m_liftHold ? QStringLiteral("⏵ Resume") : QStringLiteral("⏸ Hold"));
+    updatePauseButton();
+}
+
+// What the next press does, on the button. A lift-hold still queued behind
+// the moves GRBL already has: the next press is a feed hold on the spot
+// (spindle on, in the cut), so it must not read "Resume" - someone undoing a
+// mistaken Hold would get the opposite. Feed-held, or standing at the hold
+// point: Resume. Otherwise Hold. Whatever lifted a feed hold meanwhile (Keep
+// running in Cancel job, a report out of Hold) leaves a lift-hold on Stop
+// now / Resume, never on Hold, which would run the way back down.
+void MachinePanel::updatePauseButton()
+{
+    if (m_liftHold && !m_held && !m_grbl->isHeldAtPoint()) {
+        m_pauseBtn->setText(QStringLiteral("⏹ Stop now"));
+        m_pauseBtn->setToolTip(QStringLiteral("The lift (Z up, spindle off) waits until the moves "
+                                              "already sent to the controller are done. Press to "
+                                              "stop at once instead: a feed hold where it is, "
+                                              "spindle still on"));
+    } else if (m_held || m_liftHold) {
+        m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
+        m_pauseBtn->setToolTip(m_liftHold && !m_held
+                                   ? QStringLiteral("Spindle on, back down to where the cut stopped, "
+                                                    "and on with the job")
+                                   : QString());
+    } else {
+        m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+        m_pauseBtn->setToolTip(QString());
+    }
 }
 
 // ---- gamepad -----------------------------------------------------------------

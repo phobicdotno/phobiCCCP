@@ -12,7 +12,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSettings>
+#include <QEventLoop>
+#include <QHostAddress>
+#include <QNetworkDatagram>
 #include <QTemporaryDir>
+#include <QTimer>
+#include <QUdpSocket>
 #include <cstdio>
 
 static int g_fail = 0;
@@ -56,6 +61,25 @@ static void putIni(const QString &ini, const QByteArray &json, qint64 ts, const 
     if (!stamps.isEmpty())
         s.setValue(QStringLiteral("tools/collectionsStamps"), stamps);
     s.sync();
+}
+
+static void putFresh(const QString &ini, const QByteArray &json, qint64 ts, const QByteArray &stamps)
+{
+    putIni(ini, json, ts, stamps);
+    QSettings(ini, QSettings::IniFormat).setValue(QStringLiteral("tools/collectionsFresh"), true);
+}
+
+static qint64 wholeTs(const QByteArray &payload)
+{
+    return static_cast<qint64>(QJsonDocument::fromJson(payload).object().value(QStringLiteral("coll"))
+                                   .toObject().value(QStringLiteral("ts")).toDouble());
+}
+
+static void runFor(int ms)
+{
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    loop.exec();
 }
 
 int main(int argc, char **argv)
@@ -153,7 +177,9 @@ int main(int argc, char **argv)
         };
         check(!A.merge(oldPacket(100, "{\"collections\":[{\"name\":\"Old\",\"tools\":[201]}]}")),
               "an older copy's older set is ignored");
-        check(A.merge(oldPacket(9000, "{\"collections\":[{\"name\":\"Old\",\"tools\":[201]}]}")),
+        // (A's whole-set stamp is "now": its merges raised it, see 5.)
+        check(A.merge(oldPacket(QDateTime::currentMSecsSinceEpoch() + 60000,
+                                "{\"collections\":[{\"name\":\"Old\",\"tools\":[201]}]}")),
               "an older copy's newer set is taken");
         ca = collectionsIn(a);
         check(ca.all().size() == 1 && has(ca, QStringLiteral("Old"), {201}),
@@ -199,6 +225,101 @@ int main(int argc, char **argv)
         check(small, "every packet fits in a datagram");
         check(!out.first().contains("\"77777\"") && out.first().contains("\"201\""),
               "only library bits are announced");
+    }
+
+    // 4. Two fresh installs meet: they pool once, then both are ordinary
+    //    copies, agree, stop answering each other, and a deletion sticks.
+    const QString aIni = tmp.path() + QStringLiteral("/fa.ini"), cIni = tmp.path() + QStringLiteral("/fc.ini");
+    {
+        // A added #201 to My Tools; C made Roughing and deleted Unused.
+        putFresh(aIni, "{\"collections\":[{\"name\":\"My Tools\",\"tools\":[201]},{\"name\":\"Unused\",\"tools\":[]}]}",
+                 1000, "{\"ts\":{\"My Tools\":1000},\"gone\":{}}");
+        putFresh(cIni, "{\"collections\":[{\"name\":\"My Tools\",\"tools\":[]},{\"name\":\"Roughing\",\"tools\":[251]}]}",
+                 1100, "{\"ts\":{\"Roughing\":1100},\"gone\":{\"Unused\":1100}}");
+        c2d::StockSync A(aIni, 0), C(cIni, 0);
+        check(A.merge(C.payload()), "fresh A pools fresh C's Roughing");
+        check(!QSettings(aIni, QSettings::IniFormat).value(QStringLiteral("tools/collectionsFresh")).toBool(),
+              "after pooling with another fresh copy A is fresh no more");
+        check(C.merge(A.payload()), "C takes A's My Tools");
+        check(!QSettings(cIni, QSettings::IniFormat).value(QStringLiteral("tools/collectionsFresh")).toBool(),
+              "and C is fresh no more either");
+        A.merge(C.payload());                       // C's deletion of Unused, nothing to show
+        check(!A.merge(C.payload()) && !C.merge(A.payload()) && !A.merge(C.payload()),
+              "fresh <-> fresh: the two agree and nothing changes any more");
+        const c2d::ToolCollections a = collectionsIn(aIni), c = collectionsIn(cIni);
+        check(has(a, QStringLiteral("My Tools"), {201}) && has(a, QStringLiteral("Roughing"), {251})
+                  && has(c, QStringLiteral("My Tools"), {201}) && has(c, QStringLiteral("Roughing"), {251}),
+              "both have My Tools with #201 and Roughing");
+        check(!a.byName(QStringLiteral("Unused")) && !c.byName(QStringLiteral("Unused")),
+              "Unused, deleted on C, is on neither");
+
+        // C now deletes Roughing: it goes on A too and stays gone.
+        {
+            QSettings cs(cIni, QSettings::IniFormat);
+            c2d::ToolCollections cc = collectionsIn(cs);
+            cc.remove(QStringLiteral("Roughing"));
+            QJsonObject st = QJsonDocument::fromJson(cs.value(QStringLiteral("tools/collectionsStamps")).toByteArray()).object();
+            const qint64 t = QDateTime::currentMSecsSinceEpoch() + 5;
+            QJsonObject ts = st.value(QStringLiteral("ts")).toObject(), gone = st.value(QStringLiteral("gone")).toObject();
+            ts.remove(QStringLiteral("Roughing"));
+            gone.insert(QStringLiteral("Roughing"), double(t));
+            st.insert(QStringLiteral("ts"), ts);
+            st.insert(QStringLiteral("gone"), gone);
+            cs.setValue(QStringLiteral("tools/collections"), cc.toJson());
+            cs.setValue(QStringLiteral("tools/collectionsStamps"), QJsonDocument(st).toJson(QJsonDocument::Compact));
+            cs.setValue(QStringLiteral("tools/collectionsTs"), t);
+            cs.sync();
+        }
+        check(A.merge(C.payload()) && !collectionsIn(aIni).byName(QStringLiteral("Roughing")),
+              "a deletion after pooling goes over");
+        check(!C.merge(A.payload()) && !A.merge(C.payload()) && !collectionsIn(cIni).byName(QStringLiteral("Roughing"))
+                  && !collectionsIn(aIni).byName(QStringLiteral("Roughing")),
+              "and sticks: nothing pools it back");
+
+        // Over the wire: a packet that changes nothing gets no answer; one
+        // from a copy that is behind does.
+        const QHostAddress lo(QHostAddress::LocalHost);
+        QUdpSocket spy, send;
+        check(spy.bind(lo, 47332), "spy socket binds");
+        c2d::StockSync Cw(cIni, 47331, lo, 47332);
+        check(Cw.start(), "C listens");
+        runFor(1400);                               // its start-up announce
+        while (spy.hasPendingDatagrams())
+            spy.receiveDatagram();
+        send.writeDatagram(A.payload(), lo, 47331);
+        runFor(1200);
+        check(!spy.hasPendingDatagrams(), "no answer to a packet that changes nothing");
+        const QByteArray behind = QJsonDocument(QJsonObject{{QStringLiteral("app"), QStringLiteral("phobiCCCP-stock")},
+                                                            {QStringLiteral("v"), 1},
+                                                            {QStringLiteral("from"), QStringLiteral("someone")}})
+                                      .toJson(QJsonDocument::Compact);
+        send.writeDatagram(behind, lo, 47331);
+        runFor(1200);
+        check(spy.hasPendingDatagrams(), "a copy with no Collections at all gets an answer");
+    }
+
+    // 5. An older copy (whole-set stamp only) that took P's set at 300 takes
+    //    L's merge of L's and P's edits: its stamp is strictly newer.
+    {
+        const QString l = tmp.path() + QStringLiteral("/l.ini"), pi = tmp.path() + QStringLiteral("/p.ini");
+        putIni(l, "{\"collections\":[{\"name\":\"Roughing\",\"tools\":[251,201]},{\"name\":\"Finishing\",\"tools\":[102]}]}",
+               200, "{\"ts\":{\"Roughing\":200,\"Finishing\":100},\"gone\":{}}");
+        putIni(pi, "{\"collections\":[{\"name\":\"Roughing\",\"tools\":[251]},{\"name\":\"Finishing\",\"tools\":[102,112]}]}",
+               300, "{\"ts\":{\"Roughing\":100,\"Finishing\":300},\"gone\":{}}");
+        c2d::StockSync L(l, 0), P(pi, 0);
+        const qint64 oldPeerTs = wholeTs(P.payload());          // the older copy took P's set
+        check(oldPeerTs == 300, "P announces its set at 300");
+        check(L.merge(P.payload()), "L takes P's Finishing");
+        const QByteArray lp = L.payload();
+        check(wholeTs(lp) > oldPeerTs, "L's merged set has a whole-set stamp newer than the older copy's");
+        c2d::ToolCollections lset;
+        c2d::ToolCollections::fromJson(QJsonDocument::fromJson(lp).object().value(QStringLiteral("coll")).toObject()
+                                           .value(QStringLiteral("json")).toString().toUtf8(), &lset);
+        check(has(lset, QStringLiteral("Roughing"), {251, 201}) && has(lset, QStringLiteral("Finishing"), {102, 112}),
+              "so the older copy gets both edits");
+        check(P.merge(lp), "P takes L's Roughing");
+        check(wholeTs(P.payload()) == wholeTs(lp), "P ends with L's set and does not raise the stamp again");
+        check(!L.merge(P.payload()) && !P.merge(L.payload()), "no back and forth between the two");
     }
 
     QSettings().clear();

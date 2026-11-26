@@ -1942,9 +1942,11 @@ int main(int argc, char **argv)
     if (mode == "liftdouble" || mode == "liftcancel") {
         // Hold with a lift while GRBL holds lines it has not answered yet:
         // the lift waits behind them. M1: a second press stops at once (feed
-        // hold), Resume carries on to the lift, Resume there goes back down.
+        // hold; the button says "Stop now" until then), Resume carries on
+        // to the lift, Resume at the hold point goes back down.
         // M3: Cancel job -> Keep running in that wait leaves the button on
-        // Resume, and the next press does not run the way back down.
+        // "Stop now" (never Hold), and the next press does not run the way
+        // back down.
         grbl.holdAcks = true;              // nothing from the dwell on is answered: the lift stays queued
         QStringList prog = {QStringLiteral("G90G21"), QStringLiteral("G0Z2.000"), QStringLiteral("M3S1000"),
                             QStringLiteral("G4P1.00"), QStringLiteral("G1Z-1.000F600.0")};
@@ -1957,8 +1959,9 @@ int main(int argc, char **argv)
         wait(300);
         check(panel.m_liftHold && s->isHoldQueued() && !s->isHeldAtPoint(),
               "lift: queued behind the lines GRBL has, not reached");
-        check(grbl.count("!") == 0 && panel.m_pauseBtn->text().contains(QLatin1String("Resume")),
-              "lift: first press, no feed hold, the button says Resume");
+        check(grbl.count("!") == 0 && panel.m_pauseBtn->text().contains(QLatin1String("Stop now"))
+                  && !panel.m_pauseBtn->toolTip().isEmpty(),
+              "lift: first press, no feed hold, the button says Stop now (not Resume) and why");
         if (mode == "liftdouble") {
             panel.m_pauseBtn->click();     // again: stop now
             wait(300);
@@ -1973,12 +1976,15 @@ int main(int argc, char **argv)
             check(grbl.count("~") == 1 && !panel.m_held && panel.m_liftHold && s->isHoldQueued()
                       && grbl.indexOf("M03S") < 0,
                   "liftdouble: Resume lifts the feed hold, the lift still to come, no way down yet");
-            check(panel.m_pauseBtn->text().contains(QLatin1String("Resume")),
-                  "liftdouble: the button still says Resume for the way down");
+            check(panel.m_pauseBtn->text().contains(QLatin1String("Stop now")),
+                  "liftdouble: running on to the lift, the button says Stop now again");
             grbl.release();                // GRBL takes the rest: the lift goes out
             spin(5000, [&] { return s->isHeldAtPoint(); });
             const int up = grbl.indexOf("G53 G0 Z"), off = grbl.indexOf("M5");
             check(s->isHeldAtPoint() && up >= 0 && off > up, "liftdouble: then Z up and the spindle off");
+            QApplication::processEvents();
+            check(panel.m_pauseBtn->text().contains(QLatin1String("Resume")),
+                  "liftdouble: at the hold point the button says Resume");
             panel.m_pauseBtn->click();     // back down
             wait(500);
             for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
@@ -1990,8 +1996,8 @@ int main(int argc, char **argv)
             answer = [&](const Seen &) { return QStringLiteral("Keep running"); };
             button(QStringLiteral("✕ Cancel job"))->click();
             wait(300);
-            check(panel.m_liftHold && !panel.m_held && panel.m_pauseBtn->text().contains(QLatin1String("Resume")),
-                  "liftcancel: Keep running leaves the button on Resume while the lift waits");
+            check(panel.m_liftHold && !panel.m_held && panel.m_pauseBtn->text().contains(QLatin1String("Stop now")),
+                  "liftcancel: Keep running leaves the button on Stop now (not Hold) while the lift waits");
             const int before = int(grbl.events.size());
             panel.m_pauseBtn->click();
             wait(300);

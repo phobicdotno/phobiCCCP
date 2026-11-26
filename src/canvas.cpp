@@ -2602,6 +2602,11 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         }
         m_pinching = false;    // a real mouse: whatever pinch there was is over
     }
+    if (fromTouch(event))
+        m_touchPress = {true, int(m_clicks.size()), int(m_tanLines.size()),
+                        int(m_penNodes.size()), int(m_splinePts.size())};
+    else
+        m_touchPress.valid = false;
     syncHitTolerance();
     // A press that lands outside the drawing is not on the drawing. On the
     // CNC PC's touch screen a tap on a toolbar button (Contour) also reached
@@ -3321,7 +3326,9 @@ void Canvas::contextMenuEvent(QContextMenuEvent *event)
     QAction *conv = menu.addAction(tr("Convert to path"));
     conv->setEnabled(convertible);
     connect(conv, &QAction::triggered, this, [this, ids] { convertToPaths(ids); });
-    if (m_tool != NodeEdit)
+    // Not off the Design page: the Nodes tool is on the drawing palette,
+    // which Toolpaths hides, and its taps would edit instead of picking.
+    if (m_tool != NodeEdit && m_parametricVisible)
         connect(menu.addAction(tr("Edit nodes  (N)")), &QAction::triggered, this,
                 [this] { setTool(NodeEdit); });
     connect(menu.addAction(tr("Delete")), &QAction::triggered, this, [this, ids] {
@@ -3463,6 +3470,61 @@ void Canvas::deleteSelected()
         pushEdit(new DeleteCmd(this, m_doc, victims), {});
 }
 
+// The first finger began a drag or a shape: the pinch wins. Its touch also
+// came as a mouse press, which may have started a select band, grabbed a
+// shape to move, a node or a dimension label to drag, or placed a node of a
+// path: all of that is let go, and that finger's mouse events are ignored
+// until it is lifted. What earlier taps placed (the nodes of a path, the
+// first clicks of an arc) stays: the pinch only zooms the view on them.
+void Canvas::pinchStarted()
+{
+    m_pinching = true;
+    if (m_touchPress.valid) {
+        auto rollBack = [](auto &v, int n) {
+            if (v.size() > n)
+                v.resize(n);
+        };
+        rollBack(m_clicks, m_touchPress.clicks);
+        rollBack(m_tanLines, m_touchPress.tanLines);
+        rollBack(m_penNodes, m_touchPress.penNodes);
+        rollBack(m_splinePts, m_touchPress.splinePts);
+        m_touchPress.valid = false;
+    }
+    m_penDrag = false;
+    m_resizing = false;           // a resize drag cancelled, not committed
+    // A drag-shape (ellipse, measure...) lives only while its press is held;
+    // a sketch shape's earlier clicks keep it going.
+    m_drawing = sketchTool() && !m_clicks.isEmpty();
+    if (m_clicks.isEmpty())
+        m_arcTurn = 0;
+    if (m_clicks.isEmpty() && m_tanLines.isEmpty() && m_penNodes.isEmpty() && m_splinePts.isEmpty())
+        clearPreview();
+    else if (m_preview && m_tool == DrawPath && !m_penNodes.isEmpty())
+        m_preview->setPath(previewPath(m_penNodes.last().p));
+    else if (m_preview && m_tool == DrawSpline && !m_splinePts.isEmpty())
+        m_preview->setPath(sketch::fitSpline(m_splinePts, false).painterPath());
+    // A dimension label being dragged goes back where it was: the drag
+    // moves it in the design without an undo step until the release.
+    if (!m_dragDim.isEmpty()) {
+        if (m_doc) {
+            const int i = m_doc->parametric().indexOfUid(m_dragDim);
+            if (i >= 0)
+                m_doc->parametricRef().constraints[i].label = m_dragDimLabel0;
+        }
+        m_dragDim.clear();
+    }
+    endBand();
+    m_panning = false;
+    restoreEditItem();
+    m_grab = GrabNone;
+    if (QGraphicsItem *g = m_scene->mouseGrabberItem())
+        g->ungrabMouse();
+    for (QGraphicsItem *it : m_scene->items())
+        if (it->data(0).isValid() && !it->pos().isNull())
+            it->setPos(0, 0);
+    viewport()->update();
+}
+
 bool Canvas::viewportEvent(QEvent *event)
 {
     if (event->type() == QEvent::TouchCancel)
@@ -3475,23 +3537,8 @@ bool Canvas::viewportEvent(QEvent *event)
     auto *pg = static_cast<QPinchGesture *>(ge->gesture(Qt::PinchGesture));
     if (!pg)
         return QGraphicsView::viewportEvent(event);
-    if (pg->state() == Qt::GestureStarted) {
-        // The first finger began a drag or a shape: the pinch wins. Its
-        // touch also came as a mouse press, which may have started a select
-        // band, grabbed a shape to move or a node to drag: all let go, and
-        // that finger's mouse events are ignored until it is lifted.
-        m_pinching = true;
-        cancelDrawing();
-        endBand();
-        m_panning = false;
-        restoreEditItem();
-        m_grab = GrabNone;
-        if (QGraphicsItem *g = m_scene->mouseGrabberItem())
-            g->ungrabMouse();
-        for (QGraphicsItem *it : m_scene->items())
-            if (it->data(0).isValid() && !it->pos().isNull())
-                it->setPos(0, 0);
-    }
+    if (pg->state() == Qt::GestureStarted)
+        pinchStarted();
     const double f = pg->scaleFactor();
     if (f > 0.0 && std::isfinite(f) && qAbs(f - 1.0) > 1e-4) {
         // Zoom about the point between the fingers, as the wheel does about the mouse.

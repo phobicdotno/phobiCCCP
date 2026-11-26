@@ -1190,7 +1190,8 @@ int main(int argc, char *argv[])
             // late ack is a stall only when the machine isn't moving either.
             if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000
                 && lastState != QLatin1String("Run")
-                && lastState != QLatin1String("Hold")) {
+                && !lastState.startsWith(QLatin1String("Hold"))
+                && !lastState.startsWith(QLatin1String("Door"))) {
                 qWarning().noquote() << "STALL: no ack for 10 s while idle — aborting";
                 grbl.stopStream();
                 QCoreApplication::exit(4);
@@ -1371,7 +1372,8 @@ int main(int argc, char *argv[])
             // late ack is a stall only when the machine isn't moving either.
             if (phase == 5 && grbl.isStreaming() && grbl.msSinceAck() > 10000
                 && lastState != QLatin1String("Run")
-                && lastState != QLatin1String("Hold")) {
+                && !lastState.startsWith(QLatin1String("Hold"))
+                && !lastState.startsWith(QLatin1String("Door"))) {
                 qWarning().noquote() << "STALL: no ack for 10 s while idle — aborting";
                 grbl.stopStream();
                 QCoreApplication::exit(4);

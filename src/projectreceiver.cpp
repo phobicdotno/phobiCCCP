@@ -49,7 +49,15 @@ QString safeFileName(const QString &name)
         s.remove(0, 1);
     while (s.endsWith(QLatin1Char('.')) || s.endsWith(QLatin1Char(' ')))
         s.chop(1);
-    s.truncate(80);
+    if (s.size() > 80) {
+        // Keep the extension: the importer picks the format by it, and a
+        // long "....svg" cut at 80 came in as an unknown file type.
+        const int dot = s.lastIndexOf(QLatin1Char('.'));
+        const QString ext = dot > 0 && s.size() - dot <= 10 ? s.mid(dot) : QString();
+        s = s.left(80 - ext.size()) + ext;
+        while (s.endsWith(QLatin1Char(' ')) || s.endsWith(QLatin1Char('.')))
+            s.chop(1);
+    }
     return s.isEmpty() ? QStringLiteral("project") : s;
 }
 

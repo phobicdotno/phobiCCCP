@@ -374,6 +374,7 @@ private:
     bool m_holdSeen = false;
     QElapsedTimer m_heldClock;
     void setHeld(bool held);             // m_held and the pause button
+    void updatePauseButton();            // Hold / Stop now / Resume, from m_held and m_liftHold
     bool m_endRisePending = false;       // the end-of-job rise waits for Idle
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
     QProgressBar *m_progress;

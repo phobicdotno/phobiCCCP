@@ -16,6 +16,7 @@
 #include "../src/element.h"
 #include "../src/model3d.h"
 #include "../src/propertiespanel.h"
+#include "../src/shapestrip.h"
 
 #include <QApplication>
 #include <QDoubleSpinBox>
@@ -26,7 +27,11 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QContextMenuEvent>
+#include <QListWidgetItem>
+#include <QMenu>
 #include <QMouseEvent>
+#include <QTimer>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSpinBox>
@@ -37,6 +42,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 
 static int g_checks = 0;
 
@@ -1829,6 +1835,81 @@ int main(int argc, char *argv[])
         check(order() == QStringList({a.id}), "delete takes the listed shapes");
         sc.undoStack()->undo();
         check(sdoc.elements().size() == 3, "undo brings them back");
+    }
+
+    // --- The element menu offers Edit nodes on the Design page only ------------------
+    // (Toolpaths hides the drawing palette; the Nodes tool there edited
+    // instead of picking.)
+    {
+        c2d::Document mdoc;
+        c2d::Canvas mc;
+        mc.resize(900, 700);
+        mc.show();
+        mc.setDocument(&mdoc);
+        mc.resetTransform();
+        mc.scale(3, -3);
+        mc.centerOn(QPointF(100, 100));
+        const c2d::Element sq = c2d::Element::makeRectangle({100, 100}, 40, 40, mdoc.defaultLayer());
+        mdoc.addElement(sq);
+        mc.rebuild();
+        mc.setTool(c2d::Canvas::Select);
+        auto menuTexts = [&] {
+            auto texts = std::make_shared<QStringList>();
+            QTimer::singleShot(50, [texts] {
+                if (auto *m = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                    for (QAction *a : m->actions())
+                        *texts << a->text();
+                    m->close();
+                }
+            });
+            mc.selectElements({sq.id});
+            const QPoint at = vp(&mc, {80, 100});   // on the square's left edge
+            QContextMenuEvent ev(QContextMenuEvent::Mouse, at, mc.viewport()->mapToGlobal(at));
+            QApplication::sendEvent(mc.viewport(), &ev);
+            return *texts;
+        };
+        auto hasEditNodes = [](const QStringList &t) {
+            for (const QString &s : t)
+                if (s.startsWith(QLatin1String("Edit nodes")))
+                    return true;
+            return false;
+        };
+        const QStringList design = menuTexts();
+        check(!design.isEmpty() && hasEditNodes(design), "element menu: Edit nodes on the Design page");
+        mc.setParametricVisible(false);
+        const QStringList tp = menuTexts();
+        check(!tp.isEmpty() && !hasEditNodes(tp), "element menu: no Edit nodes off the Design page");
+        check(mc.tool() == c2d::Canvas::Select, "element menu: the tool is untouched");
+    }
+
+    // --- Shape strip: a shape past the strip's tiles stays selected ----------------
+    // A traced image can hold more shapes than the strip shows; picking a
+    // tile let go of every selected shape that had none.
+    {
+        c2d::Document tdoc;
+        c2d::Canvas tc;
+        tc.resize(900, 700);
+        tc.setDocument(&tdoc);
+        QStringList ids;
+        for (int i = 0; i < 405; ++i) {
+            const c2d::Element e = c2d::Element::makeCircle({double(i % 20) * 10, double(i / 20) * 10}, 2,
+                                                            tdoc.defaultLayer());
+            tdoc.addElement(e);
+            ids << e.id;
+        }
+        tc.rebuild();
+        c2d::ShapeStrip strip(&tc);
+        check(strip.count() < ids.size(), "shape strip: not every shape has a tile");
+        tc.selectElements({ids.last()});
+        strip.item(0)->setSelected(true);
+        QStringList sel = tc.selectedElementIds();
+        sel.sort();
+        QStringList want{ids.first(), ids.last()};
+        want.sort();
+        check(sel == want, "shape strip: a tile picked keeps the selected shape that has no tile");
+        strip.clearSelection();
+        check(tc.selectedElementIds() == QStringList{ids.last()},
+              "shape strip: and letting go of the tiles keeps it too");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

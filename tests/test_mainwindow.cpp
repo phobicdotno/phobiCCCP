@@ -514,6 +514,17 @@ int main(int argc, char *argv[])
               "rotate undo: an untouched component is exactly where it was");
         check(w.m_bg.x == 30 && w.m_bg.y == 40 && w.m_bg.rotationDeg == 0 && !w.m_bg.userChanged,
               "rotate undo: an untouched background is exactly as it was");
+        // Resized after the turn but not moved: not "untouched", so it turns
+        // back as it is instead of taking its old corner with its new size.
+        undo->redo();
+        w.m_bg.scale = 2;
+        undo->undo();
+        check(qAbs(w.m_bg.rotationDeg) < 1e-9 && !(w.m_bg.x == 30 && w.m_bg.y == 40),
+              "rotate undo: a background resized after the turn turns back, not to its old corner");
+        w.m_bg.x = 30;
+        w.m_bg.y = 40;
+        w.m_bg.scale = 1;
+        w.m_bg.userChanged = false;
         undo->redo();
         // Edits after the turn: one more texture, the background moved 5 mm.
         c2d::Model3D m2 = w.m_model->model();

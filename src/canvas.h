@@ -265,6 +265,13 @@ private:
     // A two-finger pinch is under way: the first finger's synthesized mouse
     // events are ignored until it is lifted (see viewportEvent).
     bool m_pinching = false;
+    // How far a multi-click shape had got before the last touch press: a
+    // pinch rolls back only what its own first finger added (see pinchStarted).
+    struct TouchPress {
+        bool valid = false;
+        int clicks = 0, tanLines = 0, penNodes = 0, splinePts = 0;
+    } m_touchPress;
+    void pinchStarted();
     // Select band (viewport coords). Dragged left to right it is a window
     // (only what lies wholly inside); right to left a crossing (whatever
     // line it touches). Ctrl adds to the selection it started with.

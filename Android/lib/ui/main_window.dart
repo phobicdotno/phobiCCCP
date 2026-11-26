@@ -40,6 +40,9 @@ class _MainWindowState extends State<MainWindow> {
   bool _snap = true, _fullScreen = false;
   Set<String> _sel = {};
   int? _tp;
+  // Picking shapes on the board lets go of the toolpath's halo but keeps it
+  // current ("+" still adds to it), as the computer's list does.
+  bool _tpLit = true;
 
   /// Toolpath cards whose shape thumbnails are open, by index (kept with the
   /// card when it moves, as the desktop keeps them by toolpath).
@@ -398,7 +401,10 @@ class _MainWindowState extends State<MainWindow> {
     }[type] ?? tpTypeLabel(type);
     final tp = ToolpathSpec(name: '$stem $n', type: type, shapes: shapes, tool: tool, depth: depth);
     _commit(d.copyWith(toolpaths: [...d.toolpaths, tp]));
-    setState(() => _tp = _d!.toolpaths.length - 1);
+    setState(() {
+      _tp = _d!.toolpaths.length - 1;
+      _tpLit = true;
+    });
     final open = openPathsLeftOut(d, tp);
     _say('${tp.name}: ${shapes.length} vector${shapes.length == 1 ? '' : 's'}'
         '${open > 0 ? ' (${openPathsWords(open)})' : ''}');
@@ -637,6 +643,19 @@ class _MainWindowState extends State<MainWindow> {
 
   // ---- layout ---------------------------------------------------------------------
 
+  /// Switches page. Outside Design only Select, Hand and Area make sense:
+  /// a drawing tool left on there drew a circle where a tap should pick
+  /// shapes for a toolpath (the computer switches to Select too).
+  void _setMode(int i) {
+    _mode = i;
+    _pathDraft = null;
+    if (i != 0 && _tool != DrawTool.select && _tool != DrawTool.hand && _tool != DrawTool.area) {
+      _tool = DrawTool.select;
+    } else if (_tool == DrawTool.path) {
+      _tool = DrawTool.select;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -688,9 +707,9 @@ class _MainWindowState extends State<MainWindow> {
             _Item('Select all', d == null ? null : () => setState(() => _sel = {for (final s in d.shapes) s.id})),
           ]),
           _menu('View', [
-            _Item('1 · Design', () => setState(() => _mode = 0), checked: _mode == 0),
-            _Item('2 · Toolpaths', () => setState(() => _mode = 1), checked: _mode == 1),
-            _Item('3 · Machine', () => setState(() => _mode = 2), checked: _mode == 2),
+            _Item('1 · Design', () => setState(() => _setMode(0)), checked: _mode == 0),
+            _Item('2 · Toolpaths', () => setState(() => _setMode(1)), checked: _mode == 1),
+            _Item('3 · Machine', () => setState(() => _setMode(2)), checked: _mode == 2),
             null,
             _Item('Fit', _zoom.reset),
             _Item('Snap to grid', () => setState(() => _snap = !_snap), checked: _snap),
@@ -803,9 +822,7 @@ class _MainWindowState extends State<MainWindow> {
             child: InkWell(
               borderRadius: BorderRadius.circular(6),
               onTap: () => setState(() {
-                _mode = i;
-                _pathDraft = null;
-                if (_tool == DrawTool.path) _tool = DrawTool.select;
+                _setMode(i);
                 _status = const [
                   'Design — draw and edit vectors',
                   'Toolpaths — select vectors, then pick a toolpath above the drawing',
@@ -896,13 +913,14 @@ class _MainWindowState extends State<MainWindow> {
                   snap: _snap,
                   zoom: _zoom,
                   selected: _sel,
-                  highlighted: _mode == 1 && _tp != null && _tp! < d.toolpaths.length ? d.toolpaths[_tp!].shapes.toSet() : const {},
-                  leftOf: _mode == 1 && _tp != null && _tp! < d.toolpaths.length ? _tp : null,
+                  highlighted: _mode == 1 && _tpLit && _tp != null && _tp! < d.toolpaths.length ? d.toolpaths[_tp!].shapes.toSet() : const {},
+                  leftOf: _mode == 1 && _tpLit && _tp != null && _tp! < d.toolpaths.length ? _tp : null,
                   pathDraft: _pathDraft ?? const [],
                   // A tap on empty board lets go of the toolpath too, as on the computer.
                   onSelect: (ids) => setState(() {
                     _sel = ids;
                     if (ids.isEmpty) _tp = null;
+                    if (ids.isNotEmpty) _tpLit = false;
                   }),
                   onMove: (ids, dx, dy) => setState(() {
                     _beforeMove ??= _d;
@@ -963,7 +981,10 @@ class _MainWindowState extends State<MainWindow> {
             tools: app.tools,
             current: _tp,
             selectedShapes: _sel,
-            onPick: (i) => setState(() => _tp = i),
+            onPick: (i) => setState(() {
+              _tp = i;
+              _tpLit = true;
+            }),
             shapesOpen: _shapesOpen,
             onToggleShapes: (i) => setState(() => _shapesOpen.contains(i) ? _shapesOpen.remove(i) : _shapesOpen.add(i)),
             onNew: _newToolpath,

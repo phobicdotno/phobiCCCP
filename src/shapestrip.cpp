@@ -1,4 +1,6 @@
 #include "shapestrip.h"
+
+#include <QSet>
 #include "c2ddocument.h"
 #include "canvas.h"
 #include <QAction>
@@ -144,7 +146,16 @@ void ShapeStrip::toCanvas()
     if (m_busy)
         return;
     m_busy = true;
-    m_canvas->selectElements(selectedIds());
+    // Past kMaxTiles a shape has no tile: one selected on the canvas stays
+    // selected (the strip cannot have let go of what it does not show).
+    QSet<QString> tiled;
+    for (int i = 0; i < count(); ++i)
+        tiled.insert(item(i)->data(Qt::UserRole).toString());
+    QStringList ids = selectedIds();
+    for (const QString &id : m_canvas->selectedElementIds())
+        if (!tiled.contains(id) && !ids.contains(id))
+            ids << id;
+    m_canvas->selectElements(ids);
     m_busy = false;
 }
 

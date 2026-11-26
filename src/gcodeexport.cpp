@@ -2789,13 +2789,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // Tabs as tall as the whole cut (a 2 mm outline with 3 mm tabs)
             // would lift over every tab on every pass and leave those
             // stretches uncut, so the shape comes out with gaps. A cut that
-            // shallow holds nothing: no tabs.
+            // shallow holds nothing: no tabs. (No note: every new contour is
+            // 2.54 mm deep with 3 mm tabs, and a note on each teaches people
+            // to skip notes.)
             if (cp.tabTop >= cp.zTop - 1e-9) {
                 cp.tabTop = -1e9;
                 cp.tabWidth = 0;
-                const QString n = QStringLiteral("%1: tabs as tall as the cut, none made").arg(name);
-                if (!res.notes.contains(n))
-                    res.notes << n;
             }
         };
         if (cutout) {

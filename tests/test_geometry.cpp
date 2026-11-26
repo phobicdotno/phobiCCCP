@@ -415,7 +415,7 @@ int main(int argc, char *argv[])
     }
 
     // --- tabs as tall as the cut: none made (they lifted over every tab on
-    // every pass and left those stretches uncut), with a note.
+    // every pass and left those stretches uncut).
     {
         Rig r;
         r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
@@ -426,10 +426,6 @@ int main(int argc, char *argv[])
         cutBounds(g.gcode, &minZ);
         check(g.done.size() == 1 && approx(minZ, -2.0, 1e-3), "shallow cut with tall tabs still cuts");
         check(!g.gcode.contains(QLatin1String("Z1.000")), "no lift to a tab top above the stock");
-        bool noted = false;
-        for (const QString &n : g.notes)
-            noted = noted || n.contains(QLatin1String("tabs as tall as the cut"));
-        check(noted, "shallow cut with tall tabs is noted");
     }
 
     // --- a ramp into a short last pass starts from the floor already cut,
