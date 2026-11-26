@@ -123,6 +123,7 @@ public:
         return (m_stopped || m_running < 0 || m_running >= m_plan.sections.size())
                    ? nullptr : &m_plan.sections.at(m_running);
     }
+    int runningPass() const { return m_runningPass; }
     const JobPlan &plan() const { return m_plan; }
     // "Start here": a tapped toolpath or pass row can start the job again
     // from its first line. The button shows only while `on` (idle, homed,

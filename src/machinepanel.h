@@ -167,6 +167,20 @@ private:
     };
     bool runProgram(QString *remoteWhy = nullptr, const StartFrom *from = nullptr);
     void startHere(int section, int pass);
+    // The row `section`/`pass` of the job list as a StartFrom.
+    StartFrom rowOf(int section, int pass) const;
+    // Where a design's job stopped (a crash, a power cut, Stop): saved while
+    // it runs, cleared when it finishes or is cancelled, and offered as
+    // "Continue from" when that design is open again and the machine homed.
+    void saveResumePoint(int acked);
+    static void clearResumePoint();
+    void updateContinueOffer();
+    void continueWhereStopped();
+    QPushButton *m_continueBtn = nullptr;
+    QString m_docHash;                   // the open design's file, SHA-1 hex
+    QString m_runPath, m_runHash;        // the running design's, empty when not one
+    QElapsedTimer m_resumeSaveClock;
+    int m_resumeSavedSec = -1, m_resumeSavedPass = -1;
     void log(const QString &line);
 
     Document *m_doc = nullptr;

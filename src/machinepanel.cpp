@@ -30,6 +30,7 @@
 #include <QDialogButtonBox>
 #include <QPoint>
 #include <QFileInfo>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileDialog>
 #include <QDir>
@@ -733,6 +734,18 @@ MachinePanel::MachinePanel(QWidget *parent)
     m_runBtn->setObjectName(QStringLiteral("start"));
     m_runBtn->setMinimumHeight(64);
     bv->addWidget(m_runBtn);
+    // After a crash or a power cut: the job of this design, from the start
+    // of the step it stopped in. Shown only when that can be done.
+    m_continueBtn = new QPushButton(jobCard);
+    m_continueBtn->setObjectName(QStringLiteral("continueStopped"));
+    m_continueBtn->setMinimumHeight(56);
+    m_continueBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background: #f2a536; color: #16181d; border: none; border-radius: 8px;"
+        " font-size: 16px; font-weight: 700; padding: 6px 14px; }"
+        "QPushButton:pressed { background: #c8861f; }"));
+    m_continueBtn->setVisible(false);
+    connect(m_continueBtn, &QPushButton::clicked, this, [this] { continueWhereStopped(); });
+    bv->addWidget(m_continueBtn);
     {
         // Any G-code file runs here too (a tiled design's tile programs,
         // a program made elsewhere): the same checks, tool changes and end.
@@ -1442,6 +1455,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         m_progress->setValue(a);
         if (m_jobView)
             m_jobView->setProgress(a, t);
+        saveResumePoint(a);
     });
     connect(m_grbl, &GrblStreamer::consoleLine, this, [this](const QString &l) {
         log(l);
@@ -1571,6 +1585,11 @@ MachinePanel::MachinePanel(QWidget *parent)
                : QStringLiteral("== program stopped =="));
         const bool endJob = m_endOfJobPending && ok && !rehearsal;
         m_endOfJobPending = false;
+        // Finished: nothing to continue. Stopped: the place stays saved.
+        if (ok && !m_runPath.isEmpty())
+            clearResumePoint();
+        m_runPath.clear();
+        m_runHash.clear();
         if (m_jobView) {
             m_jobView->setProgress(ok ? m_progress->maximum() : m_progress->value(), m_progress->maximum());
             m_jobView->setParked(false);
@@ -2714,10 +2733,19 @@ void MachinePanel::showPage(const QString &name)
         m_rightStack->setCurrentWidget(m_jobPage);
 }
 
+static QString fileHash(const QString &path)
+{
+    QFile f(path);
+    if (path.isEmpty() || !f.open(QIODevice::ReadOnly))
+        return {};
+    return QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha1).toHex());
+}
+
 void MachinePanel::setDocument(Document *doc)
 {
     m_doc = doc;
     ++m_docSeq;
+    m_docHash = doc ? fileHash(doc->filePath()) : QString();
     // A design opened (here or from a pad) is what is run next.
     if (!m_ncPath.isEmpty()) {
         log(QStringLiteral("G-code file %1 put away: a design was opened").arg(QFileInfo(m_ncPath).fileName()));
@@ -2726,6 +2754,7 @@ void MachinePanel::setDocument(Document *doc)
         m_ncOps.clear();
     }
     refreshJobInfo();
+    updateContinueOffer();
 }
 
 void MachinePanel::openProgramFile()
@@ -3127,6 +3156,8 @@ void MachinePanel::cancelJob()
     }
     m_endOfJobPending = false;   // cancelled: no end-of-job moves behind the hold
     m_hist.cancelled = true;
+    clearResumePoint();
+    m_runPath.clear();
     holdResetThen([this] {
         clearJob();
         log(QStringLiteral("job cancelled: spindle off, Z up to the top"));
@@ -3942,6 +3973,7 @@ void MachinePanel::onStatus(const MachineStatus &st)
         m_jobView->setStartHereAllowed(m_homed && m_grbl->isConnected() && !m_grbl->isStreaming()
                                        && !isBusy() && !m_held && m_machineState == QLatin1String("Idle"));
     }
+    updateContinueOffer();
     if ((st.flood || st.mist) != m_coolantOn)
         showCoolant(st.flood || st.mist);
     if (m_ovLabel) {
@@ -5726,6 +5758,16 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     m_progress->setFormat(QStringLiteral("%p%"));
     m_jobTools = jobTools;
     m_toolOrdBase = toolOrdBase;
+    // A design (not a G-code file, not an air cut) leaves its place behind
+    // while it runs, to continue from after a crash.
+    m_runPath = (!fromFile && !air) ? m_doc->filePath() : QString();
+    m_runHash = m_runPath.isEmpty() ? QString() : fileHash(m_runPath);
+    if (m_runHash.isEmpty())
+        m_runPath.clear();     // never saved: nothing to open again
+    else
+        m_docHash = m_runHash; // saved since it was opened
+    m_resumeSaveClock.invalidate();
+    m_resumeSavedSec = m_resumeSavedPass = -1;
     m_jobFromFile = fromFile;
     {
         QSettings ps;
@@ -5789,11 +5831,8 @@ void MachinePanel::recordJobEnd(const QString &how, int code)
         log(QStringLiteral("!! could not write the job history (%1)").arg(jobhistory::filePath()));
 }
 
-// A row of the last job's list was chosen: start the job again from there.
-void MachinePanel::startHere(int section, int pass)
+MachinePanel::StartFrom MachinePanel::rowOf(int section, int pass) const
 {
-    if (!m_jobView || section < 0 || section >= m_jobView->plan().sections.size())
-        return;
     const JobPlan &plan = m_jobView->plan();
     const JobSection &sec = plan.sections.at(section);
     StartFrom f;
@@ -5806,6 +5845,81 @@ void MachinePanel::startHere(int section, int pass)
             ++f.rank;
     }
     f.row = m_jobView->rowName(section, f.pass);
+    return f;
+}
+
+void MachinePanel::saveResumePoint(int acked)
+{
+    if (m_runPath.isEmpty() || !m_jobView || !m_grbl->isStreaming())
+        return;
+    const int sec = m_jobView->running();
+    if (sec < 0 || sec >= m_jobView->plan().sections.size()
+        || m_jobView->plan().sections.at(sec).kind != JobSection::Toolpath)
+        return;
+    // On each new step, else at most every 2 s: every answered line would
+    // be a disk write.
+    const bool moved = sec != m_resumeSavedSec || m_jobView->runningPass() != m_resumeSavedPass;
+    if (!moved && m_resumeSaveClock.isValid() && m_resumeSaveClock.elapsed() < 2000)
+        return;
+    m_resumeSaveClock.start();
+    m_resumeSavedSec = sec;
+    m_resumeSavedPass = m_jobView->runningPass();
+    const StartFrom f = rowOf(sec, m_jobView->runningPass());
+    QSettings set;
+    set.setValue(QStringLiteral("resume/path"), m_runPath);
+    set.setValue(QStringLiteral("resume/hash"), m_runHash);
+    set.setValue(QStringLiteral("resume/acked"), acked);
+    set.setValue(QStringLiteral("resume/title"), f.title);
+    set.setValue(QStringLiteral("resume/passes"), f.passes);
+    set.setValue(QStringLiteral("resume/rank"), f.rank);
+    set.setValue(QStringLiteral("resume/pass"), f.pass);
+    set.setValue(QStringLiteral("resume/row"), f.row);
+    set.sync();
+}
+
+void MachinePanel::clearResumePoint()
+{
+    QSettings set;
+    set.remove(QStringLiteral("resume"));
+    set.sync();
+}
+
+void MachinePanel::updateContinueOffer()
+{
+    if (!m_continueBtn)
+        return;
+    QSettings set;
+    const QString path = set.value(QStringLiteral("resume/path")).toString();
+    const bool show = !path.isEmpty() && m_doc && m_ncPath.isEmpty() && m_doc->filePath() == path
+                      && !m_docHash.isEmpty() && set.value(QStringLiteral("resume/hash")).toString() == m_docHash
+                      && m_homed && m_grbl->isConnected() && !m_grbl->isStreaming() && !isBusy() && !m_held
+                      && m_machineState == QLatin1String("Idle");
+    if (show)
+        m_continueBtn->setText(QStringLiteral("\u25b6 Continue from %1 (where it stopped)")
+                                   .arg(set.value(QStringLiteral("resume/row")).toString()));
+    m_continueBtn->setVisible(show);
+}
+
+void MachinePanel::continueWhereStopped()
+{
+    QSettings set;
+    StartFrom f;
+    f.title = set.value(QStringLiteral("resume/title")).toString();
+    f.passes = set.value(QStringLiteral("resume/passes")).toInt();
+    f.rank = set.value(QStringLiteral("resume/rank")).toInt();
+    f.pass = set.value(QStringLiteral("resume/pass"), -1).toInt();
+    f.row = set.value(QStringLiteral("resume/row")).toString();
+    if (f.title.isEmpty() || isBusy() || m_grbl->isStreaming() || m_held)
+        return;
+    runProgram(nullptr, &f);
+}
+
+// A row of the last job's list was chosen: start the job again from there.
+void MachinePanel::startHere(int section, int pass)
+{
+    if (!m_jobView || section < 0 || section >= m_jobView->plan().sections.size())
+        return;
+    const StartFrom f = rowOf(section, pass);
     if (isBusy() || m_grbl->isStreaming() || m_held) {
         log(QStringLiteral("!! busy — cannot start from a step now"));
         return;

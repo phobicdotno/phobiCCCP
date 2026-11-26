@@ -15,6 +15,7 @@
 #include <QDialog>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -57,6 +58,7 @@
 #include <QDialog>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -973,6 +975,77 @@ int main(int argc, char **argv)
         wait(1500);
         check(asked == 1 && tools == 0 && grbl.indexOf("G43.1") < 0 && grbl.indexOf("M03S10000") >= 0,
               "starthere: the bit in is the one wanted, no tool change");
+    }
+
+    if (mode == "continue") {
+        // A job stopped in the second toolpath (a crash, a power cut, Stop)
+        // leaves its place behind; the same design opened again with the
+        // machine homed offers to continue from the start of that toolpath.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_bsSafeZ->setValue(-30.0);
+        grbl.wcoX = -200;
+        grbl.wcoY = -200;
+        grbl.wcoZ = -60;
+        const QString file = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                             + QStringLiteral("/continue_test.c2d");
+        {
+            // The design's file as on disk: only its bytes count (the hash).
+            QFile f(file);
+            check(f.open(QIODevice::WriteOnly) && f.write("design bytes") > 0, "continue: design file written");
+        }
+        doc.setFilePath(file);
+        panel.setDocument(&doc);
+        wait(800);
+        check(!panel.m_continueBtn->isVisible(), "continue: nothing offered before a job");
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith(QLatin1String("Start from")))
+                return QStringLiteral("▶ Start here");
+            if (v.headline.startsWith(QLatin1String("Stream")))
+                return QStringLiteral("▶ Start");
+            return QStringLiteral("Measure and continue");
+        };
+        check(panel.runProgram(), "continue: the job starts");
+        QSettings set;
+        spin(30000, [&] {
+            return !s->isStreaming() || set.value(QStringLiteral("resume/row")).toString() == QLatin1String("small");
+        });
+        s->stopStream();
+        wait(1500);
+        check(set.value(QStringLiteral("resume/row")).toString() == QLatin1String("small")
+                  && set.value(QStringLiteral("resume/path")).toString() == file
+                  && !set.value(QStringLiteral("resume/hash")).toString().isEmpty(),
+              "continue: the step it stopped in is saved with the design and its hash");
+        // Opened again later, homed again.
+        panel.setDocument(&doc);
+        panel.m_homed = true;
+        spin(5000, [&] { return panel.m_continueBtn->isVisible(); });
+        check(panel.m_continueBtn->isVisible()
+                  && panel.m_continueBtn->text().contains(QLatin1String("Continue from small (where it stopped)")),
+              "continue: offered on the job card");
+        panel.m_homed = false;
+        wait(600);
+        check(!panel.m_continueBtn->isVisible(), "continue: not offered unhomed");
+        panel.m_homed = true;
+        wait(600);
+        grbl.events.clear();
+        panel.m_continueBtn->click();
+        spin(20000, [&] { return grbl.indexOf("G1Z-1.000F300.0") >= 0 && !s->isStreaming(); });
+        wait(1500);
+        check(grbl.count("G1Z-1.000F300.0") == 1 && grbl.indexOf("X42.063") > grbl.indexOf("G1Z-1.000F300.0"),
+              "continue: the second toolpath only, from its start");
+        check(set.value(QStringLiteral("resume/path")).toString().isEmpty() && !panel.m_continueBtn->isVisible(),
+              "continue: finished, nothing left to continue");
+        // Another file with the same name is not the same design.
+        set.setValue(QStringLiteral("resume/path"), file);
+        set.setValue(QStringLiteral("resume/hash"), QStringLiteral("0000"));
+        set.setValue(QStringLiteral("resume/row"), QStringLiteral("small"));
+        panel.setDocument(&doc);
+        wait(800);
+        check(!panel.m_continueBtn->isVisible(), "continue: not offered for a changed file");
+        QFile::remove(file);
     }
 
     if (mode == "tcspin") {
