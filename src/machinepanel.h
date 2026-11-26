@@ -56,6 +56,8 @@ public:
     // straight into slots that then touch them. Cut the connections first.
     ~MachinePanel() override;
     void setDocument(Document *doc);
+    // True while the open design has changes the file on disk does not.
+    void setUnsavedCheck(std::function<bool()> f) { m_unsaved = std::move(f); }
     void showPage(const QString &name);   // "job" / "bitzero" / "bitsetter" (used by --shot)
     GrblStreamer *streamer() const { return m_grbl; }
 
@@ -493,6 +495,7 @@ private:
     QList<int> m_warmSecs;               // step lengths, read when it starts
     int m_warmStep = -1;                 // -1: not warming up
     int m_warmLeft = 0;                  // seconds left in this step
+    bool m_warmHeld = false;             // step change waiting for a busy controller
     bool m_rpmRangeSet = false;          // $30/$31 applied to the field
     bool m_held = false;
     // m_held stays until a report shows the machine out of Hold (seen in
@@ -502,6 +505,10 @@ private:
     void setHeld(bool held);             // m_held and the pause button
     bool m_endRisePending = false;       // the end-of-job rise waits for Idle
     bool m_endOfJobPending = false;      // a real job is streaming: retract + M5 at its end
+    std::function<bool()> m_unsaved;
+    QString m_surfFixedPath;             // surfacing loaded at the machine's front-left
+    double m_surfWcoX = 0, m_surfWcoY = 0; // the XY work offset it was laid out with
+    bool m_jobCoolant = false;           // the streamed job switches dust/coolant: M9 at its end
     QProgressBar *m_progress;
     QPlainTextEdit *m_console;
 

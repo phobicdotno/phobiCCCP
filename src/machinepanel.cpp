@@ -1595,7 +1595,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         const bool endJob = m_endOfJobPending && ok && !rehearsal;
         m_endOfJobPending = false;
         // Finished: nothing to continue. Stopped: the place stays saved.
-        if (ok && !m_runPath.isEmpty())
+        // A job that parks keeps it until the machine stands still: the last
+        // lines are acked when planned, not when cut.
+        const bool runSaved = ok && !m_runPath.isEmpty();
+        if (runSaved && !endJob)
             clearResumePoint();
         m_runPath.clear();
         m_runHash.clear();
@@ -1656,8 +1659,10 @@ MachinePanel::MachinePanel(QWidget *parent)
             // planned, so the position read now is from before the program's
             // own final retract, and a rise from it could go down.
             m_endRisePending = true;
-            whenIdle([this] {
+            whenIdle([this, runSaved] {
                 m_endRisePending = false;
+                if (runSaved)
+                    clearResumePoint();
                 m_grbl->startMacro(endOfJobMoves());
             });
         }
@@ -2165,7 +2170,7 @@ void MachinePanel::bitZeroBegin()
         startSurfaceMap();
         return;
     }
-    const MachineStatus st = m_grbl->status();
+    MachineStatus st = m_grbl->status();
     if (st.probePin) {
         log(QStringLiteral("!! the probe input is already closed — is the pin touching the "
                            "plate, or the magnet on the plate itself? Move clear and retry"));
@@ -2199,6 +2204,24 @@ void MachinePanel::bitZeroBegin()
             ask.defaultOk = false;
             if (!shopAsk(this, ask))
                 return;
+            // The question was open: a jog (gamepad), a disconnect or a job
+            // can have come in meanwhile. Check again and take the position
+            // the return moves start from now, not from before.
+            const bool streaming = m_grbl->isStreaming();
+            if (!m_grbl->isConnected() || needsInit()
+                || (streaming && !(mode == BitZeroPanel::ZOnly && zeroAllowed(false)))
+                || !requireHomed(QStringLiteral("BitZero probing")) || endRiseWaiting()
+                || (m_onIdle && !streaming) || (!streaming && movingStill(QStringLiteral("BitZero")))
+                || !m_grbl->canSendCommand() || m_mapper->isWaiting()
+                || m_bzPanel->mode() != mode) {
+                log(QStringLiteral("!! BitZero: the machine changed while the question was open — press again"));
+                return;
+            }
+            st = m_grbl->status();
+            if (st.probePin) {
+                log(QStringLiteral("!! the probe input is already closed — move clear and retry"));
+                return;
+            }
             log(QStringLiteral("BitZero: job zero is the %1, not the probed corner").arg(jobZeroText(*m_doc)));
         }
     }
@@ -2468,7 +2491,7 @@ void MachinePanel::bitZeroAfterCentre(Phase stage)
                                 .arg(boss ? QStringLiteral("taken off") : QStringLiteral("added"));
         log(QStringLiteral("%1 centre at machine X %2 Y %3. %4")
                 .arg(what).arg(c.x, 0, 'f', 3).arg(c.y, 0, 'f', 3).arg(res));
-        m_bzPanel->setCentreResult(QStringLiteral("Centre set as X0 Y0. ") + res);
+        m_bzPanel->setCentreResult(QStringLiteral("Centre found (X0 Y0 is set there next). ") + res);
         m_phase = Phase::BitZeroHome;
         m_grbl->startMacro({QStringLiteral("G90"),
                             QStringLiteral("G53 G0 X%1 Y%2").arg(m_bzCx, 0, 'f', 3).arg(m_bzCy, 0, 'f', 3)});
@@ -3147,10 +3170,16 @@ void MachinePanel::openSurfacing()
     st.setValue(QStringLiteral("machine/surf/alongY"), dir->currentIndex() == 1);
     st.setValue(QStringLiteral("machine/surf/finish"), finish->isChecked());
 
-    const SurfacingParams p = params();
-    const SurfacingPlan plan = planSurfacing(p);
+    SurfacingParams p = params();
     // Checked again: the machine may have moved its zero while the dialog was open.
     const MachineStatus &now = m_grbl->status();
+    const bool machineCorner = corner->currentIndex() == 1;
+    if (machineCorner) {
+        // Front-left of the machine is machine-fixed: from the zero as it is now.
+        p.x0 = left + kMargin + p.toolDia / 2 - (now.mx - now.wx);
+        p.y0 = front + kMargin + p.toolDia / 2 - (now.my - now.wy);
+    }
+    const SurfacingPlan plan = planSurfacing(p);
     QString why = plan.error;
     if (why.isEmpty())
         why = surfacingFitProblem(plan, now.mx - now.wx, now.my - now.wy, left, right, front, back);
@@ -3166,6 +3195,10 @@ void MachinePanel::openSurfacing()
         return;
     }
     m_ncPath = QStringLiteral("Surfacing %1 × %2 mm").arg(p.width).arg(p.height);
+    // Its coordinates hold the zero of now: Start refuses if XY zero moves.
+    m_surfFixedPath = machineCorner ? m_ncPath : QString();
+    m_surfWcoX = now.mx - now.wx;
+    m_surfWcoY = now.my - now.wy;
     m_ncLines = nc.lines;
     m_ncOps = nc.ops;
     log(QStringLiteral("surfacing loaded: %1 × %2 mm, Ø %3 bit, %4 lines × %5 passes to Z-%6")
@@ -3295,7 +3328,11 @@ void MachinePanel::cancelJob()
     }
     m_endOfJobPending = false;   // cancelled: no end-of-job moves behind the hold
     m_hist.cancelled = true;
-    clearResumePoint();
+    // Only this run's own point: a G-code file, an air cut or a macro has
+    // none, and cancelling it must not drop a stopped design's point.
+    if (!m_runPath.isEmpty()
+        && QSettings().value(QStringLiteral("resume/path")).toString() == m_runPath)
+        clearResumePoint();
     m_runPath.clear();
     holdResetThen([this] {
         clearJob();
@@ -4252,6 +4289,7 @@ void MachinePanel::endWarmup(const QString &why)
         return;
     m_warmTimer->stop();
     m_warmStep = -1;
+    m_warmHeld = false;
     if (!why.isEmpty())
         log(why);
     updateSpindleButtons();
@@ -4291,6 +4329,18 @@ void MachinePanel::warmupStep()
         endWarmup(QStringLiteral("warm-up ended: a job is running"));
         return;
     }
+    // A macro (or an error's reset) owns the controller for now: the next
+    // speed or the final M5 would be refused, so hold this step and try
+    // again on the next tick instead of losing the spindle-off.
+    if (m_grbl->isConnected() && !m_grbl->canSendCommand()) {
+        if (!m_warmHeld)
+            log(QStringLiteral("warm-up: controller busy, the spindle change waits for it"));
+        m_warmHeld = true;
+        m_warmLeft = 1;
+        updateSpindleButtons();
+        return;
+    }
+    m_warmHeld = false;
     const int next = m_warmStep + 1;
     if (next >= 3) {
         m_warmTimer->stop();
@@ -4377,13 +4427,44 @@ void MachinePanel::openControllerSettings()
         auto conn = std::make_shared<QMetaObject::Connection>();
         *conn = connect(m_grbl, &GrblStreamer::macroFinished, &dlg, [this, &dlg, conn](bool ok) {
             disconnect(*conn);
-            dlg.setBusy(false);
-            dlg.setSettings(toMap(m_grbl->settings()));
-            if (!ok)
+            if (ok) {
+                dlg.setBusy(false);
+                dlg.setSettings(toMap(m_grbl->settings()));
+                return;
+            }
+            // The refused line ended the macro before its $$: the cached list
+            // is from before the edit. Read it again before showing values.
+            dlg.setBusy(true, QStringLiteral("A setting was refused. Reading the settings again…"));
+            auto listed = std::make_shared<QMetaObject::Connection>();
+            *listed = connect(m_grbl, &GrblStreamer::settingsListed, &dlg, [this, &dlg, listed] {
+                disconnect(*listed);
+                dlg.setBusy(false);
+                dlg.setSettings(toMap(m_grbl->settings()));
                 shopTell(&dlg, QStringLiteral("Controller settings"),
                          QStringLiteral("The controller refused a setting"),
                          QStringLiteral("The ones before it were stored; the list shows what the "
                                         "controller has now. See the log for its error."));
+            });
+            // Retried while the controller is still settling after the error.
+            auto ask = std::make_shared<std::function<void(int)>>();
+            const std::weak_ptr<std::function<void(int)>> self = ask;   // no cycle
+            *ask = [this, &dlg, listed, self](int left) {
+                if (!*listed)
+                    return;
+                if (m_grbl->sendCommand(QStringLiteral("$$")))
+                    return;
+                if (left > 0) {
+                    QTimer::singleShot(500, &dlg, [again = self.lock(), left] { (*again)(left - 1); });
+                    return;
+                }
+                disconnect(*listed);
+                dlg.setBusy(false);
+                shopTell(&dlg, QStringLiteral("Controller settings"),
+                         QStringLiteral("The controller refused a setting"),
+                         QStringLiteral("The settings could not be read back, so the list may be "
+                                        "out of date. Close it and open it again."));
+            };
+            (*ask)(10);
         });
         m_grbl->startMacro(lines + QStringList{QStringLiteral("$$")});
     });
@@ -4639,7 +4720,11 @@ void MachinePanel::hoverDryRun()
         || needsInit() || !requireHomed(QStringLiteral("Hover dry run")) || movingStill(QStringLiteral("Hover dry run"))
         || !travelOk())
         return;
-    QStringList lines = riseToTop();
+    // A spindle started by hand (or a warm-up) keeps running at Idle: the
+    // trace promises the spindle off, so stop it before the first move.
+    endWarmup(QStringLiteral("warm-up ended: hover dry run"));
+    QStringList lines{QStringLiteral("M5")};
+    lines += riseToTop();
     lines << QStringLiteral("G21") << QStringLiteral("G90")
           << QStringLiteral("G0 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y0, 0, 'f', 3)
           << QStringLiteral("G0 Z%1").arg(hoverZ, 0, 'f', 3)
@@ -4753,7 +4838,7 @@ QStringList MachinePanel::endOfJobMoves()
     if (!m_homed) {
         log(QStringLiteral("job done: not homed, so up to safe Z and spindle off, no park"));
         QStringList up{QStringLiteral("G90"), QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3)};
-        if (coolantWithJob())
+        if (m_jobCoolant)
             up << QStringLiteral("M9");
         up << QStringLiteral("M5");
         return up;
@@ -4769,7 +4854,7 @@ QStringList MachinePanel::endOfJobMoves()
     } else {
         log(QStringLiteral("job done: up to the top, then spindle off (the park spot is off the machine)"));
     }
-    if (coolantWithJob())
+    if (m_jobCoolant)
         moves << QStringLiteral("M9");
     moves << QStringLiteral("M5");
     return moves;
@@ -5138,6 +5223,11 @@ void MachinePanel::measureTool(Phase why)
     }
     if (why == Phase::MeasureManual && movingStill(QStringLiteral("Measure")))
         return;
+    // Measured by hand outside a job: the bit may have been swapped, so
+    // Start here goes through the tool change again instead of trusting
+    // the one the last job ended on.
+    if (why == Phase::MeasureManual && !m_grbl->isStreaming())
+        m_toolStretch = -1;
     m_phase = why;
     const MachineStatus st = m_grbl->status();
     // Manual measurements return to where the tool was; after a tool change
@@ -5514,6 +5604,14 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     // same checks from here on.
     const bool fromFile = !m_ncPath.isEmpty();
     const QString ncAtStart = m_ncPath;
+    // Surfacing at the front-left of the machine was laid out in the work
+    // coordinates of its load: a new XY zero since would move the area.
+    if (fromFile && m_ncPath == m_surfFixedPath && m_grbl->status().valid) {
+        const MachineStatus &now = m_grbl->status();
+        if (std::abs((now.mx - now.wx) - m_surfWcoX) > 0.01 || std::abs((now.my - now.wy) - m_surfWcoY) > 0.01)
+            return refuse(QStringLiteral("XY zero moved since the surfacing was loaded."),
+                          QStringLiteral("Load Surfacing again so the area stays at the front-left of the machine."));
+    }
     if (!fromFile && !m_doc)
         return refuse(QStringLiteral("Open a .c2d file first."));
     const QString docAtStart = m_doc ? m_doc->filePath() : QString();
@@ -5627,6 +5725,10 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     lines = safeRapidsTransform(lines);
     {
         QStringList head{QStringLiteral("G21")};
+        // Air cut drops the program's M3, but a spindle started by hand
+        // keeps running at Idle: stop it before the first move.
+        if (air)
+            head << QStringLiteral("M5");
         head += riseToTop();
         // A Z-only first rapid would come down wherever the spindle stands.
         const QString across = GrblStreamer::crossToFirstCut(lines, 0);
@@ -5796,12 +5898,15 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     // those off so the ending is ours: up to the top first, then spindle off
     // (see streamFinished). Only the trailing lines go; a tool-change M05
     // in the middle stays.
+    // The end-of-job M9 follows what this program was made with, not the
+    // box as it is when the job ends (it can be cleared while it runs).
+    m_jobCoolant = coolantWithJob();
     while (!lines.isEmpty()) {
         const QString last = lines.last().trimmed().toUpper();
         if (last == QLatin1String("M05") || last == QLatin1String("M5")
             || last == QLatin1String("M02") || last == QLatin1String("M2")
             || last == QLatin1String("M30")
-            || (coolantWithJob() && (last == QLatin1String("M9") || last == QLatin1String("M09"))))
+            || (m_jobCoolant && (last == QLatin1String("M9") || last == QLatin1String("M09"))))
             lines.removeLast();
         else
             break;
@@ -5809,7 +5914,7 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     // Dust collector / coolant with the spindle: on after each start, off
     // before each tool change; the last off is in the end-of-job moves,
     // just before the spindle stops at the park spot.
-    if (coolantWithJob()) {
+    if (m_jobCoolant) {
         lines = coolantTransform(lines, coolantMist());
         log(QStringLiteral("dust/coolant: %1 after the spindle starts, M9 before it stops")
                 .arg(coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8")));
@@ -5845,7 +5950,7 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
             return refuse(QStringLiteral("There is no BitSetter reference yet."),
                           QStringLiteral("Zero Z with the BitSetter on (or press Measure tool "
                                          "with the bit Z was zeroed with), then start again."));
-        const QString coolant = coolantWithJob() ? (coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8"))
+        const QString coolant = m_jobCoolant ? (coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8"))
                                                  : QString();
         QString why;
         const QStringList cut = GrblStreamer::startFromLines(lines, fromQ, riseToTop(), change ? lastTool : -1,
@@ -5901,7 +6006,12 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     m_toolOrdBase = toolOrdBase;
     // A design (not a G-code file, not an air cut) leaves its place behind
     // while it runs, to continue from after a crash.
-    m_runPath = (!fromFile && !air) ? m_doc->filePath() : QString();
+    // Edited and not saved: the file is an older revision than what runs, and
+    // continuing from it after a restart would cut the old geometry.
+    const bool unsaved = !fromFile && m_unsaved && m_unsaved();
+    m_runPath = (!fromFile && !air && !unsaved) ? m_doc->filePath() : QString();
+    if (unsaved && !air)
+        log(QStringLiteral("design not saved: no continue point is kept for this run"));
     m_runHash = m_runPath.isEmpty() ? QString() : fileHash(m_runPath);
     if (m_runHash.isEmpty())
         m_runPath.clear();     // never saved: nothing to open again

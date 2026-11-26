@@ -1079,6 +1079,18 @@ int main(int argc, char **argv)
         panel.setDocument(&doc);
         wait(800);
         check(!panel.m_continueBtn->isVisible(), "continue: not offered for a changed file");
+        // Edited and not saved: what runs is not the file, so no point is kept.
+        set.remove(QStringLiteral("resume"));
+        panel.setUnsavedCheck([] { return true; });
+        panel.m_homed = true;
+        wait(600);
+        check(panel.runProgram(), "continue: an unsaved design still runs");
+        spin(30000, [&] { return !s->isStreaming() || grbl.count("G1Z-1.000F300.0") > 0; });
+        s->stopStream();
+        wait(1500);
+        check(set.value(QStringLiteral("resume/path")).toString().isEmpty(),
+              "continue: an unsaved design's run keeps no continue point");
+        panel.setUnsavedCheck({});
         QFile::remove(file);
     }
 

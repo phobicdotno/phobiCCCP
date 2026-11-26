@@ -607,6 +607,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_info->setReadOnly(true);
     m_model = new ModelPanel(this);
     m_machine = new MachinePanel(this);
+    // A run of a design edited since its save is not the file on disk: no
+    // continue point for it (see MachinePanel::runProgram).
+    m_machine->setUnsavedCheck([this] { return m_dirty || m_untitled; });
     m_iso = new IsoPreview(this);
     m_sim = new SimPanel(this);
     m_toolStrip = new ToolStrip(this);
