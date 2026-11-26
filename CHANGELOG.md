@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.3.65 (build 155) — 2026-11-26
+
+> Dogbone corners, raster pockets, joining imported vectors, a flute-length and chipload check, spindle and rapid overrides, and GRBL errors in plain English.
+
+- **Flute length warning:** a toolpath that cuts deeper than its bit's flutes now says so on its card, in its settings, on export and in the Run box, so the shank does not rub and burn the wall. It is a warning only and does not stop the run.
+- **Spindle and rapid override:** under "More" on the Machine page, spindle −10 % / 100 % / +10 % and rapid 25 % / 50 % / 100 % now sit under the feed override buttons and change the machine mid-job like the feed ones. The gamepad can be set to spindle +10 %, spindle −10 % and a rapid button that steps 100 → 50 → 25 → 100 %.
+- **Join and close vectors / Check vectors:** Edit > Vectors > Join and close vectors… links imported DXF/SVG pieces whose ends lie within a gap you set (default 0.1 mm) into single paths, flipping pieces as needed and closing shapes that come round, as one undo step. Curves stay curves. Check vectors lists open, doubled, zero-length and self-crossing vectors and selects them. Both work on the selection, or on the whole drawing when nothing is selected.
+- **Dogbone / T-bone corners:** Contour, Pocket and Cutout toolpaths have a Corners choice: Sharp (off), Dogbone or T-bone. It cuts a bit-sized bite into every inside corner so a square part or tenon seats fully. Dogbone cuts diagonally into the corner; T-bone cuts along the longer side so a slot bottom keeps its full depth. Ported from Syntexophobic.
+- **Raster pockets:** a pocket can now be cleared with straight back-and-forth lines instead of rings. At each depth the bit takes one lap round the wall, then cuts parallel lines at your stepover inside it, at the raster angle you choose (0 = along X). It works with islands, ramp and helix entry.
+- **Chipload check:** under the spindle speed, the toolpath form shows the feed per tooth and says whether it is OK, too low (rubbing, heat) or too high (bit may break). Suggest sets the feed to the middle of the good range at the current spindle speed. The tool library shows a suggested starting rpm and feed for a bit with no feeds for the chosen material.
+- **GRBL errors and alarms in plain English:** an error:NN or ALARM:N now says in the log what it means. When a job stops on one, a "Job stopped" popup shows the code, the likely cause on a Shapeoko with BitSetter/BitZero, and what to do. Initialize and Unlock stay usable while it shows.
+
 ## v1.3.62 (build 152) — 2026-11-18
 
 > Popup buttons no longer cut off their text.
