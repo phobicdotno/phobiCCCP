@@ -38,6 +38,7 @@
 #include "setupsheet.h"
 #include "dxfexport.h"
 #include "boxdialog.h"
+#include "qrdialog.h"
 #include <QDesktopServices>
 #include <QUrl>
 
@@ -892,6 +893,12 @@ MainWindow::MainWindow(QWidget *parent)
     });
     boxAct->setToolTip(QStringLiteral(
         "Draw the flat parts of a finger-jointed box on the stock: bottom, sides, ends and a lid"));
+    QAction *qrAct = createMenu->addAction(QStringLiteral("&QR code…"), this, [this] {
+        if (hasDocument())
+            runQrDialog(this, m_canvas);
+    });
+    qrAct->setToolTip(QStringLiteral(
+        "Draw a QR code for a text or web address on the centre of the stock, ready to pocket"));
 
     // View > Full Screen: the window covers the whole display, panel and all.
     // Remembered, so the shop PC comes back up the way it was left.

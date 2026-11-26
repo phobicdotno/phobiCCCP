@@ -131,6 +131,7 @@ add_library(phobicccp_ui STATIC
     src/sendtopaddialog.cpp
     src/sendtodialog.cpp
     src/boxgen.cpp src/boxdialog.cpp
+    src/qrcode.cpp src/qrdialog.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -395,6 +396,9 @@ if(Qt6Test_FOUND)
     add_executable(test_boxgen tests/test_boxgen.cpp)
     target_link_libraries(test_boxgen PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME boxgen COMMAND test_boxgen)
+    add_executable(test_qrcode tests/test_qrcode.cpp)
+    target_link_libraries(test_qrcode PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME qrcode COMMAND test_qrcode)
     add_executable(test_padmachinemodal tests/test_padmachinemodal.cpp)
     target_link_libraries(test_padmachinemodal PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME padmachinemodal COMMAND test_padmachinemodal)
