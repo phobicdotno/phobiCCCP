@@ -4627,11 +4627,13 @@ void MachinePanel::hoverDryRun()
         return;
     ShopAsk ask;
     ask.title = QStringLiteral("Hover dry run");
-    ask.headline = QStringLiteral("Trace the job outline 50 mm above the work zero?");
-    ask.body = QStringLiteral("X %1 to %2, Y %3 to %4 (%5 × %6 mm), at Z +50 mm, feed %7 mm/min. "
-                              "Spindle stays off. It ends hovering over the first corner.")
+    ask.headline = QStringLiteral("Trace the job outline 50 mm above the stock?");
+    ask.body = QStringLiteral("X %1 to %2, Y %3 to %4 (%5 × %6 mm), at work Z %7 mm (50 mm above the "
+                              "stock top), feed %8 mm/min. Spindle stays off. It ends hovering over "
+                              "the first corner.")
                    .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1)
-                   .arg(x1 - x0, 0, 'f', 1).arg(y1 - y0, 0, 'f', 1).arg(kFeed, 0, 'f', 0);
+                   .arg(x1 - x0, 0, 'f', 1).arg(y1 - y0, 0, 'f', 1).arg(hoverZ, 0, 'f', 1)
+                   .arg(kFeed, 0, 'f', 0);
     ask.note = QStringLiteral("Nothing is cut: the bit stays 5 cm up.");
     ask.okText = QStringLiteral("▶ Trace");
     ask.defaultOk = false;
@@ -4650,8 +4652,9 @@ void MachinePanel::hoverDryRun()
           << QStringLiteral("G1 X%1 Y%2").arg(x1, 0, 'f', 3).arg(y1, 0, 'f', 3)
           << QStringLiteral("G1 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y1, 0, 'f', 3)
           << QStringLiteral("G1 X%1 Y%2").arg(x0, 0, 'f', 3).arg(y0, 0, 'f', 3);
-    log(QStringLiteral("hover dry run: X %1..%2 Y %3..%4 at Z +%5")
-            .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1).arg(kHover, 0, 'f', 0));
+    log(QStringLiteral("hover dry run: X %1..%2 Y %3..%4 at work Z %5 (%6 mm above the stock)")
+            .arg(x0, 0, 'f', 1).arg(x1, 0, 'f', 1).arg(y0, 0, 'f', 1).arg(y1, 0, 'f', 1)
+            .arg(hoverZ, 0, 'f', 1).arg(kHover, 0, 'f', 0));
     m_grbl->startMacro(lines);
 }
 
@@ -6116,6 +6119,14 @@ bool MachinePanel::resumeFromRemote(const QString &who, QString *why)
     }
     log(QStringLiteral("Resume from pad %1").arg(who));
     m_pauseBtn->click();
+    // The button can refuse (the job is being cancelled, Z still lifting):
+    // still held then, and the pad must hear so.
+    if (m_held || m_liftHold) {
+        if (why)
+            *why = m_resetPending ? QStringLiteral("the job is being cancelled")
+                                  : QStringLiteral("the machine could not resume yet, try again");
+        return false;
+    }
     return true;
 }
 

@@ -660,16 +660,22 @@ int main(int argc, char **argv)
         grbl.events.clear();
         answer = [&](const Seen &) { return QStringLiteral("Cancel job"); };
         bool closed = false;
+        int padResumed = -1;      // Resume from the pad: the same button, its refusal told back
+        QString padWhy;
         QTimer::singleShot(0, [&] {
             runUntilDialogGone([&] {
                 closed = true;
-                QTimer::singleShot(100, [&] { panel.m_pauseBtn->click(); });
+                QTimer::singleShot(100, [&] {
+                    padResumed = panel.resumeFromRemote(QStringLiteral("test"), &padWhy);
+                });
             });
         });
         button(QStringLiteral("✕ Cancel job"))->click();
         spin(3000, [&] { return closed; });
         wait(7000);
         check(grbl.count("ALARM3") == 0, "cancelresume: no reset while moving");
+        std::printf("pad resume: %d (%s)\n", padResumed, qPrintable(padWhy));
+        check(padResumed == 0 && !padWhy.isEmpty(), "cancelresume: the pad hears the refusal");
     }
 
     if (mode == "safez") {
