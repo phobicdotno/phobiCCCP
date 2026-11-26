@@ -65,6 +65,9 @@ NcProgram readNcProgram(const QString &text)
     const QStringList raw = text.split(QLatin1Char('\n'));
     int motion = 0;
     double x = 0, y = 0, z = 0, feed = 0;
+    // Where the machine stands in work X and Y, once the program has named
+    // it; a G53 or G28/G30 move takes it out of reach again.
+    bool knownX = false, knownY = false;
     bool haveFeed = false;
     int pendingTool = -1;
     double lastS = 0;
@@ -234,9 +237,13 @@ NcProgram readNcProgram(const QString &text)
                     }
                     // GRBL refuses an arc block without an axis word
                     // (error:26): a full circle names its end, where it started.
-                    if (!hasX && !hasY)
+                    if (!hasX && !hasY) {
+                        if (!knownX || !knownY)
+                            return fail(n + 1, QStringLiteral("A full circle (I/J only) where the machine's X and Y "
+                                                              "are not known: name X and Y before it."));
                         out << QStringLiteral("X") + QString::number(nx, 'f', 4)
                             << QStringLiteral("Y") + QString::number(ny, 'f', 4);
+                    }
                     p.ops << Op::arcTo(nx, ny, nz, ci, cj, motion == 2, feed);
                 }
             }
@@ -244,7 +251,17 @@ NcProgram readNcProgram(const QString &text)
                 x = nx;
                 y = ny;
                 z = nz;
+                knownX = knownX || hasX;
+                knownY = knownY || hasY;
             }
+        }
+        // A machine-coordinate move, or a trip to a stored spot, ends where
+        // the work X/Y it names is no longer known (G28/G30 alone: both).
+        if (g53 || home) {
+            if (hasX || (home && !hasX && !hasY))
+                knownX = false;
+            if (hasY || (home && !hasX && !hasY))
+                knownY = false;
         }
         // The spindle on a line of its own, the way the post writes it, so
         // the air cut finds and drops it ("M03 S12000", "S9000", "M05").

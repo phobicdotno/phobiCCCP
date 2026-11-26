@@ -120,6 +120,78 @@ struct FakeGrbl {
     }
 };
 
+// Follows the work X/Y and motion mode through the lines a controller was
+// sent and checks every arc as GRBL would run it: from where the machine
+// stands, the centre at start + I/J, the end as far from the centre as the
+// start. A machine-coordinate or stored-spot move with X/Y leaves the start
+// unknown, and an arc from an unknown start fails too.
+static bool arcsConsistent(const QList<QByteArray> &lines)
+{
+    static const QRegularExpression word(QStringLiteral("([GXYIJ])\\s*(-?[0-9.]+)"));
+    double x = 0, y = 0;
+    bool known = false;
+    int motion = 0;
+    for (const QByteArray &raw : lines) {
+        QString l = QString::fromLatin1(raw).toUpper();
+        const int c = l.indexOf(QLatin1Char(';'));
+        if (c >= 0)
+            l.truncate(c);
+        l.remove(QRegularExpression(QStringLiteral("\\([^)]*\\)")));
+        bool machine = false, hasX = false, hasY = false, hasI = false, hasJ = false;
+        double nx = x, ny = y, i = 0, j = 0;
+        for (auto it = word.globalMatch(l); it.hasNext();) {
+            const auto m = it.next();
+            const double v = m.captured(2).toDouble();
+            switch (m.captured(1).at(0).toLatin1()) {
+            case 'G':
+                if (v == 53 || v == 28 || v == 30) machine = true;
+                else if (v >= 0 && v <= 3 && v == std::floor(v)) motion = int(v);
+                break;
+            case 'X': nx = v; hasX = true; break;
+            case 'Y': ny = v; hasY = true; break;
+            case 'I': i = v; hasI = true; break;
+            case 'J': j = v; hasJ = true; break;
+            }
+        }
+        if (machine) {
+            if (hasX || hasY)
+                known = false;
+            continue;
+        }
+        if ((motion == 2 || motion == 3) && (hasX || hasY || hasI || hasJ)) {
+            if (!known)
+                return false;
+            const double cx = x + i, cy = y + j;
+            if (std::abs(std::hypot(x - cx, y - cy) - std::hypot(nx - cx, ny - cy)) > 0.005)
+                return false;
+        }
+        if (hasX && hasY)
+            known = true;
+        x = nx;
+        y = ny;
+    }
+    return true;
+}
+
+// The work Z the machine stands at when line `upTo` of what was sent
+// starts, following Z words; a G53 or G28/G30 Z move makes it unknown (NaN).
+static double workZBefore(const QList<QByteArray> &lines, int upTo)
+{
+    static const QRegularExpression zWord(QStringLiteral("Z\\s*(-?[0-9.]+)"));
+    double z = std::nan("");
+    for (int i = 0; i < upTo && i < lines.size(); ++i) {
+        const QString l = QString::fromLatin1(lines.at(i)).toUpper();
+        const auto m = zWord.match(l);
+        if (!m.hasMatch())
+            continue;
+        if (l.contains(QLatin1String("G53")) || l.contains(QLatin1String("G28")) || l.contains(QLatin1String("G30")))
+            z = std::nan("");
+        else
+            z = m.captured(1).toDouble();
+    }
+    return z;
+}
+
 int main(int argc, char **argv)
 {
     QCoreApplication app(argc, argv);
@@ -242,10 +314,15 @@ int main(int argc, char **argv)
         spin(2000, [&] { return parked >= 0; });
         s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
         spin(3000, [&] { return finished; });
-        const int across = grbl.seen.indexOf("G90 G0 X20 Y3");
-        check(finished && across > 0 && grbl.seen.value(across + 1) == "G1 F900.0"
-                  && grbl.seen.value(across + 2) == "X20Y3",
-              "tool change: the program's G1 and feed back in before its next line");
+        // The cut goes on with no Z of its own: back to where it stopped
+        // (X5 Y0), down to its depth, and only then the program's next line.
+        const int across = grbl.seen.indexOf("G90 G0 X5.000 Y0.000");
+        check(finished && across > 0 && grbl.seen.value(across + 1) == "G0 Z2.500"
+                  && grbl.seen.value(across + 2) == "G1 Z-1.000 F600"
+                  && grbl.seen.value(across + 3) == "G1 F900.0" && grbl.seen.value(across + 4) == "X20Y3",
+              "tool change: back to the cut's start and depth, the program's G1 and feed back in");
+        check(workZBefore(grbl.seen, grbl.seen.indexOf("X20Y3")) == -1.0,
+              "tool change: a contour at one depth goes on at that depth, not in the air");
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
@@ -267,13 +344,84 @@ int main(int argc, char **argv)
         spin(2000, [&] { return parked >= 0; });
         added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
         spin(3000, [&] { return finished; });
-        const int across = grbl.seen.indexOf("G90 G0 X-10 Y0");
-        check(finished && finishedOk && across > 0 && grbl.seen.value(across + 1) == "G1 F800.0"
-                  && grbl.seen.value(across + 2) == "G2 X-10Y0I0J-10" && !grbl.seen.contains("G2"),
-              "tool change: a modal arc goes back on its own block, not as a bare G2");
-        check(added == 4, "tool change: every line put in is counted (rise, crossing, feed)");
+        // Back to where the arc starts (where the machine stood before the
+        // change), not to its end: from there I0 J-10 is the programmed centre.
+        const int across = grbl.seen.indexOf("G90 G0 X0.000 Y10.000");
+        check(finished && finishedOk && across > 0 && grbl.seen.value(across + 1) == "G0 Z2.500"
+                  && grbl.seen.value(across + 2) == "G1 Z-1.000 F600" && grbl.seen.value(across + 3) == "G1 F800.0"
+                  && grbl.seen.value(across + 4) == "G2 X-10Y0I0J-10" && !grbl.seen.contains("G2")
+                  && !grbl.seen.contains("G90 G0 X-10 Y0"),
+              "tool change: a modal arc goes back on its own block, from its own start and depth");
+        check(arcsConsistent(grbl.seen), "tool change: every arc sent runs from its start, end on its circle");
+        check(workZBefore(grbl.seen, grbl.seen.indexOf("G2 X-10Y0I0J-10")) == -1.0,
+              "tool change: the arc goes on at its depth");
+        check(added == 6, "tool change: every line put in is counted (rise, crossing, way down, feed)");
         QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // The same arc, but the program moved in machine coordinates before the
+    // change: where the arc starts in work X/Y is not known, so it is refused
+    // rather than sent from a guess.
+    {
+        grbl.seen.clear();
+        int parked = -1;
+        QString err;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::errorOccurred, [&](const QString &e) { err = e; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("G0X10Y0"),
+                       QStringLiteral("G1Z-1F300"), QStringLiteral("G2X0Y10I-10J0F800"),
+                       QStringLiteral("G53G0X-50"), QStringLiteral("M0 ;T2"), QStringLiteral("X-10Y0I0J-10")});
+        spin(2000, [&] { return parked >= 0; });
+        const int before = grbl.seen.size();
+        const int added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(500, [] { return false; });
+        check(added == 0 && err.contains(QLatin1String("arc")) && grbl.seen.size() == before
+                  && !grbl.seen.contains("G2 X-10Y0I0J-10"),
+              "tool change: an arc from an unknown start is refused, nothing sent");
+        s.stopStream();
+        spin(300, [] { return false; });
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
+    }
+
+    // The next toolpath with its own retract and plunge: the program finds
+    // its way down itself, no depth is put in; a cut whose depth is not known
+    // is refused.
+    {
+        grbl.seen.clear();
+        int parked = -1;
+        bool finished = false;
+        QString err;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        QObject::connect(&s, &c2d::GrblStreamer::errorOccurred, [&](const QString &e) { err = e; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("G0X0Y0"),
+                       QStringLiteral("G1Z-1F300"), QStringLiteral("G1X5F900"), QStringLiteral("M0 ;T2"),
+                       QStringLiteral("G0Z5"), QStringLiteral("G0X30Y30"), QStringLiteral("G1Z-2F300"),
+                       QStringLiteral("G1X40")});
+        spin(2000, [&] { return parked >= 0; });
+        s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(3000, [&] { return finished; });
+        check(finished && grbl.seen.contains("G90 G0 X30 Y30") && !grbl.seen.contains("G0 Z2.500")
+                  && workZBefore(grbl.seen, grbl.seen.indexOf("G1X40")) == -2.0,
+              "tool change: a toolpath with its own retract and plunge is left to them");
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+
+        grbl.seen.clear();
+        parked = -1;
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G0X0Y0"), QStringLiteral("G1X5F900"),
+                       QStringLiteral("M0 ;T2"), QStringLiteral("X20Y3")});
+        spin(2000, [&] { return parked >= 0; });
+        const int before = grbl.seen.size();
+        const int added = s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(500, [] { return false; });
+        check(added == 0 && err.contains(QLatin1String("deep")) && grbl.seen.size() == before,
+              "tool change: a cut going on from an unknown depth is refused, nothing sent");
+        s.stopStream();
+        spin(300, [] { return false; });
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::errorOccurred, nullptr, nullptr);
     }
 
     // The look-ahead that keeps a Z-only plunge off the BitSetter.
@@ -577,6 +725,10 @@ int main(int argc, char **argv)
             check(a.size() > 2 && !a.contains("G2") && a.last() == "G2 X-10Y0I0J-10"
                       && a.contains("G90 G0 X0.000 Y10.000"),
                   "start here: a modal arc keeps its G2, on the arc block itself");
+            QList<QByteArray> sent;
+            for (const QString &l : a)
+                sent << l.toLatin1();
+            check(arcsConsistent(sent), "start here: the arc runs from its own start, end on its circle");
             const QStringList own = GrblStreamer::startFromLines(
                 {"G90G21", "G0Z5", "M03S10000", "G0X10Y0", "G1Z-1F200", "G2X0Y10I-10J0F800", "G1X-10Y0"},
                 6, rise, -1, QString(), &why);

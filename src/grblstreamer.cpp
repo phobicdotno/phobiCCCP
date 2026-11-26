@@ -306,11 +306,13 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
         l = l.toUpper();
         if (l.startsWith(kToolMarker) || l == kHoldMarker || l.trimmed().isEmpty())
             continue;
-        bool machine = false;
+        bool machine = false, home = false;
         for (auto it = gWord.globalMatch(l); it.hasNext();) {
             const int g = it.next().captured(1).toInt();
             if (g >= 0 && g <= 3)
                 m.motion = g;
+            else if (g == 28 || g == 30)
+                home = true;
             else if (g == 91)
                 m.valid = false;             // relative moves: Z cannot be followed
             else if (g == 53)
@@ -331,10 +333,15 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
             m.z = zm.captured(1).toDouble();
             m.haveZ = true;
         }
-        if (!machine) {
-            const auto xm = xWord.match(l), ym = yWord.match(l);
+        const auto xm = xWord.match(l), ym = yWord.match(l);
+        if (!machine && !home) {
             if (xm.hasMatch()) { m.x = xm.captured(1).toDouble(); hx = true; }
             if (ym.hasMatch()) { m.y = ym.captured(1).toDouble(); hy = true; }
+        } else {
+            // A machine-coordinate move or a trip to a stored spot leaves the
+            // work X/Y it names (G28/G30 alone: both) unknown until set again.
+            if (xm.hasMatch() || (home && !xm.hasMatch() && !ym.hasMatch())) hx = false;
+            if (ym.hasMatch() || (home && !xm.hasMatch() && !ym.hasMatch())) hy = false;
         }
     }
     m.haveXY = hx && hy;
@@ -568,6 +575,41 @@ void GrblStreamer::continueAfterHold(const QStringList &lines)
     pump();
 }
 
+// Does the program go on cutting where it stopped? The index of its first
+// line that moves in X, Y or Z when that is a cut (G1/G2/G3, modal or its
+// own) with X or Y: it starts from the spot and depth the machine had, and
+// run from the top it would cut in the air or ramp a wrong slope. -1 for a
+// Z-only line, a rapid or a machine-coordinate move first: the program
+// finds its own way down.
+static int cutAfterStop(const QStringList &lines, int from, int motion)
+{
+    static const QRegularExpression motionWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*([0-3])(?![0-9.])"));
+    static const QRegularExpression xyWord(QStringLiteral("(?:^|[^A-Z])[XY]-?[0-9.]"));
+    static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z-?[0-9.]"));
+    static const QRegularExpression axisCommand(QStringLiteral("G(?:53|28|30|92|10)(?![0-9.])"));
+    static const QRegularExpression pause(QStringLiteral("^M0*[01](?![0-9])"));
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
+    for (int i = qMax(0, from); i < lines.size(); ++i) {
+        QString l = lines.at(i);
+        l.remove(paren);
+        const int c = l.indexOf(QChar(';'));
+        if (c >= 0) l.truncate(c);
+        l = l.trimmed().toUpper();
+        if (l.isEmpty())
+            continue;
+        if (l.startsWith(kToolMarker) || l == kHoldMarker || pause.match(l).hasMatch()
+            || axisCommand.match(l).hasMatch() || l.contains(QStringLiteral("G91")))
+            return -1;
+        for (auto it = motionWord.globalMatch(l); it.hasNext();)
+            motion = it.next().captured(1).toInt();
+        const bool xy = xyWord.match(l).hasMatch();
+        if (!xy && !zWord.match(l).hasMatch())
+            continue;
+        return xy && motion >= 1 ? i : -1;
+    }
+    return -1;
+}
+
 int GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
@@ -591,6 +633,28 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
     // names no motion word would run as a rapid. The program's own motion
     // mode and feed go back in after the way in.
     const Modal before = scanModal(m_queue, m_nextIndex);
+    // An arc that goes on after the change starts where the machine stood
+    // before it, and GRBL takes its centre (I/J) from there. Crossing to a
+    // later X/Y (the arc's own end) would cut a different circle. Without
+    // that spot known there is no right place to start it from.
+    const bool arc = before.valid && (before.motion == 2 || before.motion == 3);
+    if (arc && !before.haveXY) {
+        emit errorOccurred(QStringLiteral("cannot continue: the program goes on with an arc, and "
+                                          "where that arc starts is not known. Stop, and start "
+                                          "from the next toolpath."));
+        return 0;
+    }
+    // A cut that goes on after the change (a 2D contour at one depth names
+    // no Z again) starts where the machine stood, at the depth it had: back
+    // there at the top, then down, then the cut.
+    const int cutAt = !first.isEmpty() && before.valid ? cutAfterStop(m_queue, m_nextIndex, before.motion) : -1;
+    const bool cutOn = cutAt >= 0;
+    if (cutOn && (!before.haveXY || !before.haveZ)) {
+        emit errorOccurred(QStringLiteral("cannot continue: the program goes on cutting, and where "
+                                          "or how deep that cut starts is not known. Stop, and "
+                                          "start from the next toolpath."));
+        return 0;
+    }
     int at = m_nextIndex;
     for (const QString &l : first) {
         const QString t = l.trimmed();
@@ -601,20 +665,42 @@ int GrblStreamer::continueAfterToolChange(const QStringList &first)
     // and the spindle may be standing over the BitSetter still: cross to the
     // first cut at the top before the program may come down.
     if (!first.isEmpty()) {
-        const QString across = crossToFirstCut(m_queue, at);
+        const QString across = (arc || cutOn)
+                                   ? QStringLiteral("G90 G0 X%1 Y%2").arg(before.x, 0, 'f', 3).arg(before.y, 0, 'f', 3)
+                                   : crossToFirstCut(m_queue, at);
         if (!across.isEmpty())
             m_queue.insert(at++, across);
     }
-    if (before.valid && before.haveFeed && before.motion >= 1)
+    if (!cutOn && before.valid && before.haveFeed && before.motion >= 1)
         m_queue.insert(at++, QStringLiteral("G1 F%1").arg(before.feed, 0, 'f', 1));
+    int added = at - m_nextIndex;
+    int armFrom = at;
+    if (cutOn) {
+        // Down right before the cut, after the program's own spindle start
+        // and its wait between the change and the cut (the park stopped the
+        // spindle): as after a hold, a rapid to just above the stock, then
+        // slowly in; then the program's feed again.
+        const int cut = cutAt + added;
+        int c = cut;
+        if (before.z >= 2.5) {
+            m_queue.insert(c++, QStringLiteral("G0 Z%1").arg(before.z, 0, 'f', 3));
+        } else {
+            m_queue.insert(c++, QStringLiteral("G0 Z2.500"));
+            m_queue.insert(c++, QStringLiteral("G1 Z%1 F%2").arg(before.z, 0, 'f', 3)
+                                    .arg(qMin(before.haveFeed ? before.feed : 600.0, 600.0), 0, 'f', 0));
+        }
+        if (before.haveFeed)
+            m_queue.insert(c++, QStringLiteral("G1 F%1").arg(before.feed, 0, 'f', 1));
+        added += c - cut;
+        armFrom = c;
+    }
     if (before.valid && (before.motion == 2 || before.motion == 3))
-        armNextMove(m_queue, at, before.motion);
+        armNextMove(m_queue, armFrom, before.motion);
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
     m_ackClock.restart();
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
-    const int added = at - m_nextIndex;
     if (added)
         emit progressChanged(m_ackedCount, m_queue.size());
     pump();

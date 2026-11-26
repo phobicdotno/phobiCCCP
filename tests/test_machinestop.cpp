@@ -717,6 +717,9 @@ int main(int argc, char **argv)
         check(c2d::machinemacros::cleanLines(QStringLiteral("(retract!) G53 G0 Z-5 ; now~\nG0 X2 (ok?"))
                   == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 X2")}),
               "macro: notes are not sent, so a '!' in one is no feed hold");
+        check(c2d::machinemacros::cleanLines(QStringLiteral("(retract; machine coordinates) G53 G0 Z-5\nG0 Z5 ; stop!"))
+                  == QStringList({QStringLiteral("G53 G0 Z-5"), QStringLiteral("G0 Z5")}),
+              "macro: a ';' inside a note in brackets does not drop the move after it");
         QStringList h;
         for (int i = 0; i < 40; ++i)
             h = c2d::machinemacros::pushHistory(h, QStringLiteral("G0 X%1").arg(i));
@@ -941,8 +944,9 @@ int main(int argc, char **argv)
             return QStringLiteral("Measure and continue");
         };
         panel.m_endOfJobPending = true;
-        s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G1X5F500"),
-                        QStringLiteral("M0 ;T2"), QStringLiteral("M3S1000"), QStringLiteral("G1X6F500")});
+        s->startStream({QStringLiteral("G0Z5"), QStringLiteral("G0X0Y0"), QStringLiteral("M3S1000"),
+                        QStringLiteral("G1Z-1F200"), QStringLiteral("G1X5F500"), QStringLiteral("M0 ;T2"),
+                        QStringLiteral("M3S1000"), QStringLiteral("G1X6F500")});
         spin(8000, [&] { return !s->isStreaming(); });
         wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
@@ -951,6 +955,13 @@ int main(int argc, char **argv)
         check(grbl.indexOf("G43.1 Z2") >= 0, "tc: offset applied");
         check(grbl.indexOf("G1X6") > grbl.indexOf("G43.1 Z2"), "tc: rest after offset");
         check(grbl.indexOf("M5", grbl.indexOf("G1X6")) > 0, "tc: spindle off at end");
+        // The cut goes on at its depth with no Z of its own: over its start at
+        // the top, the program's spindle start, then down, then the cut.
+        const int across = grbl.indexOf("G90 G0 X5.000 Y0.000", grbl.indexOf("G43.1 Z2"));
+        const int m3 = grbl.indexOf("M3S1000", across), down = grbl.indexOf("G1 Z-1.000 F500", across);
+        check(across > 0 && m3 > across && down > m3 && grbl.indexOf("G1 F500.0", down) == down + 1
+                  && grbl.indexOf("G1X6F500") == down + 2,
+              "tc: back over the cut's start, spindle on, down to its depth, then the cut");
     }
 
     if (mode == "starthere") {
