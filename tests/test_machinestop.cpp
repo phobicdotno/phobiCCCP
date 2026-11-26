@@ -326,7 +326,7 @@ struct FakeGrbl {
     }
     int indexOf(const QByteArray &prefix, int from = 0) const
     {
-        for (int i = from; i < events.size(); ++i)
+        for (int i = qMax(0, from); i < events.size(); ++i)
             if (events.at(i).startsWith(prefix))
                 return i;
         return -1;
@@ -990,7 +990,7 @@ int main(int argc, char **argv)
         check(grbl.indexOf("M5", grbl.indexOf("G1X6")) > 0, "tc: spindle off at end");
         // The cut goes on at its depth with no Z of its own: over its start at
         // the top, the program's spindle start, then down, then the cut.
-        const int across = grbl.indexOf("G90 G0 X5.000 Y0.000", grbl.indexOf("G43.1 Z2"));
+        const int across = grbl.indexOf("G90 G0 X5.000 Y0.000", grbl.indexOf("G21 G43.1 Z2"));
         const int m3 = grbl.indexOf("M3S1000", across), down = grbl.indexOf("G1 Z-1.000 F500", across);
         check(across > 0 && m3 > across && down > m3 && grbl.indexOf("G1 F500.0", down) == down + 1
                   && grbl.indexOf("G1X6F500") == down + 2,
