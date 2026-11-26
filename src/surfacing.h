@@ -35,6 +35,9 @@ struct SurfacingPlan {
     bool ok() const { return error.isEmpty(); }
 };
 
+// More moves than this and the plan is refused (error set, no ops).
+constexpr double kSurfacingMaxOps = 2.0e6;
+
 SurfacingPlan planSurfacing(const SurfacingParams &p);
 
 // The plan's centre path (work) moved by the work offset (machine = work +

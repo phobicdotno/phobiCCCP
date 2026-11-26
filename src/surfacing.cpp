@@ -39,6 +39,15 @@ SurfacingPlan planSurfacing(const SurfacingParams &p)
     const double xa = p.x0 - r, xb = p.x0 + p.width + r;
     const double ya = p.y0 - r, yb = p.y0 + p.height + r;
     s.minX = xa; s.maxX = xb; s.minY = ya; s.maxY = yb;
+    // A huge area with a tiny bit and stepdown would make a plan too big to
+    // hold or send; refuse it before building it.
+    const double nLines = std::ceil(((p.alongX ? yb - ya : xb - xa)) / step) + 1;
+    const double nPasses = std::ceil(p.depth / p.stepdown - 1e-9);
+    if (nLines * qMax(1.0, nPasses) * 2 > kSurfacingMaxOps) {
+        s.error = QStringLiteral("Too many moves for this area, bit, stepover and depth per pass: "
+                                 "use a bigger stepover or depth per pass, or a smaller area.");
+        return s;
+    }
     // Along X: each line runs xa..xb, the lines step across Y.
     const QVector<double> across = p.alongX ? stations(ya, yb, step) : stations(xa, xb, step);
     const double la = p.alongX ? xa : ya, lb = p.alongX ? xb : yb;
