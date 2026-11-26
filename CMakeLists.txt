@@ -133,6 +133,7 @@ add_library(phobicccp_ui STATIC
     src/sendtodialog.cpp
     src/boxgen.cpp src/boxdialog.cpp
     src/qrcode.cpp src/qrdialog.cpp
+    src/grblsettingsdialog.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -472,6 +473,12 @@ add_test(NAME coolant COMMAND test_coolant)
 add_executable(test_surfacing tests/test_surfacing.cpp)
 target_link_libraries(test_surfacing PRIVATE phobicccp_ui)
 add_test(NAME surfacing COMMAND test_surfacing)
+# Controller $ settings editor: names, changed lines, backup and restore.
+if(Qt6Test_FOUND)
+    add_executable(test_grblsettings tests/test_grblsettings.cpp)
+    target_link_libraries(test_grblsettings PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME grblsettings COMMAND test_grblsettings)
+endif()
 
 # The gamepad reader, driven through a fifo carrying synthetic joystick events
 # so it can be tested with no controller plugged in.

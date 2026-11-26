@@ -108,6 +108,8 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     // reconnect may be another machine (machine profiles) or a controller
     // whose settings changed. Until the new $$ arrives the fallbacks apply.
     m_settings.clear();
+    m_inListing = false;
+    m_banner.clear();
     m_wcoX = m_wcoY = m_wcoZ = 0;
     m_haveWco = false;
     m_statusTimer->start();
@@ -824,9 +826,16 @@ void GrblStreamer::handleLine(const QByteArray &line)
         bool okN = false, okV = false;
         const int n = line.mid(1, eq - 1).toInt(&okN);
         const double v = line.mid(eq + 1).toDouble(&okV);
-        if (okN && okV)
+        if (okN && okV) {
             m_settings.insert(n, v);
+            m_inListing = true;
+        }
+    } else if (m_inListing && (line == "ok" || line.startsWith("error:"))) {
+        m_inListing = false;
+        emit settingsListed();
     }
+    if (line.startsWith("Grbl"))
+        m_banner = QString::fromLatin1(line).trimmed();
     // Realtime status: <Idle|MPos:10.000,20.000,-1.000|FS:500,8000|WCO:0,0,0>
     if (line.startsWith('<')) {
         const QList<QByteArray> parts = line.mid(1).chopped(line.endsWith('>') ? 1 : 0).split('|');

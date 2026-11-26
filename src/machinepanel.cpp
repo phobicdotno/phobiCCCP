@@ -20,6 +20,7 @@
 #include "surfacing.h"
 #include "jobhistory.h"
 #include "machineprofiles.h"
+#include "grblsettingsdialog.h"
 
 #include <QApplication>
 #include <QButtonGroup>
@@ -912,6 +913,18 @@ MachinePanel::MachinePanel(QWidget *parent)
     coolRow->addWidget(m_coolantCode);
     coolRow->addStretch(1);
     mv->addLayout(coolRow);
+    // The controller's own $ settings ($$), with a backup file.
+    auto *ctlRow = new QHBoxLayout;
+    auto *ctlBtn = new QPushButton(QStringLiteral("Controller settings…"), more);
+    ctlBtn->setMinimumHeight(44);
+    ctlBtn->setToolTip(QStringLiteral(
+        "See and change the controller's own settings ($$): speeds, acceleration, "
+        "steps/mm, travel, homing. Save them to a file and restore them."));
+    connect(ctlBtn, &QPushButton::clicked, this, [this] { openControllerSettings(); });
+    m_idleOnly << ctlBtn;
+    ctlRow->addWidget(ctlBtn);
+    ctlRow->addStretch(1);
+    mv->addLayout(ctlRow);
     connect(m_useMap, &QCheckBox::toggled, this, [this](bool on) {
         if (!m_loading)
             QSettings().setValue(QStringLiteral("machine/heightmap/use"), on);
@@ -1383,6 +1396,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         QTimer::singleShot(600, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
         saveSettings();
     });
+    connect(m_grbl, &GrblStreamer::settingsListed, this, [this] { autoBackupSettings(); });
     connect(m_grbl, &GrblStreamer::disconnected, this, [this] {
         ++m_stopSeq;
         // Nothing more can be sent; the spindle stays as the controller has it.
@@ -4101,6 +4115,82 @@ void MachinePanel::warmupStep()
     m_warmLeft = m_warmSecs.at(next);
     m_warmTimer->start();
     updateSpindleButtons();
+}
+
+QString MachinePanel::settingsRefusal() const
+{
+    if (!m_grbl->isConnected())
+        return QStringLiteral("Connect to the controller first.");
+    if (isBusy() || m_grbl->isStreaming())
+        return QStringLiteral("The machine is busy. Wait until the job or move is over.");
+    // GRBL takes $ settings in Idle and Alarm (a wrong homing setting is
+    // fixed while it is locked), never while moving or held.
+    if (m_machineState != QLatin1String("Idle") && !m_machineState.startsWith(QLatin1String("Alarm")))
+        return QStringLiteral("The controller is not idle (%1).").arg(m_machineState);
+    return QString();
+}
+
+static QMap<int, double> toMap(const QHash<int, double> &h)
+{
+    QMap<int, double> m;
+    for (auto it = h.cbegin(); it != h.cend(); ++it)
+        m.insert(it.key(), it.value());
+    return m;
+}
+
+void MachinePanel::autoBackupSettings()
+{
+    QSettings ps;
+    const QString profile = machineprofiles::nameOf(ps, machineprofiles::activeId(ps));
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                        + QStringLiteral("/grbl-backups");
+    const QString path = grblsettings::autoBackup(dir, profile, QDate::currentDate(),
+                                                  m_grbl->banner(), toMap(m_grbl->settings()));
+    if (!path.isEmpty())
+        log(QStringLiteral("controller settings backed up to %1").arg(QDir::toNativeSeparators(path)));
+}
+
+void MachinePanel::openControllerSettings()
+{
+    const QString why = settingsRefusal();
+    if (!why.isEmpty()) {
+        shopTell(this, QStringLiteral("Controller settings"),
+                 QStringLiteral("Not now"), why);
+        return;
+    }
+    if (!m_grbl->haveSettings()) {
+        m_settingsAsked.start();
+        m_grbl->sendCommand(QStringLiteral("$$"));
+        shopTell(this, QStringLiteral("Controller settings"),
+                 QStringLiteral("Reading the settings"),
+                 QStringLiteral("The controller has not listed its settings yet. Try again in a moment."));
+        return;
+    }
+    GrblSettingsDialog dlg(toMap(m_grbl->settings()), m_grbl->banner(), this);
+    connect(&dlg, &GrblSettingsDialog::sendRequested, this, [this, &dlg](const QStringList &lines) {
+        const QString no = settingsRefusal();
+        if (!no.isEmpty()) {
+            shopTell(&dlg, QStringLiteral("Controller settings"), QStringLiteral("Not sent"), no);
+            return;
+        }
+        for (const QString &l : lines)
+            log(QStringLiteral("setting %1").arg(l));
+        dlg.setBusy(true, QStringLiteral("Sending %1 setting%2 and reading them back…")
+                              .arg(lines.size()).arg(lines.size() == 1 ? "" : "s"));
+        auto conn = std::make_shared<QMetaObject::Connection>();
+        *conn = connect(m_grbl, &GrblStreamer::macroFinished, &dlg, [this, &dlg, conn](bool ok) {
+            disconnect(*conn);
+            dlg.setBusy(false);
+            dlg.setSettings(toMap(m_grbl->settings()));
+            if (!ok)
+                shopTell(&dlg, QStringLiteral("Controller settings"),
+                         QStringLiteral("The controller refused a setting"),
+                         QStringLiteral("The ones before it were stored; the list shows what the "
+                                        "controller has now. See the log for its error."));
+        });
+        m_grbl->startMacro(lines + QStringList{QStringLiteral("$$")});
+    });
+    dlg.exec();
 }
 
 bool MachinePanel::isBusy() const

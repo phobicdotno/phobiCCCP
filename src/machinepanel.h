@@ -340,6 +340,10 @@ private:
     // ends of the travel. col 0 = left .. 4 = right, row 0 = back .. 4 = front.
     void quickMoveSpot(int col, int row, double &x, double &y) const;
     void openQuickMove();
+    // The controller's $ settings: list, change, back up, restore.
+    void openControllerSettings();
+    QString settingsRefusal() const;     // why they cannot be changed now, or empty
+    void autoBackupSettings();           // first $$ of the day, per machine
     void quickMoveTo(int col, int row);   // all the way up if not up, then there
     QStringList endOfJobMoves();          // a finished job: top, park spot, M5
     bool m_parkAfterHome = false;

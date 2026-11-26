@@ -137,6 +137,10 @@ public:
     // is emptied on every connect: another machine may answer now).
     double setting(int n, double fallback) const { return m_settings.value(n, fallback); }
     bool haveSettings() const { return !m_settings.isEmpty(); }   // a $$ listing came in
+    QHash<int, double> settings() const { return m_settings; }
+    // The controller's start-up line ("Grbl 1.1h ['$' for help]"), if heard
+    // on this connection.
+    QString banner() const { return m_banner; }
 
 public slots:
     bool sendCommand(const QString &line);      // jog / $X / G10 — immediate
@@ -197,6 +201,8 @@ signals:
     void probeResult(double mx, double my, double mz, bool ok);
     void macroFinished(bool ok);
     void consoleLine(const QString &line);      // raw traffic for the log
+    // A `$$` listing ended (the ok after its last $n= line).
+    void settingsListed();
     // A sendCommand() line was answered: `ok` true for "ok", false for an
     // error or alarm. The panel counts a zero as done only on its ok.
     void commandAnswered(const QString &line, bool ok);
@@ -225,6 +231,8 @@ private:
     QByteArray m_rx;
     MachineStatus m_status;
     QHash<int, double> m_settings;   // $n=value lines seen
+    bool m_inListing = false;        // $n= lines seen, their ok not yet
+    QString m_banner;
     double m_wcoX = 0, m_wcoY = 0, m_wcoZ = 0;
     bool m_haveWco = false;
     double m_tloAtWco = 0.0;
