@@ -180,6 +180,41 @@ int main(int argc, char **argv)
         check(ok.done.size() == 1 && ok.skipped.isEmpty(), "a flute within the cone exports");
     }
 
+    // A pocket already cleared to 5 mm around the line: 5 to 7 mm needs only
+    // 2 mm of cone; a pocket that does not reach the line counts for nothing.
+    for (const bool covers : {true, false}) {
+        Document doc;
+        const Element box = Element::makeRectangle(covers ? QPointF(50, 0) : QPointF(50, 100), 120, 40, layer);
+        doc.addElement(line);
+        doc.addElement(box);
+        Toolpath pk;
+        pk.uuid = QStringLiteral("{pk}");
+        pk.type = QStringLiteral("pocket_toolpath");
+        pk.json = QJsonObject{{"type", pk.type}, {"name", QStringLiteral("pk")}, {"enabled", true},
+                              {"uuid", pk.uuid}, {"start_depth", QStringLiteral("0.000")},
+                              {"end_depth", QStringLiteral("5.000")}, {"stepdown", 5.0}, {"stepover", 5.0},
+                              {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+                              {"tool", QJsonObject{{"diameter", 12.0}, {"type", 0}, {"number", 201}}},
+                              {"elements", QJsonArray{QJsonObject{{"uuid", box.id}}}}};
+        doc.addToolpath(pk);
+        Toolpath fl;
+        fl.uuid = QStringLiteral("{fl}");
+        fl.type = QStringLiteral("fluting_toolpath");
+        fl.json = QJsonObject{{"type", fl.type}, {"name", QStringLiteral("f")}, {"enabled", true},
+                              {"uuid", fl.uuid}, {"start_depth", QStringLiteral("-5.000")},
+                              {"end_depth", QStringLiteral("-7.000")}, {"passes", 1},
+                              {"speeds", QJsonObject{{"feedrate", 1000}, {"plungerate", 300}, {"rpm", 10000}}},
+                              {"tool", QJsonObject{{"diameter", 12.7}, {"angle", 90}, {"type", 2}, {"number", 301}}},
+                              {"elements", QJsonArray{QJsonObject{{"uuid", line.id}}}}};
+        doc.addToolpath(fl);
+        const GcodeResult g = exportGcode(doc);
+        const bool fluted = g.done.contains(QStringLiteral("f"));
+        std::fprintf(stderr, "cleared-floor flute (covers %d): done %d, skipped %s\n", int(covers),
+                     int(g.done.size()), qPrintable(g.skipped.join(QLatin1String("; "))));
+        check(fluted == covers, covers ? "a flute below a cleared floor needs only the cone below it"
+                                       : "a floor cleared elsewhere does not count for the cone");
+    }
+
     // The factory: label, V-bit, defaults.
     {
         Document doc;

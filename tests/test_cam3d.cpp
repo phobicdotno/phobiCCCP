@@ -1105,6 +1105,31 @@ int main()
         check(gl.done.size() == 1 && feedLevels(gl.ops) == feedLevels(gs.ops),
               "rest rough without a bigger bit roughs everything");
         check(!gl.notes.filter(QStringLiteral("bigger previous bit")).isEmpty(), "rest rough: says it roughed everything");
+
+        // The big rough bounded to the left 20 mm: the rest rough over the
+        // whole model must rough the pocket's right part, which it never cut.
+        c2d::Document half;
+        const c2d::Element left = c2d::Element::makeRectangle({10, 20}, 20, 40, half.defaultLayer());
+        half.addElement(left);
+        QJsonObject bigLeft = rough(flat6, "big", 2.4, false);
+        bigLeft.insert("elements", QJsonArray{QJsonObject{{"uuid", left.id}}});
+        addToolpath(half, bigLeft);
+        addToolpath(half, rough(flat3, "rest", 1.2, true));
+        const c2d::GcodeResult gh = c2d::exportGcode(half, nullptr, &m);
+        int rightMiddle = 0, leftMiddle = 0;
+        inRest = false;
+        for (const Op &o : gh.ops) {
+            if (o.kind == Op::Comment)
+                inRest = o.text == QLatin1String("rest");
+            if (!inRest || o.kind != Op::Feed || o.z > -0.05 || o.y < 12 || o.y > 28)
+                continue;
+            rightMiddle += o.x > 24 && o.x < 30;
+            leftMiddle += o.x > 10 && o.x < 12;
+        }
+        std::fprintf(stderr, "rest rough after a half rough: %d moves in the uncut right part, %d in the cut left\n",
+                     rightMiddle, leftMiddle);
+        check(gh.done.size() == 2 && rightMiddle > 0, "rest rough: roughs what the earlier rough's boundary left out");
+        check(leftMiddle == 0, "rest rough: still skips what the earlier rough cleared");
     }
 
 
