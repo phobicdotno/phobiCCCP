@@ -3099,7 +3099,8 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 // Rest roughing (enable_rest): per level, only what a bigger
                 // end mill could not reach. Its size is the bit of the
                 // nearest 3D Rough above (rest_auto), else rest_diameter.
-                double prevR = 0;
+                double restR = 0;
+                double prevFloor = -1e9;   // below it the previous rough cut nothing
                 if (j.value("enable_rest").toBool(false)) {
                     if (j.value("rest_auto").toBool(true)) {
                         const QVector<Toolpath> &all = doc.toolpaths();
@@ -3109,19 +3110,22 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                         for (--k; k >= 0; --k)
                             if (all.at(k).type == QLatin1String("3d_rough_toolpath")
                                 && all.at(k).json.value("enabled").toBool(true)) {
-                                prevR = toolGeomOf(all.at(k).json.value("tool").toObject()).radius();
+                                restR = toolGeomOf(all.at(k).json.value("tool").toObject()).radius();
+                                prevFloor = cam3dParams(all.at(k).json, safeZ).maxDepth;
                                 break;
                             }
                     }
-                    if (prevR <= 0)
-                        prevR = numOr(j.value("rest_diameter"), 0) / 2.0;
-                    if (prevR <= r + 1e-6) {
+                    if (restR <= 0)
+                        restR = numOr(j.value("rest_diameter"), 0) / 2.0;
+                    if (restR <= r + 1e-6) {
                         res.notes << QStringLiteral("%1: rest needs a bigger previous bit, "
                                                     "roughing everything").arg(name);
-                        prevR = 0;
+                        restR = 0;
                     }
                 }
                 for (const RoughLevel &lv : roughLevels(*hm, p3, boundary, watch)) {
+                    // Below the previous rough's max depth it left all of it.
+                    const double prevR = lv.z < prevFloor - 1e-6 ? 0.0 : restR;
                     QList<Job> jobs;
                     QList<QPainterPath> restCentres;
                     for (const QPainterPath &comp : components(lv.region)) {
@@ -3606,6 +3610,17 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 res.skipped << (closedCount ? QStringLiteral("%1 (fluting is for open vectors; closed ones left out)").arg(name)
                                             : QStringLiteral("%1 (no vectors)").arg(name));
                 continue;
+            }
+            // Deeper than a V-bit's cone, the shank would cut the stock
+            // above the groove (nothing above it is cleared).
+            if (const ToolGeom fg = toolGeomOf(tool); fg.kind == ToolGeom::VBit) {
+                const double halfTan = qTan(qDegreesToRadians(qBound(10.0, fg.angle, 179.0) / 2));
+                const double cone = fg.radius() / halfTan;
+                if (-cp.zBot > cone + 1e-6) {
+                    res.skipped << QStringLiteral("%1 (deeper than the V-bit's cone (%2 mm): lower the end depth "
+                                                  "or use a wider bit)").arg(name, QString::number(cone, 'f', 2));
+                    continue;
+                }
             }
             if (closedCount)
                 res.notes << QStringLiteral("%1: %2 closed vector(s) left out (fluting is for open vectors)")
@@ -4682,6 +4697,11 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                     // inside the wall lap, which cuts that band.
                     const QList<QPolygonF> inner = insetRings(comp, toolR + leave + qMin(toolR, stepover));
                     job.lines = hatchRings(inner, stepover, rasterAngle);
+                    // Wider than a radius, a line can fall up to a stepover
+                    // inside that band's edge and leave a strip by the wall
+                    // lap: a second lap on the band's edge closes it.
+                    if (stepover > toolR + 1e-9)
+                        job.rings += inner;
                     pocketMine << regionFromRings(wall);
                     if (helix)
                         addHelix(job, wall, helixWant, helixAngle);

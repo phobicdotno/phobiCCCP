@@ -170,6 +170,16 @@ int main(int argc, char **argv)
               "a closed vector alone is refused");
     }
 
+    // Deeper than the 12.7 mm 90-degree V-bit's 6.35 mm cone: refused.
+    {
+        const GcodeResult g = exportFlute(line, {{"end_depth", QStringLiteral("-10.000")}});
+        check(g.done.isEmpty() && g.skipped.size() == 1
+                  && g.skipped.first().contains(QLatin1String("cone")),
+              "a flute deeper than the V-bit's cone is refused");
+        const GcodeResult ok = exportFlute(line, {{"end_depth", QStringLiteral("-6.000")}});
+        check(ok.done.size() == 1 && ok.skipped.isEmpty(), "a flute within the cone exports");
+    }
+
     // The factory: label, V-bit, defaults.
     {
         Document doc;
