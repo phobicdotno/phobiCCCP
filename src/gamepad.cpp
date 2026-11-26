@@ -26,7 +26,8 @@ QStringList actions()
             QStringLiteral("y-"), QStringLiteral("z+"), QStringLiteral("z-"),
             QStringLiteral("step+"), QStringLiteral("step-"), QStringLiteral("hold"), QStringLiteral("stop"),
             QStringLiteral("zeroxy"), QStringLiteral("zeroz"), QStringLiteral("unlock"),
-            QStringLiteral("home")};
+            QStringLiteral("home"), QStringLiteral("spindle+"), QStringLiteral("spindle-"),
+            QStringLiteral("rapid")};
 }
 
 QString label(const QString &action)
@@ -46,6 +47,9 @@ QString label(const QString &action)
         {QStringLiteral("zeroz"), QStringLiteral("Zero Z")},
         {QStringLiteral("unlock"), QStringLiteral("Unlock ($X)")},
         {QStringLiteral("home"), QStringLiteral("Initialize / home ($H)")},
+        {QStringLiteral("spindle+"), QStringLiteral("Spindle +10 %")},
+        {QStringLiteral("spindle-"), QStringLiteral("Spindle −10 %")},
+        {QStringLiteral("rapid"), QStringLiteral("Rapid 100 / 50 / 25 %")},
     };
     return names.value(action, action);
 }

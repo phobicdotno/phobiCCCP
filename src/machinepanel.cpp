@@ -731,31 +731,39 @@ MachinePanel::MachinePanel(QWidget *parent)
     runRow->addWidget(cancelBtn);
     runRow->addWidget(m_stopBtn);
     bv->addLayout(runRow);
-    // "More": feed override and air cut, folded so the big buttons stay big.
+    // "More": feed, spindle and rapid overrides and air cut, folded so the big buttons stay big.
     auto *moreToggle = new QToolButton(jobCard);
     moreToggle->setCheckable(true);
     moreToggle->setAutoRaise(true);
     moreToggle->setArrowType(Qt::RightArrow);
     moreToggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    moreToggle->setText(QStringLiteral("Feed override, air cut, surface map"));
+    moreToggle->setText(QStringLiteral("Overrides, air cut, surface map"));
     moreToggle->setFocusPolicy(Qt::NoFocus);
     bv->addWidget(moreToggle);
     auto *more = new QWidget(jobCard);
     auto *mv = new QVBoxLayout(more);
     mv->setContentsMargins(0, 0, 0, 0);
     mv->setSpacing(6);
-    // GRBL realtime feed override — takes effect mid-program, no queue flush.
+    // GRBL realtime overrides (feed, spindle, rapid) — take effect
+    // mid-program, no queue flush.
     auto *ovRow = new QHBoxLayout;
-    ovRow->addWidget(new QLabel(QStringLiteral("feed ovr"), more));
-    auto ovBtn = [&](const QString &t, char code) {
+    QHBoxLayout *ovTo = ovRow;
+    auto ovName = [&](const QString &t) {
+        auto *l = new QLabel(t, more);
+        l->setMinimumWidth(90);
+        ovTo->addWidget(l);
+    };
+    auto ovBtn = [&](const QString &t, char code, const QString &tip) {
         auto *b = new QPushButton(t, more);
         b->setMinimumSize(60, 34);
-        ovRow->addWidget(b);
+        b->setToolTip(tip);
+        ovTo->addWidget(b);
         connect(b, &QPushButton::clicked, this, [this, code] { m_grbl->sendRealtime(code); });
     };
-    ovBtn(QStringLiteral("−10%"), char(0x92));
-    ovBtn(QStringLiteral("100%"), char(0x90));
-    ovBtn(QStringLiteral("+10%"), char(0x91));
+    ovName(QStringLiteral("feed ovr"));
+    ovBtn(QStringLiteral("−10%"), char(0x92), QStringLiteral("Feed 10 % slower"));
+    ovBtn(QStringLiteral("100%"), char(0x90), QStringLiteral("Feed back to 100 %"));
+    ovBtn(QStringLiteral("+10%"), char(0x91), QStringLiteral("Feed 10 % faster"));
     // What the controller actually runs at (its Ov: report), so three taps
     // show as 130 % instead of having to be counted.
     m_ovLabel = new QLabel(QStringLiteral("feed 100 %"), more);
@@ -766,6 +774,23 @@ MachinePanel::MachinePanel(QWidget *parent)
     ovRow->addWidget(m_ovLabel);
     ovRow->addStretch(1);
     mv->addLayout(ovRow);
+    // Spindle: 10 % steps like the feed. Rapid: GRBL has only 25, 50 and 100 %.
+    auto *spinRow = new QHBoxLayout;
+    ovTo = spinRow;
+    ovName(QStringLiteral("spindle ovr"));
+    ovBtn(QStringLiteral("−10%"), char(0x9B), QStringLiteral("Spindle 10 % slower"));
+    ovBtn(QStringLiteral("100%"), char(0x99), QStringLiteral("Spindle back to 100 %"));
+    ovBtn(QStringLiteral("+10%"), char(0x9A), QStringLiteral("Spindle 10 % faster"));
+    spinRow->addStretch(1);
+    mv->addLayout(spinRow);
+    auto *rapidRow = new QHBoxLayout;
+    ovTo = rapidRow;
+    ovName(QStringLiteral("rapid ovr"));
+    ovBtn(QStringLiteral("25%"), char(0x97), QStringLiteral("Rapid moves at 25 %"));
+    ovBtn(QStringLiteral("50%"), char(0x96), QStringLiteral("Rapid moves at 50 %"));
+    ovBtn(QStringLiteral("100%"), char(0x95), QStringLiteral("Rapid moves back to 100 %"));
+    rapidRow->addStretch(1);
+    mv->addLayout(rapidRow);
     auto *airRow = new QHBoxLayout;
     m_airCut = new QCheckBox(QStringLiteral("Air cut"), more);
     m_airCut->setToolTip(QStringLiteral(
@@ -2785,6 +2810,13 @@ void MachinePanel::gamepadButton(int number, bool pressed)
         initializeMachine();
     } else if (action == QLatin1String("unlock")) {
         unlock();
+    } else if (action == QLatin1String("spindle+") || action == QLatin1String("spindle-")) {
+        m_grbl->sendRealtime(char(action == QLatin1String("spindle+") ? 0x9A : 0x9B));
+    } else if (action == QLatin1String("rapid")) {
+        // 100 → 50 → 25 → 100, from what the controller last reported.
+        const int now = m_grbl->status().ovRapid;
+        m_grbl->sendRealtime(char(now > 50 ? 0x96 : now > 25 ? 0x97 : 0x95));
+        log(QStringLiteral("gamepad: rapid %1 %").arg(now > 50 ? 50 : now > 25 ? 25 : 100));
     } else {
         log(QStringLiteral("gamepad: button %1 is mapped to \"%2\", which is not "
                            "an action").arg(number).arg(action));

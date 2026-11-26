@@ -89,6 +89,7 @@ struct FakeGrbl {
     int homeReports = 0;      // Home is reported at least this often, however slow the poll
     QByteArray travel = "$130=425.000\r\n$131=425.000\r\n$132=75.000\r\n$27=1.500\r\n";
     QList<QByteArray> events;
+    int ovRapid = 100, ovSpindle = 100;   // reported as Ov:100,rapid,spindle
 
     void send(const QByteArray &s) { (void)!::write(fd, s.constData(), size_t(s.size())); }
     QByteArray num(double v) const { return QByteArray::number(v, 'f', 3); }
@@ -115,13 +116,24 @@ struct FakeGrbl {
                     --homeReports;
                 send("<" + QByteArray(locked || alarm ? "Alarm" : held ? (holdSettles ? "Hold:0" : "Hold:1") : home ? "Home" : jogging() ? "Jog" : "Idle")
                      + "|MPos:" + num(mx) + ',' + num(my) + ',' + num(mz)
-                     + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ) + ">\r\n");   // XY zero inside the travel
+                     + "|FS:0,0|WCO:-200.000,-200.000," + num(wcoZ)   // XY zero inside the travel
+                     + "|Ov:100," + QByteArray::number(ovRapid) + ',' + QByteArray::number(ovSpindle)
+                     + ">\r\n");
             } else if (c == '!') {
                 held = true;
                 events << "!";
             } else if (c == '~') {
                 held = false;
                 events << "~";
+            } else if (uchar(c) >= 0x90 && uchar(c) <= 0x9D) {   // overrides
+                const uchar b = uchar(c);
+                if (b == 0x95) ovRapid = 100;
+                else if (b == 0x96) ovRapid = 50;
+                else if (b == 0x97) ovRapid = 25;
+                else if (b == 0x99) ovSpindle = 100;
+                else if (b == 0x9A) ovSpindle = qMin(200, ovSpindle + 10);
+                else if (b == 0x9B) ovSpindle = qMax(10, ovSpindle - 10);
+                events << "OV:" + QByteArray::number(b, 16);
             } else if (uchar(c) == 0x85) {
                 jogClock.invalidate();
                 events << "JOGCANCEL";
@@ -413,6 +425,9 @@ int main(int argc, char **argv)
                          QVariantList{grbl.mx, grbl.my, grbl.mz});
     QSettings().setValue(QStringLiteral("machine/port"), QString::fromLatin1(name));
     QSettings().setValue(QStringLiteral("gamepad/6"), QStringLiteral("home"));
+    QSettings().setValue(QStringLiteral("gamepad/10"), QStringLiteral("spindle+"));
+    QSettings().setValue(QStringLiteral("gamepad/11"), QStringLiteral("spindle-"));
+    QSettings().setValue(QStringLiteral("gamepad/12"), QStringLiteral("rapid"));
     QSettings().setValue(QStringLiteral("ui/padStyle"), QStringLiteral("xbox"));
 
     c2d::MachinePanel panel;
@@ -603,6 +618,50 @@ int main(int argc, char **argv)
         emit pad->axisChanged(2, -32767);
         wait(600);
         check(grbl.count("$J=") == 0, "gamepad: the triggers of an Xbox pad do nothing");
+    }
+
+    // Spindle and rapid overrides beside the feed ones, and on the gamepad:
+    // each sends its GRBL realtime byte, nothing queued. The pad's rapid
+    // button steps 100 -> 50 -> 25 -> 100 from what the controller reports.
+    {
+        auto ovs = [&] {
+            QList<QByteArray> o;
+            for (const QByteArray &e : grbl.events)
+                if (e.startsWith("OV:"))
+                    o << e;
+            return o;
+        };
+        grbl.events.clear();
+        button(QStringLiteral("+10%"), QStringLiteral("Spindle 10 % faster"))->click();
+        button(QStringLiteral("−10%"), QStringLiteral("Spindle 10 % slower"))->click();
+        button(QStringLiteral("100%"), QStringLiteral("Spindle back"))->click();
+        button(QStringLiteral("25%"), QStringLiteral("Rapid moves at 25"))->click();
+        button(QStringLiteral("50%"), QStringLiteral("Rapid moves at 50"))->click();
+        button(QStringLiteral("100%"), QStringLiteral("Rapid moves back"))->click();
+        button(QStringLiteral("+10%"), QStringLiteral("Feed 10 % faster"))->click();
+        wait(300);
+        check(ovs() == QList<QByteArray>({"OV:9a", "OV:9b", "OV:99", "OV:97", "OV:96", "OV:95", "OV:91"}),
+              "overrides: spindle, rapid and feed buttons send their realtime bytes");
+        check(grbl.count("$") == 0 && grbl.count("G") == 0, "overrides: nothing queued");
+        grbl.ovRapid = 100;
+        grbl.ovSpindle = 100;
+        wait(400);
+        grbl.events.clear();
+        padPress(10);
+        padPress(11);
+        wait(300);
+        check(ovs() == QList<QByteArray>({"OV:9a", "OV:9b"}),
+              "gamepad: spindle + and - send 0x9A and 0x9B");
+        grbl.events.clear();
+        for (int i = 0; i < 3; ++i) {
+            padPress(12);
+            wait(500);                       // the next report carries the new rapid
+        }
+        check(ovs() == QList<QByteArray>({"OV:96", "OV:97", "OV:95"}),
+              "gamepad: rapid cycles 50, 25, back to 100");
+        QLabel *ov = panel.findChild<QLabel *>(QStringLiteral("ovLabel"));
+        wait(400);
+        check(ov && ov->text() == QLatin1String("feed 100 %"), "overrides: all back to 100 % on the readout");
     }
 
     // A pad's Zero X/Y or Zero Z bumped while a question of this page is
