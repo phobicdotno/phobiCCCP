@@ -7,7 +7,8 @@
 // strokes instead of an outline, so Engrave and Fluting cut one groove per
 // line rather than tracing both sides of it. A built-in design on a small
 // grid: cap height 10 units, x-height 6, baseline 0, descenders to -3, Y-up.
-// Covers printable ASCII (32..126); anything else is left as a blank space.
+// Covers printable ASCII (32..126) and Æ Ø Å Ä Ö Ü é è ß (both cases where
+// they have two); anything else is left as a blank space.
 namespace c2d::strokefont {
 
 constexpr double kCapHeight = 10.0;

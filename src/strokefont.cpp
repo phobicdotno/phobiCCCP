@@ -1,5 +1,7 @@
 #include "strokefont.h"
 
+#include <QHash>
+#include <QPair>
 #include <QStringList>
 #include <QTransform>
 #include <QVector>
@@ -113,6 +115,29 @@ static const Glyph kGlyphs[95] = {
     {8, "M1 4 A2.5 4 1.5 1.2 180 0 A5.5 4 1.5 1.2 180 360"},                  // ~
 };
 
+// Letters past ASCII: a base letter from the table above (or none) plus
+// the strokes added to it (an accent, a ring, a bar), and the advance when
+// it differs from the base's.
+struct Extra { ushort code; char base; double advance; const char *strokes; };
+
+static const Extra kExtras[] = {
+    {0x00C5, 'A', 0, "M4.5 11 A4.5 12 1 1 -90 270"},                          // Å
+    {0x00E5, 'a', 0, "M3.75 7.5 A3.75 8.5 1 1 -90 270"},                      // å
+    {0x00D8, 'O', 0, "M1.5 -0.5 L8.5 10.5"},                                  // Ø
+    {0x00F8, 'o', 0, "M1 -0.5 L6.5 6.5"},                                     // ø
+    {0x00C6, 0, 13, "M1 0 L5.5 10 L12 10 M5.5 10 L5.5 0 L12 0 M5.5 5 L10.5 5 M2.5 3.5 L5.5 3.5"}, // Æ
+    {0x00E6, 0, 12, "A3.75 3 2.75 3 0 360 M6.5 6 L6.5 0 M6.5 3 L11.5 3 A9 3 2.5 3 0 315"}, // æ
+    {0x00C4, 'A', 0, "M3 11.5 L3 12.1 M6 11.5 L6 12.1"},                      // Ä
+    {0x00D6, 'O', 0, "M3.5 11.5 L3.5 12.1 M6.5 11.5 L6.5 12.1"},              // Ö
+    {0x00DC, 'U', 0, "M3 11.5 L3 12.1 M6 11.5 L6 12.1"},                      // Ü
+    {0x00E4, 'a', 0, "M2.5 7.5 L2.5 8.1 M5 7.5 L5 8.1"},                      // ä
+    {0x00F6, 'o', 0, "M2.5 7.5 L2.5 8.1 M5 7.5 L5 8.1"},                      // ö
+    {0x00FC, 'u', 0, "M2.5 7.5 L2.5 8.1 M5 7.5 L5 8.1"},                      // ü
+    {0x00E9, 'e', 0, "M3.5 7.5 L5 9"},                                        // é
+    {0x00E8, 'e', 0, "M2.5 9 L4 7.5"},                                        // è
+    {0x00DF, 0, 7.5, "M1 0 L1 7.5 A3.5 7.5 2.5 2.5 180 -90 A3.75 2.5 2.75 2.5 90 -90 L2.5 0"}, // ß
+};
+
 QString romanFamily() { return QStringLiteral("Single line (Roman)"); }
 QString italicFamily() { return QStringLiteral("Single line (Italic)"); }
 QStringList families() { return {romanFamily(), italicFamily()}; }
@@ -170,21 +195,44 @@ QPainterPath glyph(const QString &family, QChar c, double *advance)
             v.append(parse(g.strokes));
         return v;
     }();
+    static const QHash<ushort, QPair<double, QPainterPath>> extras = [] {
+        QHash<ushort, QPair<double, QPainterPath>> h;
+        for (const Extra &x : kExtras) {
+            QPainterPath p = parse(x.strokes);
+            double adv = x.advance;
+            if (x.base) {
+                const int b = x.base - 32;
+                p.addPath(parse(kGlyphs[b].strokes));
+                if (adv <= 0)
+                    adv = kGlyphs[b].advance;
+            }
+            h.insert(x.code, {adv, p});
+        }
+        return h;
+    }();
     const int idx = c.unicode() - 32;
-    if (idx < 0 || idx >= 95) {
+    QPainterPath g;
+    if (idx >= 0 && idx < 95) {
+        g = upright.at(idx);
+        if (advance)
+            *advance = kGlyphs[idx].advance;
+    } else if (extras.contains(c.unicode())) {
+        const auto &x = extras.value(c.unicode());
+        g = x.second;
+        if (advance)
+            *advance = x.first;
+    } else {
         if (advance)
             *advance = kGlyphs[0].advance;
         return {};
     }
-    if (advance)
-        *advance = kGlyphs[idx].advance;
     if (family == italicFamily()) {
         // Slanted about the baseline (about 12 degrees), shifted so the
         // x-height sits where the upright letter's does.
         QTransform t(1, 0, 0.21, 1, -0.21 * 3, 0);
-        return t.map(upright.at(idx));
+        return t.map(g);
     }
-    return upright.at(idx);
+    return g;
 }
 
 } // namespace c2d::strokefont

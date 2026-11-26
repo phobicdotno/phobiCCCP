@@ -59,7 +59,18 @@ int main(int argc, char **argv)
                 glyphsOk = false;
             }
         }
-    check(glyphsOk, "all ASCII glyphs have strokes inside their cell");
+    const QString extra = QString::fromUtf8("ÆØÅæøåÄÖÜäöüéèß");
+    for (const QChar c : extra)
+        for (const QString &fam : strokefont::families()) {
+            double adv = 0;
+            const QPainterPath g = strokefont::glyph(fam, c, &adv);
+            const QRectF r = g.boundingRect();
+            if (g.isEmpty() || adv <= 0 || r.top() < -4 || r.bottom() > 14 || r.right() > adv + 2) {
+                std::printf("  glyph U+%04X (%s) missing or off the grid\n", c.unicode(), qPrintable(fam));
+                glyphsOk = false;
+            }
+        }
+    check(glyphsOk, "all ASCII and Nordic/German glyphs have strokes inside their cell");
 
     const Element plain = Element::makeText(QStringLiteral("HI"), {50, 50}, 20,
                                             QStringLiteral("Helvetica"), d.defaultLayer());
@@ -83,6 +94,19 @@ int main(int argc, char **argv)
     // An "O" drawn round is one stroke that comes back to its start.
     const Element o = Element::regenText(hi, {{"text", "O"}});
     check(o.painterPath.toSubpathPolygons().size() == 1, "O is one stroke");
+
+    // Norwegian letters are drawn, not left blank: one glyph per letter,
+    // each with strokes.
+    const Element nor = Element::regenText(hi, {{"text", QString::fromUtf8("BLÅBÆR Ø")}});
+    double nbw = 0;
+    const QVector<TextGlyph> nbg = Element::textGlyphs(nor.raw, &nbw);
+    bool noBlank = nbg.size() == 8;
+    for (int i = 0; i < nbg.size(); ++i)
+        if (i != 6)
+            noBlank = noBlank && !nbg.at(i).path.isEmpty();
+    check(noBlank, "BLÅBÆR Ø has no blank letters");
+    check(nbg.size() == 8 && nbg.at(2).path.boundingRect().height() > nbg.at(0).path.boundingRect().height(),
+          "Å carries its ring above the A");
 
     // Round trip of the font name through a save and load.
     d.addElement(hi);
