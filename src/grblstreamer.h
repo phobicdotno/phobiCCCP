@@ -77,8 +77,11 @@ public:
     bool isHeldAtPoint() const { return m_streaming && m_waitingHold; }
     // After the hold: spindle back on (and its spin-up), down to where the
     // program was, and its motion mode and feed as the program left them.
+    // A modal arc (G2/G3 named only on the first of its lines) is put back
+    // by continueAfterHold() on the program's next line, as GRBL takes no
+    // bare G2. Returns the number of lines put into the program.
     QStringList resumeLinesAfterHold() const;
-    void continueAfterHold(const QStringList &lines);
+    int continueAfterHold(const QStringList &lines);
     // What the program has sent up to line `upTo`: the last motion mode (G0..G3),
     // feed, spindle command and speed, and work Z. `valid` is false when a
     // line cannot be followed (G91, an unreadable word).
@@ -89,8 +92,13 @@ public:
         QChar spindle;                   // '3', '4', '5' or null
         double speed = 0;    bool haveSpeed = false;
         double z = 0;        bool haveZ = false;
+        bool inch = false;               // G20 in effect
     };
     static Modal scanModal(const QStringList &lines, int upTo);
+    // The way back for a program that left off in state `m`: spindle on,
+    // a rapid to just above the stock and the hold Z, the rest at the feed
+    // (at most 600 mm/min), then the program's feed and motion mode.
+    static QStringList resumeLinesFor(const Modal &m);
     // sendCommand() lines written but not yet answered. Continuous jog uses it
     // to stop queueing faster than the controller retires.
     int pendingCommands() const { return m_adhocPending; }
@@ -139,7 +147,9 @@ public slots:
     void startStream(const QStringList &lines); // run a whole program
     // Resume past a tool marker; `first` runs ahead of the rest of the
     // program, as part of it (byte-counted and acked like its own lines).
-    void continueAfterToolChange(const QStringList &first = {});
+    // Returns the number of lines put into the program (with the crossing
+    // to the first cut), 0 when it did not continue.
+    int continueAfterToolChange(const QStringList &first = {});
     void pauseStream();                         // '!' feed hold
     bool resumeStream();                        // '~' cycle start (false: refused)
     void stopStream();                          // abort: soft reset (ctrl-X)

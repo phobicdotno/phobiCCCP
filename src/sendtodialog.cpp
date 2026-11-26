@@ -5,6 +5,7 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QScopeGuard>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHostAddress>
@@ -241,6 +242,12 @@ void SendToDialog::send()
     const Computer c = m_computers[row];
     QString err;
     const QString path = m_makeCopy(&err);
+    // The copy goes on every way out (too big, unreadable, sent). Made before
+    // `f`, so it runs after `f` has closed the file.
+    const auto removeCopy = qScopeGuard([&path] {
+        if (!path.isEmpty())
+            QFile::remove(path);
+    });
     QFile f(path);
     if (path.isEmpty() || !f.open(QIODevice::ReadOnly)) {
         m_status->setText(QStringLiteral("Could not save a copy to send: %1")
@@ -254,7 +261,6 @@ void SendToDialog::send()
     }
     const QByteArray data = f.readAll();
     f.close();
-    QFile::remove(path);
     QSettings().setValue(QStringLiteral("sendTo/last"),
                          c.port == ProjectReceiver::kPort ? c.address
                                                           : QStringLiteral("%1:%2").arg(c.address).arg(c.port));

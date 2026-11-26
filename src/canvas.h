@@ -262,6 +262,9 @@ private:
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+    // A two-finger pinch is under way: the first finger's synthesized mouse
+    // events are ignored until it is lifted (see viewportEvent).
+    bool m_pinching = false;
     // Select band (viewport coords). Dragged left to right it is a window
     // (only what lies wholly inside); right to left a crossing (whatever
     // line it touches). Ctrl adds to the selection it started with.

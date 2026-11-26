@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QFile>
+#include <QScopeGuard>
 #include <QHostAddress>
 #include <QLabel>
 #include <QListWidget>
@@ -145,6 +146,12 @@ void SendToPadDialog::sendWhole(const Row &r)
 {
     QString err;
     const QString path = m_hooks.makeCopy(&err);
+    // The copy goes on every way out (too big, unreadable, sent). Made before
+    // `f`, so it runs after `f` has closed the file.
+    const auto removeCopy = qScopeGuard([&path] {
+        if (!path.isEmpty())
+            QFile::remove(path);
+    });
     QFile f(path);
     if (path.isEmpty() || !f.open(QIODevice::ReadOnly)) {
         m_status->setText(QStringLiteral("Could not save a copy to send: %1").arg(err.isEmpty() ? f.errorString() : err));
@@ -157,7 +164,6 @@ void SendToPadDialog::sendWhole(const Row &r)
     }
     const QByteArray data = f.readAll();
     f.close();
-    QFile::remove(path);
     const QJsonObject req{{QStringLiteral("op"), QStringLiteral("open")},
                           {QStringLiteral("name"), m_name},
                           {QStringLiteral("c2d"), QString::fromLatin1(data.toBase64())},

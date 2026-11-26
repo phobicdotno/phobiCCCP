@@ -125,8 +125,11 @@ public:
                 const QPointF pos = mapFromGlobal(pg->centerPoint());
                 const QPointF c(width() / 2.0, height() / 2.0);
                 if (f > 0.0 && std::isfinite(f)) {
-                    m_pan = pos - c - f * (pos - c - m_pan);
-                    m_scale = qBound(1e-3, m_scale * f, 1e5);
+                    // Pan by the factor the clamp let through, so a pinch
+                    // at the zoom limit does not slide the view.
+                    const double ns = qBound(1e-3, m_scale * f, 1e5);
+                    m_pan = pos - c - (ns / m_scale) * (pos - c - m_pan);
+                    m_scale = ns;
                 }
                 m_pan += pg->centerPoint() - pg->lastCenterPoint();
                 update();
@@ -217,8 +220,9 @@ protected:
         // Zoom about the cursor: keep the world point under it fixed.
         const QPointF c(width() / 2.0, height() / 2.0);
         const QPointF pos = e->position();
-        m_pan = pos - c - f * (pos - c - m_pan);
-        m_scale = qBound(1e-3, m_scale * f, 1e5);
+        const double ns = qBound(1e-3, m_scale * f, 1e5);
+        m_pan = pos - c - (ns / m_scale) * (pos - c - m_pan);
+        m_scale = ns;
         update();
     }
 

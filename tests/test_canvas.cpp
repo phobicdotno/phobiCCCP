@@ -1744,6 +1744,27 @@ int main(int argc, char *argv[])
         check(sel() == both, "Ctrl band adds to the selection");
         check(bdoc.elementById(big.id)->painterPath.boundingRect() == QRectF(50, 50, 100, 100),
               "a band moves nothing");
+
+        // The design rebuilt while a Ctrl band is dragged (an edit from the
+        // pad, a preview): what Ctrl held stays held. The band kept the old
+        // scene's items, freed by the rebuild.
+        bc.selectElements({dot.id});
+        QTest::mousePress(bc.viewport(), Qt::LeftButton, Qt::ControlModifier, vp(&bc, {160, 95}));
+        QTest::mouseMove(bc.viewport(), vp(&bc, {150, 100}));
+        bc.rebuild();
+        QTest::mouseMove(bc.viewport(), vp(&bc, {140, 105}));
+        QTest::mouseRelease(bc.viewport(), Qt::LeftButton, Qt::ControlModifier, vp(&bc, {140, 105}));
+        check(sel() == both, "Ctrl band across a rebuild still adds to the selection");
+        // Another design opened under the band: the band ends with the old one.
+        c2d::Document other;
+        bc.selectElements({});
+        QTest::mousePress(bc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&bc, {40, 40}));
+        QTest::mouseMove(bc.viewport(), vp(&bc, {100, 100}));
+        bc.setDocument(&other);
+        bc.setDocument(&bdoc);
+        QTest::mouseMove(bc.viewport(), vp(&bc, {160, 160}));
+        QTest::mouseRelease(bc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&bc, {160, 160}));
+        check(sel().isEmpty(), "a band does not outlive the design it was started on");
     }
 
     // --- Click-cycling: a second click on the same spot steps to the shape underneath ---

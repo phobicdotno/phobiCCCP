@@ -60,15 +60,20 @@ QPainterPath Element::buildPointModel(const QJsonObject &obj)
     for (int i = 0; i < points.size(); ++i) {
         const int t = ptype.at(i).toInt();
         const QPointF p = origin + pt(points.at(i).toArray());
-        if (t == 0) {
+        // Malformed rows read the way pathModel() (the node editor) reads
+        // them, so what is drawn, cut and edited is one shape: a segment row
+        // with no current point starts the path there, and a cubic missing a
+        // handle uses the segment's own end in its place (both missing: a line).
+        if (t == 0 || (t != 4 && path.elementCount() == 0)) {
             path.moveTo(p);
         } else if (t == 4) {
             path.closeSubpath();
-        } else if (t == 3) {
-            const QPointF c1 = origin + pt(cp1.at(i).toArray());
-            const QPointF c2 = origin + pt(cp2.at(i).toArray());
+        } else if (t == 3 && (cp1.size() > i || cp2.size() > i)) {
+            const QPointF c1 = cp1.size() > i ? origin + pt(cp1.at(i).toArray())
+                                              : path.currentPosition();
+            const QPointF c2 = cp2.size() > i ? origin + pt(cp2.at(i).toArray()) : p;
             path.cubicTo(c1, c2, p);
-        } else { // t == 1 (line) and any fallback
+        } else { // t == 1 (line), a handle-less cubic and any fallback
             path.lineTo(p);
         }
     }

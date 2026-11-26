@@ -157,8 +157,26 @@ ToolCollections ToolCollections::loadSettings()
 
 void ToolCollections::saveSettings() const
 {
-    QSettings().setValue(QLatin1String(kSettingsKey), toJson());
-    stampCollections();
+    // What changed since the stored copy (the built-in defaults when there
+    // is none): only those collections are stamped, so another copy takes
+    // just them and keeps its own newer ones.
+    QSettings s;
+    ToolCollections before;
+    const QByteArray old = s.value(QLatin1String(kSettingsKey)).toByteArray();
+    if (old.isEmpty() || !fromJson(old, &before))
+        before = defaults();
+    QStringList changed, removed;
+    for (const ToolCollection &c : m_list) {
+        const ToolCollection *b = before.byName(c.name);
+        if (!b || b->tools != c.tools)
+            changed.append(c.name);
+    }
+    for (const ToolCollection &b : before.m_list)
+        if (indexOf(b.name) < 0)
+            removed.append(b.name);
+    s.setValue(QLatin1String(kSettingsKey), toJson());
+    s.sync();
+    stampCollections(changed, removed);
 }
 
 } // namespace c2d

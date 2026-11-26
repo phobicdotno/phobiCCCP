@@ -8,6 +8,8 @@
 
 #define private public      // the preview's state is private to the window
 #include "../src/jobrotate.h"
+#include "../src/backgroundimage.h"
+#include "../src/model3d.h"
 #include "../src/mainwindow.h"
 #include "../src/modelpanel.h"
 #include "../src/canvas.h"
@@ -25,6 +27,8 @@
 #include <QGraphicsItem>
 #include <QDoubleSpinBox>
 #include <QFileInfo>
+#include <QImage>
+#include <QLineF>
 #include <QJsonObject>
 #include <QMap>
 #include <QStandardPaths>
@@ -361,6 +365,20 @@ int main(int argc, char *argv[])
         w.m_untitled = true;
         w.m_untitledFrom = QStringLiteral("/tmp/parts/part.dxf");
         check(w.gcodeSuggestion() == QLatin1String("/tmp/parts/part.nc"), "export: named after the imported file");
+        // Export DXF never offers the DXF the design was imported from: one
+        // Yes to "replace?" wrote over the original drawing.
+        check(w.dxfSuggestion() == QLatin1String("/tmp/parts/part-export.dxf"),
+              "export DXF: not the imported file itself");
+        {
+            QTemporaryDir dxfDir;
+            const QString svg = dxfDir.filePath("logo.svg"), dxf = dxfDir.filePath("logo.dxf");
+            w.m_untitledFrom = svg;
+            check(w.dxfSuggestion() == dxf, "export DXF: beside an imported SVG, its name");
+            QFile f(dxf);
+            check(f.open(QIODevice::WriteOnly) && f.write("0\nEOF\n") > 0, "export DXF: a DXF already there");
+            f.close();
+            check(w.dxfSuggestion() == dxfDir.filePath("logo-export.dxf"), "export DXF: not over a file already there");
+        }
         w.m_untitled = wasUntitled;
         w.m_untitledFrom = wasFrom;
     }
@@ -465,6 +483,114 @@ int main(int argc, char *argv[])
         w.m_canvas->undoStack()->redo();
         check(d.elementById(r.id)->raw.value("width").toDouble() == 30, "rotate: and Ctrl+Y turns it again");
         w.m_canvas->undoStack()->undo();
+    }
+
+    // Rotate 90° turns the 3D model and the background as they are when it
+    // is done or undone, not snapshots of them: a texture added or the
+    // background moved after the turn was lost again by Ctrl+Z.
+    {
+        QUndoStack *undo = w.m_canvas->undoStack();
+        QAction *rot = w.findChild<QAction *>(QStringLiteral("rotateJob"));
+        c2d::Model3D m;
+        c2d::ModelComponent tex;
+        tex.kind = c2d::ModelComponent::Texture;
+        tex.id = c2d::Model3D::newId();
+        tex.x = 12.5;
+        tex.y = 20.25;
+        m.components = {tex};
+        w.m_model->setModel(m);
+        w.m_bg.image = QImage(40, 20, QImage::Format_RGB32);
+        w.m_bg.image.fill(Qt::gray);
+        w.m_bg.x = 30;
+        w.m_bg.y = 40;
+        w.m_bg.rotationDeg = 0;
+        w.m_bg.userChanged = false;
+        const QPointF centre0 = w.m_bg.rectMm().center();
+        auto compAt = [&](int i) { return w.m_model->model().components.at(i); };
+        rot->trigger();
+        check(compAt(0).turns == 1 && w.m_bg.rotationDeg == -90, "rotate: the model and the background turn");
+        undo->undo();
+        check(compAt(0).x == 12.5 && compAt(0).y == 20.25 && compAt(0).turns == 0,
+              "rotate undo: an untouched component is exactly where it was");
+        check(w.m_bg.x == 30 && w.m_bg.y == 40 && w.m_bg.rotationDeg == 0 && !w.m_bg.userChanged,
+              "rotate undo: an untouched background is exactly as it was");
+        undo->redo();
+        // Edits after the turn: one more texture, the background moved 5 mm.
+        c2d::Model3D m2 = w.m_model->model();
+        c2d::ModelComponent tex2 = tex;
+        tex2.id = c2d::Model3D::newId();
+        tex2.x = 50;
+        tex2.y = 60;
+        tex2.turns = 1;
+        m2.components.append(tex2);
+        w.m_model->setModel(m2);
+        w.m_bg.x += 5;
+        const c2d::BackgroundImage moved = w.m_bg;
+        undo->undo();
+        check(w.m_model->model().components.size() == 2, "rotate undo: a component added after the turn stays");
+        check(compAt(1).turns == 0, "rotate undo: and turns back with the design");
+        check(compAt(0).x == 12.5 && compAt(0).y == 20.25 && compAt(0).turns == 0,
+              "rotate undo: the untouched one is still exact");
+        check(qAbs(w.m_bg.rotationDeg) < 1e-9
+                  && qAbs(QLineF(w.m_bg.rectMm().center(), centre0).length() - 5) < 1e-6,
+              "rotate undo: the moved background turns back, keeping its move");
+        undo->redo();
+        check(w.m_bg.x == moved.x && w.m_bg.y == moved.y && w.m_bg.rotationDeg == moved.rotationDeg,
+              "rotate redo: the moved background is exactly where it was moved to");
+        check(compAt(1).x == 50 && compAt(1).y == 60 && compAt(1).turns == 1,
+              "rotate redo: and so is the added component");
+        undo->undo();
+        w.m_bg = c2d::BackgroundImage();
+        w.m_model->setModel(c2d::Model3D());
+    }
+
+    // Toolpaths mode picks vectors: a drawing tool left on from Design (its
+    // bar is hidden there) trimmed or drew at a tap instead. Back to Select.
+    {
+        const c2d::MainWindow::Mode mode = w.mode();
+        w.setMode(c2d::MainWindow::Mode::Design, false);
+        QAction *trim = w.m_palette->findChild<QAction *>(QStringLiteral("trim"));
+        if (!trim)
+            for (QAction *a : w.m_palette->actions())
+                if (a->objectName() == QLatin1String("trim"))
+                    trim = a;
+        check(trim != nullptr, "tools: the Trim action");
+        trim->trigger();
+        check(w.m_canvas->tool() == c2d::Canvas::Trim, "tools: Trim is on in Design");
+        w.setMode(c2d::MainWindow::Mode::Toolpaths, false);
+        check(w.m_canvas->tool() == c2d::Canvas::Select && w.m_selectAct->isChecked(),
+              "tools: Toolpaths mode is back on Select, its button ticked");
+        w.m_canvas->setTool(c2d::Canvas::Pan);
+        w.setMode(c2d::MainWindow::Mode::Design, false);
+        w.setMode(c2d::MainWindow::Mode::Toolpaths, false);
+        check(w.m_canvas->tool() == c2d::Canvas::Pan, "tools: the hand (on the Toolpaths bar too) stays");
+        w.m_selectAct->trigger();
+        w.setMode(mode, false);
+    }
+
+    // A toolpath row let go of (a tap on the board) stays let go of: every
+    // edit rebuilt the list and selected the row again, halo and all.
+    {
+        w.m_canvas->m_scene->clearSelection();
+        QTreeWidget *list = w.m_tp->m_list;
+        check(list->topLevelItemCount() >= 2, "toolpath list: two rows");
+        list->setCurrentItem(list->topLevelItem(1));
+        const QString uuid = list->currentItem()->data(0, Qt::UserRole).toString();
+        check(!list->selectedItems().isEmpty() && !w.m_canvas->m_highlightIds.isEmpty(),
+              "toolpath list: a picked row is selected and its shapes outlined");
+        emit w.m_canvas->documentChanged();
+        check(!list->selectedItems().isEmpty() && list->currentItem() == list->topLevelItem(1),
+              "toolpath list: an edit keeps a selected row selected");
+        emit w.m_canvas->emptyPressed();
+        check(list->selectedItems().isEmpty() && w.m_canvas->m_highlightIds.isEmpty(),
+              "toolpath list: a tap on the board lets go of it");
+        emit w.m_canvas->documentChanged();
+        check(list->selectedItems().isEmpty() && w.m_canvas->m_highlightIds.isEmpty(),
+              "toolpath list: an edit does not select it again");
+        check(list->currentItem() == list->topLevelItem(1)
+                  && list->currentItem()->data(0, Qt::UserRole).toString() == uuid,
+              "toolpath list: it stays the current row");
+        check(QTest::qWaitFor([&] { return settled(w); }, 30000), "toolpath list: the preview settles");
     }
 
     // The edited mark follows undo: a design undone (or redone) back to how

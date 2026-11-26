@@ -1044,6 +1044,12 @@ void ToolpathPanel::setDocument(Document *doc)
     m_form->setDocument(doc);
     m_uuid.clear();
     m_hint->hide();
+    {
+        // Another design: its list is built afresh (see refresh).
+        m_loading = true;
+        m_list->clear();
+        m_loading = false;
+    }
     // Open cards of toolpaths the new design does not have are forgotten.
     // Only here: within one design an undo brings a deleted toolpath back,
     // and its card should come back open.
@@ -1062,6 +1068,14 @@ void ToolpathPanel::refresh()
 {
     m_loading = true;
     const QString keep = m_uuid;
+    // A row the user let go of (a tap on the board, a shape picked) stays
+    // current but unselected: rebuilding the list on every edit selected it
+    // again and brought its halo back. A list built afresh, or another row
+    // to show (a new toolpath, a copy, the neighbour of one deleted), is
+    // selected as before.
+    const QTreeWidgetItem *was = m_list->currentItem();
+    const bool reselect = m_list->topLevelItemCount() == 0 || !m_list->selectedItems().isEmpty()
+        || !was || was->data(0, UuidRole).toString() != keep;
     m_list->clear();
     QTreeWidgetItem *keepItem = nullptr;
     if (m_doc) {
@@ -1121,10 +1135,12 @@ void ToolpathPanel::refresh()
     }
     m_loading = false;
     updateListHeight();
-    if (keepItem)
-        m_list->setCurrentItem(keepItem);
-    else if (m_list->topLevelItemCount() > 0)
-        m_list->setCurrentItem(m_list->topLevelItem(0));
+    QTreeWidgetItem *cur = keepItem ? keepItem
+                         : m_list->topLevelItemCount() > 0 ? m_list->topLevelItem(0) : nullptr;
+    if (cur && reselect)
+        m_list->setCurrentItem(cur);
+    else if (cur)
+        m_list->setCurrentItem(cur, 0, QItemSelectionModel::NoUpdate);
     else
         showToolpath(QString());
     // setCurrentItem on an unchanged current item does not signal; re-sync.

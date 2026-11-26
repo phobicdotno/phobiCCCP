@@ -206,7 +206,9 @@ private:
     bool m_zZeroKnown = false, m_zZeroWithMap = false;
     double m_zZeroSent = 0, m_zZeroMx = 0, m_zZeroMy = 0, m_zZeroWco = 0;
     QCheckBox *m_useMap = nullptr;
-    bool m_liftHold = false;             // Hold with a lift: Z up, spindle off, XY kept; Resume goes back down        // BitZero: wait for OK before moving after the zero
+    bool m_liftHold = false;             // Hold with a lift: Z up, spindle off, XY kept; Resume goes back down
+    bool m_bzAwaitRemove = false;        // BitZero: the "remove the magnet" box is open, the move waits for OK
+    void stopMapAfterReset();            // Stop / controller reset: cancel a running surface map
     QLabel *m_mapLabel = nullptr;
     QLabel *m_ovLabel = nullptr;         // live feed/rapid/spindle override, beside the +/- buttons
     void startSurfaceMap();

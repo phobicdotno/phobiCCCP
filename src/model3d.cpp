@@ -122,6 +122,12 @@ QJsonObject ModelComponent::toJson() const
     return o;
 }
 
+// `v` clamped to [lo, hi]; `fallback` when it is not a finite number.
+static double boundedOr(double v, double lo, double hi, double fallback)
+{
+    return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
+}
+
 ModelComponent ModelComponent::fromJson(const QJsonObject &o)
 {
     ModelComponent c;
@@ -138,11 +144,13 @@ ModelComponent ModelComponent::fromJson(const QJsonObject &o)
     c.angleDeg = o.value("angle").toDouble(45.0);
     c.sourceName = o.value("source_name").toString();
     c.invert = o.value("invert").toBool(false);
-    c.blurPx = o.value("blur").toDouble(0.0);
+    // Clamped to the panel's own ranges: a hand-edited file must not ask for
+    // a blur kernel or tile size the UI could never produce.
+    c.blurPx = boundedOr(o.value("blur").toDouble(0.0), 0.0, 50.0, 0.0);
     c.x = o.value("x").toDouble(0.0);
     c.y = o.value("y").toDouble(0.0);
     c.width = o.value("width").toDouble(0.0);
-    c.tileWidth = o.value("tile_width").toDouble(10.0);
+    c.tileWidth = boundedOr(o.value("tile_width").toDouble(10.0), 0.1, 1000.0, 10.0);
     c.units = Units(qBound(0, o.value("units").toInt(), int(Inches)));
     c.turns = o.value("turns").toInt() & 3;
     return c;
@@ -223,7 +231,10 @@ QJsonObject Model3D::toJson() const
 Model3D Model3D::fromJson(const QJsonObject &o)
 {
     Model3D m;
-    m.resolution = o.value("resolution").toDouble(0.0);
+    // 0 (or anything not a positive finite size) = automatic; coarser than
+    // 10 mm a cell is not a model.
+    const double res = o.value("resolution").toDouble(0.0);
+    m.resolution = std::isfinite(res) && res > 0 ? std::min(res, 10.0) : 0.0;
     for (const QJsonValue &v : o.value("components").toArray()) {
         ModelComponent c = ModelComponent::fromJson(v.toObject());
         if (c.id.isEmpty())
@@ -510,6 +521,7 @@ GrayField grayField(const QImage &img, bool invert, double sigmaPx)
             dst[x] = invert ? 1.0f - t : t;
         }
     }
+    sigmaPx = std::isfinite(sigmaPx) ? std::clamp(sigmaPx, 0.0, 50.0) : 0.0;   // UI max
     if (sigmaPx > 0.05) {
         const int rad = std::max(1, int(std::ceil(sigmaPx * 3)));
         std::vector<float> k(2 * rad + 1);

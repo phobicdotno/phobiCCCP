@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.3.64 (build 154) — 2026-11-26
+
+> Fixes: Hold stops at once on a second press, Resume after a hold on a curve no longer stops the job, shallow contours no longer skip their tab stretches, and the pad drills 0.25 mm through like the computer.
+
+- **Hold:** pressing Hold a second time while the lift is still waiting its turn stops the machine at once (feed hold); Resume carries on to the lift. Before, the machine could keep cutting for minutes and the second press did nothing.
+- **Resume after Hold:** a hold between two arcs no longer makes Resume fail with error:36 and stop the job. Resume now comes down fast only to 2.5 mm above where it stopped and feeds the rest.
+- **Hold → Cancel job → Keep running:** the button keeps saying Resume while the head is lifted.
+- **BitZero:** a pad can no longer start a job while "Remove the magnet and BitZero" is open; the wait spot beside the BitSetter is checked against the machine travel first.
+- **Go to X0 Y0** refuses a work zero that is off the machine instead of driving into the end stop.
+- **Stop** also stops a surface map waiting for the plate, and no longer leaves Zero/Park/Quick move refused as "job still finishing".
+- **Job progress** no longer runs one line ahead after each tool change.
+- **Contours:** tabs as tall as the cut (the default 2.54 mm contour with 3 mm tabs) are left out, with a note; before, every tab stretch was left uncut. A ramp into a short last pass starts from the floor already cut.
+- **Pad:** a new Drill on the pad goes 0.25 mm through, like the computer (it went 0.5 mm). A contour's tab height and width always go to the pad, so another computer with another default rebuilds the same tabs.
+- **Toolpaths page:** a drawing tool (Trim, Circle, Node edit ...) left on in Design switches to Select, so a tap picks shapes instead of trimming them. A tap on empty board stays let go after the next edit.
+- **Touch:** a pinch no longer drags a band or moves a shape with the first finger.
+- **Rotate 90° undo** keeps 3D and background changes made after the turn, and undoing back to the saved state clears the unsaved mark.
+- **Popups** can be moved by their caption strip (the background and trace windows sat over the drawing).
+- **Export DXF** no longer suggests overwriting the DXF the design was imported from; layer names are DXF-R12 safe (upper case, no spaces) and the file has a line-type table.
+- **Offset** of a shape selected together with an exact copy of itself gives one offset shape (it gave nothing), and works the same with more than 200 shapes.
+- **Bit stock and Collections sync:** a fresh copy's first edit no longer wipes the Collections of another copy (collections now merge one by one), sync reaches every network adapter, and only bits that are in the library are taken from the network.
+- **Saving:** two copies saving the same file at once no longer trip over each other's temporary file. A design too big to send no longer leaves its copy behind.
+- **Settings and files:** a damaged machine size or 3D blur value in a file or settings can no longer send Quick move into the end stop or crash. Zoom is limited in the simulation and 3D views.
+- **Pad build (Qt):** New, Export and the setup sheet start in Documents/phobiCCCP.
+
 ## v1.3.62 (build 152) — 2026-11-18
 
 > Popup buttons no longer cut off their text.

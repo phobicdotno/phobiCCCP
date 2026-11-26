@@ -34,6 +34,7 @@
 #include <QTemporaryDir>
 #include <QTimer>
 #include <QToolButton>
+#include <QVBoxLayout>
 #include <QWindow>
 
 #include <cmath>
@@ -442,6 +443,38 @@ int main(int argc, char *argv[])
         if (!qEnvironmentVariableIsEmpty("POPUP_SHOT"))
             unsaved.grab().save(QString::fromLocal8Bit(qgetenv("POPUP_SHOT")) + QStringLiteral("-unsaved.png"));
         unsaved.close();
+
+        // With no title bar a popup is moved by its caption strip: Adjust
+        // background and Trace show their work on the canvas behind them and
+        // had to be movable out of the way. Elsewhere a drag moves nothing.
+        QDialog adjust;
+        adjust.setWindowTitle(QStringLiteral("Adjust background image"));
+        auto *lay = new QVBoxLayout(&adjust);
+        lay->addWidget(new QLabel(QStringLiteral("Opacity")));
+        lay->addWidget(new QPushButton(QStringLiteral("Close")));
+        adjust.move(100, 100);
+        adjust.show();
+        QApplication::processEvents();
+        auto drag = [&](QPoint from, QPoint by) {
+            const QPoint g = adjust.mapToGlobal(from);
+            QMouseEvent press(QEvent::MouseButtonPress, QPointF(from), QPointF(g), Qt::LeftButton,
+                              Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&adjust, &press);
+            QMouseEvent move(QEvent::MouseMove, QPointF(from + by), QPointF(g + by), Qt::NoButton,
+                             Qt::LeftButton, Qt::NoModifier);
+            QApplication::sendEvent(&adjust, &move);
+            QMouseEvent release(QEvent::MouseButtonRelease, QPointF(from + by), QPointF(g + by),
+                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+            QApplication::sendEvent(&adjust, &release);
+            QApplication::processEvents();
+        };
+        const QPoint at = adjust.pos();
+        drag(QPoint(adjust.width() / 2, 14), QPoint(60, 40));
+        check(adjust.pos() == at + QPoint(60, 40), "popup look: dragging the caption moves the popup");
+        const QPoint at2 = adjust.pos();
+        drag(QPoint(adjust.width() / 2, adjust.height() - 3), QPoint(60, 40));
+        check(adjust.pos() == at2, "popup look: a drag below the caption does not");
+        adjust.close();
     }
 
     std::printf("test_uifixes: %d checks OK\n", g_checks);

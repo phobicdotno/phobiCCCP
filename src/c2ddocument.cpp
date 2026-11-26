@@ -1,12 +1,16 @@
 #include "c2ddocument.h"
 #include "zlibutil.h"
 
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <cstdio>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRandomGenerator>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -205,8 +209,38 @@ bool Document::save(const QString &destPath, QString *error)
         if (fi.isSymLink())
             realDest = fi.exists() ? fi.canonicalFilePath() : fi.symLinkTarget();
     }
-    const QString tmpPath = realDest + QStringLiteral(".phobisave");
-    QFile::remove(tmpPath);
+    // One staging name per save (process id and a random part): two copies
+    // of the app saving to the same file staged in one shared
+    // <dest>.phobisave, each removing or renaming the other's half-written
+    // copy. Staging files a crashed save left behind (this naming and the
+    // old shared one) are cleared once they are an hour old, so a save still
+    // running in another process keeps its own.
+    {
+        const QFileInfo di(realDest);
+        const QDateTime stale = QDateTime::currentDateTimeUtc().addSecs(-3600);
+        QString base;                       // the file name, its wildcard characters literal
+        for (const QChar c : di.fileName()) {
+            const bool wild = c == QLatin1Char('[') || c == QLatin1Char('*') || c == QLatin1Char('?');
+            if (wild)
+                base += QLatin1Char('[');
+            base += c;
+            if (wild)
+                base += QLatin1Char(']');
+        }
+        const QFileInfoList old = di.absoluteDir().entryInfoList(
+            {base + QStringLiteral(".phobisave"),
+             base + QStringLiteral(".phobisave-journal"),
+             base + QStringLiteral(".*.phobisave"),
+             base + QStringLiteral(".*.phobisave-journal")},
+            QDir::Files | QDir::Hidden | QDir::System);
+        for (const QFileInfo &f : old)
+            if (f.lastModified().toUTC() < stale)
+                QFile::remove(f.absoluteFilePath());
+    }
+    const QString tmpPath = realDest
+        + QStringLiteral(".%1-%2.phobisave")
+              .arg(QCoreApplication::applicationPid())
+              .arg(QRandomGenerator::global()->generate(), 8, 16, QLatin1Char('0'));
     if (!QFileInfo::exists(m_path)) {
         // The file it was opened from is gone (a pulled stick, moved, or the
         // untitled scratch file cleaned away): start from a blank container

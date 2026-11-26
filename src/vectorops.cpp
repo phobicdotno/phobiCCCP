@@ -267,21 +267,50 @@ QVector<QPolygonF> booleanRings(const QVector<QPainterPath> &subjects,
 // everything would turn an overlap into a hole.
 static C2::Paths64 nestedRegion(const QVector<QPainterPath> &paths, double tol)
 {
-    QVector<C2::Paths64> regions;
+    struct Region {
+        C2::Paths64 paths;
+        C2::Rect64 box;
+        double area;
+    };
+    auto covers = [](const Region &outer, const Region &inner) {      // inner within outer
+        return C2::Difference(inner.paths, outer.paths, C2::FillRule::NonZero).empty();
+    };
+    QVector<Region> regions;
     for (const QPainterPath &pp : paths) {
         C2::Paths64 r = regionOf({pp}, tol);
-        if (!r.empty())
-            regions.append(std::move(r));
+        if (r.empty())
+            continue;
+        Region reg{std::move(r), {}, 0.0};
+        reg.box = C2::GetBounds(reg.paths);
+        reg.area = std::fabs(C2::Area(reg.paths));
+        // An exact duplicate of an earlier element (a shape selected with its
+        // copy) adds nothing; kept, it would nest inside the first as a hole.
+        bool dup = false;
+        for (const Region &k : regions)
+            if (k.box == reg.box && covers(k, reg) && covers(reg, k)) {
+                dup = true;
+                break;
+            }
+        if (!dup)
+            regions.append(std::move(reg));
     }
-    if (regions.size() > 200)    // containment is pairwise; keep it bounded
-        return regionOf(paths, tol);
+    // Containment is pairwise, but the bounding-box test rejects almost every
+    // pair before Clipper runs, so the same rule holds at any element count.
     QVector<int> depth(regions.size(), 0);
     int deepest = 0;
     for (int i = 0; i < regions.size(); ++i) {
-        for (int j = 0; j < regions.size(); ++j)
-            if (i != j && C2::Difference(regions.at(i), regions.at(j), C2::FillRule::NonZero).empty()
-                && !(C2::Difference(regions.at(j), regions.at(i), C2::FillRule::NonZero).empty() && j > i))
+        const Region &ri = regions.at(i);
+        for (int j = 0; j < regions.size(); ++j) {
+            if (i == j)
+                continue;
+            const Region &rj = regions.at(j);
+            if (!rj.box.Contains(ri.box) || ri.area > rj.area * (1 + 1e-9) + 1.0)
+                continue;
+            // Mutually covering (equal within Clipper's grid but not caught
+            // above): only the earlier one counts as the outer.
+            if (covers(rj, ri) && !(j > i && covers(ri, rj)))
                 ++depth[i];
+        }
         deepest = qMax(deepest, depth.at(i));
     }
     C2::Paths64 out;
@@ -289,7 +318,8 @@ static C2::Paths64 nestedRegion(const QVector<QPainterPath> &paths, double tol)
         C2::Paths64 level;
         for (int i = 0; i < regions.size(); ++i)
             if (depth.at(i) == d)
-                level.insert(level.end(), regions.at(i).begin(), regions.at(i).end());
+                level.insert(level.end(), regions.at(i).paths.begin(),
+                             regions.at(i).paths.end());
         if (level.empty())
             continue;
         out = d % 2 == 0 ? C2::Union(out, level, C2::FillRule::NonZero)

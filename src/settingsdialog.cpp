@@ -8,6 +8,8 @@
 #include <QSettings>
 #include <QVBoxLayout>
 
+#include <cmath>
+
 namespace c2d {
 
 namespace appsettings {
@@ -53,9 +55,18 @@ Machine machine(QSettings &s)
 {
     QString key = s.value(QStringLiteral("machine/size"), QStringLiteral("s5pro-4x4")).toString();
     if (key == QLatin1String("custom")) {
-        const double w = s.value(QStringLiteral("machine/customWidth"), 1000).toDouble();
-        const double h = s.value(QStringLiteral("machine/customHeight"), 1000).toDouble();
-        return {key, QStringLiteral("Custom (%1 × %2 mm)").arg(w).arg(h), w, h};
+        // A hand-edited or corrupt settings file must not size the design
+        // to NaN, zero or kilometres: non-numeric / non-finite falls back to
+        // the default machine, the rest clamps to the dialog's own range.
+        bool okW = false, okH = false;
+        double w = s.value(QStringLiteral("machine/customWidth"), 1000).toDouble(&okW);
+        double h = s.value(QStringLiteral("machine/customHeight"), 1000).toDouble(&okH);
+        if (okW && okH && std::isfinite(w) && std::isfinite(h)) {
+            w = qBound(10.0, w, 5000.0);
+            h = qBound(10.0, h, 5000.0);
+            return {key, QStringLiteral("Custom (%1 × %2 mm)").arg(w).arg(h), w, h};
+        }
+        key = QStringLiteral("s5pro-4x4");
     }
     if (!key.contains(QLatin1Char('-')))
         key.prepend(QStringLiteral("s5pro-"));   // the first keys were "2x2" ... "4x4"

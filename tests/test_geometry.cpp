@@ -414,6 +414,55 @@ int main(int argc, char *argv[])
         check(g.gcode.contains(QLatin1String("Z-2.000")), "tabs lift to cut_depth - tab_height");
     }
 
+    // --- tabs as tall as the cut: none made (they lifted over every tab on
+    // every pass and left those stretches uncut), with a note.
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 2.0}, {"tab_height", 3.0},
+                                 {"ignore_tabs", false}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double minZ;
+        cutBounds(g.gcode, &minZ);
+        check(g.done.size() == 1 && approx(minZ, -2.0, 1e-3), "shallow cut with tall tabs still cuts");
+        check(!g.gcode.contains(QLatin1String("Z1.000")), "no lift to a tab top above the stock");
+        bool noted = false;
+        for (const QString &n : g.notes)
+            noted = noted || n.contains(QLatin1String("tabs as tall as the cut"));
+        check(noted, "shallow cut with tall tabs is noted");
+    }
+
+    // --- a ramp into a short last pass starts from the floor already cut,
+    // not a full step-down above it (it fed up inside the slot first).
+    {
+        Rig r;
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 5.0}, {"depth_per_pass", 2.0},
+                                 {"enable_ramping", true}, {"ramp_angle", 10.0}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        double z = 100, deepest = 100;
+        bool upInside = false;
+        for (const QString &raw : g.gcode.split(QLatin1Char('\n'))) {
+            const QString l = raw.trimmed();
+            const int at = l.indexOf(QLatin1Char('Z'));
+            if (at < 0)
+                continue;
+            int e = at + 1;
+            while (e < l.size() && (l[e].isDigit() || l[e] == QLatin1Char('.') || l[e] == QLatin1Char('-')))
+                ++e;
+            const double nz = l.mid(at + 1, e - at - 1).toDouble();
+            const bool rapid = l.startsWith(QLatin1String("G0")) && !l.startsWith(QLatin1String("G01"));
+            if (!rapid && nz > z + 1e-6 && nz > deepest + 1e-6 && nz < 0)
+                upInside = true;   // fed up above a floor already cut
+            if (rapid)
+                deepest = 100;
+            z = nz;
+            deepest = qMin(deepest, z);
+        }
+        check(g.done.size() == 1, "ramped cutout exports");
+        check(!upInside, "ramp into the short last pass starts at the floor already cut");
+    }
+
     // --- cutout tabs are measured from the cut depth, not the break-through.
     // The break-through goes into the spoilboard; counting it made every tab
     // thinner by that much (Z-2.500 here instead of Z-2.000).

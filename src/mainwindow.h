@@ -179,6 +179,7 @@ private:
     void layoutToolBars();
     QToolBar *m_palette = nullptr;   // drawing tools (Design)
     QToolBar *m_tpBar = nullptr;     // toolpath kinds (Toolpaths)
+    QAction *m_selectAct = nullptr;  // the Select tool (both pages' bars)
     QList<int> m_canvasSizes, m_designSizes;   // splitter sizes, kept across mode switches
     void applySplits();
     Mode m_mode = Mode::Design;
@@ -196,6 +197,7 @@ private:
     // Where Export G-code starts: beside the design (or the file an untitled
     // one came from), named after it.
     QString gcodeSuggestion() const;
+    QString dxfSuggestion() const;   // never the design's own source file
     void commitEdits();
     bool typingPending() const;
     QAction *m_receiveAct = nullptr;
@@ -238,6 +240,9 @@ private:
     // its change from inside redo()/undo(), just before the stack moves; one
     // still unclaimed when the event loop is back was made past the stack.
     bool m_changeUnclaimed = false;
+    // The 3D model is being turned by an undo step (Rotate 90°): that edit
+    // is undone with the step, so it keeps the saved mark.
+    bool m_modelByUndo = false;
     void trackChange();          // on every Canvas::documentChanged
     void markSaved();            // memory and file agree: just saved, or just opened
     bool m_untitled = false;     // Save asks for a name (the file is scratch)

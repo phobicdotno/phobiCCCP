@@ -656,8 +656,9 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
         Toolpath fresh = makeToolpath(doc, type, elementIds);
         QJsonObject j = fresh.json;
         if (type == QLatin1String("contour")) {
-            // Tabs the pad carries: off, or a height / width other than the
-            // computer's own default. Not lost.
+            // Tabs the pad carries: off, and always their height / width, so
+            // a computer with another default tab height rebuilds the same
+            // tabs (and the pad shows the real height, not its own 3 mm).
             QJsonObject tp = toolpaths.last().toObject();
             if (t.json.value(QStringLiteral("ignore_tabs")).toBool(false))
                 tp.insert(QStringLiteral("tabs"), false);
@@ -665,7 +666,7 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             for (const auto &k : keys) {
                 const QString ck = QString::fromLatin1(k.first);
                 const double have = t.json.value(ck).toDouble(-1);
-                if (have > 0 && std::abs(have - fresh.json.value(ck).toDouble()) > 1e-9)
+                if (have > 0)
                     tp.insert(QString::fromLatin1(k.second), have);
                 if (t.json.contains(ck))
                     j.insert(ck, t.json.value(ck));

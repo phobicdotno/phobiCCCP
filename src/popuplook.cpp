@@ -10,6 +10,9 @@
 #include <QLabel>
 #include <QLayout>
 #include <QMessageBox>
+#include <QInputDevice>
+#include <QMouseEvent>
+#include <QPointer>
 #include <QPushButton>
 #include <QToolButton>
 #include <QWindow>
@@ -19,6 +22,9 @@ namespace c2d {
 namespace {
 
 const char *kDone = "phobicPopupLook";
+// The height of the strip along a popup's top edge (its caption) that
+// moves the popup when dragged: with no title bar it is the only handle.
+const char *kDragTop = "phobicPopupDragTop";
 
 // The default button is bold, but Qt sizes the buttons from the plain font,
 // so a long label ("Close without Saving") was cut off at both ends. Make
@@ -58,6 +64,37 @@ public:
         } else if (e->type() == QEvent::Show) {
             if (auto *dlg = qobject_cast<QDialog *>(o))
                 fitButtons(dlg);
+        } else if (e->type() == QEvent::MouseButtonPress) {
+            auto *dlg = qobject_cast<QDialog *>(o);
+            auto *me = static_cast<QMouseEvent *>(e);
+            const int top = dlg ? dlg->property(kDragTop).toInt() : 0;
+            if (top > 0 && me->button() == Qt::LeftButton && me->position().y() < top) {
+                // A mouse asks the window system to move it (Wayland allows
+                // nothing else); a finger, or a system that says no, moves
+                // it here.
+                const QInputDevice *dev = me->device();
+                const bool touch = dev && dev->type() == QInputDevice::DeviceType::TouchScreen;
+                QWindow *w = dlg->windowHandle();
+                if (!touch && w && w->startSystemMove())
+                    return true;
+                m_drag = dlg;
+                m_offset = me->globalPosition().toPoint() - dlg->pos();
+                return true;
+            }
+        } else if (e->type() == QEvent::MouseMove) {
+            if (m_drag && o == m_drag) {
+                auto *me = static_cast<QMouseEvent *>(e);
+                if (me->buttons() & Qt::LeftButton)
+                    m_drag->move(me->globalPosition().toPoint() - m_offset);
+                else
+                    m_drag.clear();
+                return true;
+            }
+        } else if (e->type() == QEvent::MouseButtonRelease) {
+            if (m_drag && o == m_drag) {
+                m_drag.clear();
+                return true;
+            }
         } else if (e->type() == QEvent::Resize) {
             // The X stays in the corner.
             if (auto *dlg = qobject_cast<QDialog *>(o))
@@ -67,6 +104,10 @@ public:
         }
         return false;
     }
+
+private:
+    QPointer<QDialog> m_drag;   // the popup being dragged by its caption
+    QPoint m_offset;            // from the pointer to the popup's corner
 };
 
 } // namespace
@@ -134,12 +175,17 @@ void applyPopupLook(QDialog *dlg)
         x->raise();
         dlg->setMinimumSize(dlg->minimumSize().expandedTo(QSize(kX + 4 * kEdge, kX + 2 * kEdge)));
     }
+    // The caption strip (or the bare edge) moves the popup: one that shows
+    // its work on the canvas behind it (Adjust background, Trace) can be
+    // dragged out of the way. Only where the dialog itself is under the
+    // pointer: the X and anything else in the strip still take their press.
+    dlg->setProperty(kDragTop, kEdge);
     if (QLayout *lay = dlg->layout()) {
         int l, t, r, b;
         lay->getContentsMargins(&l, &t, &r, &b);
-        lay->setContentsMargins(l + kEdge,
-                                t + kEdge + (needsX ? kX + 4 : title.isEmpty() ? 0 : kCaption),
-                                r + kEdge, b + kEdge);
+        const int strip = kEdge + (needsX ? kX + 4 : title.isEmpty() ? 0 : kCaption);
+        lay->setContentsMargins(l + kEdge, t + strip, r + kEdge, b + kEdge);
+        dlg->setProperty(kDragTop, t + strip);
         if (!title.isEmpty()) {
             auto *cap = new QLabel(title.toUpper(), dlg);
             cap->setObjectName(QStringLiteral("popupCaption"));

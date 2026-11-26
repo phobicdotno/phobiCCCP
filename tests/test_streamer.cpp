@@ -281,7 +281,8 @@ int main(int argc, char **argv)
                        QStringLiteral("G0X10Y10"), QStringLiteral("G1Z-1F300")});
         spin(2000, [&] { return parks.size() == 1; });
         check(parks.size() == 1 && parks.at(0) == 1, "queue cross: parks for the first bit");
-        s.continueAfterToolChange(rise);
+        check(s.continueAfterToolChange(rise) == rise.size(),
+              "queue cross: no crossing (no X/Y before the next marker), the rise counted");
         spin(2000, [&] { return parks.size() == 2; });
         check(parks.size() == 2 && parks.at(1) == 2, "queue cross: parks for the second bit");
         check(grbl.seen.contains("G53 G0 Z-2.500") && grbl.seen.last() == "M05",
@@ -289,7 +290,8 @@ int main(int argc, char **argv)
         check(!grbl.seen.contains("G90 G0 X10 Y10"),
               "queue cross: no crossing to the next bit's first cut before that bit is in");
         const int before = int(grbl.seen.size());
-        s.continueAfterToolChange(rise);
+        check(s.continueAfterToolChange(rise) == rise.size() + 1,
+              "queue cross: the crossing to the first cut is counted with the rise (progress)");
         spin(3000, [&] { return finished; });
         check(finished && finishedOk, "queue cross: the program finishes");
         check(grbl.seen.size() == before + 6 && grbl.seen.at(before + 1) == "G53 G0 Z-2.500"
@@ -351,6 +353,73 @@ int main(int argc, char **argv)
         check(finished, "hold: the program carries on to its end");
         check(grbl.seen.lastIndexOf("M03S16000") > off, "hold: the spindle comes on again after the lift");
         // The flags above end with this block; the streamer lives on.
+        QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // The way back down after a hold: a rapid only to a little above the
+    // stock and the hold Z, the rest at the feed (capped), in the program's
+    // units.
+    {
+        using c2d::GrblStreamer;
+        GrblStreamer::Modal m;
+        m.haveZ = true; m.z = -1.5; m.haveFeed = true; m.feed = 1000; m.motion = 1;
+        QStringList r = GrblStreamer::resumeLinesFor(m);
+        check(r.contains(QStringLiteral("G0Z2.500")) && r.contains(QStringLiteral("G1Z-1.500F600")),
+              "resume: in the stock, a rapid to 2.5 above the top, then fed down");
+        m.z = 5.0;
+        r = GrblStreamer::resumeLinesFor(m);
+        check(r.contains(QStringLiteral("G0Z7.500")) && r.contains(QStringLiteral("G1Z5.000F600"))
+                  && !r.contains(QStringLiteral("G0Z5.000")),
+              "resume: above the stock, not a rapid all the way to the hold Z");
+        m.z = -0.05; m.inch = true; m.feed = 40;
+        r = GrblStreamer::resumeLinesFor(m);
+        check(r.contains(QStringLiteral("G0Z0.1000")) && r.contains(QStringLiteral("G1Z-0.0500F24.0")),
+              "resume: inch program, 0.1 in and 24 in/min");
+        check(GrblStreamer::scanModal({"G90G20", "G1Z-1F10"}, 2).inch
+                  && !GrblStreamer::scanModal({"G90G20", "G21", "G1Z-1F10"}, 3).inch,
+              "modal: G20 after G90 on one line is read");
+        m.inch = false; m.motion = 2;
+        r = GrblStreamer::resumeLinesFor(m);
+        for (const QString &l : r)
+            check(!l.startsWith(QStringLiteral("G2")) && !l.startsWith(QStringLiteral("G3")),
+                  "resume: no bare G2 line (GRBL refuses it)");
+    }
+
+    // Hold between two modal arcs: the post names G2 only on the first arc
+    // line. After the way back down (G1 to go down), the program's next line
+    // must be an arc again, not a straight G1 with stray I/J.
+    {
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
+        QStringList prog = {QStringLiteral("G90G21"), QStringLiteral("G0Z2.540"), QStringLiteral("M03S16000"),
+                            QStringLiteral("G1Z-1.000F600.0"), QStringLiteral("G2X1.000Y0.000I0.500J0.000")};
+        for (int i = 0; i < 300; ++i)
+            prog << QStringLiteral("X%1.000Y%2.000I0.500J0.000").arg(i + 2).arg(i % 2);
+        grbl.seen.clear();
+        bool reached = false, finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::holdPointReached, [&] { reached = true; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream(prog);
+        check(s.queueHoldPoint({QStringLiteral("G53 G0 Z-5"), QStringLiteral("M5")}), "arc hold: the lines go in");
+        spin(3000, [&] { return reached; });
+        check(reached && s.isHeldAtPoint(), "arc hold: the program stands at the point");
+        const QStringList down = s.resumeLinesAfterHold();
+        check(down.contains(QStringLiteral("G1F600.0")), "arc hold: the feed comes back");
+        const int sentBefore = int(grbl.seen.size());
+        check(s.continueAfterHold(down) == down.size(), "arc hold: every resume line counted");
+        spin(6000, [&] { return finished; });
+        check(finished, "arc hold: the program carries on to its end");
+        const int at = int(grbl.seen.indexOf("G1F600.0", sentBefore));
+        check(at >= 0 && at + 1 < grbl.seen.size(), "arc hold: the resume lines went out");
+        const QByteArray next = grbl.seen.at(at + 1);
+        std::printf("arc hold: first program line after the way down: %s\n", next.constData());
+        check(next.startsWith("G2X") && next.contains("I0.500"),
+              "arc hold: the next line is an arc again (G2 restored), not a G1 with I/J");
+        int g2 = 0;
+        for (int i = at + 1; i < grbl.seen.size(); ++i)
+            g2 += grbl.seen.at(i).startsWith("G2");
+        check(g2 == 1, "arc hold: only that one line gets the G2");
         QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }

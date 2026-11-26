@@ -2395,7 +2395,7 @@ public:
                 first = false;
             } else if (job.closed) {
                 if (ramp) {
-                    rampAt = rampDescend(lap, z + cp.stepdown, z, cp.rampAngle);
+                    rampAt = rampDescend(lap, zWas, z, cp.rampAngle);   // from the floor already cut
                 } else {
                     // The first pass below the tab tops after ramped ones:
                     // we stand where the last ramp reached depth, anywhere
@@ -2786,6 +2786,17 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             cp.tabTop = floor + numOr(j.value("tab_height"), 0);
             cp.tabWidth = qBound(1.0, numOr(j.value("tab_width"), 6.0), 30.0);
             cp.tabToolR = qMax(0.0, numOr(j.value("tool").toObject().value("diameter"), 3.175) / 2);
+            // Tabs as tall as the whole cut (a 2 mm outline with 3 mm tabs)
+            // would lift over every tab on every pass and leave those
+            // stretches uncut, so the shape comes out with gaps. A cut that
+            // shallow holds nothing: no tabs.
+            if (cp.tabTop >= cp.zTop - 1e-9) {
+                cp.tabTop = -1e9;
+                cp.tabWidth = 0;
+                const QString n = QStringLiteral("%1: tabs as tall as the cut, none made").arg(name);
+                if (!res.notes.contains(n))
+                    res.notes << n;
+            }
         };
         if (cutout) {
             const double floor = depth(j.value("cut_depth"));
