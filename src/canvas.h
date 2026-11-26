@@ -100,6 +100,12 @@ public:
     // and select them.
     void addElements(const QVector<Element> &els, const QString &what);
     QStringList selectedElementIds() const;
+    // Layers (layers.h): swap elements for copies of themselves on another
+    // layer, or with their layer renamed, shown, hidden or locked. One undo
+    // step; `after` keeps the ids (and z-order) of the elements it replaces.
+    void editLayers(const QVector<Element> &after, const QString &text);
+    // Edit > Select all: every shape not on a hidden or locked layer.
+    void selectAll();
     Document *document() const { return m_doc; }
     void selectIds(const QStringList &ids);   // replace the selection (vector ops)
     void selectElements(const QStringList &ids);

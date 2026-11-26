@@ -51,6 +51,7 @@ add_library(phobicccp_core STATIC
     src/simulation.cpp
     src/vectorops.cpp
     src/dogbone.cpp
+    src/layers.cpp
     src/sketch.cpp
     src/parametric.cpp
     src/adaptive.cpp
@@ -99,7 +100,7 @@ add_library(phobicccp_ui STATIC
     src/aboutdialog.cpp
     src/propertiespanel.cpp
     src/parameterspanel.cpp
-    src/toolpathpanel.cpp src/shapestrip.cpp
+    src/toolpathpanel.cpp src/shapestrip.cpp src/layerspanel.cpp
     src/dragscroll.cpp src/decimalkey.cpp
     src/toolpathform.cpp
     src/toollibrarydialog.cpp
@@ -293,6 +294,9 @@ if(Qt6Test_FOUND)
     add_executable(test_canvas tests/test_canvas.cpp)
     target_link_libraries(test_canvas PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME canvas COMMAND test_canvas)
+    add_executable(test_layers tests/test_layers.cpp)
+    target_link_libraries(test_layers PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME layers COMMAND test_layers)
     # Area tool on hair-thin islands, and pattern copies round a closed path.
     add_executable(test_areathin tests/test_areathin.cpp)
     target_link_libraries(test_areathin PRIVATE phobicccp_ui Qt6::Test)

@@ -327,6 +327,24 @@ static void testLayersAndGroupsLost(const QString &dir)
         lost.clear();
         padlink::designFromDocument(p2, d, &lost, &err);
         check(lost.contains(QStringLiteral("layers and groups")), "a layer named Cut on every shape is reported as lost");
+        // A hidden DEFAULT layer: the pad shows it, and it comes back shown.
+        const QString p4 = QDir(dir).filePath("layers4.c2d");
+        check(padlink::buildDocument(d, p4, nullptr, &err), "layers4 fixture builds");
+        Document d4;
+        d4.load(p4, &err);
+        for (const Element &e : d4.elements()) {
+            QJsonObject r = e.raw;
+            QJsonObject l = r.value("layer").toObject();
+            l.insert("visible", false);
+            r.insert("layer", l);
+            d4.replaceElement(Element::fromJson(r));
+        }
+        d4.save(p4, &err);
+        lost.clear();
+        const QJsonObject back4 = padlink::designFromDocument(p4, d, &lost, &err);
+        check(lost.contains(QStringLiteral("layers and groups")), "a hidden layer is reported as lost");
+        check(back4.value("shapes").toArray().size() == d4.elements().size(),
+              "a hidden layer's shapes still go to the pad");
         Document d3;
         d3.load(path, &err);
         if (!d3.toolpaths().isEmpty()) {

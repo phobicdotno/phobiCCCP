@@ -513,11 +513,14 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             lose(QStringLiteral("construction lines"));
             continue;
         }
-        // The pad puts every shape on one layer, in no group.
+        // The pad puts every shape on one layer, in no group. It draws every
+        // shape: a hidden or locked layer comes back shown and unlocked.
         const QJsonValue group = e.raw.value(QStringLiteral("group_id"));
+        const QJsonObject layer = e.raw.value(QStringLiteral("layer")).toObject();
         if ((group.isArray() ? !group.toArray().isEmpty() : !group.toString().isEmpty())
-            || e.raw.value(QStringLiteral("layer")).toObject().value(QStringLiteral("name")).toString()
-                   != QLatin1String("DEFAULT"))
+            || layer.value(QStringLiteral("name")).toString() != QLatin1String("DEFAULT")
+            || !layer.value(QStringLiteral("visible")).toBool(true)
+            || layer.value(QStringLiteral("locked")).toBool(false))
             lose(QStringLiteral("layers and groups"));
         if (!e.raw.value(QStringLiteral("tabs")).toArray().isEmpty())
             lose(QStringLiteral("tabs"));

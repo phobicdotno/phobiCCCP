@@ -166,12 +166,14 @@ public:
     }
 
     // Layer object for newly created elements: copied from an existing element
-    // so new shapes land on the same layer; falls back to CC's DEFAULT layer.
+    // so new shapes land on the same layer (the first one that is shown and
+    // not locked, so a new shape never lands out of sight or out of reach);
+    // falls back to CC's DEFAULT layer.
     QJsonObject defaultLayer() const
     {
-        if (!m_elements.isEmpty()) {
-            const QJsonObject l = m_elements.first().raw.value("layer").toObject();
-            if (!l.isEmpty())
+        for (const Element &e : m_elements) {
+            const QJsonObject l = e.raw.value("layer").toObject();
+            if (!l.isEmpty() && l.value("visible").toBool(true) && !l.value("locked").toBool(false))
                 return l;
         }
         QJsonObject l;

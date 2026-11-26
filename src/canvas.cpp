@@ -1,5 +1,6 @@
 #include <numeric>
 #include "canvas.h"
+#include "layers.h"
 #include <QUuid>
 #include "vectorops.h"
 #include "sketchgeom.h"
@@ -358,6 +359,31 @@ private:
     Canvas *m_c; Document *m_d; Element m_before, m_after;
 };
 
+// Swap elements for copies of themselves on another layer, or with their
+// layer's flags or name changed (same ids, same places in the z-order).
+class LayerCmd : public QUndoCommand
+{
+public:
+    LayerCmd(Canvas *c, Document *d, const QVector<Element> &after, const QString &text)
+        : m_c(c), m_d(d), m_after(after)
+    {
+        setText(text);
+        for (const Element &e : after)
+            if (const Element *was = d->elementById(e.id))
+                m_before.append(*was);
+    }
+    void redo() override { apply(m_after); }
+    void undo() override { apply(m_before); }
+private:
+    void apply(const QVector<Element> &els)
+    {
+        for (const Element &e : els)
+            m_d->replaceElement(e);
+        refresh(m_c);
+    }
+    Canvas *m_c; Document *m_d; QVector<Element> m_before, m_after;
+};
+
 // Swap a set of elements for another set (convert-to-path: a text becomes
 // several glyph paths). Afters are appended, so the z-order may change.
 class ReplaceCmd : public QUndoCommand
@@ -644,7 +670,7 @@ void Canvas::selectAreaAt(const QPointF &p, bool add)
     QVector<QPainterPath> paths;
     for (QGraphicsItem *it : m_scene->items())
         if (auto *e = dynamic_cast<ElemItem *>(it))
-            if (e->isClosed() && e->data(0).isValid()) {
+            if (e->isClosed() && e->data(0).isValid() && e->isVisible()) {
                 closed.append({e->data(0).toString(), e->mapToScene(e->path())});
                 paths << closed.last().second;
             }
@@ -999,6 +1025,33 @@ void Canvas::moveElementBy(const QString &id, double dx, double dy)
         return;
     if (m_doc->elementById(id))
         pushEdit(new MoveCmd(this, m_doc, {{id, QPointF(dx, dy)}}), {id});
+}
+
+void Canvas::editLayers(const QVector<Element> &after, const QString &text)
+{
+    if (!m_doc || after.isEmpty())
+        return;
+    QStringList ids;
+    for (const Element &e : after)
+        ids << e.id;
+    pushEdit(new LayerCmd(this, m_doc, after, text), ids);
+}
+
+void Canvas::selectAll()
+{
+    if (!m_doc)
+        return;
+    if (m_tool != Select && m_tool != NodeEdit && m_tool != Pan && m_tool != SelectArea)
+        setTool(Select);
+    // Items on hidden layers are invisible and those on locked layers are
+    // not selectable: setSelected() leaves both alone.
+    m_scene->blockSignals(true);
+    for (QGraphicsItem *it : m_scene->items())
+        if (it->data(0).isValid() && it->isVisible()
+            && (it->flags() & QGraphicsItem::ItemIsSelectable))
+            it->setSelected(true);
+    m_scene->blockSignals(false);
+    onSelectionChanged();
 }
 
 QStringList Canvas::selectedElementIds() const
@@ -1574,8 +1627,9 @@ void Canvas::setTool(Tool t)
     const bool selectable = (t == Select || t == NodeEdit || t == Pan || t == SelectArea);
     for (QGraphicsItem *it : m_scene->items()) {
         if (it->data(0).isValid()) {
-            it->setFlag(QGraphicsItem::ItemIsSelectable, selectable);
-            it->setFlag(QGraphicsItem::ItemIsMovable, t == Select);
+            const bool locked = it->data(1).toBool();   // on a locked layer
+            it->setFlag(QGraphicsItem::ItemIsSelectable, selectable && !locked);
+            it->setFlag(QGraphicsItem::ItemIsMovable, t == Select && !locked);
         }
     }
     switch (t) {
@@ -1698,8 +1752,13 @@ void Canvas::rebuild()
         m_scene->addItem(item);
         item->setToolTip(QStringLiteral("%1  %2").arg(e.geometryType, e.id));
         item->setData(0, e.id);                       // scene item -> element
-        item->setFlag(QGraphicsItem::ItemIsSelectable, selectable);
-        item->setFlag(QGraphicsItem::ItemIsMovable, m_tool == Select);
+        // Layers: a hidden one is not drawn (nor picked; its toolpaths still
+        // cut it), a locked one is drawn but cannot be selected or moved.
+        const bool locked = layers::isLocked(e);
+        item->setData(1, locked);
+        item->setVisible(!layers::isHidden(e));
+        item->setFlag(QGraphicsItem::ItemIsSelectable, selectable && !locked);
+        item->setFlag(QGraphicsItem::ItemIsMovable, m_tool == Select && !locked);
         if (selected.contains(e.id))
             item->setSelected(true);
     }
@@ -2360,6 +2419,8 @@ bool Canvas::modifyTarget(const QPointF &q, QString *id, PathModel *model,
     for (int i = 0; i < els.size(); ++i) {
         int sub;
         double g;
+        if (layers::isHidden(els.at(i)) || layers::isLocked(els.at(i)))
+            continue;   // out of sight or locked: not a target (still a bound)
         if (!els.at(i).painterPath.boundingRect().adjusted(-tol, -tol, tol, tol).contains(q))
             continue;
         const PathModel &pm = modelAt(i);
@@ -3155,7 +3216,8 @@ void Canvas::cycleSelection(QMouseEvent *event)
         return;
     QList<QGraphicsItem *> stack;
     for (QGraphicsItem *it : items(event->pos()))
-        if (it->data(0).isValid() && it->isVisible())
+        if (it->data(0).isValid() && it->isVisible()
+            && (it->flags() & QGraphicsItem::ItemIsSelectable))   // not a locked layer's
             stack.append(it);
     int at = -1;
     for (int i = 0; i < stack.size(); ++i)

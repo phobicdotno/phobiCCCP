@@ -32,6 +32,7 @@
 #include "simpanel.h"
 #include "toolpathpanel.h"
 #include "shapestrip.h"
+#include "layerspanel.h"
 #include "vectoractions.h"
 #include "importui.h"
 #include "setupsheet.h"
@@ -641,6 +642,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_docTabs->setIconSize(QSize(18, 18));
     m_shapes = new ShapeStrip(m_canvas, this);
     m_docTabs->addTab(m_shapes, toolIcon(QStringLiteral("document")), QStringLiteral("Shapes"));
+    m_layers = new LayersPanel(m_canvas, this);
+    m_docTabs->addTab(m_layers, toolIcon(QStringLiteral("document")), QStringLiteral("Layers"));
     m_docTabs->addTab(m_info, toolIcon(QStringLiteral("document")), QStringLiteral("Document"));
     m_docTabs->addTab(scrolled(m_model), toolIcon(QStringLiteral("model")), QStringLiteral("Model"));
     m_docTabs->addTab(scrolled(m_parameters), toolIcon(QStringLiteral("fx")), QStringLiteral("Parameters"));
@@ -861,6 +864,11 @@ MainWindow::MainWindow(QWidget *parent)
         m_canvas->deleteSelected();
     });
     delAct->setToolTip(QStringLiteral("Delete the selected vectors  (Delete)"));
+    QAction *allAct = editMenu->addAction(QStringLiteral("Select &all"), this, [this] {
+        m_canvas->selectAll();
+    });
+    allAct->setShortcut(QKeySequence::SelectAll);
+    allAct->setToolTip(QStringLiteral("Select every shape, except those on hidden or locked layers  (Ctrl+A)"));
 
     // Create: generators that draw ready-made parts as plain vectors.
     auto *createMenu = m_menuBar->addMenu(QStringLiteral("&Create"));
@@ -2655,6 +2663,7 @@ void MainWindow::openPath(const QString &path, bool untitled)
     m_tp->setDocument(&m_doc);
     m_machine->setDocument(&m_doc);
     m_model->setDocument(&m_doc);
+    m_layers->documentReplaced();
     markSaved();
     m_recovery.discard();             // the design it replaces was saved or let go
     if (m_untitledPath != path)
