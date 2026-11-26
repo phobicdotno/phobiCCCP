@@ -371,6 +371,11 @@ int main(int argc, char *argv[])
         app.processEvents();
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         check(editorFor<QDoubleSpinBox>(&form, "raster_angle") != nullptr, "pocket: raster angle shown for Raster");
+        // Undo hands the old json (rings) back: the raster angle goes again.
+        form.setToolpath("{ps}", "pocket_toolpath", jp);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        check(!editorFor<QDoubleSpinBox>(&form, "raster_angle"), "pocket: undo to rings hides the raster angle");
     }
 
     // Chipload line under the spindle speed, and Suggest fills the feed.
