@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.66 (build 156) — 2026-11-26
+
+> Cutting time on every toolpath card, text on any path, fluting, a finger-joint box generator, toolpath templates, 3D rest roughing, running any G-code file, and layers with groups.
+
+- **Cutting time on the toolpath cards:** each toolpath card now shows about how long it cuts ("≈ 4 min", "≈ 1 h 12 min", "< 1 min"), and the list ends with the total for the ticked toolpaths. It uses the same estimate as the Setup Sheet and updates when the preview is rebuilt.
+- **Text on path:** select one text and one line, curve or closed shape, then Edit > Vectors > Text on path. The letters follow the shape and turn with it. Set the distance above or below the line, where the text starts (or centre it), and flip it to the other side. The text becomes plain vectors so the file still opens in Carbide Create; one Undo brings the text back.
+- **Fluting:** a new toolpath that cuts a V-bit or ball-nose groove down each selected open line, arc or curve. It ramps from nothing to full depth and back out, so the ends taper. Choose the ramp at the start, the end or both, its length in mm or % of the line (25 % by default), a straight or smooth ramp, and the number of passes.
+- **Box with finger joints:** Create > Box with Finger Joints draws the flat parts of a box (bottom, front, back, two ends and an optional lid) as closed vectors laid side by side on the stock. You give the inside or outside size, material thickness (starts at the stock thickness), finger width (about 3 × thickness, rounded to an odd number of fingers), bit diameter and a fit gap (0.1 mm). One Undo removes the whole box. Cut the parts with an outside Contour and Corners: Dogbone so the fingers seat fully.
+- **Toolpath templates:** on the Toolpaths page, Templates ▾ > Save as template… keeps the tool, depths, feeds and all settings of the ticked toolpaths, without their shapes, under a name. Apply template… adds them to any design, cutting the selected shapes, or with no shapes and a "pick shapes" mark on the card. One Undo takes the whole set back.
+- **3D rest roughing:** 3D Rough has a "Rest: only what a bigger bit left" switch. At each depth level a smaller bit cuts only the corners and narrow slots the bigger bit of the 3D Rough above could not reach. You can also type the bigger bit's size.
+- **Open G-code:** the Machine page can run any G-code file (.nc, .gcode, .tap, .ngc), such as a tiled design's tile programs. It gets the same checks as a design: it must fit the travel and match the Z zero, T/M6 parks for a BitSetter tool change, the job list has a row per tool with times, and the job ends with a park. Files with inch units, cutter comp, incremental moves, other work zeros or drilling cycles are refused with the line and the reason. "Back to design" runs the open design again.
+- **Layers and groups:** a Layers tab on the Design page shows, hides, locks, renames, adds and deletes layers, moves the selected shapes to a layer, and a tap on a layer selects its shapes. Hidden shapes are not drawn but still cut. Locked shapes can't be picked. Select all skips both. Edit > Group (Ctrl+Alt+G) / Ungroup (Ctrl+Shift+G): a click picks the whole group, Alt+click picks one shape.
+
 ## v1.3.65 (build 155) — 2026-11-26
 
 > Dogbone corners, raster pockets, joining imported vectors, a flute-length and chipload check, spindle and rapid overrides, and GRBL errors in plain English.
