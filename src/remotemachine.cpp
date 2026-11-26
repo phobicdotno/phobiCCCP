@@ -466,7 +466,7 @@ bool RemoteMachine::switchMachine(const QString &id)
 bool RemoteMachine::send(const QString &name, const QByteArray &c2d, bool start, const QString &machine)
 {
     const Computer *c = current();
-    if (!c || m_sending)
+    if (!c || m_sending || m_switching)
         return false;
     const QString active = c->info.value(QStringLiteral("activeMachine")).toString();
     if (!machine.isEmpty() && machine != active) {
@@ -856,7 +856,8 @@ void RemoteMachinePanel::refresh()
     m_warn->setVisible(!warn.isEmpty());
     refreshSteps(c, machine);
 
-    const bool canSend = haveDesign && c && online && !m_client->isSending();
+    const bool canSend = haveDesign && c && online && !m_client->isSending()
+                         && !m_client->isSwitching();
     m_send->setEnabled(canSend);
     // Honours the computer's gate: with starting from pads off there, only
     // Send is offered (and the computer refuses a start anyway).
@@ -868,7 +869,7 @@ void RemoteMachinePanel::refresh()
 void RemoteMachinePanel::send(bool start)
 {
     const RemoteMachine::Computer *c = m_client->current();
-    if (!c || !m_design.makeCopy || m_client->isSending())
+    if (!c || !m_design.makeCopy || m_client->isSending() || m_client->isSwitching())
         return;
     const QString name = m_design.name ? m_design.name() : QStringLiteral("Design");
     const QString host = c->name(), key = c->key();
@@ -911,7 +912,10 @@ void RemoteMachinePanel::send(bool start)
     const QByteArray data = f.readAll();
     f.close();
     QFile::remove(path);
-    m_client->send(name, data, start, machineId);
+    if (!m_client->send(name, data, start, machineId))
+        m_result->setText(m_client->isSwitching()
+                              ? QStringLiteral("Not sent: the machine is being switched. Try again when it is done.")
+                              : QStringLiteral("Not sent: %1 is busy or gone.").arg(host));
     refresh();
 }
 

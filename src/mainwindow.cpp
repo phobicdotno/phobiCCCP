@@ -921,6 +921,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_receiveAct->setChecked(QSettings().value(QStringLiteral("receive/enabled"), true).toBool());
     connect(m_receiveAct, &QAction::toggled, this, [this](bool on) {
         QSettings().setValue(QStringLiteral("receive/enabled"), on);
+        if (!on) {
+            // Turned off by the user: no retry may start it again.
+            m_relistenTries = 0;
+            if (m_relistenTimer)
+                m_relistenTimer->stop();
+        }
         setReceiving(on);
     });
     fileMenu->addSeparator();
@@ -3114,11 +3120,10 @@ bool MainWindow::newUntitled(double width, double height, double thickness)
 void MainWindow::setReceiving(bool on)
 {
     if (!on) {
+        // The retry count is kept: relisten() replaces the receiver this
+        // way, and its backoff must go on counting.
         delete m_receiver;
         m_receiver = nullptr;
-        m_relistenTries = 0;
-        if (m_relistenTimer)
-            m_relistenTimer->stop();
         return;
     }
     if (m_receiver)
