@@ -950,7 +950,9 @@ void GrblStreamer::flushTlo()
     ++m_adhocPending;
     m_adhocLines << QStringLiteral("G43.1");
     m_adhocClock.restart();
-    writeLine(QStringLiteral("G43.1 Z%1").arg(m_tlo, 0, 'f', 3));
+    // In mm whatever was typed or run before: in G20 the offset would be
+    // read 25.4 times too large. An inch program gets G20 back on resume.
+    writeLine(QStringLiteral("G21 G43.1 Z%1").arg(m_tlo, 0, 'f', 3));
 }
 
 void GrblStreamer::resyncAdhoc(const QString &why)

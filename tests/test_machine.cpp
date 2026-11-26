@@ -1351,7 +1351,7 @@ int main(int argc, char **argv)
                         QStringLiteral("G0Z5.000"), QStringLiteral("X25.100Y24.900")});
         spin(8000, [&] { return finished; });
         check(finished && finishedOk, "resume: the job runs to the end");
-        const int measured = grbl.indexOf("G43.1");
+        const int measured = grbl.indexOf("G21 G43.1");
         const int back = grbl.indexOf("G53 G0 X-123.500 Y-234.250");
         const int program = grbl.indexOf("G90G21");
         const int retract = grbl.indexOf("G0Z5.000");
@@ -1519,7 +1519,7 @@ int main(int argc, char **argv)
         spin(1500, [&] { return grbl.count("G4P0.01") == 1; });
         grbl.hangDwell = false;              // (it would hang the G43.1 as well)
         s->applyToolLengthOffset(0);
-        check(s->isMacroRunning() && grbl.count("G43.1") == 0, "probe miss: the offset waits for the macro");
+        check(s->isMacroRunning() && grbl.count("G21 G43.1") == 0, "probe miss: the offset waits for the macro");
         grbl.alarm = true;                   // Alarm until $X: G-code is answered error:9
         grbl.send("ALARM:5\r\nok\r\n");
         spin(1500, [&] { return macroEnds > 0; });
@@ -1528,9 +1528,9 @@ int main(int argc, char **argv)
         // The panel unlocks by itself after a probe miss.
         spin(3000, [&] { return answers.size() >= 3 && s->pendingCommands() == 0; });
         wait(300);
-        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G43.1");
-        check(unlock >= 0 && tlo > unlock && grbl.count("G43.1") == 1
-                  && grbl.events.at(tlo) == "G43.1 Z0.000",
+        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G21 G43.1");
+        check(unlock >= 0 && tlo > unlock && grbl.count("G21 G43.1") == 1
+                  && grbl.events.at(tlo) == "G21 G43.1 Z0.000",
               "probe miss: the offset is written once, after the unlock, not into the alarm");
         check(grbl.count("G0X1") == 0, "probe miss: the rest of the macro is not sent");
         check(answers.size() == 3 && answers.at(1).first == QLatin1String("$X") && answers.at(1).second
@@ -1596,7 +1596,7 @@ int main(int argc, char **argv)
         spin(1500, [&] { return answers.size() == 1; });
         grbl.hangDwell = false;
         check(answers.size() == 1 && answers.at(0).first == QLatin1String("$X") && s->pendingCommands() == 1
-                  && grbl.count("G43.1") == 0,
+                  && grbl.count("G21 G43.1") == 0,
               "alarm after unlock: the offset waits for the line still out");
         grbl.alarm = true;                   // Alarm until $X: G-code is answered error:9
         grbl.send("ALARM:9\r\nok\r\n");
@@ -1604,13 +1604,13 @@ int main(int argc, char **argv)
         wait(400);
         check(answers.size() == 2 && answers.at(1).first == QLatin1String("G4P0.01") && !answers.at(1).second,
               "alarm after unlock: the alarm is that line's answer");
-        check(grbl.count("G43.1") == 0, "alarm after unlock: no offset written into the alarm");
+        check(grbl.count("G21 G43.1") == 0, "alarm after unlock: no offset written into the alarm");
         grbl.events.clear();
         check(s->sendCommand(QStringLiteral("$X")), "alarm after unlock: unlocked again");
         spin(1500, [&] { return answers.size() >= 4 && s->pendingCommands() == 0; });
         wait(300);
-        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G43.1");
-        check(unlock >= 0 && tlo > unlock && grbl.count("G43.1") == 1 && grbl.events.at(tlo) == "G43.1 Z2.500",
+        const int unlock = grbl.indexOf("$X"), tlo = grbl.indexOf("G21 G43.1");
+        check(unlock >= 0 && tlo > unlock && grbl.count("G21 G43.1") == 1 && grbl.events.at(tlo) == "G21 G43.1 Z2.500",
               "alarm after unlock: the offset is written once, after the unlock");
         check(answers.size() == 4 && answers.at(3).first == QLatin1String("G43.1") && answers.at(3).second,
               "alarm after unlock: and answered for itself");

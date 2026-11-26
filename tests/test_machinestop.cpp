@@ -763,6 +763,17 @@ int main(int argc, char **argv)
         for (const QByteArray &e : grbl.events)
             if (e.startsWith("$J=")) { jog = true; jogMm = e.startsWith("$J=G21 "); }
         check(jog && jogMm, "inchpark: a jog names G21");
+        // A measured tool's length offset: Z1.5 mm, not 1.5 inches.
+        grbl.events.clear();
+        check(panel.sendTyped(QStringLiteral("G20")), "inchpark: G20 again");
+        wait(400);
+        s->applyToolLengthOffset(1.5);
+        wait(600);
+        int bare = 0;
+        for (const QByteArray &e : grbl.events)
+            bare += e.contains("G43.1") && !e.startsWith("G21 G43.1");
+        check(grbl.indexOf("G21 G43.1 Z1.500") > grbl.indexOf("G20") && bare == 0,
+              "inchpark: the tool length offset goes out in mm (G21 in its line)");
     }
 
     if (mode == "mdihome") {
@@ -921,7 +932,7 @@ int main(int argc, char **argv)
         wait(2500);
         std::printf("offset label on machine B: %s\n", qPrintable(panel.m_tloLabel->text()));
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
-        check(grbl.count("G43.1 Z12") == 0, "tlo: machine A's tool offset is not applied on machine B");
+        check(grbl.count("G21 G43.1 Z12") == 0, "tlo: machine A's tool offset is not applied on machine B");
     }
 
     if (mode == "descendlive") {
@@ -970,8 +981,8 @@ int main(int argc, char **argv)
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         check(seen.size() == 1, "tc: one prompt");
         check(!s->isStreaming(), "tc: job finished");
-        check(grbl.indexOf("G43.1 Z2") >= 0, "tc: offset applied");
-        check(grbl.indexOf("G1X6") > grbl.indexOf("G43.1 Z2"), "tc: rest after offset");
+        check(grbl.indexOf("G21 G43.1 Z2") >= 0, "tc: offset applied");
+        check(grbl.indexOf("G1X6") > grbl.indexOf("G21 G43.1 Z2"), "tc: rest after offset");
         check(grbl.indexOf("M5", grbl.indexOf("G1X6")) > 0, "tc: spindle off at end");
     }
 
@@ -1020,7 +1031,7 @@ int main(int argc, char **argv)
         // The toolpath's first line is before its own spindle start (the post
         // starts it after the tool change): over the start at the top, then
         // the program's spindle start and wait.
-        const int m5 = grbl.indexOf("M5"), tlo = grbl.indexOf("G43.1"), m3 = grbl.indexOf("M03S10000");
+        const int m5 = grbl.indexOf("M5"), tlo = grbl.indexOf("G21 G43.1"), m3 = grbl.indexOf("M03S10000");
         const int across = grbl.indexOf("G90 G0 X46.825 Y19.525");
         check(across > tlo && across < m3, "starthere: across at the top after the change, before the spindle");
         check(m5 >= 0 && tlo > m5 && m3 > tlo && grbl.indexOf("G4P3.00", m3) == m3 + 1,
@@ -1039,7 +1050,7 @@ int main(int argc, char **argv)
         check(panel.runProgram(nullptr, &f), "starthere: started again");
         spin(20000, [&] { return !s->isStreaming(); });
         wait(1500);
-        check(asked == 1 && tools == 0 && grbl.indexOf("G43.1") < 0 && grbl.indexOf("M03S10000") >= 0,
+        check(asked == 1 && tools == 0 && grbl.indexOf("G21 G43.1") < 0 && grbl.indexOf("M03S10000") >= 0,
               "starthere: the bit in is the one wanted, no tool change");
     }
 
@@ -1184,7 +1195,7 @@ int main(int argc, char **argv)
         spin(8000, [&] { return !s->isStreaming(); });
         wait(1000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
-        const int offset = grbl.indexOf("G43.1 Z2");
+        const int offset = grbl.indexOf("G21 G43.1 Z2");
         const int across = grbl.indexOf("G90 G0 X80.354 Y38.452", offset);
         const int retract = grbl.indexOf("G0Z2.540", offset);
         check(seen.size() == 1 && offset >= 0, "tcspin: one prompt, the bit measured");
@@ -1698,7 +1709,7 @@ int main(int argc, char **argv)
         wait(800);
         s->applyToolLengthOffset(0.4);
         wait(800);
-        const bool g431 = grbl.indexOf("G43.1 Z0.400") >= 0;
+        const bool g431 = grbl.indexOf("G21 G43.1 Z0.400") >= 0;
         grbl.wcoZ = grbl.mz - 1.75 + 0.4;   // as GRBL reports it with G43.1 active
         wait(800);
         panel.m_useMap->setChecked(false);
@@ -1958,21 +1969,21 @@ int main(int argc, char **argv)
         for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
             std::printf("LOG:\n%s\n", qPrintable(t->toPlainText().right(1200)));
         wait(3000);
-        std::printf("TLO app=%.3f  G43.1 sent=%d\n", s->toolLengthOffset(), grbl.count("G43.1"));
+        std::printf("TLO app=%.3f  G43.1 sent=%d\n", s->toolLengthOffset(), grbl.count("G21 G43.1"));
         check(grbl.count("$J=") == 0, "a jog tapped while homing is refused");
-        check(grbl.count("G43.1") >= 1, "the tool offset goes out after homing");
+        check(grbl.count("G21 G43.1") >= 1, "the tool offset goes out after homing");
     }
     if (mode == "tloretry") {
         // A G43.1 the controller refuses is sent again once it is Idle.
         wait(600);
-        grbl.reject = "G43.1";
+        grbl.reject = "G21 G43.1";
         s->applyToolLengthOffset(1.5);
         wait(400);
-        const int refused = grbl.count("G43.1");
+        const int refused = grbl.count("G21 G43.1");
         grbl.reject.clear();
         wait(1500);
-        std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G43.1"));
-        check(refused >= 1 && grbl.count("G43.1") > refused, "a refused tool offset is sent again");
+        std::printf("G43.1 refused %d, sent in all %d\n", refused, grbl.count("G21 G43.1"));
+        check(refused >= 1 && grbl.count("G21 G43.1") > refused, "a refused tool offset is sent again");
     }
     if (mode == "v1miss") {
         grbl.geo = true;
@@ -2154,10 +2165,10 @@ int main(int argc, char **argv)
     if (mode == "tlospam") {
         // A G43.1 the controller keeps refusing gets a few tries, not one per report.
         wait(600);
-        grbl.reject = "G43.1";
+        grbl.reject = "G21 G43.1";
         s->applyToolLengthOffset(1.5);
         wait(3000);
-        check(grbl.count("G43.1") <= 4, "a refused G43.1 is not retried endlessly");
+        check(grbl.count("G21 G43.1") <= 4, "a refused G43.1 is not retried endlessly");
     }
     if (mode == "remoteset" || mode == "ovrreset") {
         // Run settings made at the computer that a pad cannot see refuse a
@@ -2349,7 +2360,7 @@ int main(int argc, char **argv)
         for (QPlainTextEdit *t : panel.findChildren<QPlainTextEdit *>())
             logText += t->toPlainText();
         check(seen.isEmpty(), "endalarm: Cancel job asks nothing");
-        check(grbl.count("!") == 0 && grbl.count("G43.1") == 0 && grbl.count("G91") == 0 && grbl.count("G53") == 0,
+        check(grbl.count("!") == 0 && grbl.count("G21 G43.1") == 0 && grbl.count("G91") == 0 && grbl.count("G53") == 0,
               "endalarm: Cancel job sends nothing into the locked controller");
         check(!logText.contains(QLatin1String("job cancelled: spindle off, Z up to the top")),
               "endalarm: no claim that Z went up");
