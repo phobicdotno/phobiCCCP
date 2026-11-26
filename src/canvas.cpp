@@ -1507,6 +1507,7 @@ void Canvas::setDocument(Document *doc)
     // panels, handed the new document after this, show none.
     m_scene->clearSelection();
     endBand();   // a band on the old design selects nothing in the new one
+    m_deferredPress.valid = false;
     // The old design's toolpath preview and highlight must not follow it.
     clearToolpathPreview();
     setVectorHighlight({});
@@ -1557,6 +1558,7 @@ void Canvas::setTool(Tool t)
     m_grab = GrabNone;
     m_band = false;
     m_bandKeep.clear();
+    m_deferredPress.valid = false;   // a tap of the old tool lands nowhere
     viewport()->setCursor(t == Pan ? Qt::OpenHandCursor
                           : t == SelectArea ? Qt::PointingHandCursor
                           : t == Select || t == NodeEdit ? Qt::ArrowCursor : Qt::CrossCursor);
@@ -2622,6 +2624,12 @@ void Canvas::mousePressEvent(QMouseEvent *event)
     // A band still open at a new press lost its release (a touch that ended
     // somewhere else): it ends here, without stretching to the new point.
     endBand();
+    m_deferredPress.valid = false;   // a press whose release never came
+    if (!m_replaying && fromTouch(event) && commitsOnPress(event)) {
+        m_deferredPress = {true, event->position(), event->globalPosition(), event->modifiers()};
+        event->accept();
+        return;
+    }
     if (event->button() == Qt::MiddleButton || (m_tool == Pan && event->button() == Qt::LeftButton)) {
         m_panning = true;
         m_panLast = event->pos();
@@ -3018,6 +3026,19 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_pinching && fromTouch(event)) {
         // The pinch's last finger up: the next touch is a tap or drag again.
         m_pinching = false;
+        event->accept();
+        return;
+    }
+    if (m_deferredPress.valid && fromTouch(event) && event->button() == Qt::LeftButton) {
+        // The finger came up without a pinch: the tap does now what a mouse
+        // press does at once, where the finger went down.
+        const DeferredPress d = m_deferredPress;
+        m_deferredPress.valid = false;
+        QMouseEvent press(QEvent::MouseButtonPress, d.pos, d.globalPos, Qt::LeftButton, Qt::LeftButton,
+                          d.mods, event->pointingDevice());
+        m_replaying = true;
+        mousePressEvent(&press);
+        m_replaying = false;
         event->accept();
         return;
     }
@@ -3470,6 +3491,31 @@ void Canvas::deleteSelected()
         pushEdit(new DeleteCmd(this, m_doc, victims), {});
 }
 
+bool Canvas::commitsOnPress(const QMouseEvent *event) const
+{
+    if (!m_doc || event->button() != Qt::LeftButton)
+        return false;
+    switch (m_tool) {
+    case Constrain:
+    case Dimension:
+    case DrawPoint:
+    case DrawText:
+        return true;
+    default:
+        break;
+    }
+    const QPointF at = mapToScene(event->pos());
+    if (clickTool())
+        return m_clicks.size() + 1 >= clicksNeeded();
+    if (sketchTool())
+        return m_tanLines.size() >= sketchLinesNeeded() && m_clicks.size() + 1 >= sketchPointsNeeded();
+    if (m_tool == DrawPath)
+        return m_penNodes.size() >= 2 && QLineF(at, m_penNodes.first().p).length() <= pxToMm(8);
+    if (m_tool == DrawSpline)
+        return m_splinePts.size() >= 3 && QLineF(at, m_splinePts.first()).length() <= pxToMm(8);
+    return false;
+}
+
 // The first finger began a drag or a shape: the pinch wins. Its touch also
 // came as a mouse press, which may have started a select band, grabbed a
 // shape to move, a node or a dimension label to drag, or placed a node of a
@@ -3479,6 +3525,7 @@ void Canvas::deleteSelected()
 void Canvas::pinchStarted()
 {
     m_pinching = true;
+    m_deferredPress.valid = false;   // its tap never happens
     if (m_touchPress.valid) {
         auto rollBack = [](auto &v, int n) {
             if (v.size() > n)
@@ -3503,18 +3550,15 @@ void Canvas::pinchStarted()
         m_preview->setPath(previewPath(m_penNodes.last().p));
     else if (m_preview && m_tool == DrawSpline && !m_splinePts.isEmpty())
         m_preview->setPath(sketch::fitSpline(m_splinePts, false).painterPath());
-    // A dimension label being dragged goes back where it was: the drag
-    // moves it in the design without an undo step until the release.
-    if (!m_dragDim.isEmpty()) {
-        if (m_doc) {
-            const int i = m_doc->parametric().indexOfUid(m_dragDim);
-            if (i >= 0)
-                m_doc->parametricRef().constraints[i].label = m_dragDimLabel0;
-        }
-        m_dragDim.clear();
-    }
+    cancelDimDrag();
     endBand();
     m_panning = false;
+    // A node being dragged goes back as Esc puts it: the model too, or the
+    // next node edit would commit the moved node inside its own undo step.
+    if (m_tool == NodeEdit && m_grab != GrabNone) {
+        syncEditTarget();
+        previewModel();
+    }
     restoreEditItem();
     m_grab = GrabNone;
     if (QGraphicsItem *g = m_scene->mouseGrabberItem())

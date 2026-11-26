@@ -681,7 +681,7 @@ class ToolpathsPanel extends StatelessWidget {
         ),
         PCard(
           title: 'Depth',
-          child: Column(children: [_row('End', StepperField(t.depth, (v) => onChange(i, t.copyWith(depth: v)), min: 0.01, max: 1000, decimals: 3))]),
+          child: Column(children: [_row('End', StepperField(t.depth, (v) => onChange(i, t.copyWith(depth: v)), min: 0.01, max: 1000, decimals: 3, magnitude: true))]),
         ),
         if (t.type == 'profile')
           PCard(
@@ -704,8 +704,8 @@ class ToolpathsPanel extends StatelessWidget {
             child: Column(children: [
               _row('Tabs', Switch(value: t.tabs, onChanged: (v) => onChange(i, t.copyWith(tabs: v)))),
               if (t.tabs) ...[
-                _row('Height', StepperField(t.tabHeight ?? 3, (v) => onChange(i, t.copyWith(tabHeight: v)), min: 0.1, max: 50, decimals: 2)),
-                _row('Width', StepperField(t.tabWidth ?? 12, (v) => onChange(i, t.copyWith(tabWidth: v)), min: 1, max: 30, decimals: 1)),
+                _row('Height', StepperField(t.tabHeight ?? 3, (v) => onChange(i, t.copyWith(tabHeight: v)), min: 0.1, max: 50, decimals: 2, magnitude: true)),
+                _row('Width', StepperField(t.tabWidth ?? 12, (v) => onChange(i, t.copyWith(tabWidth: v)), min: 1, max: 30, decimals: 1, magnitude: true)),
               ],
             ]),
           ),

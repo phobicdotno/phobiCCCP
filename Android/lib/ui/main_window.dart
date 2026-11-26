@@ -22,6 +22,23 @@ import 'widgets.dart';
 /// Kept with pubspec.yaml's version and the desktop's VERSION.
 const appVersion = '1.3.64';
 
+/// The tool left on when the page switches to [mode]. Outside Design only
+/// Select, Hand and Area make sense: a drawing tool left on there drew a
+/// circle where a tap should pick shapes for a toolpath (the computer
+/// switches to Select too). An unfinished path is dropped on any switch.
+DrawTool toolForMode(int mode, DrawTool tool) {
+  if (tool == DrawTool.path) return DrawTool.select;
+  if (mode != 0 && tool != DrawTool.select && tool != DrawTool.hand && tool != DrawTool.area) return DrawTool.select;
+  return tool;
+}
+
+/// The current toolpath and whether its halo shows once [ids] are picked on
+/// the board: picking shapes lets go of the halo but keeps the toolpath
+/// current ("+" still adds to it), as the computer's list does; picking
+/// nothing lets go of the toolpath too.
+({int? tp, bool lit}) afterPick(Set<String> ids, int? tp, bool lit) =>
+    ids.isEmpty ? (tp: null, lit: lit) : (tp: tp, lit: false);
+
 class MainWindow extends StatefulWidget {
   final AppState app;
   const MainWindow(this.app, {super.key});
@@ -269,7 +286,7 @@ class _MainWindowState extends State<MainWindow> {
     ];
     final face = fillFace([for (final c in closed) c.$2], (x, y));
     if (face.isEmpty) {
-      setState(() => _sel = {});
+      setState(() => _select({}));
       return;
     }
     final ids = <String>{};
@@ -325,7 +342,7 @@ class _MainWindowState extends State<MainWindow> {
       _say('Area — $unsure text item(s) not selected: near the edge, or with closed letters '
           '(A, O, e…) the pad cannot keep uncut. Select it by hand to keep the letters standing (their insides get cut)');
     }
-    setState(() => _sel = ids);
+    setState(() => _select(ids));
   }
 
   Future<void> _tapAt(double x, double y) async {
@@ -643,17 +660,21 @@ class _MainWindowState extends State<MainWindow> {
 
   // ---- layout ---------------------------------------------------------------------
 
-  /// Switches page. Outside Design only Select, Hand and Area make sense:
-  /// a drawing tool left on there drew a circle where a tap should pick
-  /// shapes for a toolpath (the computer switches to Select too).
+  /// Switches page, leaving on only a tool that page uses (toolForMode).
   void _setMode(int i) {
     _mode = i;
     _pathDraft = null;
-    if (i != 0 && _tool != DrawTool.select && _tool != DrawTool.hand && _tool != DrawTool.area) {
-      _tool = DrawTool.select;
-    } else if (_tool == DrawTool.path) {
-      _tool = DrawTool.select;
-    }
+    _tool = toolForMode(i, _tool);
+  }
+
+  /// Every pick of shapes (board, Area, Select all, the shape list) goes
+  /// through here, so the toolpath halo follows the same rule (afterPick).
+  /// Called inside setState.
+  void _select(Set<String> ids) {
+    _sel = ids;
+    final p = afterPick(ids, _tp, _tpLit);
+    _tp = p.tp;
+    _tpLit = p.lit;
   }
 
   @override
@@ -704,7 +725,7 @@ class _MainWindowState extends State<MainWindow> {
             _Item('Redo', _redo.isEmpty ? null : () => _undoRedo(false)),
             null,
             _Item('Delete', _sel.isEmpty ? null : _deleteSelected),
-            _Item('Select all', d == null ? null : () => setState(() => _sel = {for (final s in d.shapes) s.id})),
+            _Item('Select all', d == null ? null : () => setState(() => _select({for (final s in d.shapes) s.id}))),
           ]),
           _menu('View', [
             _Item('1 · Design', () => setState(() => _setMode(0)), checked: _mode == 0),
@@ -917,11 +938,7 @@ class _MainWindowState extends State<MainWindow> {
                   leftOf: _mode == 1 && _tpLit && _tp != null && _tp! < d.toolpaths.length ? _tp : null,
                   pathDraft: _pathDraft ?? const [],
                   // A tap on empty board lets go of the toolpath too, as on the computer.
-                  onSelect: (ids) => setState(() {
-                    _sel = ids;
-                    if (ids.isEmpty) _tp = null;
-                    if (ids.isNotEmpty) _tpLit = false;
-                  }),
+                  onSelect: (ids) => setState(() => _select(ids)),
                   onMove: (ids, dx, dy) => setState(() {
                     _beforeMove ??= _d;
                     _d = _d!.copyWith(shapes: [for (final s in _d!.shapes) ids.contains(s.id) ? s.movedWithin(dx, dy) : s]);
@@ -970,7 +987,7 @@ class _MainWindowState extends State<MainWindow> {
             },
           ),
         ),
-        Expanded(child: DocumentTabs(design: d, tools: app.tools, selected: _sel, onPick: (id) => setState(() => _sel = {id}))),
+        Expanded(child: DocumentTabs(design: d, tools: app.tools, selected: _sel, onPick: (id) => setState(() => _select({id})))),
       ]);
 
   Widget _toolpathPanel(Design d) => Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
@@ -997,7 +1014,10 @@ class _MainWindowState extends State<MainWindow> {
               // Right after the original, as on the computer: list order is cut order.
               _commit(d.copyWith(toolpaths: [...d.toolpaths]..insert(i + 1, t.copyWith(name: '${t.name} copy'))));
               _remapOpen((k) => k > i ? k + 1 : k);
-              setState(() => _tp = i + 1);
+              setState(() {
+                _tp = i + 1;
+                _tpLit = true;
+              });
             },
             onDelete: (i) {
               if (_changedUnder(d)) return;
@@ -1016,7 +1036,10 @@ class _MainWindowState extends State<MainWindow> {
                 final r = k > i ? k - 1 : k;
                 return r >= to ? r + 1 : r;
               });
-              setState(() => _tp = to);
+              setState(() {
+                _tp = to;
+                _tpLit = true;
+              });
             },
             onPickTool: _pickTool,
           ),

@@ -35,6 +35,7 @@ public:
                        quint16 targetPort = kPort, QObject *parent = nullptr);
 
     bool start();
+    quint16 localPort() const;             // the port it listens on (0: not started)
     void announce();                       // send everything now
     // What announce() sends: one datagram, or more when the stock does not
     // fit in kMaxDatagram (the Collections ride in the first).

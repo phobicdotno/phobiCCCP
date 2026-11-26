@@ -685,6 +685,7 @@ void JobView::clear()
     m_running = -1;
     m_runningPass = -1;
     m_parked = false;
+    m_parkedWhy.clear();
     m_stopped = false;
     m_parkedAt = -1;
     m_parkedTotal = 0;
@@ -791,8 +792,15 @@ void JobView::setOverride(int percent)
     refresh();
 }
 
-void JobView::setParked(bool parked)
+void JobView::setParked(bool parked, const QString &why)
 {
+    if (parked && why != m_parkedWhy) {
+        m_parkedWhy = why;
+        if (parked == m_parked) {
+            refresh();
+            return;
+        }
+    }
     if (parked == m_parked)
         return;
     m_parked = parked;
@@ -1054,7 +1062,8 @@ void JobView::refresh()
                 }
             }
             if (m_parked)
-                what += QStringLiteral("  ·  waiting at the tool change");
+                what += m_parkedWhy.isEmpty() ? QStringLiteral("  ·  waiting at the tool change")
+                                              : QStringLiteral("  ·  ") + m_parkedWhy;
             m_current->setText(what);
         } else {
             m_current->setText(QStringLiteral("Starting…"));

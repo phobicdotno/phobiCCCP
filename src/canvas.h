@@ -272,6 +272,18 @@ private:
         int clicks = 0, tanLines = 0, penNodes = 0, splinePts = 0;
     } m_touchPress;
     void pinchStarted();
+    // A touch press that would add a shape or a constraint at once (a point,
+    // text, the last click of an arc/slot/sketch, a constraint or dimension
+    // pick, closing a path or spline) waits for its release: the first finger
+    // of a pinch must not commit anything, and the pinch swallows the release.
+    struct DeferredPress {
+        bool valid = false;
+        QPointF pos, globalPos;
+        Qt::KeyboardModifiers mods;
+    } m_deferredPress;
+    bool m_replaying = false;
+    bool commitsOnPress(const QMouseEvent *event) const;
+    void cancelDimDrag();   // a dimension label being dragged goes back
     // Select band (viewport coords). Dragged left to right it is a window
     // (only what lies wholly inside); right to left a crossing (whatever
     // line it touches). Ctrl adds to the selection it started with.

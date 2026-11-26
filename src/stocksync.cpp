@@ -39,6 +39,11 @@ QSettings *StockSync::open() const
     return m_file.isEmpty() ? new QSettings : new QSettings(m_file, QSettings::IniFormat);
 }
 
+quint16 StockSync::localPort() const
+{
+    return m_sock ? m_sock->localPort() : 0;
+}
+
 bool StockSync::start()
 {
     if (m_sock)
@@ -418,7 +423,11 @@ static bool mergeCollections(QSettings &s, const QJsonObject &coll, bool whole, 
     // copy that already took the peer's set at that stamp never takes ours.
     // A copy that merges this next ends with the same set as ours and does
     // not raise it again.
-    const bool newer = stamped || (changed && !sameSet(result, peer));
+    // Also when ours changed to exactly the peer's set but our stamp is not
+    // below its own: an older copy may hold our old content at our stamp,
+    // and would never take the peer's (older) one or ours at that stamp.
+    // The next copy to merge this has nothing to change, so it stops there.
+    const bool newer = stamped || (changed && (!sameSet(result, peer) || lts >= pts));
     s.setValue(QLatin1String(kCollTs), static_cast<qint64>(newer ? now : qMax(lts, pts)));
     if (newer)
         *tell = true;
@@ -468,25 +477,20 @@ bool StockSync::merge(const QByteArray &data)
         s->setValue(base + QStringLiteral("ts"), ts);
         changed = true;
     }
-    // Bits we have counts for and the sender (all of whose bits are here)
-    // has none: it is behind.
-    if (!split && !tell) {
-        s->beginGroup(QStringLiteral("toolStock"));
-        const QStringList ours = s->childGroups();
-        for (const QString &n : ours) {
-            bool ok = false;
-            const int number = n.toInt(&ok);
-            if (ok && known.contains(number) && !stock.contains(n)
-                && s->value(n + QStringLiteral("/ts"), 0).toLongLong() > 0) {
-                tell = true;
-                break;
-            }
-        }
-        s->endGroup();
-    }
+    // A bit the sender has no counts for at all is left to the 30 s
+    // announce: its library may not have that bit, and answering for it
+    // answered every packet of that copy.
     const bool whole = !split || root.value(QStringLiteral("part")).toInt(-1) == 0;
-    if (mergeCollections(*s, root.value(QStringLiteral("coll")).toObject(), whole, limit, &tell))
+    bool collTell = false;
+    if (mergeCollections(*s, root.value(QStringLiteral("coll")).toObject(), whole, limit, &collTell))
         changed = true;
+    // Collections too big for a datagram are not sent: answering for them
+    // would only repeat a packet without them, every 2 s for ever.
+    if (collTell) {
+        const QJsonObject mineNow = collectionsPayload(*s);
+        if (!mineNow.isEmpty() && jsonSize(mineNow) + 256 <= kMaxDatagram)
+            tell = true;
+    }
     m_tellPeers = tell;
     s->sync();
     return changed;

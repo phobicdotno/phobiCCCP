@@ -40,12 +40,19 @@ void refresh(Canvas *c, const QStringList &select)
     c->selectIds(select);
 }
 
+// Which results each consumed input turned into: input id -> result ids.
+using Lineage = QHash<QString, QStringList>;
+
 // Toolpaths reference elements by uuid; when an operation consumes its
 // inputs, every toolpath that pointed at one of them is pointed at the
-// result elements instead (so a pocket on two circles becomes a pocket on
-// their weld). Returns (before, after) pairs for the toolpaths that change.
+// results *that input became* (`from`) instead - so a pocket on two circles
+// becomes a pocket on their weld, but a drill on the cut-outs of a Subtract
+// does not become a drill on the plate. A toolpath left with no vectors
+// stays, empty, the way deleting its shapes leaves it; `emptied` counts
+// those. Returns (before, after) pairs for the toolpaths that change.
 QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QString> &removed,
-                                                     const QVector<Element> &added)
+                                                     const QVector<Element> &added,
+                                                     const Lineage &from, int *emptied)
 {
     QVector<QPair<Toolpath, Toolpath>> out;
     if (removed.isEmpty())
@@ -54,18 +61,27 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
         const QJsonArray refs = t.json.value("elements").toArray();
         bool hit = false;
         QJsonArray kept;
-        QSet<QString> seen;
+        QSet<QString> seen, wanted;
         for (const QJsonValue &v : refs) {
             const QString id = v.toObject().value("uuid").toString();
-            if (removed.contains(id)) { hit = true; continue; }
+            if (removed.contains(id)) {
+                hit = true;
+                for (const QString &r : from.value(id))
+                    wanted.insert(r);
+                continue;
+            }
             kept.append(v);
             seen.insert(id);
         }
         if (!hit)
             continue;
         for (const Element &e : added)
-            if (!seen.contains(e.id))
+            if (wanted.contains(e.id) && !seen.contains(e.id)) {
                 kept.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
+                seen.insert(e.id);
+            }
+        if (kept.isEmpty() && emptied)
+            ++*emptied;
         Toolpath after = t;
         after.json.insert(QStringLiteral("elements"), kept);
         out.append({t, after});
@@ -73,13 +89,138 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
     return out;
 }
 
+// Every input became every result: Union welds them all, and an Intersect
+// result is the area common to all inputs, so it lies inside each of them.
+Lineage everyResult(const QVector<Element> &inputs, const QVector<Element> &results)
+{
+    QStringList ids;
+    for (const Element &e : results)
+        ids << e.id;
+    Lineage from;
+    for (const Element &e : inputs)
+        from.insert(e.id, ids);
+    return from;
+}
+
+// Subtract: the results are what is left of the first input; the others
+// are cut away (consumed) and become nothing.
+Lineage subtractLineage(const QVector<Element> &inputs, const QVector<Element> &results)
+{
+    Lineage from;
+    if (inputs.isEmpty())
+        return from;
+    from = everyResult({inputs.first()}, results);
+    for (int i = 1; i < inputs.size(); ++i)
+        from.insert(inputs.at(i).id, QStringList());
+    return from;
+}
+
+// A path flattened finely: QPainterPath flattens curves to within half a
+// unit - half a millimetre here - so it is flattened 200x larger and
+// scaled back (about 2.5 µm).
+QVector<QPolygonF> fineOutline(const QPainterPath &p)
+{
+    constexpr double k = 200.0;
+    const QTransform down = QTransform::fromScale(1.0 / k, 1.0 / k);
+    QVector<QPolygonF> out;
+    for (const QPolygonF &poly : p.toSubpathPolygons(QTransform::fromScale(k, k)))
+        out.append(down.map(poly));
+    return out;
+}
+
+double segDist2(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double len2 = QPointF::dotProduct(ab, ab);
+    const double t = len2 > 0 ? qBound(0.0, QPointF::dotProduct(p - a, ab) / len2, 1.0) : 0.0;
+    const QPointF q = a + t * ab - p;
+    return QPointF::dotProduct(q, q);
+}
+
+// Whether a vertex of `ring` lies within `reach` of the outline `polys`
+// (closed subpaths also get their closing side).
+bool ringNear(const QVector<QPolygonF> &ring, const QVector<QPolygonF> &polys, bool closed,
+              double reach)
+{
+    const double r2 = reach * reach;
+    for (const QPolygonF &poly : polys) {
+        if (poly.isEmpty())
+            continue;
+        const QRectF zone = poly.boundingRect().adjusted(-reach, -reach, reach, reach);
+        const int n = poly.size();
+        const bool wrap = closed && n > 2 && poly.first() != poly.last();
+        for (const QPolygonF &rp : ring)
+            for (const QPointF &v : rp) {
+                if (!zone.contains(v))
+                    continue;
+                if (n == 1 && segDist2(v, poly.first(), poly.first()) <= r2)
+                    return true;
+                for (int i = 1; i < n; ++i)
+                    if (segDist2(v, poly.at(i - 1), poly.at(i)) <= r2)
+                        return true;
+                if (wrap && segDist2(v, poly.last(), poly.first()) <= r2)
+                    return true;
+            }
+    }
+    return false;
+}
+
+// Offset: every input is offset in one region, so one result ring can come
+// from several inputs (outlines that grew into each other) and several
+// rings from one (a plate and its hole). A ring is the offset of the inputs
+// whose outline it runs at |delta| from - and it is at least |delta| from
+// every outline, so "within |delta| plus a little" picks exactly those. An
+// input matched by no ring (its offset swallowed by a neighbour's) gets the
+// rings it overlaps; a ring matched by no input goes to all of them.
+Lineage offsetLineage(const QVector<Element> &inputs, const QVector<Element> &results,
+                      double delta)
+{
+    Lineage from;
+    for (const Element &e : inputs)
+        from.insert(e.id, QStringList());
+    const double reach = std::fabs(delta) * 1.01 + 0.02;
+    QVector<QVector<QPolygonF>> outlines;
+    QVector<QRectF> zones;
+    for (const Element &e : inputs) {
+        outlines.append(fineOutline(e.painterPath));
+        zones.append(e.painterPath.boundingRect().adjusted(-reach, -reach, reach, reach));
+    }
+    for (const Element &r : results) {
+        const QVector<QPolygonF> ring = r.painterPath.toSubpathPolygons();
+        const QRectF box = r.painterPath.boundingRect();
+        bool any = false;
+        for (int i = 0; i < inputs.size(); ++i) {
+            if (!zones.at(i).intersects(box) && !zones.at(i).contains(box))
+                continue;
+            if (ringNear(ring, outlines.at(i), vec::isClosed(inputs.at(i)), reach)) {
+                from[inputs.at(i).id] << r.id;
+                any = true;
+            }
+        }
+        if (!any)
+            for (const Element &e : inputs)
+                from[e.id] << r.id;
+    }
+    for (const Element &e : inputs) {
+        QStringList &mine = from[e.id];
+        if (!mine.isEmpty())
+            continue;
+        for (const Element &r : results)
+            if (r.painterPath.intersects(e.painterPath))
+                mine << r.id;
+    }
+    return from;
+}
+
 // Replace `inputs` (unless kept) by `results`; results are inserted where the
-// first consumed input sat so the z-order stays put.
+// first consumed input sat so the z-order stays put. `from` says which
+// results each input became, for the toolpaths that machined it.
 class ReplaceCmd : public QUndoCommand
 {
 public:
     ReplaceCmd(Canvas *c, Document *d, const QVector<Element> &inputs,
-               const QVector<Element> &results, bool keepInputs, const QString &text)
+               const QVector<Element> &results, bool keepInputs, const QString &text,
+               const Lineage &from)
         : m_c(c), m_d(d), m_results(results)
     {
         setText(text);
@@ -93,7 +234,7 @@ public:
             }
             std::sort(m_removed.begin(), m_removed.end(),
                       [](const auto &a, const auto &b) { return a.first < b.first; });
-            m_tps = retargetToolpaths(d, removed, results);
+            m_tps = retargetToolpaths(d, removed, results, from, &m_emptied);
             m_removedIds = removed;
         }
         for (const Element &e : results)
@@ -136,6 +277,8 @@ public:
         restoreModelVectors(*m_d, m_model);
         refresh(m_c, inputIds);
     }
+    // Toolpaths this edit leaves with no vectors (see retargetToolpaths).
+    int emptiedToolpaths() const { return m_emptied; }
 private:
     Canvas *m_c; Document *m_d;
     QVector<Element> m_results;
@@ -144,6 +287,7 @@ private:
     QStringList m_resultIds;
     QSet<QString> m_removedIds;
     ModelVectorRefs m_model;
+    int m_emptied = 0;
 };
 
 class MoveManyCmd : public QUndoCommand
@@ -566,14 +710,18 @@ QVector<Element> VectorActions::orderedSelection() const
     return out;
 }
 
-void VectorActions::pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
-                                bool keepInputs, const QString &text)
+int VectorActions::pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
+                               bool keepInputs, const QString &text,
+                               const QHash<QString, QStringList> &from)
 {
     QStringList ids;
     for (const Element &e : inputs)
         ids << e.id;
-    m_canvas->pushEdit(
-        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text), ids);
+    auto *cmd = new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text,
+                               from);
+    const int emptied = cmd->emptiedToolpaths();   // before the stack owns it
+    m_canvas->pushEdit(cmd, ids);
+    return emptied;
 }
 
 // The action's own result, with any warning its edit raised (constraints
@@ -643,10 +791,17 @@ void VectorActions::boolean(vec::BoolOp op)
         emit m_canvas->statusHint(tr("%1: empty result — vectors do not overlap").arg(name));
         return;
     }
-    pushReplace(closedInputs, results, false,
-                tr("%1 %2 vectors").arg(name).arg(closedInputs.size()));
-    reportDone(tr("%1: %2 vector(s) → %3 closed path(s)")
-                   .arg(name).arg(closedInputs.size()).arg(results.size()));
+    // Subtract leaves only what is left of the first vector; the others are
+    // cut away, and a toolpath on them must not move onto the base.
+    const Lineage from = op == vec::BoolOp::Subtract ? subtractLineage(closedInputs, results)
+                                                     : everyResult(closedInputs, results);
+    const int emptied = pushReplace(closedInputs, results, false,
+                                    tr("%1 %2 vectors").arg(name).arg(closedInputs.size()), from);
+    QString msg = tr("%1: %2 vector(s) → %3 closed path(s)")
+                      .arg(name).arg(closedInputs.size()).arg(results.size());
+    if (emptied)
+        msg += tr("; %1 toolpath(s) on the cut-away vectors have no vectors left").arg(emptied);
+    reportDone(msg);
 }
 
 void VectorActions::offset()
@@ -698,8 +853,11 @@ void VectorActions::offsetBy(double delta, bool keepInputs)
         emit m_canvas->statusHint(tr("Offset: nothing left — inset larger than the shape"));
         return;
     }
+    // Each toolpath follows only the outlines grown (or shrunk) from its own
+    // vectors: Offset runs on the whole selection as one region.
     pushReplace(inputs, results, keepInputs,
-                tr("offset %1 vector(s) by %2 mm").arg(inputs.size()).arg(delta));
+                tr("offset %1 vector(s) by %2 mm").arg(inputs.size()).arg(delta),
+                keepInputs ? Lineage() : offsetLineage(inputs, results, delta));
     reportDone(tr("Offset by %1 mm: %2 closed path(s)").arg(delta).arg(results.size()));
 }
 

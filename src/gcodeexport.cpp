@@ -2779,6 +2779,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         // The tab height is measured from `floor`, the cut depth itself: a
         // cutout's break-through goes into the spoilboard under the part,
         // and counting it made every tab thinner by that much.
+        bool tabsThrough = false;   // the tabbed cut reaches the stock bottom
         auto readTabs = [&](double floor) {
             if (j.value("ignore_tabs").toBool(true)
                 || numOr(j.value("tab_height"), 0) <= 0.01)
@@ -2791,8 +2792,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // stretches uncut, so the shape comes out with gaps. A cut that
             // shallow holds nothing: no tabs. (No note: every new contour is
             // 2.54 mm deep with 3 mm tabs, and a note on each teaches people
-            // to skip notes.)
-            if (cp.tabTop >= cp.zTop - 1e-9) {
+            // to skip notes.) A cut through thin stock keeps them: there a
+            // full-height tab is what holds the part.
+            bool thickOk = false;
+            const double thick = std::abs(doc.params().value(QStringLiteral("thickness")).toDouble(&thickOk));
+            tabsThrough = thickOk && thick > 0 && -floor >= thick - 1e-6;
+            if (!tabsThrough && cp.tabTop >= cp.zTop - 1e-9) {
                 cp.tabTop = -1e9;
                 cp.tabWidth = 0;
             }
@@ -4354,6 +4359,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 case RestVerdict::Raised:
                     res.notes << QStringLiteral("%1: starts at %2 mm, the toolpaths above cut to %3 mm")
                                      .arg(name, QString::number(-cp.zTop, 'f', 2), QString::number(-floor, 'f', 2));
+                    // Started lower, tabs can now reach the new top: in a
+                    // groove that does not go through they would leave gaps.
+                    if (!tabsThrough && cp.tabTop >= cp.zTop - 1e-9) {
+                        cp.tabTop = -1e9;
+                        cp.tabWidth = 0;
+                    }
                     break;
                 case RestVerdict::Partial:
                     if (pocket) {

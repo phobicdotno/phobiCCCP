@@ -1107,7 +1107,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         if (m_liftHold) {
             // Stopped at once by a second press (below) while the lift was
             // still queued: let the program finish what it took, then the
-            // lift. The button reads Stop now until the hold point, then
+            // lift. The button reads "Hold here now" until the hold point, then
             // Resume for the way back down (updatePauseButton()).
             if (m_held) {
                 if (m_resetPending) {
@@ -1125,7 +1125,7 @@ MachinePanel::MachinePanel(QWidget *parent)
             if (!m_grbl->isHeldAtPoint()) {
                 m_grbl->pauseStream();
                 setHeld(true);
-                log(QStringLiteral("hold: Stop now pressed while the lift waits its turn - stopping at "
+                log(QStringLiteral("hold: \"Hold here now\" pressed while the lift waits its turn - stopping at "
                                    "once (feed hold, spindle still on). Resume carries on to the "
                                    "lift"));
                 return;
@@ -1149,7 +1149,7 @@ MachinePanel::MachinePanel(QWidget *parent)
                 m_liftHold = true;
                 updatePauseButton();
                 log(QStringLiteral("hold: finishing the lines already sent, then Z up and spindle off. "
-                                   "Press Stop now (or the pad's hold again) to stop at once instead"));
+                                   "Press Hold here now (or the pad's hold again) to stop at once instead"));
             }
         } else if (!m_held) {
             m_grbl->pauseStream();
@@ -1242,7 +1242,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         emit livePosition(0, 0, 0, false);
     });
     connect(m_grbl, &GrblStreamer::statusChanged, this, [this](const MachineStatus &st) { onStatus(st); });
-    // At the lift-hold's point "Stop now" turns into Resume.
+    // At the lift-hold's point "Hold here now" turns into Resume.
     connect(m_grbl, &GrblStreamer::holdPointReached, this, [this] { updatePauseButton(); });
     connect(m_grbl, &GrblStreamer::progressChanged, this, [this](int a, int t) {
         m_progress->setMaximum(qMax(1, t));
@@ -2443,6 +2443,30 @@ void MachinePanel::startSurfaceMap()
             return;
         }
     }
+    // The grid is in work XY and the map goes there with G0: a zero set
+    // before homing, or a grid larger than the stock, can put a point past
+    // the travel (an end stop, the position lost). Check the four corners.
+    {
+        const MachineStatus &st = m_grbl->status();
+        if (!st.valid || !m_grbl->hasWorkOffset()) {
+            log(QStringLiteral("!! surface map: the work offset has not been reported yet - try again "
+                               "in a moment"));
+            return;
+        }
+        const double ox = st.mx - st.wx, oy = st.my - st.wy;
+        for (const double x : {plan.x0, plan.x1})
+            for (const double y : {plan.y0, plan.y1})
+                if (!insideTravel(x + ox, y + oy)) {
+                    shopTell(this, QStringLiteral("Surface map"),
+                             QStringLiteral("The map grid is off the machine"),
+                             QStringLiteral("Grid point X %1  Y %2 is at machine X %3  Y %4, outside "
+                                            "the machine's travel. Check the work zero (set before "
+                                            "homing?) and the grid's size.")
+                                 .arg(x, 0, 'f', 1).arg(y, 0, 'f', 1)
+                                 .arg(x + ox, 0, 'f', 1).arg(y + oy, 0, 'f', 1));
+                    return;
+                }
+    }
     log(QStringLiteral("surface map: %1 × %2 points over X%3–%4 Y%5–%6, travelling at "
                        "work Z%7%8")
             .arg(plan.cols).arg(plan.rows)
@@ -2738,12 +2762,27 @@ void MachinePanel::setHeld(bool held)
 // (spindle on, in the cut), so it must not read "Resume" - someone undoing a
 // mistaken Hold would get the opposite. Feed-held, or standing at the hold
 // point: Resume. Otherwise Hold. Whatever lifted a feed hold meanwhile (Keep
-// running in Cancel job, a report out of Hold) leaves a lift-hold on Stop
-// now / Resume, never on Hold, which would run the way back down.
+// running in Cancel job, a report out of Hold) leaves a lift-hold on Hold
+// here now / Resume, never on Hold, which would run the way back down.
+// The job card's clock waits while held, as at a tool change.
 void MachinePanel::updatePauseButton()
 {
+    if (m_jobView) {
+        const bool atPoint = m_liftHold && m_grbl->isHeldAtPoint();
+        if (m_grbl->isParkedForTool()) {
+            m_holdParked = false;              // the tool change's own park owns it
+        } else {
+            const bool park = m_grbl->isStreaming() && (m_held || atPoint);
+            if (park)
+                m_jobView->setParked(true, atPoint && !m_held ? QStringLiteral("held: Z up, spindle off")
+                                                              : QStringLiteral("held"));
+            else if (m_holdParked)
+                m_jobView->setParked(false);
+            m_holdParked = park;
+        }
+    }
     if (m_liftHold && !m_held && !m_grbl->isHeldAtPoint()) {
-        m_pauseBtn->setText(QStringLiteral("⏹ Stop now"));
+        m_pauseBtn->setText(QStringLiteral("⏸ Hold here now"));
         m_pauseBtn->setToolTip(QStringLiteral("The lift (Z up, spindle off) waits until the moves "
                                               "already sent to the controller are done. Press to "
                                               "stop at once instead: a feed hold where it is, "
@@ -4738,6 +4777,10 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("homed"), m_grbl->isConnected() && m_homed);
     o.insert(QStringLiteral("busy"), isBusy());
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
+    // Held (a feed hold, a lift-hold queued or standing at its point): the
+    // pad says so instead of "Cutting".
+    o.insert(QStringLiteral("held"), m_grbl->isConnected()
+                                         && (m_held || m_liftHold || m_grbl->isHeldAtPoint()));
     o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());
     // The running job's steps, for the pad's job list.

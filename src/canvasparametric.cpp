@@ -506,6 +506,22 @@ void Canvas::setConstraintType(Constraint::Type t)
         resetPicks();
 }
 
+// A dimension label being dragged goes back where it was: the drag moves it
+// in the design without an undo step until the release, which now never
+// comes to this drag.
+void Canvas::cancelDimDrag()
+{
+    if (m_dragDim.isEmpty())
+        return;
+    if (m_doc) {
+        const int i = m_doc->parametric().indexOfUid(m_dragDim);
+        if (i >= 0)
+            m_doc->parametricRef().constraints[i].label = m_dragDimLabel0;
+    }
+    m_dragDim.clear();
+    viewport()->update();
+}
+
 void Canvas::setShowConstraints(bool on)
 {
     m_showConstraints = on;
@@ -520,7 +536,7 @@ void Canvas::setParametricVisible(bool on)
         // Hidden tools must not keep taking clicks (Toolpaths mode picks
         // vectors with them): back to Select, with nothing half picked.
         resetPicks();
-        m_dragDim.clear();
+        cancelDimDrag();
         if (m_tool == Constrain || m_tool == Dimension)
             setTool(Select);
     }

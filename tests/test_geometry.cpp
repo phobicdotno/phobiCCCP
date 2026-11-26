@@ -428,6 +428,19 @@ int main(int argc, char *argv[])
         check(!g.gcode.contains(QLatin1String("Z1.000")), "no lift to a tab top above the stock");
     }
 
+    // --- ...but a cut through thin stock keeps its full-height tabs: they
+    // are what holds the part (2 mm sheet, 3 mm tabs).
+    {
+        Rig r;
+        r.doc.setParam(QStringLiteral("thickness"), QStringLiteral("2.000"));
+        r.addShape(c2d::Element::makeRectangle({30, 20}, 40, 20, layer));
+        r.addToolpath("cutout", {{"cut_depth", 2.0}, {"tab_height", 3.0},
+                                 {"ignore_tabs", false}});
+        const c2d::GcodeResult g = c2d::exportGcode(r.doc);
+        check(g.done.size() == 1 && g.gcode.contains(QLatin1String("Z1.000")),
+              "a through cut in thin stock keeps its tabs");
+    }
+
     // --- a ramp into a short last pass starts from the floor already cut,
     // not a full step-down above it (it fed up inside the slot first).
     {

@@ -691,6 +691,10 @@ class MachineStatus {
   /// How the last job ended once nothing streams: 'finished', 'stopped', or
   /// '' (still going, or an older phobiCCCP).
   final String jobEnd;
+
+  /// The job is held (lifted, paused) at the computer and waits for Resume
+  /// there. False from a phobiCCCP that does not say.
+  final bool held;
   const MachineStatus(
       {this.connected = false,
       this.homed = false,
@@ -700,7 +704,8 @@ class MachineStatus {
       this.state = '',
       this.job = '',
       this.steps = const [],
-      this.jobEnd = ''});
+      this.jobEnd = '',
+      this.held = false});
   factory MachineStatus.fromJson(Map<String, Object?> j) => MachineStatus(
         connected: _b(j['connected']),
         homed: _b(j['homed']),
@@ -711,6 +716,7 @@ class MachineStatus {
         job: _s(j['job']),
         steps: _l(j['steps']).map((s) => JobStep.fromJson(_m(s))).toList(),
         jobEnd: _s(j['jobEnd']),
+        held: _b(j['held']),
       );
 
   /// The heading over the job list on the Machine page.
@@ -724,6 +730,7 @@ class MachineStatus {
 
   String words() {
     if (!connected) return 'Not connected';
+    if (held) return 'Held — press Resume at the computer';
     if (streaming) return job.isEmpty ? 'Cutting' : 'Cutting $job';
     if (state.startsWith('Alarm')) return 'Alarm: needs Initialize';
     if (!homed) return 'Connected, not homed';

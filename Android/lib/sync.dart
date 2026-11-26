@@ -175,6 +175,10 @@ Future<SyncResult> syncWith(Desktop desk, DesignStore store,
       Future<bool?> settleForOlder(Design d) async {
         final w = await c.get(d.id);
         if (w.id != d.id || !plausibleStamp(w.modified, now)) return null;
+        // Edited here during the round trip: settled with the next sync,
+        // not overwritten or forked from the copy read before it.
+        final cur = store.get(d.id);
+        if (cur == null || cur.modified != d.modified) return null;
         final mineWins = winsOver(d, w);
         final loser = mineWins ? w : d;
         String? fork;

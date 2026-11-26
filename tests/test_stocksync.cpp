@@ -280,20 +280,20 @@ int main(int argc, char **argv)
         // from a copy that is behind does.
         const QHostAddress lo(QHostAddress::LocalHost);
         QUdpSocket spy, send;
-        check(spy.bind(lo, 47332), "spy socket binds");
-        c2d::StockSync Cw(cIni, 47331, lo, 47332);
-        check(Cw.start(), "C listens");
+        check(spy.bind(lo, 0), "spy socket binds");
+        c2d::StockSync Cw(cIni, 0, lo, spy.localPort());
+        check(Cw.start() && Cw.localPort() != 0, "C listens");
         runFor(1400);                               // its start-up announce
         while (spy.hasPendingDatagrams())
             spy.receiveDatagram();
-        send.writeDatagram(A.payload(), lo, 47331);
+        send.writeDatagram(A.payload(), lo, Cw.localPort());
         runFor(1200);
         check(!spy.hasPendingDatagrams(), "no answer to a packet that changes nothing");
         const QByteArray behind = QJsonDocument(QJsonObject{{QStringLiteral("app"), QStringLiteral("phobiCCCP-stock")},
                                                             {QStringLiteral("v"), 1},
                                                             {QStringLiteral("from"), QStringLiteral("someone")}})
                                       .toJson(QJsonDocument::Compact);
-        send.writeDatagram(behind, lo, 47331);
+        send.writeDatagram(behind, lo, Cw.localPort());
         runFor(1200);
         check(spy.hasPendingDatagrams(), "a copy with no Collections at all gets an answer");
     }
@@ -320,6 +320,28 @@ int main(int argc, char **argv)
         check(P.merge(lp), "P takes L's Roughing");
         check(wholeTs(P.payload()) == wholeTs(lp), "P ends with L's set and does not raise the stamp again");
         check(!L.merge(P.payload()) && !P.merge(L.payload()), "no back and forth between the two");
+    }
+
+    // 6. A merge that turns our set into exactly the peer's, while our stamp
+    //    is not below the peer's: an older copy that holds our old set at our
+    //    stamp must still get the new one. All had c1 and c7 at T0; A deleted
+    //    c7 at T7 (the older copy O took {c1} at T7); B, offline, deleted c7
+    //    at T5 and changed c1 at T6.
+    {
+        const QString a6 = tmp.path() + QStringLiteral("/a6.ini"), b6 = tmp.path() + QStringLiteral("/b6.ini");
+        putIni(a6, "{\"collections\":[{\"name\":\"c1\",\"tools\":[201]}]}", 7000,
+               "{\"ts\":{\"c1\":1000},\"gone\":{\"c7\":7000}}");
+        putIni(b6, "{\"collections\":[{\"name\":\"c1\",\"tools\":[201,102]}]}", 6000,
+               "{\"ts\":{\"c1\":6000},\"gone\":{\"c7\":5000}}");
+        c2d::StockSync A6(a6, 0), B6(b6, 0);
+        const qint64 oldPeerTs = wholeTs(A6.payload());       // O took A's set
+        check(A6.merge(B6.payload()), "A takes B's changed c1");
+        check(has(collectionsIn(a6), QStringLiteral("c1"), {201, 102}) && !collectionsIn(a6).byName(QStringLiteral("c7")),
+              "A: B's c1, c7 still gone");
+        const QByteArray ap = A6.payload();
+        check(wholeTs(ap) > oldPeerTs, "A's stamp rises above the one the older copy holds");
+        check(!B6.merge(ap) || wholeTs(B6.payload()) == wholeTs(ap), "B takes the stamp, not a new one");
+        check(!A6.merge(B6.payload()) && !B6.merge(A6.payload()), "and the two stop there");
     }
 
     QSettings().clear();

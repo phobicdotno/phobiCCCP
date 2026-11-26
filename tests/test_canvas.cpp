@@ -17,6 +17,7 @@
 #include "../src/model3d.h"
 #include "../src/propertiespanel.h"
 #include "../src/shapestrip.h"
+#include "../src/parametric.h"
 
 #include <QApplication>
 #include <QDoubleSpinBox>
@@ -31,6 +32,8 @@
 #include <QListWidgetItem>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPointingDevice>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QPixmap>
 #include <QPushButton>
@@ -1835,6 +1838,95 @@ int main(int argc, char *argv[])
         check(order() == QStringList({a.id}), "delete takes the listed shapes");
         sc.undoStack()->undo();
         check(sdoc.elements().size() == 3, "undo brings them back");
+    }
+
+    // --- A finger's tap that adds something waits for the finger to lift ----------
+    // The first finger of a pinch also comes as a press; the pinch swallows
+    // its release, so nothing it would have added is ever added. A mouse
+    // press still adds at once.
+    {
+        c2d::Document pdoc;
+        c2d::Canvas pc;
+        pc.resize(900, 700);
+        pc.show();
+        pc.setDocument(&pdoc);
+        pc.resetTransform();
+        pc.scale(3, -3);
+        pc.centerOn(QPointF(60, 60));
+        pc.setTool(c2d::Canvas::DrawPoint);
+        QPointingDevice finger(QStringLiteral("test touchscreen"), 4711, QInputDevice::DeviceType::TouchScreen,
+                               QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position, 10, 0);
+        auto touch = [&](QEvent::Type t, QPointF mm) {
+            const QPoint p = vp(&pc, mm);
+            QMouseEvent e(t, QPointF(p), QPointF(pc.viewport()->mapToGlobal(p)), Qt::LeftButton,
+                          t == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier, &finger);
+            QApplication::sendEvent(pc.viewport(), &e);
+        };
+        touch(QEvent::MouseButtonPress, {50, 50});
+        check(pdoc.elements().isEmpty(), "touch: a point waits for the finger to lift");
+        touch(QEvent::MouseButtonRelease, {50, 50});
+        check(pdoc.elements().size() == 1
+                  && near(pdoc.elements().first().painterPath.boundingRect().center(), {50, 50}, 0.5),
+              "touch: lifted, the point is placed where the finger went down");
+        QTest::mousePress(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {80, 80}));
+        check(pdoc.elements().size() == 2, "mouse: a press places the point at once");
+        QTest::mouseRelease(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {80, 80}));
+        check(pdoc.elements().size() == 2, "mouse: and the release adds nothing more");
+        // A finger that starts a drag-shape (ellipse) still draws as it moves.
+        pc.setTool(c2d::Canvas::DrawEllipse);
+        touch(QEvent::MouseButtonPress, {20, 20});
+        touch(QEvent::MouseMove, {40, 30});
+        touch(QEvent::MouseButtonRelease, {40, 30});
+        check(pdoc.elements().size() == 3, "touch: a dragged ellipse is drawn as before");
+    }
+
+    // --- A dimension label dragged when Design is left goes back -------------------
+    // Leaving the Design page ended the drag with the label moved in the
+    // design and no undo step for it.
+    {
+        QTemporaryDir dd;
+        QString err;
+        const QString blank = dd.filePath("dim.c2d");
+        check(c2d::Document::createBlank(blank, 200, 200, 19, &err), "dimension drag: a blank design");
+        c2d::Document ddoc;
+        check(ddoc.load(blank, &err), "dimension drag: it loads");
+        const c2d::Element l = c2d::Element::makePath({{20, 50}, {120, 50}}, false, ddoc.defaultLayer());
+        ddoc.addElement(l);
+        c2d::Constraint c;
+        c.type = c2d::Constraint::Distance;
+        c2d::GeoRef r;
+        r.kind = c2d::GeoRef::Line;
+        r.id = l.id;
+        r.index = 0;
+        c.refs = {r};
+        c.uid = ddoc.parametric().nextUid();
+        c.name = ddoc.parametric().nextDimensionName();
+        c.expr = QStringLiteral("100");
+        c2d::param::prime(ddoc, c);
+        c.label = QPointF(0, -15);
+        ddoc.parametricRef().constraints.append(c);
+        c2d::param::solve(ddoc);
+        c2d::Canvas dc;
+        dc.resize(900, 700);
+        dc.show();
+        dc.setTool(c2d::Canvas::Select);
+        dc.setDocument(&ddoc);
+        dc.resetTransform();
+        dc.scale(3, -3);
+        dc.centerOn(QPointF(70, 50));
+        check(QTest::qWaitForWindowExposed(&dc), "dimension drag: the canvas is shown");
+        dc.viewport()->repaint();
+        const QPointF label0 = ddoc.parametric().constraints.first().label;
+        QTest::mousePress(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {70, 35}));
+        const QPointF at(70, 35);
+        QTest::mouseMove(dc.viewport(), vp(&dc, at + QPointF(10, -10)));
+        check(ddoc.parametric().constraints.first().label != label0, "dimension drag: the label follows the drag");
+        dc.setParametricVisible(false);
+        check(ddoc.parametric().constraints.first().label == label0,
+              "dimension drag: leaving Design puts the label back");
+        QTest::mouseRelease(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {80, 25}));
+        check(ddoc.parametric().constraints.first().label == label0 && dc.undoStack()->count() == 0,
+              "dimension drag: and no step moves it later");
     }
 
     // --- The element menu offers Edit nodes on the Design page only ------------------
