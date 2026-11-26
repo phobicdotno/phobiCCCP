@@ -78,6 +78,13 @@ int main()
                                                 QStringLiteral("G1 X5 F500"), QStringLiteral("M9"),
                                                 QStringLiteral("M5")}),
           "short M3/M5 words count too");
+    const QStringList packed{QStringLiteral("M3M8S12000"), QStringLiteral("G1 X5 F500"), QStringLiteral("M5M9")};
+    check(coolantTransform(packed) == packed, "own M8 packed after M3: left alone");
+    const QStringList notes{QStringLiteral("(start) M3 S12000"), QStringLiteral("G0X1 (M8)"), QStringLiteral("M5")};
+    check(coolantTransform(notes) == QStringList({QStringLiteral("(start) M3 S12000"), QStringLiteral("M8"),
+                                                  QStringLiteral("G0X1 (M8)"), QStringLiteral("M9"),
+                                                  QStringLiteral("M5")}),
+          "a word after a note counts, a word inside one does not");
 
     check(gamepadmap::actions().contains(QStringLiteral("coolant"))
               && gamepadmap::label(QStringLiteral("coolant")) != QLatin1String("coolant"),

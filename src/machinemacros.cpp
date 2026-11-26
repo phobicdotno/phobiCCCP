@@ -6,6 +6,7 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QVBoxLayout>
 
@@ -47,10 +48,17 @@ QStringList cleanLines(const QString &text)
 {
     QStringList out;
     const QStringList raw = text.split(QChar('\n'));
+    // A note in brackets ends at its ')': "(retract) G53 G0 Z-5 (up)" still
+    // has a move in it. Only a line that is nothing but notes is left out.
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)"));
     for (QString l : raw) {
         l = l.trimmed();
-        if (l.isEmpty() || l.startsWith(QChar(';'))
-            || (l.startsWith(QChar('(')) && l.endsWith(QChar(')'))))
+        if (l.isEmpty() || l.startsWith(QChar(';')))
+            continue;
+        QString bare = l;
+        bare.remove(paren);
+        bare = bare.trimmed();
+        if (bare.isEmpty() || bare.startsWith(QChar(';')))
             continue;
         out << l;
     }

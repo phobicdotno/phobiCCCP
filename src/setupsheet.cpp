@@ -98,7 +98,9 @@ QString setupSheetHtml(const Document &doc, const QString &title)
     if (!p.value(QStringLiteral("material")).isEmpty())
         h += QStringLiteral("<tr><th>Material</th><td>%1</td></tr>").arg(esc(p.value(QStringLiteral("material"))));
     h += QStringLiteral("<tr><th>Zero</th><td>%1</td></tr>").arg(esc(jobZeroText(doc)));
-    h += QStringLiteral("<tr><th>Safe Z</th><td>%1 mm</td></tr>").arg(mm(documentSafeZ(doc)));
+    // In the job-zero frame, like the Extents: with the zero at the bottom the
+    // program clears the stock at the Safe Z plus its thickness.
+    h += QStringLiteral("<tr><th>Safe Z</th><td>%1 mm</td></tr>").arg(mm(documentSafeZ(doc) + jobZeroShift(doc).z()));
     if (total.hasBounds) {
         h += QStringLiteral("<tr><th>Extents</th><td>X %1 … %2, Y %3 … %4, Z %5 … %6 mm</td></tr>")
                  .arg(mm(total.minX, 1), mm(total.maxX, 1), mm(total.minY, 1), mm(total.maxY, 1),

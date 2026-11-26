@@ -221,6 +221,30 @@ int main(int argc, char **argv)
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
 
+    // A program cutting in G1 across a tool change on a line of its own: the
+    // rise and the crossing leave GRBL in G0, so the program's G1 and feed go
+    // back in before its next line (a bare "X20Y3" must not run as a rapid).
+    {
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        grbl.seen.clear();
+        int parked = -1;
+        bool finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parked = t; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G0Z5"), QStringLiteral("G0X0Y0"),
+                       QStringLiteral("G1Z-1F300"), QStringLiteral("G1X5F900"), QStringLiteral("M0 ;T2"),
+                       QStringLiteral("X20Y3")});
+        spin(2000, [&] { return parked >= 0; });
+        s.continueAfterToolChange({QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")});
+        spin(3000, [&] { return finished; });
+        const int across = grbl.seen.indexOf("G90 G0 X20 Y3");
+        check(finished && across > 0 && grbl.seen.value(across + 1) == "G1 F900.0"
+                  && grbl.seen.value(across + 2) == "X20Y3",
+              "tool change: the program's G1 and feed back in before its next line");
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
     // The look-ahead that keeps a Z-only plunge off the BitSetter.
     {
         using c2d::GrblStreamer;
@@ -513,6 +537,15 @@ int main(int argc, char **argv)
                       && d.indexOf("G1 Z-1.000 F200") < d.indexOf("G1Z-2F200")
                       && d.indexOf("G90 G0 X5.000 Y2.000") < d.indexOf("M3 S10000"),
                   "start here: down to the pass's Z at the plunge feed, coolant with the spindle");
+        }
+        // Started on a block that continues a modal arc: G2 goes back in.
+        {
+            const QStringList arc = {"G90G21", "G0Z5", "M03S10000", "G0X10Y0", "G1Z-1F200",
+                                     "G2X0Y10I-10J0F800", "X-10Y0I0J-10"};
+            const QStringList a = GrblStreamer::startFromLines(arc, 6, rise, -1, QString(), &why);
+            check(a.size() > 2 && a.at(a.size() - 2) == "G2" && a.last() == "X-10Y0I0J-10"
+                      && a.contains("G90 G0 X0.000 Y10.000"),
+                  "start here: a modal arc keeps its G2");
         }
         check(GrblStreamer::startFromLines({"G0Z5", "G91", "G1Z-1F300", "G1X1"}, 3, rise, -1, QString(), &why).isEmpty()
                   && why.contains(QLatin1String("G91")),

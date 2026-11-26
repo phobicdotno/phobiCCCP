@@ -82,7 +82,20 @@ int main(int argc, char **argv)
     {
         const QVector<Op> a = {Op::rapid(0, 0, 0), Op::feedTo(50, 0, 0, 6000), Op::feedTo(100, 0, 0, 6000)};
         const QVector<Op> b = {Op::rapid(0, 0, 0), Op::feedTo(50, 0, 0, 6000), Op::dwell(0), Op::feedTo(100, 0, 0, 6000)};
-        check(computeStats(b).timeSec > computeStats(a).timeSec + 0.2, "a dwell brings the machine to rest");
+        const QVector<Op> c = {Op::rapid(0, 0, 0), Op::feedTo(50, 0, 0, 6000), Op::dwell(0.5), Op::feedTo(100, 0, 0, 6000)};
+        check(std::abs(computeStats(b).timeSec - computeStats(a).timeSec) < 1e-9,
+              "a zero dwell (the post writes no G4) changes nothing");
+        check(computeStats(c).timeSec > computeStats(a).timeSec + 0.5 + 0.2, "a dwell brings the machine to rest and waits");
+        // The same speed again: the post writes nothing, the moves run on.
+        const QVector<Op> d = {Op::spindle(10000), Op::rapid(0, 0, 0), Op::feedTo(50, 0, 0, 6000),
+                               Op::spindle(10000), Op::feedTo(100, 0, 0, 6000)};
+        const QVector<Op> e = {Op::spindle(10000), Op::rapid(0, 0, 0), Op::feedTo(50, 0, 0, 6000),
+                               Op::feedTo(100, 0, 0, 6000)};
+        const QVector<Op> g = {Op::spindle(10000), Op::rapid(0, 0, 0), Op::feedTo(50, 0, 0, 6000),
+                               Op::spindle(12000), Op::feedTo(100, 0, 0, 6000)};
+        check(std::abs(computeStats(d).timeSec - computeStats(e).timeSec) < 1e-9
+                  && computeStats(g).timeSec > computeStats(e).timeSec + 0.2,
+              "a spindle op stops the moves only when the post writes a line for it");
     }
     // The job plan from g-code uses the same planner.
     {
@@ -94,6 +107,16 @@ int main(int argc, char **argv)
         check(std::abs(plan.cumSec.last() - (100 / v + v / 400)) < 0.03, "the job plan's times come from the planner");
         const QVector<Op> ops = {Op::rapid(0, 0, 0), Op::feedTo(100, 0, 0, 6000)};
         check(std::abs(plan.cumSec.last() - computeStats(ops).timeSec) < 1e-6, "job plan and estimate agree");
+    }
+    // An R arc is planned as the arc it is, not as its chord.
+    {
+        const QStringList r = {QStringLiteral("G21"), QStringLiteral("G90"), QStringLiteral("G0X0Y0Z0"),
+                               QStringLiteral("G2X20Y0R10F600"), QStringLiteral("M05")};
+        const QStringList ij = {QStringLiteral("G21"), QStringLiteral("G90"), QStringLiteral("G0X0Y0Z0"),
+                                QStringLiteral("G2X20Y0I10J0F600"), QStringLiteral("M05")};
+        const double a = planJob(r, {}, nullptr, 5000).cumSec.last();
+        const double b = planJob(ij, {}, nullptr, 5000).cumSec.last();
+        check(std::abs(a - b) < 1e-6 && a > 3.0, "job plan: an R arc takes as long as the same arc in I/J");
     }
     // A million moves: planned in well under a second.
     {

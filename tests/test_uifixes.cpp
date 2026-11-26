@@ -132,6 +132,15 @@ int main(int argc, char *argv[])
               "setup sheet: both diameters listed");
         check(tools.indexOf(QStringLiteral("quarter")) < tools.indexOf(QStringLiteral("eighth")),
               "setup sheet: in the order they are loaded");
+        {
+            // Zero at the bottom of 19 mm stock: Safe Z in that frame too.
+            c2d::Document bz = d;
+            bz.setParam(QStringLiteral("phobic_zero_z"), QStringLiteral("bottom"));
+            bz.setParam(QStringLiteral("thickness"), QStringLiteral("19"));
+            bz.setParam(QStringLiteral("retract"), QStringLiteral("2.54"));
+            check(c2d::setupSheetHtml(bz, QStringLiteral("t")).contains(QStringLiteral("<th>Safe Z</th><td>21.54 mm")),
+                  "setup sheet: Safe Z above the bottom zero, like the program");
+        }
 
         c2d::ToolStrip strip;
         c2d::IsoPreview iso;
