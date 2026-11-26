@@ -1425,11 +1425,9 @@ int main(int argc, char *argv[])
                     dlg.setWindowModality(Qt::NonModal);
                     dlg.show();
                     QTimer::singleShot(800, [&dlg, out] {
-                        dlg.grab().save(out);
-                        QCoreApplication::exit(0);
+                        QCoreApplication::exit(dlg.grab().save(out) ? 0 : 1);   // a shot not written fails
                     });
-                    app.exec();
-                    return 0;
+                    return app.exec();
                 }
                 else if (step == "settings") {
                     // The Settings dialog, grabbed on its own.
@@ -1438,11 +1436,9 @@ int main(int argc, char *argv[])
                     dlg.setWindowModality(Qt::NonModal);
                     dlg.show();
                     QTimer::singleShot(800, [&dlg, out] {
-                        dlg.grab().save(out);
-                        QCoreApplication::exit(0);
+                        QCoreApplication::exit(dlg.grab().save(out) ? 0 : 1);   // a shot not written fails
                     });
-                    app.exec();
-                    return 0;
+                    return app.exec();
                 }
                 else if (step == "padmap") {
                     // The gamepad dialog with a few buttons held down.
@@ -1462,19 +1458,19 @@ int main(int argc, char *argv[])
                     dlg.showPressed(1, true);
                     dlg.showAxis(0, 1);
                     QTimer::singleShot(800, [&dlg, out] {
-                        dlg.grab().save(out);
-                        QCoreApplication::exit(0);
+                        QCoreApplication::exit(dlg.grab().save(out) ? 0 : 1);   // a shot not written fails
                     });
-                    app.exec();
-                    return 0;
+                    return app.exec();
                 }
                 else if (step == "asktool" || step == "askrun" || step == "askhome") {
                     // The Machine page's popups, grabbed on their own.
                     const QString out = QString::fromLocal8Bit(argv[3]);
+                    // The popup runs its own loop, so the outcome is kept here.
+                    static int shotRc = 1;
                     QTimer::singleShot(800, [out] {
-                        if (QWidget *d = QApplication::activeModalWidget())
-                            d->grab().save(out);
-                        QCoreApplication::exit(0);
+                        QWidget *d = QApplication::activeModalWidget();
+                        shotRc = d && d->grab().save(out) ? 0 : 1;   // a shot not written fails
+                        QCoreApplication::exit(shotRc);
                     });
                     c2d::ShopAsk a;
                     if (step == "askhome") {
@@ -1515,7 +1511,7 @@ int main(int argc, char *argv[])
                         a.defaultOk = false;
                     }
                     c2d::shopAsk(&w, a);
-                    return 0;
+                    return shotRc;
                 }
                 else if (step.startsWith("resize=")) {
                     // resize=WxH after a page is up: what full screen or

@@ -54,6 +54,9 @@ public:
     static constexpr int kSendTimeoutMs = 5 * 60 * 1000;
     // No answer for this long: shown as not answering.
     static constexpr int kStaleMs = 6000;
+    // While the computer wanted does not answer, discovery sweeps every this
+    // many rounds (about every 15 s), not every round.
+    static constexpr int kLostSweepRounds = 5;
 
     struct Computer {
         QString id, host, address;
@@ -66,6 +69,9 @@ public:
         // When the info held was asked for (RemoteMachine's request count):
         // an answer to an earlier question is older news and is dropped.
         quint64 infoSeq = 0;
+        // This entry, not another at the same address later (forgotten and
+        // typed in again): answers are matched to it by this.
+        quint64 gen = 0;
         QString key() const { return QStringLiteral("%1:%2").arg(address).arg(port); }
         QString name() const { return host.isEmpty() ? address : host; }
     };
@@ -100,7 +106,9 @@ public:
     // Ask now instead of at the next tick.
     void pollNow();
     // Switch the selected computer to machine `id`; machineSwitched() tells.
-    void switchMachine(const QString &id);
+    // One at a time: false (nothing asked) while one is on its way.
+    bool switchMachine(const QString &id);
+    bool isSwitching() const { return m_switching; }
     // Send the design (the bytes of a .c2d) to the selected computer's
     // machine in use; with `start`, ask it to start cutting. `machine`: the
     // id of the machine the user was shown (asked about) when they said so;
@@ -121,6 +129,13 @@ private:
     void discoverNow();
     void ask(int index);
     int indexOf(const QString &key) const;
+    // The entry `gen` while it is still at `key`, else -1.
+    int indexOfAsked(quint64 gen, const QString &key) const;
+    // What the settings keep for the user's pick: a computer found on the
+    // network by its install id (so it is known again at a new address),
+    // one typed in by its address.
+    static QString rememberAs(const Computer &c);
+    bool isRemembered(const Computer &c) const;
     void saveTyped() const;
     // Shown, without remembering it as the user's pick.
     void show(int index);
@@ -139,9 +154,11 @@ private:
     bool m_running = false;
     bool m_heard = false;    // a discovery answer came (else rounds also sweep)
     bool m_sending = false;
+    bool m_switching = false;
     bool m_paused = false;   // the app is in the background
     int m_ticks = 0;         // polls
     quint64 m_seq = 0;       // requests asked, and machine switches answered
+    quint64 m_gens = 0;      // entries made
     int m_rounds = 0;        // discovery rounds
 };
 

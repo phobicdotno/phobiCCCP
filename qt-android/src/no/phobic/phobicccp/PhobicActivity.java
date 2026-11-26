@@ -55,6 +55,21 @@ public class PhobicActivity extends QtActivity
     // Files copied in before this were for an earlier run of the program and
     // are open or imported by now; later ones may still be on their way in.
     private static final long PROCESS_START = System.currentTimeMillis();
+    // Work that talks to the program (fileArrived, fileMessage), held until
+    // it is ready: a picker's or save dialog's answer can come to an app
+    // Android started afresh, before the program has registered its natives.
+    // Each runs once, in order.
+    private static final ArrayList<Runnable> s_afterReady = new ArrayList<Runnable>();
+
+    // `work` on a thread of its own once the program is ready (now if it is).
+    // Only on the UI thread, as nativeReady drains the list there.
+    private static void whenReady(final Runnable work)
+    {
+        if (s_ready)
+            new Thread(work).start();
+        else
+            s_afterReady.add(work);
+    }
 
     @Override
     public void onCreate(Bundle savedInstanceState)
@@ -93,6 +108,9 @@ public class PhobicActivity extends QtActivity
                 if (s_ready)
                     return;
                 s_ready = true;
+                for (Runnable work : s_afterReady)
+                    new Thread(work).start();
+                s_afterReady.clear();
                 // What came in on an earlier run is open or imported by now:
                 // cleared, but not what was copied in since this process
                 // started (the file that started the app, one shared meanwhile).
@@ -201,9 +219,9 @@ public class PhobicActivity extends QtActivity
             s_pendingSave = null;
             if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null && from != null) {
                 final Uri to = data.getData();
-                new Thread(new Runnable() {
+                whenReady(new Runnable() {
                     @Override public void run() { copyOut(from, to); }
-                }).start();
+                });
             }
             return;
         }
@@ -248,18 +266,20 @@ public class PhobicActivity extends QtActivity
 
     private void copyInLater(final Uri uri, final int purpose)
     {
-        new Thread(new Runnable() {
+        whenReady(new Runnable() {
             @Override public void run() { copyIn(uri, purpose); }
-        }).start();
+        });
     }
 
     private void copyIn(Uri uri, int purpose)
     {
         String name = displayName(uri);
-        // A folder of its own, so two files of one name never meet.
+        // A folder of its own, and a short fixed name: the name it came with
+        // (which may not fit a file system, 110 Chinese letters are 330
+        // bytes) goes to the program, which cleans it (incoming::settle).
         File dir = new File(new File(getCacheDir(), "incoming"), Long.toString(System.nanoTime()));
         dir.mkdirs();
-        File out = new File(dir, safeName(name));
+        File out = new File(dir, "file");
         try (InputStream in = getContentResolver().openInputStream(uri);
              OutputStream os = new FileOutputStream(out)) {
             if (in == null)
@@ -323,15 +343,6 @@ public class PhobicActivity extends QtActivity
         if (name == null || name.isEmpty())
             name = uri.getLastPathSegment();
         return name == null || name.isEmpty() ? "file" : name;
-    }
-
-    // The program cleans the name properly; this only keeps it one file in `dir`.
-    private static String safeName(String name)
-    {
-        String s = name.replace('/', '_').replace('\\', '_').replace('\0', '_');
-        if (s.isEmpty() || s.equals(".") || s.equals(".."))
-            s = "file";
-        return s.length() > 200 ? s.substring(s.length() - 200) : s;
     }
 
     private static void deleteTree(File f, boolean self)

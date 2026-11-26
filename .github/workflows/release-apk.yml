@@ -33,6 +33,13 @@ jobs:
           if (( 10#$mi >= 100 || 10#$pa >= 100 )); then
             echo "::error::version $v: minor and patch must be below 100 (Android version code)"; exit 1
           fi
+          # The desktop APK takes its version (name and code) from project()
+          # in CMakeLists.txt: a tag or VERSION that says otherwise would put
+          # an APK of another version under this release.
+          cmake_v="$(sed -nE 's/^project\([^)]*VERSION ([0-9.]+).*/\1/p' CMakeLists.txt | head -n1)"
+          if [ "$cmake_v" != "$v" ]; then
+            echo "::error::version $v differs from CMakeLists.txt project() version '$cmake_v'"; exit 1
+          fi
           echo "V=$v" >> "$GITHUB_ENV"
 
       - name: Create the release

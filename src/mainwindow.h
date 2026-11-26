@@ -205,6 +205,11 @@ private:
     ModelPanel *m_model;         // 3D modelling components + composited relief
     ProjectReceiver *m_receiver = nullptr;   // listens while receiving is on
     bool m_wasAway = false;   // the app was in the background (Android) since it last listened
+    // Listening again when the sockets did not come back at once (relisten):
+    // a few more tries, each further apart.
+    QTimer *m_relistenTimer = nullptr;
+    int m_relistenTries = 0;
+    static constexpr int kRelistenTries = 6;   // 1, 2, 4, 8, 16, 32 s
     // A received project or a pad's send is being answered: its questions and
     // the program export run the event loop, and another one must not open a
     // design (or start the machine) in the middle of it.

@@ -2962,8 +2962,15 @@ void MainWindow::showStartupWindow()
         show();
     // Only the real window listens: --shot and the tests build a MainWindow too.
     setReceiving(m_receiveAct->isChecked());
-    // Copies shared or saved on an earlier run (onShareDesign) are done with.
-    QDir(shareDir()).removeRecursively();
+    // Copies shared or saved on an earlier run (onShareDesign) are done with,
+    // but for a recent one: Android may have ended the app while its save
+    // dialog was up, and the answer comes to this run (PhobicActivity).
+    {
+        const QDateTime dayAgo = QDateTime::currentDateTime().addDays(-1);
+        for (const QFileInfo &fi : QDir(shareDir()).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
+            if (fi.lastModified() < dayAgo)
+                QDir(fi.filePath()).removeRecursively();
+    }
     // Android may take the app's sockets away while it is in the background
     // (screen off, another app in front). Back in front, listen again when
     // they are gone, or, after being away, whenever no one is connected, so
@@ -2975,6 +2982,7 @@ void MainWindow::showStartupWindow()
         }
         if (st != Qt::ApplicationActive || !m_receiveAct->isChecked())
             return;
+        m_relistenTries = 0;
         relisten(std::exchange(m_wasAway, false));
     });
     QTimer::singleShot(3000, this, [this] { checkForUpdate(); });
@@ -3151,6 +3159,26 @@ void MainWindow::relisten(bool away)
         setReceiving(false);
         setReceiving(true);
     }
+    // Android may hand the sockets back a little later: tried again while
+    // in front and receiving is on, each time further apart, a few times.
+    // A connected sender or pad is kept through each (rebind above).
+    if (!m_receiveAct->isChecked() || (m_receiver && m_receiver->isHealthy())) {
+        m_relistenTries = 0;
+        if (m_relistenTimer)
+            m_relistenTimer->stop();
+        return;
+    }
+    if (m_relistenTries >= kRelistenTries)
+        return;
+    if (!m_relistenTimer) {
+        m_relistenTimer = new QTimer(this);
+        m_relistenTimer->setSingleShot(true);
+        connect(m_relistenTimer, &QTimer::timeout, this, [this] {
+            if (QGuiApplication::applicationState() == Qt::ApplicationActive)
+                relisten(false);
+        });
+    }
+    m_relistenTimer->start(1000 << m_relistenTries++);
 }
 
 void MainWindow::onProjectReceived(int id, const ReceivedProject &p)

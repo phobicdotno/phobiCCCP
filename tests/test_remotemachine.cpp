@@ -14,6 +14,7 @@
 
 #include <QApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QFile>
 #include <QLabel>
@@ -55,6 +56,34 @@ class TestRemoteMachine : public QObject
         if (!f.open(QIODevice::ReadOnly))
             return {};
         return f.readAll();
+    }
+    // Press `button` on the message box that comes up within `delayMs`
+    // (or later, up to 20 s). A box without that button is rejected and
+    // `missing` set, so the test fails instead of waiting for ever.
+    static void answerBox(const QString &button, int delayMs, QString *asked, bool *missing)
+    {
+        QElapsedTimer since;
+        since.start();
+        auto tryIt = std::make_shared<std::function<void()>>();
+        *tryIt = [tryIt, since, button, asked, missing] {
+            auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!box) {
+                if (since.elapsed() < 20000)
+                    QTimer::singleShot(100, *tryIt);
+                return;
+            }
+            if (asked)
+                *asked = box->text();
+            for (QAbstractButton *bt : box->buttons())
+                if (bt->text().remove(QLatin1Char('&')) == button) {
+                    bt->click();
+                    return;
+                }
+            if (missing)
+                *missing = true;
+            box->reject();
+        };
+        QTimer::singleShot(delayMs, *tryIt);
     }
     static QString activeMachine()
     {
@@ -299,11 +328,53 @@ private slots:
         rm.addAddress(QStringLiteral("127.0.0.1:%1").arg(fake.serverPort()));
         rm.pollNow();   // on its way, slowly
         QSignalSpy switched(&rm, &RemoteMachine::machineSwitched);
-        rm.switchMachine(QStringLiteral("new"));
+        QVERIFY(rm.switchMachine(QStringLiteral("new")));
+        QVERIFY(rm.isSwitching());
+        QVERIFY(!rm.switchMachine(QStringLiteral("old")));   // one at a time
         QVERIFY(switched.wait(3000));
+        QVERIFY(!rm.isSwitching());
         QCOMPARE(rm.current()->info.value("activeMachine").toString(), QStringLiteral("new"));
         QTRY_VERIFY_WITH_TIMEOUT(!rm.current()->asking, 3000);   // the slow answer came
         QCOMPARE(rm.current()->info.value("activeMachine").toString(), QStringLiteral("new"));
+
+        // Forgotten and typed in again while an answer was on its way: the
+        // answer was for the entry that is gone, not for the new one.
+        rm.pollNow();
+        QVERIFY(rm.current()->asking);
+        rm.forget(rm.selected());
+        QCOMPARE(rm.computers().size(), 0);
+        QCOMPARE(rm.addAddress(QStringLiteral("127.0.0.1:%1").arg(fake.serverPort())), 0);
+        QTest::qWait(1300);
+        QVERIFY(rm.current()->info.isEmpty());
+        QVERIFY(!rm.current()->asking);
+        forgetHosts();
+    }
+
+    void remembersFoundComputerById()
+    {
+        // A computer found on the network and picked is known again by its
+        // install id, at whatever address it has next time.
+        forgetHosts();
+        const QString lastKey = QStringLiteral("remoteMachine/last");
+        QSettings().setValue(QStringLiteral("remoteMachine/hosts"), QStringList{QStringLiteral("192.0.2.7")});
+        {
+            RemoteMachine rm(QStringLiteral("pad-1"));
+            SendToDialog::Computer f;
+            f.id = QStringLiteral("shop");
+            f.address = QStringLiteral("192.0.2.9");
+            f.host = QStringLiteral("shop-pc");
+            rm.addFound(f);
+            QCOMPARE(rm.current()->address, QStringLiteral("192.0.2.7"));   // the typed one came first
+            rm.select(1);
+            QCOMPARE(QSettings().value(lastKey).toString(), QStringLiteral("id:shop"));
+        }
+        RemoteMachine rm(QStringLiteral("pad-1"));
+        QCOMPARE(rm.current()->address, QStringLiteral("192.0.2.7"));
+        SendToDialog::Computer moved;
+        moved.id = QStringLiteral("shop");
+        moved.address = QStringLiteral("192.0.2.99");   // a new lease
+        rm.addFound(moved);
+        QCOMPARE(rm.current()->address, QStringLiteral("192.0.2.99"));
         forgetHosts();
     }
 
@@ -476,8 +547,12 @@ private slots:
         QVERIFY(cut.listen(QHostAddress::LocalHost, 0));
         connect(&cut, &QTcpServer::newConnection, &cut, [&cut] {
             QTcpSocket *s = cut.nextPendingConnection();
-            connect(s, &QTcpSocket::readyRead, s, [s] {
-                if (s->readAll().contains("\"op\""))
+            // Cut off once the whole request is in (the hello, then one line),
+            // however the bytes are split.
+            auto got = std::make_shared<QByteArray>();
+            connect(s, &QTcpSocket::readyRead, s, [s, got] {
+                got->append(s->readAll());
+                if (got->count('\n') >= 2 && got->contains("\"op\""))
                     s->abort();
             });
         });
@@ -530,19 +605,10 @@ private slots:
         QVERIFY(labelWith(QStringLiteral("The machine is not ready")));
         // Cancelled first: nothing is sent.
         QString asked;
-        auto answer = [&asked](const QString &button) {
-            QTimer::singleShot(300, [&asked, button] {
-                auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
-                if (!box)
-                    return;
-                asked = box->text();
-                for (QAbstractButton *bt : box->buttons())
-                    if (bt->text().remove(QLatin1Char('&')) == button)
-                        bt->click();
-            });
-        };
-        answer(QStringLiteral("Cancel"));
+        bool missing = false;
+        answerBox(QStringLiteral("Cancel"), 300, &asked, &missing);
         start->click();
+        QVERIFY(!missing);
         QVERIFY(asked.contains(QStringLiteral("will start on")));
         QVERIFY(!panel.client()->isSending());
         // Switched to another machine there while the question was up:
@@ -550,15 +616,11 @@ private slots:
         QTimer::singleShot(300, [this] {
             QString why;
             w->switchMachine(b, &why);
-            QTimer::singleShot(2 * RemoteMachine::kPollMs + 500, [] {
-                if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget()))
-                    for (QAbstractButton *bt : box->buttons())
-                        if (bt->text().remove(QLatin1Char('&')) == QLatin1String("Send and start"))
-                            bt->click();
-            });
         });
+        answerBox(QStringLiteral("Send and start"), 300 + 2 * RemoteMachine::kPollMs + 500, nullptr, &missing);
         const QString before = w->m_doc.filePath();
         start->click();
+        QVERIFY(!missing);
         QVERIFY(!panel.client()->isSending());
         QVERIFY(labelWith(QStringLiteral("switched to Router B")));
         QCOMPARE(w->m_doc.filePath(), before);
@@ -577,8 +639,9 @@ private slots:
                                        .filePath(QFileInfo(w->m_doc.filePath()).completeBaseName() + QStringLiteral(".c2d"));
         QVERIFY2(QFileInfo::exists(sharedCopy), qPrintable(sharedCopy));
         asked.clear();
-        answer(QStringLiteral("Send and start"));
+        answerBox(QStringLiteral("Send and start"), 300, &asked, &missing);
         start->click();
+        QVERIFY(!missing);
         QVERIFY(asked.contains(QStringLiteral("Bracket")));
         QVERIFY(panel.client()->isSending());
         // The machine here is not connected, so it opens but does not start.

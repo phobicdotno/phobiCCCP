@@ -173,8 +173,19 @@ void RemoteMachine::discoverNow()
 {
     // The first round is broadcast only; while nothing answers, every
     // address of this pad's own network is asked too (as the Flutter pad does).
+    // While the computer picked (or the one picked last time) is not
+    // answering, it may be at a new address that broadcasts do not reach:
+    // swept then too, though others answer, every kLostSweepRounds rounds.
+    bool lost = m_selected < 0 || !online(m_selected);
+    if (!m_rememberedKey.isEmpty()) {
+        bool there = false;
+        for (int i = 0; i < m_computers.size(); ++i)
+            there = there || (isRemembered(m_computers[i]) && online(i));
+        lost = lost || !there;
+    }
+    const bool sweep = m_rounds > 0 && (!m_heard || (lost && m_rounds % kLostSweepRounds == 0));
     if (m_udp)
-        SendToDialog::discover(m_udp, !m_heard && m_rounds > 0);
+        SendToDialog::discover(m_udp, sweep);
     ++m_rounds;
 }
 
@@ -184,6 +195,28 @@ int RemoteMachine::indexOf(const QString &key) const
         if (m_computers[i].key() == key)
             return i;
     return -1;
+}
+
+int RemoteMachine::indexOfAsked(quint64 gen, const QString &key) const
+{
+    for (int i = 0; i < m_computers.size(); ++i)
+        if (m_computers[i].gen == gen)
+            return m_computers[i].key() == key ? i : -1;
+    return -1;
+}
+
+QString RemoteMachine::rememberAs(const Computer &c)
+{
+    return !c.typed && !c.id.isEmpty() ? QStringLiteral("id:") + c.id : c.key();
+}
+
+bool RemoteMachine::isRemembered(const Computer &c) const
+{
+    if (m_rememberedKey.isEmpty())
+        return false;
+    if (m_rememberedKey.startsWith(QLatin1String("id:")))
+        return !c.typed && QStringView(m_rememberedKey).mid(3) == c.id;
+    return c.key() == m_rememberedKey;
 }
 
 bool RemoteMachine::addFound(const SendToDialog::Computer &f)
@@ -214,14 +247,17 @@ bool RemoteMachine::addFound(const SendToDialog::Computer &f)
                 c.answeredAt = 0;
                 c.error.clear();
                 c.asking = false;         // an answer from the old one is dropped (indexOf)
-                if (m_rememberedKey == was) {
-                    m_rememberedKey = moved;
+                if (m_rememberedKey == was) {   // remembered by address (before ids)
+                    m_rememberedKey = rememberAs(c);
                     QSettings().setValue(kLastKey, m_rememberedKey);
                 }
                 if (m_running)
                     ask(i);
                 emit changed();
             }
+            // Picked last time, by its id: picked again wherever it answers.
+            if (isRemembered(c) && m_selected != i && !online(m_selected))
+                show(i);
             return true;
         }
     }
@@ -230,8 +266,9 @@ bool RemoteMachine::addFound(const SendToDialog::Computer &f)
     c.host = f.host;
     c.address = f.address;
     c.port = port;
+    c.gen = ++m_gens;
     m_computers.append(c);
-    if (m_selected < 0 || c.key() == m_rememberedKey)
+    if (m_selected < 0 || isRemembered(c))
         show(m_computers.size() - 1);
     ask(m_computers.size() - 1);
     emit changed();
@@ -257,6 +294,7 @@ int RemoteMachine::addAddress(const QString &text)
     c.host = a;
     c.port = port;
     c.typed = true;
+    c.gen = ++m_gens;
     int i = indexOf(c.key());
     if (i < 0) {
         m_computers.append(c);
@@ -265,7 +303,7 @@ int RemoteMachine::addAddress(const QString &text)
         m_computers[i].typed = true;
     }
     saveTyped();
-    if (m_selected < 0 || c.key() == m_rememberedKey)
+    if (m_selected < 0 || isRemembered(m_computers[i]))
         show(i);
     if (m_running)
         ask(i);
@@ -278,7 +316,7 @@ void RemoteMachine::forget(int index)
     if (index < 0 || index >= m_computers.size() || !m_computers[index].typed)
         return;
     const QString was = m_selected >= 0 ? m_computers[m_selected].key() : QString();
-    if (m_computers[index].key() == m_rememberedKey) {
+    if (isRemembered(m_computers[index])) {
         // Not picked again should it turn up on the network.
         m_rememberedKey.clear();
         QSettings().remove(kLastKey);
@@ -304,7 +342,7 @@ void RemoteMachine::select(int index)
 {
     if (index < 0 || index >= m_computers.size())
         return;
-    m_rememberedKey = m_computers[index].key();
+    m_rememberedKey = rememberAs(m_computers[index]);
     QSettings().setValue(kLastKey, m_rememberedKey);
     show(index);
 }
@@ -353,12 +391,12 @@ void RemoteMachine::ask(int index)
     Computer &c = m_computers[index];
     c.asking = true;
     const QString key = c.key();
-    const quint64 seq = ++m_seq;
+    const quint64 seq = ++m_seq, gen = c.gen;
     SendToDialog::call(this, c.address, c.port, QJsonObject{{QStringLiteral("op"), QStringLiteral("info")}},
-                       kInfoTimeoutMs, [this, key, seq](const QJsonObject &r) {
-                           const int i = indexOf(key);
+                       kInfoTimeoutMs, [this, key, seq, gen](const QJsonObject &r) {
+                           const int i = indexOfAsked(gen, key);
                            if (i < 0)
-                               return;   // forgotten meanwhile
+                               return;   // forgotten or moved meanwhile
                            Computer &c = m_computers[i];
                            c.asking = false;
                            // Asked before a machine switch was answered: it
@@ -390,16 +428,22 @@ void RemoteMachine::ask(int index)
                        });
 }
 
-void RemoteMachine::switchMachine(const QString &id)
+bool RemoteMachine::switchMachine(const QString &id)
 {
     const Computer *c = current();
-    if (!c)
-        return;
+    // One at a time: the answer of each is stamped as the newest news, so
+    // two on their way could leave the older one shown.
+    if (!c || m_switching)
+        return false;
+    m_switching = true;
     const QString key = c->key(), name = c->name();
+    const quint64 gen = c->gen;
     SendToDialog::call(this, c->address, c->port,
                        QJsonObject{{QStringLiteral("op"), QStringLiteral("machine")}, {QStringLiteral("id"), id}},
-                       30000, [this, key, name](const QJsonObject &r) {
+                       30000, [this, key, name, gen](const QJsonObject &r) {
+                           m_switching = false;
                            if (!r.value(QStringLiteral("ok")).toBool()) {
+                               emit changed();
                                emit machineSwitched(false, QStringLiteral("Could not switch: %1")
                                                                .arg(r.value(QStringLiteral("error")).toString()));
                                return;
@@ -407,7 +451,7 @@ void RemoteMachine::switchMachine(const QString &id)
                            // The answer is the computer's "info" as it is now.
                            // An "info" asked before now may still be on its
                            // way with the machine from before: dropped.
-                           if (const int i = indexOf(key); i >= 0) {
+                           if (const int i = indexOfAsked(gen, key); i >= 0) {
                                m_computers[i].info = r;
                                m_computers[i].infoSeq = ++m_seq;
                                m_computers[i].answeredAt = now();
@@ -415,6 +459,8 @@ void RemoteMachine::switchMachine(const QString &id)
                            emit machineSwitched(true, QStringLiteral("%1 now uses %2").arg(name, activeMachineName(r)));
                            emit changed();
                        });
+    emit changed();
+    return true;
 }
 
 bool RemoteMachine::send(const QString &name, const QByteArray &c2d, bool start, const QString &machine)
@@ -485,6 +531,7 @@ namespace {
 QLabel *caption(const QString &text)
 {
     auto *l = new QLabel(text);
+    l->setTextFormat(Qt::PlainText);   // the steps heading names a machine from the network
     l->setObjectName(QStringLiteral("caption"));
     return l;
 }
@@ -776,7 +823,7 @@ void RemoteMachinePanel::refresh()
     m_status->setStyleSheet(remotestatus::readyToCut(status) && online ? QStringLiteral("color: #6fcf7f;")
                                                                         : QString());
     m_machines->setVisible(!info.isEmpty());
-    m_machines->setEnabled(online && !m_client->isSending());
+    m_machines->setEnabled(online && !m_client->isSending() && !m_client->isSwitching());
     refreshMachines(c);
     m_allow->setVisible(!info.isEmpty());
     m_allow->setText(allowStart ? QStringLiteral("Pads may start cutting here.")
@@ -838,6 +885,7 @@ void RemoteMachinePanel::send(bool start)
                                        "set and nobody is near the machine.")
                             .arg(name, machine, host),
                         QMessageBox::NoButton, this);
+        box.setTextFormat(Qt::PlainText);   // the computer and machine names come from the network
         QAbstractButton *go = box.addButton(QStringLiteral("Send and start"), QMessageBox::AcceptRole);
         box.addButton(QMessageBox::Cancel);
         box.setDefaultButton(QMessageBox::Cancel);
