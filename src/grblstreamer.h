@@ -94,8 +94,27 @@ public:
         QChar spindle;                   // '3', '4', '5' or null
         double speed = 0;    bool haveSpeed = false;
         double z = 0;        bool haveZ = false;
+        double x = 0, y = 0; bool haveXY = false;   // work X and Y, both named once
+        bool inches = false;             // G20 seen (and no G21 after it)
     };
     static Modal scanModal(const QStringList &lines, int upTo);
+    // Start a program again from queue line `fromQ` (a toolpath or pass start of
+    // the plan, which counts queued lines only): the program's own lines from
+    // there, behind a way in from wherever the spindle stands. `rise` takes it
+    // to the top (G53); with `toolChange` >= 0 it first stops the spindle and
+    // parks at an `M0 ;T<n>` marker, so the tool change runs as in a job. Then
+    // over the start at the top, spindle on with its spin-up wait (and
+    // `coolant`, "M8"/"M7", when not empty), down to the Z the program stood at
+    // there, the last bit slowly, and the program's feed and motion mode.
+    // Comment lines just before the start stay with it (the toolpath's name).
+    // Empty with `why` set when the program cannot be followed up to there.
+    static QStringList startFromLines(const QStringList &lines, int fromQ, const QStringList &rise,
+                                      int toolChange, const QString &coolant, QString *why);
+    // The raw line index of queue line `q` (lines that are not comments).
+    static int rawIndexOfQueued(const QStringList &lines, int q);
+    // Tool markers (`M0 ;T<n>`) before queue line `q`; `lastTool` gets the last
+    // one's tool number (-1 when there is none).
+    static int toolMarkersBefore(const QStringList &lines, int q, int *lastTool = nullptr);
     // sendCommand() lines written but not yet answered. Continuous jog uses it
     // to stop queueing faster than the controller retires.
     int pendingCommands() const { return m_adhocPending; }

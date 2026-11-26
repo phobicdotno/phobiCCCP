@@ -293,9 +293,12 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
     static const QRegularExpression fWord(QStringLiteral("(?:^|[^A-Z])F(-?[0-9.]+)"));
     static const QRegularExpression sWord(QStringLiteral("(?:^|[^A-Z])S(-?[0-9.]+)"));
     static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z(-?[0-9.]+)"));
+    static const QRegularExpression xWord(QStringLiteral("(?:^|[^A-Z])X(-?[0-9.]+)"));
+    static const QRegularExpression yWord(QStringLiteral("(?:^|[^A-Z])Y(-?[0-9.]+)"));
     static const QRegularExpression mWord(QStringLiteral("(?:^|[^A-Z0-9.])M0*([345])(?![0-9.])"));
     static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
     Modal m;
+    bool hx = false, hy = false;
     for (int i = 0; i < upTo && i < lines.size(); ++i) {
         QString l = lines.at(i);
         l = l.left(l.indexOf(QChar(';')) < 0 ? l.size() : l.indexOf(QChar(';')));
@@ -312,6 +315,10 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
                 m.valid = false;             // relative moves: Z cannot be followed
             else if (g == 53)
                 machine = true;
+            else if (g == 20)
+                m.inches = true;
+            else if (g == 21)
+                m.inches = false;
         }
         auto fm = fWord.match(l);
         if (fm.hasMatch()) { m.feed = fm.captured(1).toDouble(); m.haveFeed = true; }
@@ -324,8 +331,122 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
             m.z = zm.captured(1).toDouble();
             m.haveZ = true;
         }
+        if (!machine) {
+            const auto xm = xWord.match(l), ym = yWord.match(l);
+            if (xm.hasMatch()) { m.x = xm.captured(1).toDouble(); hx = true; }
+            if (ym.hasMatch()) { m.y = ym.captured(1).toDouble(); hy = true; }
+        }
     }
+    m.haveXY = hx && hy;
     return m;
+}
+
+static bool queuedLine(const QString &l)
+{
+    const QString s = l.trimmed();
+    return !s.isEmpty() && !s.startsWith(QChar('('));
+}
+
+int GrblStreamer::rawIndexOfQueued(const QStringList &lines, int q)
+{
+    int n = 0;
+    for (int i = 0; i < lines.size(); ++i) {
+        if (!queuedLine(lines.at(i)))
+            continue;
+        if (n == q)
+            return i;
+        ++n;
+    }
+    return -1;
+}
+
+int GrblStreamer::toolMarkersBefore(const QStringList &lines, int q, int *lastTool)
+{
+    int n = 0, count = 0, last = -1;
+    for (int i = 0; i < lines.size() && n < q; ++i) {
+        if (!queuedLine(lines.at(i)))
+            continue;
+        const int t = toolMarkerNumber(lines.at(i).trimmed());
+        if (t >= 0) {
+            ++count;
+            last = t;
+        }
+        ++n;
+    }
+    if (lastTool)
+        *lastTool = last;
+    return count;
+}
+
+QStringList GrblStreamer::startFromLines(const QStringList &lines, int fromQ, const QStringList &rise,
+                                         int toolChange, const QString &coolant, QString *why)
+{
+    auto fail = [&](const QString &w) {
+        if (why)
+            *why = w;
+        return QStringList{};
+    };
+    const int raw = rawIndexOfQueued(lines, fromQ);
+    if (fromQ <= 0 || raw < 0)
+        return fail(QStringLiteral("that step is not in the program"));
+    if (rise.isEmpty())
+        return fail(QStringLiteral("the machine is not homed: there is no safe way up"));
+    if (toolMarkerNumber(lines.at(raw).trimmed()) >= 0)
+        return fail(QStringLiteral("pick a toolpath, not a tool change"));
+    const Modal m = scanModal(lines, raw);
+    if (!m.valid)
+        return fail(QStringLiteral("the program moves in relative steps (G91) before that point"));
+    if (m.inches)
+        return fail(QStringLiteral("the program is in inches (G20)"));
+    if (!m.haveXY || !m.haveZ || !m.haveFeed)
+        return fail(QStringLiteral("the program has not moved to a known spot before that point"));
+    // The program's first line there must not need the motion before it:
+    // an arc continued without its start point would cut a wrong curve.
+    int first = raw;
+    while (first > 0 && !queuedLine(lines.at(first - 1)) && !lines.at(first - 1).trimmed().isEmpty())
+        --first;
+    // How fast to go into the stock: the row's own plunge (a G1 with Z
+    // alone) or the program's feed, at most 600 mm/min.
+    double plunge = qMin(m.feed, 600.0);
+    {
+        static const QRegularExpression fz(QStringLiteral("F(-?[0-9.]+)"));
+        for (int i = raw; i < lines.size() && i < raw + 40; ++i) {
+            const QString u = lines.at(i).trimmed().toUpper();
+            if (!queuedLine(u) || u.contains(QChar('X')) || u.contains(QChar('Y')))
+                continue;
+            if ((u.startsWith(QLatin1String("G1")) || u.startsWith(QLatin1String("G01"))) && u.contains(QChar('Z'))) {
+                const auto f = fz.match(u);
+                if (f.hasMatch() && f.captured(1).toDouble() > 0)
+                    plunge = qMin(f.captured(1).toDouble(), plunge);
+                break;
+            }
+        }
+    }
+    QStringList r{QStringLiteral("G21"), QStringLiteral("G90"), QStringLiteral("G17")};
+    r += rise;
+    if (toolChange >= 0) {
+        if (!coolant.isEmpty())
+            r << QStringLiteral("M9");
+        r << QStringLiteral("M5") << QStringLiteral("M0 ;T%1").arg(toolChange);
+        r += rise;
+    }
+    r << QStringLiteral("G90 G0 X%1 Y%2").arg(m.x, 0, 'f', 3).arg(m.y, 0, 'f', 3);
+    if ((m.spindle == QChar('3') || m.spindle == QChar('4')) && m.haveSpeed) {
+        r << QStringLiteral("M%1 S%2").arg(m.spindle).arg(m.speed, 0, 'f', 0)
+          << QStringLiteral("G4P3.00");
+        if (!coolant.isEmpty())
+            r << coolant;
+    }
+    if (m.z >= 2.5) {
+        r << QStringLiteral("G0 Z%1").arg(m.z, 0, 'f', 3);
+    } else {
+        r << QStringLiteral("G0 Z2.500")
+          << QStringLiteral("G1 Z%1 F%2").arg(m.z, 0, 'f', 3).arg(plunge, 0, 'f', 0);
+    }
+    r << QStringLiteral("G1 F%1").arg(m.feed, 0, 'f', 1);
+    if (m.motion == 0)
+        r << QStringLiteral("G0");
+    return r + lines.mid(first);
 }
 
 bool GrblStreamer::canLiftHold() const

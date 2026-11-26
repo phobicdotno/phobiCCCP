@@ -481,6 +481,86 @@ int main(int argc, char **argv)
         grbl.positional = false;
     }
 
+    // Start again from a chosen step: a two-toolpath job started from the
+    // second toolpath streams the way in (rise, across at the top, spindle
+    // and its wait, down), then exactly the second toolpath and nothing of
+    // the first. With another bit wanted, the tool change comes first.
+    {
+        using c2d::GrblStreamer;
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        const QStringList job = {
+            "G90G21", "(Outline)", "G0Z5.000", "M03S18000", "G4P3.00", "G0X10.000Y10.000",
+            "G1Z-1.000F300.0", "G1X20.000F1200.0", "G0Z5.000",
+            "(Pocket)", "G0X30.000Y40.000", "G1Z-2.000F250.0", "G1X35.000F1000.0", "G0Z5.000", "M05"};
+        const QStringList rise = {QStringLiteral("G90"), QStringLiteral("G53 G0 Z-2.500")};
+        // Queue line of the second toolpath's first move: comments take no index.
+        const int fromQ = 8;
+        check(GrblStreamer::rawIndexOfQueued(job, fromQ) == 10, "start here: queue to raw line");
+        QString why;
+        const QStringList run = GrblStreamer::startFromLines(job, fromQ, rise, -1, QString(), &why);
+        const QStringList want = {"G21", "G90", "G17", "G90", "G53 G0 Z-2.500", "G90 G0 X20.000 Y10.000",
+                                  "M3 S18000", "G4P3.00", "G0 Z5.000", "G1 F1200.0", "G0"};
+        check(run.mid(0, want.size()) == want, "start here: rise, across at the top, spindle, wait, down");
+        check(run.mid(want.size()) == job.mid(9), "start here: then the second toolpath, its name and nothing else");
+        check(!run.contains("G1X20.000F1200.0") && !run.contains("(Outline)"), "start here: nothing of the first toolpath");
+        // Started on a pass that begins below the top: the last bit goes slowly.
+        {
+            const QStringList deep = {"G90G21", "G0Z5", "M03S10000", "G0X1Y2", "G1Z-1F200", "G1X5F900",
+                                      "G1Z-2F200", "G1X1F900"};
+            const QStringList d = GrblStreamer::startFromLines(deep, 6, rise, -1, QStringLiteral("M8"), &why);
+            check(d.contains("G0 Z2.500") && d.contains("G1 Z-1.000 F200") && d.contains("M8")
+                      && d.indexOf("G1 Z-1.000 F200") < d.indexOf("G1Z-2F200")
+                      && d.indexOf("G90 G0 X5.000 Y2.000") < d.indexOf("M3 S10000"),
+                  "start here: down to the pass's Z at the plunge feed, coolant with the spindle");
+        }
+        check(GrblStreamer::startFromLines({"G0Z5", "G91", "G1Z-1F300", "G1X1"}, 3, rise, -1, QString(), &why).isEmpty()
+                  && why.contains(QLatin1String("G91")),
+              "start here: refused after G91");
+        check(GrblStreamer::startFromLines(job, fromQ, {}, -1, QString(), &why).isEmpty(),
+              "start here: refused without a way up");
+        int last = 0;
+        check(GrblStreamer::toolMarkersBefore({"G0Z5", "M0 ;T3", "G1X1F100", "M0 ;T4", "G1X2"}, 4, &last) == 2
+                  && last == 4, "start here: tool markers before a line");
+
+        // Streamed: the program as sent to the controller.
+        bool finished = false, finishedOk = false;
+        QList<int> parks;
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool ok) {
+            finished = true;
+            finishedOk = ok;
+        });
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parks << t; });
+        grbl.seen.clear();
+        s.startStream(run);
+        spin(3000, [&] { return finished; });
+        QList<QByteArray> expect;
+        for (const QString &l : run)
+            if (!l.startsWith(QLatin1Char('(')))
+                expect << l.toLatin1();
+        check(finished && finishedOk && grbl.seen == expect, "start here: streamed as built, nothing else");
+
+        // Another bit: spindle off, park at the marker, and only after the
+        // change the way in to the second toolpath.
+        finished = false;
+        grbl.seen.clear();
+        const QStringList tc = GrblStreamer::startFromLines(job, fromQ, rise, 2, QString(), &why);
+        check(tc.indexOf("M5") < tc.indexOf("M0 ;T2") && tc.indexOf("M0 ;T2") < tc.indexOf("G90 G0 X20.000 Y10.000"),
+              "start here: tool change first");
+        s.startStream(tc);
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 2 && !grbl.seen.contains("M3 S18000")
+                  && grbl.seen.contains("M5"),
+              "start here: parks for the bit before the spindle starts");
+        s.continueAfterToolChange(rise);
+        spin(3000, [&] { return finished; });
+        check(finished && finishedOk && grbl.seen.contains("M3 S18000") && grbl.seen.last() == "M05"
+                  && grbl.seen.contains("G1X35.000F1000.0") && !grbl.seen.contains("G1X20.000F1200.0"),
+              "start here: after the change, the second toolpath runs");
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+    }
+
     s.disconnectPort();
     ::close(slave);
     ::close(master);
