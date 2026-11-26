@@ -124,6 +124,7 @@ add_library(phobicccp_ui STATIC
     src/projectreceiver.cpp
     src/sendtopaddialog.cpp
     src/sendtodialog.cpp
+    src/remotemachine.cpp
 )
 target_link_libraries(phobicccp_ui PUBLIC phobicccp_core Qt6::Widgets Qt6::Network)
 
@@ -315,6 +316,13 @@ if(Qt6Test_FOUND)
     add_executable(test_sendtopad tests/test_sendtopad.cpp)
     target_link_libraries(test_sendtopad PRIVATE phobicccp_ui)
     add_test(NAME sendtopad COMMAND test_sendtopad)
+    # The pad's Machine page (remotemachine.h) against a real main window's
+    # pad link on loopback: status polling, machine switch, send, and a start
+    # refused while pads may not start; and discovery's sweep addresses.
+    add_executable(test_remotemachine tests/test_remotemachine.cpp)
+    target_link_libraries(test_remotemachine PRIVATE phobicccp_ui Qt6::Test)
+    add_test(NAME remotemachine COMMAND test_remotemachine)
+    set_tests_properties(remotemachine PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_canvasparametric tests/test_canvasparametric.cpp)
     target_link_libraries(test_canvasparametric PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME canvasparametric COMMAND test_canvasparametric)

@@ -28,6 +28,7 @@ class IsoPreview;
 class ProjectReceiver;
 struct ReceivedProject;
 class MachinePanel;
+class RemoteMachinePanel;
 class ModelPanel;
 class ParametersPanel;
 class PropertiesPanel;
@@ -160,6 +161,8 @@ private:
     ParametersPanel *m_parameters; // user parameters, dimensions, constraints (Design tab)
     ToolpathPanel *m_tp;         // toolpath list + parameter editor
     MachinePanel *m_machine;     // GRBL serial control + streaming (Machine page)
+    // On a pad, the Machine page instead: a phobiCCCP's machine on the network.
+    RemoteMachinePanel *m_remoteMachine = nullptr;
     IsoPreview *m_iso;           // isometric animated route preview (Simulate page)
     QSplitter *m_simPage;        // 3D route | material removal
     SimPanel *m_sim;             // material-removal simulation (Simulate page)
@@ -185,6 +188,7 @@ private:
     QAction *m_modeActs[4] = {};
     ModelPanel *m_model;         // 3D modelling components + composited relief
     ProjectReceiver *m_receiver = nullptr;   // listens while receiving is on
+    bool m_wasAway = false;   // the app was in the background (Android) since it last listened
     // A received project or a pad's send is being answered: its questions and
     // the program export run the event loop, and another one must not open a
     // design (or start the machine) in the middle of it.

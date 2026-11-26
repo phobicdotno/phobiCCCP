@@ -76,6 +76,7 @@
 #include <QPushButton>
 #include <QStandardPaths>
 #include "sendtodialog.h"
+#include "remotemachine.h"
 #include "settingsdialog.h"
 #include "toolbarorder.h"
 #include "jobrotate.h"
@@ -548,6 +549,21 @@ static QIcon toolIcon(const QString &kind)
 
 // Everything BackgroundImage::saveTo writes. The background is changed past
 // the undo stack, so "undone back to the saved design" checks it by value.
+namespace {
+QString instanceId();   // below, with the rest of the pad link
+}
+
+// The Machine page shows a phobiCCCP on the network instead of a serial
+// machine (remotemachine.h): on a pad, which has no serial ports.
+static bool remoteMachinePage()
+{
+#ifdef Q_OS_ANDROID
+    return true;
+#else
+    return false;
+#endif
+}
+
 static bool sameBackground(const BackgroundImage &a, const BackgroundImage &b)
 {
     return a.image.isNull() == b.image.isNull() && a.pngData == b.pngData
@@ -696,6 +712,21 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     m_stack->addWidget(m_machine);
+    if (remoteMachinePage()) {
+        RemoteMachinePanel::Design design;
+        design.name = [this] {
+            if (m_doc.filePath().isEmpty())
+                return QString();
+            return m_untitled ? QStringLiteral("Untitled") : QFileInfo(m_doc.filePath()).completeBaseName();
+        };
+        design.toolpaths = [this] { return int(m_doc.toolpaths().size()); };
+        design.makeCopy = [this](QString *err) {
+            commitEdits();
+            return sendCopy(m_doc.filePath(), err);
+        };
+        m_remoteMachine = new RemoteMachinePanel(instanceId(), design, this);
+        m_stack->addWidget(m_remoteMachine);
+    }
 
     // Simulate page: the 3D route preview beside the material-removal view.
     m_simPage = new QSplitter(Qt::Horizontal, this);
@@ -1781,7 +1812,7 @@ void MainWindow::setMode(Mode m, bool autoRun)
     if (m == Mode::Simulate)
         page = m_simPage;
     else if (m == Mode::Machine)
-        page = m_machine;
+        page = m_remoteMachine ? static_cast<QWidget *>(m_remoteMachine) : m_machine;
     m_stack->setCurrentWidget(page);
     // Design: drawing tools and vector actions. Toolpaths: the toolpath
     // kinds instead. Options (snap, fit, preview, undo) on both.
@@ -1806,7 +1837,7 @@ void MainWindow::setMode(Mode m, bool autoRun)
         if (m_isoStale)
             refreshIso();
         m_sim->simulate();
-    } else if (m == Mode::Machine) {
+    } else if (m == Mode::Machine && !m_remoteMachine) {
         m_machine->setFocus();            // arrow keys jog straight away
     }
     // Only the user's own mode choice (autoRun) is remembered: a received file
@@ -2672,6 +2703,23 @@ void MainWindow::showStartupWindow()
         show();
     // Only the real window listens: --shot and the tests build a MainWindow too.
     setReceiving(m_receiveAct->isChecked());
+    // Android may take the app's sockets away while it is in the background
+    // (screen off, another app in front). Back in front, listen again when
+    // they are gone, or, after being away, whenever no one is connected, so
+    // computers and pads find this one again.
+    connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState st) {
+        if (st == Qt::ApplicationSuspended || st == Qt::ApplicationHidden) {
+            m_wasAway = true;
+            return;
+        }
+        if (st != Qt::ApplicationActive || !m_receiveAct->isChecked())
+            return;
+        const bool away = std::exchange(m_wasAway, false);
+        if (!m_receiver || !m_receiver->isHealthy() || (away && m_receiver->isIdle())) {
+            setReceiving(false);
+            setReceiving(true);
+        }
+    });
     QTimer::singleShot(3000, this, [this] { checkForUpdate(); });
     // ... and once an hour after that, so a long-running copy sees a new
     // version without being restarted first.

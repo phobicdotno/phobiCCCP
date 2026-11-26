@@ -64,8 +64,12 @@ cmake --build build-android     # build-android/android-build/build/outputs/apk/
 Touch: hold a finger still to right-click, pinch with two fingers to zoom and
 pan the canvas. File > Send to phobiCCCP… sends the design to the computer by
 the machine (which needs File > Receive from Syntexophobic and pads on), and
-can start the cut there. There is no serial port on a pad, so the Machine side
-there has nothing to connect to. V-carve is the same medial-axis one as on a computer
+can start the cut there. There is no serial port on a pad, so its Machine page
+shows the machine of a phobiCCCP on the network instead: the computers found (or
+added by name or address), their machines (tap one to switch), what the machine
+is doing and the job's steps, and Start / Send without starting for the open
+design. Start asks first, and is offered only where that computer has Machine >
+Pads may start cutting on. There is no jog, hold or stop from the pad. V-carve is the same medial-axis one as on a computer
 (Boost.Polygon headers, taken from the build machine). The other way, File > Send to pad… on a computer lists the pads
 running this program and opens the design there.
 

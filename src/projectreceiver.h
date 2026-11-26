@@ -5,6 +5,7 @@
 #include <QObject>
 #include <QString>
 #include <QVector>
+#include <memory>
 
 class QTcpServer;
 class QTcpSocket;
@@ -103,6 +104,21 @@ QString safeFileName(const QString &name);
 QString saveReceived(const ReceivedProject &project, const QString &baseDir,
                      QStringList *paths, QString *error = nullptr);
 
+// Android drops broadcast datagrams to an app unless it holds Wi-Fi's
+// multicast lock, so a pad would never hear a computer's discovery datagram
+// (nor, on some phones, the answers to its own). While at least one of these
+// exists the app holds that lock; the receiver and every discovery hold one
+// while they run. Elsewhere it does nothing.
+class MulticastHold
+{
+public:
+    MulticastHold();
+    ~MulticastHold();
+    MulticastHold(const MulticastHold &) = delete;
+    MulticastHold &operator=(const MulticastHold &) = delete;
+    static int holders();   // how many there are now
+};
+
 class ProjectReceiver : public QObject
 {
     Q_OBJECT
@@ -132,6 +148,12 @@ public:
     bool start(quint16 port = kPort, QString *error = nullptr);
     void stop();
     bool isListening() const;
+    // Listening for both transfers and discovery. Android may take an app's
+    // sockets away while it is in the background; the window then starts
+    // the receiver again when it comes back (MainWindow).
+    bool isHealthy() const;
+    // No sender or pad is connected.
+    bool isIdle() const { return m_conns.isEmpty(); }
     quint16 port() const;
 
     // The user's decision on transfer `id` (from received()): the sender gets
@@ -171,6 +193,7 @@ private:
     QHash<int, QTcpSocket *> m_waiting;   // complete, waiting for answer()
     QHash<int, QTcpSocket *> m_apiWaiting;   // API request waiting for respond()
     QJsonObject m_discoveryExtra;
+    std::unique_ptr<MulticastHold> m_multicast;   // while listening
     int m_nextId = 1;
     int m_idleMs = kIdleMs;
     int m_deadlineMs = kDeadlineMs;

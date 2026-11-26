@@ -68,6 +68,7 @@ private:
     bool m_busy = false;
     bool m_emptyShown = false;   // the status says no pad is listed
     int m_ticks = 0;
+    MulticastHold m_multicast;
 };
 
 } // namespace c2d

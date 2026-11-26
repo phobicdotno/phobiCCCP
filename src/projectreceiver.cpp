@@ -19,6 +19,12 @@
 #include <cmath>
 #include <limits>
 
+#ifdef Q_OS_ANDROID
+#include <QCoreApplication>
+#include <QJniEnvironment>
+#include <QJniObject>
+#endif
+
 namespace c2d {
 
 static const QByteArray kHello = QByteArrayLiteral("PHOBICCCP-SEND 1\n");
@@ -257,6 +263,71 @@ struct ProjectReceiver::Conn {
     QElapsedTimer reqClock;   // since the first byte of the request still arriving
 };
 
+namespace {
+int g_multicastHolders = 0;
+
+#ifdef Q_OS_ANDROID
+// WifiManager.MulticastLock, made once. Not reference counted on the Java
+// side: the count is kept here, so one acquire and one release suffice.
+QJniObject &multicastLock()
+{
+    static QJniObject lock;
+    if (!lock.isValid()) {
+        QJniObject ctx = QNativeInterface::QAndroidApplication::context();
+        if (!ctx.isValid())
+            return lock;
+        ctx = ctx.callObjectMethod("getApplicationContext", "()Landroid/content/Context;");
+        const QJniObject wifi = ctx.isValid()
+            ? ctx.callObjectMethod("getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;",
+                                   QJniObject::fromString(QStringLiteral("wifi")).object<jstring>())
+            : QJniObject();
+        if (!wifi.isValid())
+            return lock;
+        lock = wifi.callObjectMethod("createMulticastLock",
+                                     "(Ljava/lang/String;)Landroid/net/wifi/WifiManager$MulticastLock;",
+                                     QJniObject::fromString(QStringLiteral("phobiCCCP")).object<jstring>());
+        if (lock.isValid())
+            lock.callMethod<void>("setReferenceCounted", jboolean(false));
+    }
+    return lock;
+}
+
+void setMulticastLock(bool on)
+{
+    QJniObject &lock = multicastLock();
+    if (lock.isValid())
+        lock.callMethod<void>(on ? "acquire" : "release");
+    // A missing permission or a phone without Wi-Fi throws in Java; carry on
+    // without the lock (sweeping still finds computers) rather than crash.
+    QJniEnvironment env;
+    env.checkAndClearExceptions();
+}
+#endif
+} // namespace
+
+MulticastHold::MulticastHold()
+{
+#ifdef Q_OS_ANDROID
+    if (g_multicastHolders == 0)
+        setMulticastLock(true);
+#endif
+    ++g_multicastHolders;
+}
+
+MulticastHold::~MulticastHold()
+{
+    --g_multicastHolders;
+#ifdef Q_OS_ANDROID
+    if (g_multicastHolders == 0)
+        setMulticastLock(false);
+#endif
+}
+
+int MulticastHold::holders()
+{
+    return g_multicastHolders;
+}
+
 ProjectReceiver::ProjectReceiver(QObject *parent) : QObject(parent) {}
 
 ProjectReceiver::~ProjectReceiver()
@@ -280,6 +351,7 @@ bool ProjectReceiver::start(quint16 port, QString *error)
     if (m_udp->bind(QHostAddress::Any, m_tcp->serverPort(),
                     QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint))
         connect(m_udp, &QUdpSocket::readyRead, this, &ProjectReceiver::onDatagrams);
+    m_multicast = std::make_unique<MulticastHold>();
     return true;
 }
 
@@ -298,11 +370,17 @@ void ProjectReceiver::stop()
     m_tcp = nullptr;
     delete m_udp;
     m_udp = nullptr;
+    m_multicast.reset();
 }
 
 bool ProjectReceiver::isListening() const
 {
     return m_tcp && m_tcp->isListening();
+}
+
+bool ProjectReceiver::isHealthy() const
+{
+    return isListening() && m_udp && m_udp->state() == QAbstractSocket::BoundState;
 }
 
 quint16 ProjectReceiver::port() const
