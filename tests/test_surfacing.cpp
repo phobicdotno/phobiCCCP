@@ -87,6 +87,14 @@ int main()
     for (int i = m5 + 1; i < nc.lines.size(); ++i)
         check(!nc.lines.at(i).startsWith(QLatin1String("G1")), "nothing cut after M5");
 
+    // A full circle named by its centre alone is a move for the reader too.
+    {
+        const NcProgram c = readNcProgram(QStringLiteral("G90 G21\nG0 X0 Y0 Z1\nG1 Z-1 F300\nG2 I5 J0 F800\n"));
+        check(c.ok() && !c.ops.isEmpty() && c.ops.last().kind == Op::Arc && near(c.ops.last().x, 0)
+                  && near(c.ops.last().ci, 5) && c.ops.last().cw,
+              "nc: G2 with I/J only is a full-circle arc op");
+    }
+
     // Two passes of 0.5 for 1 mm, lines along Y, climb finish round.
     SurfacingParams q = p;
     q.depth = 1.0;

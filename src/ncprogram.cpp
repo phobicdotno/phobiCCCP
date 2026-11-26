@@ -203,7 +203,8 @@ NcProgram readNcProgram(const QString &text)
             p.ops << Op::spindle(0);
         if (dwell)
             p.ops << Op::dwell(pSec);
-        const bool move = hasX || hasY || hasZ;
+        // "G2 I5 J0": a full circle back to where it started, a move too.
+        const bool move = hasX || hasY || hasZ || (motion >= 2 && (hasI || hasJ));
         if (move && !g53) {
             if (home) {
                 // To the stored spot by way of this point: the point is in
