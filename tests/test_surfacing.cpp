@@ -126,6 +126,17 @@ int main()
     bad.toolDia = 0;
     check(!planSurfacing(bad).ok(), "no bit refused");
 
+    // A plan of hundreds of millions of moves is refused before it is built.
+    SurfacingParams huge = p;
+    huge.width = 5000;
+    huge.height = 5000;
+    huge.toolDia = 1;
+    huge.stepoverPct = 5;
+    huge.depth = 50;
+    huge.stepdown = 0.05;
+    const SurfacingPlan hp = planSurfacing(huge);
+    check(!hp.ok() && hp.ops.isEmpty(), "an oversized plan is refused");
+
     std::printf("surfacing: %d checks passed\n", g_checks);
     return 0;
 }

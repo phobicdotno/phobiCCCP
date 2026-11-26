@@ -142,8 +142,9 @@ SimResult simulate(const QVector<Op> &ops, const QHash<int, ToolGeom> &tools,
 QImage renderHeightMap(const HeightMap &map, double stockT,
                        const QVector<quint8> &gouges = {});
 // Tints the cells of `mask` (LeftoverResult::mask) orange on an image from
-// renderHeightMap() of the same map.
-void paintLeftovers(QImage &img, const QVector<quint8> &mask);
+// renderHeightMap() of the same map. Cells set in `gouges` stay red.
+void paintLeftovers(QImage &img, const QVector<quint8> &mask,
+                    const QVector<quint8> &gouges = {});
 
 // Colours used by renderHeightMap, exposed for the panel's legend.
 QColor simColorUncut();
