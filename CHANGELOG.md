@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.63 (build 153) — 2026-11-26
+
+> The desktop program on the pad: a working Machine page, finger-sized controls, and files in and out like any Android app.
+
+- **Pad, Machine page:** instead of a serial port and jog buttons with nothing to connect to, it shows the phobiCCCP computers on the network (or one added by name or address), their machines (tap one to switch), what the machine is doing and the running job's steps, updated about every 1.5 seconds. **Start** sends the open design and starts cutting after a confirmation; it is offered only where that computer has Machine › Pads may start cutting on, and if the computer refuses it says why. **Send without starting** just opens the design there. There is no remote jog, hold or stop.
+- **Pad, finding computers:** the pad keeps Android's Wi-Fi multicast open while it listens or searches, asks every address on its own network one by one when broadcasts find nothing, and listens and searches again after coming back from the background. Send to phobiCCCP and Send to pad on a computer also ask address by address when nothing answers.
+- **Touch-sized controls:** on the pad, buttons, menus, tabs, lists, scroll bars, tick boxes and number fields are finger-sized. A computer with a touch screen can turn it on under Settings › Touch-sized controls. While drawing, Finish and Cancel buttons stand in for Enter and Esc.
+- **Dialogs** never get bigger than the screen; a long one scrolls with OK and Cancel always visible.
+- **Pad, files:** open or import designs, SVG, DXF and HPGL from Downloads, Google Drive or a USB stick, or with Open with / Share from another app. Exported G-code, DXF, the setup sheet and a copy of the design can be shared or saved anywhere.
+- **Pad, old designs:** designs from the old pad app can be brought in as .c2d files (offered once, then any time from the File menu); the old copies are kept.
+- **Pad, settings:** changing the GUI scale or touch sizes asks you to reopen the app instead of trying to restart it.
+- **Pad releases:** both pad APKs of a release can now be installed over each other either way round, and the desktop program on the pad has true V-carve again.
+
 ## v1.3.62 (build 152) — 2026-11-18
 
 > Popup buttons no longer cut off their text.
