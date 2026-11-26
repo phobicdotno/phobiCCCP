@@ -1275,9 +1275,25 @@ QPainterPath textOnPathOutline(const QJsonObject &textObj, const QPainterPath &p
     if (places)
         places->clear();
     double width = 0;
-    const QVector<TextGlyph> glyphs = Element::textGlyphs(textObj, &width);
+    QVector<TextGlyph> glyphs = Element::textGlyphs(textObj, &width);
     if (glyphs.isEmpty())
         return out;
+    // A stretch kept in the text's transform (a uniform scale is in its
+    // height already); its turn and place do not matter on the path.
+    const QJsonArray tf = textObj.value("transform").toArray();
+    if (tf.size() == 9) {
+        const double sx = std::hypot(tf.at(0).toDouble(), tf.at(1).toDouble());
+        const double sy = std::hypot(tf.at(3).toDouble(), tf.at(4).toDouble());
+        if (sx > 1e-12 && sy > 1e-12 && (std::fabs(sx - 1) > 1e-9 || std::fabs(sy - 1) > 1e-9)) {
+            const QTransform st = QTransform::fromScale(sx, sy);
+            for (TextGlyph &g : glyphs) {
+                g.path = st.map(g.path);
+                g.cluster *= sx;
+                g.advance *= sx;
+            }
+            width *= sx;
+        }
+    }
     // The first subpath, flattened finely so curves are measured by their
     // true length (Qt's own flattening is coarse at millimetre scale).
     const double k = 100.0;
@@ -1298,7 +1314,7 @@ QPainterPath textOnPathOutline(const QJsonObject &textObj, const QPainterPath &p
     const double total = acc.last();
     if (total < 1e-9)
         return out;
-    const bool closed = path.elementCount() > 0
+    const bool closed = opt.closed != 0 && path.elementCount() > 0
                         && QLineF(poly.first(), poly.last()).length() < 1e-6;
     // Point at arc length s: wrapped on a closed path, carried on along the
     // end direction past an open path's ends.
@@ -1347,7 +1363,11 @@ QVector<Element> textOnPathElements(const Element &text, const Element &path,
 {
     if (text.geometryType != QLatin1String("text"))
         return {};
-    const QPainterPath placed = textOnPathOutline(text.raw, path.painterPath, opt);
+    TextOnPathOptions o2 = opt;
+    const PathModel guide = Element::pathModel(path);
+    if (o2.closed < 0 && !guide.isEmpty())
+        o2.closed = guide.subs.first().closed ? 1 : 0;
+    const QPainterPath placed = textOnPathOutline(text.raw, path.painterPath, o2);
     if (placed.isEmpty())
         return {};
     // A text whose outlines are already where they belong (identity

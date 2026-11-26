@@ -204,6 +204,7 @@ struct TextOnPathOptions {
     double offset = 0;
     double startPercent = -1;
     bool flip = false;
+    int closed = -1;   // the guide's first subpath: 0 open, 1 closed, -1 judge by its ends
 };
 // Where each glyph of Element::textGlyphs landed: `arcPos` is the distance
 // along the path of its cluster's left edge, `at` the point that left edge's
