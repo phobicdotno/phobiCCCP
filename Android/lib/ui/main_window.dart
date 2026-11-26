@@ -1017,7 +1017,7 @@ class _MainWindowState extends State<MainWindow> {
       final r = await app.preview(d, c);
       if (mounted) await showPreview(context, d.name, c.name, r);
     } catch (e) {
-      _say('No preview from ${c.name}: $e');
+      if (mounted) _say('No preview from ${c.name}: $e');
     } finally {
       if (mounted) setState(() => _previewing = false);
     }
