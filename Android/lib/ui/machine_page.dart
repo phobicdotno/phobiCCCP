@@ -31,15 +31,19 @@ class _MachinePageState extends State<MachinePage> {
   // Stop takes two taps: the first arms it, for that computer, for a few seconds.
   String? _stopArmedFor;
   Timer? _stopDisarm;
-  bool _controlBusy = false;
+  // Hold/Resume/Stop requests waiting for an answer, counted per computer:
+  // Hold and Resume wait for them; Stop never does (a slow Hold, or one sent
+  // to another computer, must not keep Stop out of reach).
+  final Map<String, int> _pending = {};
   AppState get app => widget.app;
 
 
   Future<void> _control(Computer c, String op) async {
+    final id = c.desktop.id;
     _stopDisarm?.cancel();
     setState(() {
       _stopArmedFor = null;
-      _controlBusy = true;
+      _pending[id] = (_pending[id] ?? 0) + 1;
     });
     try {
       await app.control(c, op);
@@ -51,7 +55,16 @@ class _MachinePageState extends State<MachinePage> {
     } catch (e) {
       widget.onStatus('Not done: $e');
     } finally {
-      if (mounted) setState(() => _controlBusy = false);
+      if (mounted) {
+        setState(() {
+          final n = (_pending[id] ?? 1) - 1;
+          if (n > 0) {
+            _pending[id] = n;
+          } else {
+            _pending.remove(id);
+          }
+        });
+      }
     }
   }
 
@@ -94,7 +107,7 @@ class _MachinePageState extends State<MachinePage> {
   /// Resume only where pads may start cutting.
   Widget _runControls(Computer c, DesktopInfo info) {
     final held = info.status.onHold;
-    final free = !_controlBusy;
+    final free = !_pending.containsKey(c.desktop.id);
     final armed = _stopArmedFor == c.desktop.id;
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
       Row(children: [
@@ -107,7 +120,7 @@ class _MachinePageState extends State<MachinePage> {
         const SizedBox(width: 10),
         Expanded(
           child: _bigBtn(armed ? 'Tap again to stop' : 'Stop', Icons.stop_rounded,
-              armed ? const Color(0xFFFF3B3B) : const Color(0xFFD03A3A), free ? () => _stopTap(c) : null,
+              armed ? const Color(0xFFFF3B3B) : const Color(0xFFD03A3A), () => _stopTap(c),
               text: Colors.white),
         ),
       ]),

@@ -13,10 +13,18 @@ struct ProbeFeeds {
     double retract = 2.0;      // back-off between the two touches
 };
 
-// Hole: from inside, out to the + wall then the - wall of one axis, back at
+// Hole, in two steps per axis. Nothing in a hole moves fast except over
+// ground the pin has already travelled.
+// Search: from inside (machine coordinate `startAbs` on this axis), fast out
+// to the + wall, straight back to the start, fast out to the - wall, back to
 // the start. `search` is how far each side may travel. Contacts: [fast+,
-// slow+, fast-, slow-].
-QStringList holeProbeLines(char axis, double search, const ProbeFeeds &f);
+// fast-].
+QStringList holeSearchLines(char axis, double search, const ProbeFeeds &f, double startAbs);
+// Touch: the slow touches on the walls the search found at `plus` and
+// `minus`. Each starts the back-off short of its wall, never more than half
+// the chord between the two (all of it travelled by the search), and ends
+// back at the start. Contacts: [slow+, slow-].
+QStringList holeTouchLines(char axis, double plus, double minus, double startAbs, const ProbeFeeds &f);
 
 // Boss: from just over its top, out past the + side by diameter/2 +
 // clearance, down `depth`, probe back toward the boss, up, back over the

@@ -39,13 +39,24 @@ int main()
     f.fastFeed = 300;
     f.slowFeed = 50;
     f.retract = 2;
-    const QStringList hole = holeProbeLines('X', 15, f);
-    check(hole.first() == "G91" && hole.last() == "G90", "hole: relative, then absolute");
+    const QStringList hole = holeSearchLines('X', 15, f, -100);
     check(hole.at(1) == "G38.3 X15.000 F300", "hole: fast + search");
-    check(hole.at(3) == "G38.2 X4.000 F50", "hole: slow + touch");
+    check(hole.at(3) == "G53 G0 X-100.000", "hole: back to the start, not a set back-off");
     check(hole.at(5) == "G38.3 X-15.000 F300", "hole: fast - search");
-    check(hole.at(7) == "G38.2 X-4.000 F50", "hole: slow - touch");
-    check(hole.count() == 10 && hole.filter("G38.2").count() == 2, "hole: two slow touches");
+    check(hole.last() == "G53 G0 X-100.000" && hole.filter("G38.2").isEmpty(),
+          "hole: search ends at the start, no slow touch yet");
+    // Walls 10 mm apart: the 2 mm back-off fits.
+    const QStringList touch = holeTouchLines('X', -95, -105, -100, f);
+    check(touch.at(1) == "G53 G0 X-97.000" && touch.at(3) == "G38.2 X4.000 F50", "hole: slow + touch");
+    check(touch.at(6) == "G53 G0 X-103.000" && touch.at(8) == "G38.2 X-4.000 F50", "hole: slow - touch");
+    check(touch.last() == "G53 G0 X-100.000" && touch.filter("G38.2").count() == 2,
+          "hole: two slow touches, back at the start");
+    // Pin started 1.25 mm off the middle of a 6 mm hole, 3 mm pin: the X
+    // chord the pin travels is 1.66 mm. The back-off is half that, not 2 mm
+    // into the far wall.
+    const QStringList tight = holeTouchLines('X', 0.83, -0.83, 0, f);
+    check(tight.at(1) == "G53 G0 X0.000" && tight.at(6) == "G53 G0 X0.000",
+          "hole: back-off never past the middle of the chord travelled");
 
     const QStringList boss = bossProbeLines('Y', 20, 5, 8, f, -100);
     check(boss.at(1) == "G0 Y15.000", "boss: out past + side (r + clearance)");

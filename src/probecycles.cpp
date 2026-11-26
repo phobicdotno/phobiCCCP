@@ -8,22 +8,41 @@ namespace c2d {
 static QString mm(double v) { return QString::number(v, 'f', 3); }
 static QString feed(double v) { return QString::number(v, 'f', 0); }
 
-QStringList holeProbeLines(char axis, double search, const ProbeFeeds &f)
+QStringList holeSearchLines(char axis, double search, const ProbeFeeds &f, double startAbs)
 {
     const QChar a = QChar::fromLatin1(axis);
-    const QString back = mm(f.retract), again = mm(f.retract + 2.0), far = mm(search);
+    const QString far = mm(search), start = mm(startAbs);
+    // Started off the middle, the wall can be closer than any back-off: go
+    // back the way the pin came, to the start, never a set distance.
     return {QStringLiteral("G91"),
             // + wall (G38.3: a miss is reported, not an alarm)
             QStringLiteral("G38.3 %1%2 F%3").arg(a, far, feed(f.fastFeed)),
-            QStringLiteral("G0 %1-%2").arg(a, back),
-            QStringLiteral("G38.2 %1%2 F%3").arg(a, again, feed(f.slowFeed)),
-            QStringLiteral("G0 %1-%2").arg(a, back),
+            QStringLiteral("G90"),
+            QStringLiteral("G53 G0 %1%2").arg(a, start),
+            QStringLiteral("G91"),
             // - wall
             QStringLiteral("G38.3 %1-%2 F%3").arg(a, far, feed(f.fastFeed)),
-            QStringLiteral("G0 %1%2").arg(a, back),
+            QStringLiteral("G90"),
+            QStringLiteral("G53 G0 %1%2").arg(a, start)};
+}
+
+QStringList holeTouchLines(char axis, double plus, double minus, double startAbs, const ProbeFeeds &f)
+{
+    const QChar a = QChar::fromLatin1(axis);
+    // The search travelled the whole chord: half of it is free on each side.
+    const double b = std::max(0.0, std::min(f.retract, (plus - minus) / 2.0));
+    const QString again = mm(b + 2.0), start = mm(startAbs);
+    return {QStringLiteral("G90"),
+            QStringLiteral("G53 G0 %1%2").arg(a, mm(plus - b)),
+            QStringLiteral("G91"),
+            QStringLiteral("G38.2 %1%2 F%3").arg(a, again, feed(f.slowFeed)),
+            QStringLiteral("G90"),
+            QStringLiteral("G53 G0 %1%2").arg(a, start),
+            QStringLiteral("G53 G0 %1%2").arg(a, mm(minus + b)),
+            QStringLiteral("G91"),
             QStringLiteral("G38.2 %1-%2 F%3").arg(a, again, feed(f.slowFeed)),
-            QStringLiteral("G0 %1%2").arg(a, back),
-            QStringLiteral("G90")};
+            QStringLiteral("G90"),
+            QStringLiteral("G53 G0 %1%2").arg(a, start)};
 }
 
 QStringList bossProbeLines(char axis, double diameter, double clearance, double depth,

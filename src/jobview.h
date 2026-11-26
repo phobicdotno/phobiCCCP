@@ -95,6 +95,7 @@ public:
     // are not in the plan: tell how many, so the counts line up again.
     void setProgress(int acked, int total);
     void linesInserted(int n) { m_inserted += n; refresh(); }
+    int inserted() const { return m_inserted; }
     // The controller's feed override, percent: the feed part of every
     // estimate is scaled by it.
     void setOverride(int percent);

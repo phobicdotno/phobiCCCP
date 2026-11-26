@@ -250,6 +250,10 @@ private:
     void bitZeroAfterCentre(Phase stage);
     int m_bzPass = 0;                                // centre: 0 first X, 1 Y, 2 X again
     double m_bzXp = 0, m_bzXn = 0, m_bzYp = 0, m_bzYn = 0;   // slow contacts
+    // Hole: the axis's search done, its slow touches next, on the walls the
+    // search found.
+    bool m_bzHoleTouch = false;
+    double m_bzHoleP = 0, m_bzHoleN = 0;
     static QStringList bitZeroSideLines(char axis, const BitZeroConfig &c, double startAbs);
     void openBitZero();
     void bitZeroBegin();

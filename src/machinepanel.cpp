@@ -768,7 +768,7 @@ MachinePanel::MachinePanel(QWidget *parent)
         connect(historyBtn, &QPushButton::clicked, this, [this] {
             // The dialog is modal: open, it would cover Hold and Stop.
             if (isBusy()) {
-                shopTell(this, QStringLiteral("Job history"), QStringLiteral("Not while the machine works"),
+                shopShow(this, QStringLiteral("Job history"), QStringLiteral("Not while the machine works"),
                          QStringLiteral("Hold and Stop stay in reach: look at the history once the machine is idle."));
                 return;
             }
@@ -2244,6 +2244,7 @@ void MachinePanel::bitZeroBegin()
     m_bzWantZ = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::ZOnly
                 || m_bzMode == BitZeroPanel::Plate;
     m_bzPass = 0;
+    m_bzHoleTouch = false;
     if (round)
         m_bzPanel->setCentreResult(QString());
     m_bzCx = st.mx;
@@ -2299,9 +2300,12 @@ void MachinePanel::bitZeroStage(Phase stage, QStringList prefix)
         const double r = m_bz.holeDiameter / 2.0;
         if (stage == Phase::BitZeroZ)
             lines += plateProbeLines(m_bz.zTravel, f);
-        else if (m_bzMode == BitZeroPanel::Hole)
+        else if (m_bzMode == BitZeroPanel::Hole) {
+            const double start = axis == 'Y' ? m_bzStartY : m_bzPass == 0 ? m_bzStartX : m_bzCx;
             // Started off-centre the far wall is up to a diameter away.
-            lines += holeProbeLines(axis, std::max(r + 5.0, m_bz.holeDiameter), f);
+            lines += m_bzHoleTouch ? holeTouchLines(axis, m_bzHoleP, m_bzHoleN, start, f)
+                                   : holeSearchLines(axis, std::max(r + 5.0, m_bz.holeDiameter), f, start);
+        }
         else
             // Clearance counts from the pin's side, not its middle.
             lines += bossProbeLines(axis, m_bz.holeDiameter,
@@ -2331,6 +2335,7 @@ void MachinePanel::bitZeroFail(const QString &why)
     log(QStringLiteral("!! BitZero probe failed: %1. Unlock if alarmed, check the magnet "
                        "clip and that the pin sits in the bore, then retry").arg(why));
     m_hits.clear();
+    m_bzHoleTouch = false;
     if (m_bzPanel)
         m_bzPanel->setBusy(false);
 }
@@ -2478,14 +2483,34 @@ void MachinePanel::bitZeroAfterCentre(Phase stage)
 {
     const bool boss = m_bzMode == BitZeroPanel::Boss;
     const QString what = boss ? QStringLiteral("Boss") : QStringLiteral("Hole");
+    // Hole: two contacts per step (search, then touch); boss: four, fast
+    // and slow on each side.
+    const bool hole = m_bzMode == BitZeroPanel::Hole;
+    if (hole && (stage == Phase::BitZeroX || stage == Phase::BitZeroY)) {
+        const bool y = stage == Phase::BitZeroY;
+        if (m_hits.size() < 2) {
+            bitZeroFail(QStringLiteral("expected two %1 contacts, got %2")
+                            .arg(y ? QStringLiteral("Y") : QStringLiteral("X")).arg(m_hits.size()));
+            return;
+        }
+        if (!m_bzHoleTouch) {
+            m_bzHoleP = y ? m_hits.at(0).y : m_hits.at(0).x;
+            m_bzHoleN = y ? m_hits.at(1).y : m_hits.at(1).x;
+            m_bzHoleTouch = true;
+            bitZeroStage(stage);
+            return;
+        }
+        m_bzHoleTouch = false;
+    }
+    const int sp = hole ? 0 : 1, sn = hole ? 1 : 3;
     switch (stage) {
     case Phase::BitZeroX: {
-        if (m_hits.size() < 4) {
+        if (m_hits.size() < 4 && !hole) {
             bitZeroFail(QStringLiteral("expected four X contacts, got %1").arg(m_hits.size()));
             return;
         }
-        m_bzXp = m_hits.at(1).x;
-        m_bzXn = m_hits.at(3).x;
+        m_bzXp = m_hits.at(sp).x;
+        m_bzXn = m_hits.at(sn).x;
         m_bzCx = (m_bzXp + m_bzXn) / 2.0;
         log(QStringLiteral("%1 centre: X sides at %2 and %3 → centre X %4")
                 .arg(what).arg(m_bzXp, 0, 'f', 3).arg(m_bzXn, 0, 'f', 3).arg(m_bzCx, 0, 'f', 3));
@@ -2510,12 +2535,12 @@ void MachinePanel::bitZeroAfterCentre(Phase stage)
         return;
     }
     case Phase::BitZeroY: {
-        if (m_hits.size() < 4) {
+        if (m_hits.size() < 4 && !hole) {
             bitZeroFail(QStringLiteral("expected four Y contacts, got %1").arg(m_hits.size()));
             return;
         }
-        m_bzYp = m_hits.at(1).y;
-        m_bzYn = m_hits.at(3).y;
+        m_bzYp = m_hits.at(sp).y;
+        m_bzYn = m_hits.at(sn).y;
         m_bzCy = (m_bzYp + m_bzYn) / 2.0;
         log(QStringLiteral("%1 centre: Y sides at %2 and %3 → centre Y %4")
                 .arg(what).arg(m_bzYp, 0, 'f', 3).arg(m_bzYn, 0, 'f', 3).arg(m_bzCy, 0, 'f', 3));
@@ -6050,6 +6075,12 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
         m_docHash = m_runHash; // saved since it was opened
     m_resumeSaveClock.invalidate();
     m_resumeSavedSec = m_resumeSavedPass = -1;
+    // A new run of this design: the last run's continue point no longer
+    // says where this one is (it can be past what this run has cut yet).
+    // The first new one is written only some lines in.
+    if (!m_runPath.isEmpty()
+        && QSettings().value(QStringLiteral("resume/path")).toString() == m_runPath)
+        clearResumePoint();
     m_jobFromFile = fromFile;
     {
         QSettings ps;
@@ -6138,8 +6169,12 @@ void MachinePanel::saveResumePoint(int acked)
     // still holds up to 16 moves (GRBL 1.1), 35 by default on grblHAL. Save
     // the step of the line that far behind, so a resume repeats a little
     // rather than skips a cut.
+    // The answered count also holds lines sent on the way that are not in
+    // the plan (tool-change rise and return, hold and resume): take them
+    // off, all of them, sent or still to be answered, so the step found is
+    // never one that has not run yet.
     constexpr int kNotYetCut = 35;
-    const int q = acked - kNotYetCut;
+    const int q = acked - m_jobView->inserted() - kNotYetCut;
     const QVector<JobSection> &secs = m_jobView->plan().sections;
     int sec = -1, pass = -1;
     for (int i = 0; i < secs.size() && sec < 0; ++i)
@@ -6362,7 +6397,7 @@ void MachinePanel::openCounters()
 {
     // The dialog is modal: open, it would cover Hold and Stop.
     if (isBusy()) {
-        shopTell(this, QStringLiteral("Counters"), QStringLiteral("Not while the machine works"),
+        shopShow(this, QStringLiteral("Counters"), QStringLiteral("Not while the machine works"),
                  QStringLiteral("Hold and Stop stay in reach: look at the counters once the machine is idle."));
         return;
     }
