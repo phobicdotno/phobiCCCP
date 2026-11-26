@@ -51,6 +51,20 @@ struct FakeGrbl {
     // offset 10, 20, 0), follow absolute G0 X/Y moves, answer each G38.2 with
     // a touch at Z -7 where the head stands.
     bool positional = false;
+    bool noBanner = false;    // a reset answered without its "Grbl" banner
+    bool door = false;        // the door is open: Door:0, cycle start ignored
+    // The next `~` is ignored (GRBL still slowing into the hold) and a Run
+    // report made before the `!` arrives just after it.
+    bool staleOnResume = false;
+    // While set, oks are held back (counted) until releaseAcks().
+    bool deferAcks = false;
+    int deferred = 0;
+    void releaseAcks()
+    {
+        deferAcks = false;
+        for (; deferred > 0; --deferred)
+            send("ok\r\n");
+    }
     double x = 0, y = 0;
     bool relative = false;
 
@@ -89,23 +103,33 @@ struct FakeGrbl {
             if (c == '?' && positional) {
                 send("<Idle|MPos:" + pos() + "|WCO:10.000,20.000,0.000>\r\n");
             } else if (c == '?') {
-                send(held ? "<Hold:0|MPos:0.000,0.000,0.000|FS:0,18000>\r\n"
+                send(door ? "<Door:0|MPos:0.000,0.000,0.000|FS:0,18000>\r\n"
+                     : held ? "<Hold:0|MPos:0.000,0.000,0.000|FS:0,18000>\r\n"
                           : "<Run|MPos:0.000,0.000,0.000|FS:500,18000|Ov:120,100,90>\r\n");
             } else if (c == '!') {
                 held = true;
+            } else if (c == '~' && staleOnResume) {
+                staleOnResume = false;
+                send("<Run|MPos:0.000,0.000,0.000|FS:500,18000>\r\n");
+            } else if (c == '~') {
+                if (!door)
+                    held = false;            // cycle start: out of the hold
             } else if (c == 0x18) {
                 reset = true;
                 resetWhileHeld = held;
                 held = false;
                 line.clear();
-                send("\r\nGrbl 1.1h ['$' for help]\r\n");
+                if (!noBanner)
+                    send("\r\nGrbl 1.1h ['$' for help]\r\n");
             } else if (c == '\n') {
                 if (reset)
                     ++linesAfterReset;
                 seen << line;
                 if (positional)
                     follow(line);
-                if (!line.contains("HANG"))
+                if (deferAcks && !line.contains("HANG"))
+                    ++deferred;
+                else if (!line.contains("HANG"))
                     send(line.contains("BAD") ? "error:20\r\n" : "ok\r\n");
                 line.clear();
             } else if (c != '\r') {
@@ -281,7 +305,8 @@ int main(int argc, char **argv)
                        QStringLiteral("G0X10Y10"), QStringLiteral("G1Z-1F300")});
         spin(2000, [&] { return parks.size() == 1; });
         check(parks.size() == 1 && parks.at(0) == 1, "queue cross: parks for the first bit");
-        s.continueAfterToolChange(rise);
+        check(s.continueAfterToolChange(rise) == rise.size(),
+              "queue cross: no crossing (no X/Y before the next marker), the rise counted");
         spin(2000, [&] { return parks.size() == 2; });
         check(parks.size() == 2 && parks.at(1) == 2, "queue cross: parks for the second bit");
         check(grbl.seen.contains("G53 G0 Z-2.500") && grbl.seen.last() == "M05",
@@ -289,7 +314,8 @@ int main(int argc, char **argv)
         check(!grbl.seen.contains("G90 G0 X10 Y10"),
               "queue cross: no crossing to the next bit's first cut before that bit is in");
         const int before = int(grbl.seen.size());
-        s.continueAfterToolChange(rise);
+        check(s.continueAfterToolChange(rise) == rise.size() + 1,
+              "queue cross: the crossing to the first cut is counted with the rise (progress)");
         spin(3000, [&] { return finished; });
         check(finished && finishedOk, "queue cross: the program finishes");
         check(grbl.seen.size() == before + 6 && grbl.seen.at(before + 1) == "G53 G0 Z-2.500"
@@ -351,6 +377,113 @@ int main(int argc, char **argv)
         check(finished, "hold: the program carries on to its end");
         check(grbl.seen.lastIndexOf("M03S16000") > off, "hold: the spindle comes on again after the lift");
         // The flags above end with this block; the streamer lives on.
+        QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+    }
+
+    // The way back down after a hold: a rapid only to a little above the
+    // stock and the hold Z, the rest at the feed (capped), in the program's
+    // units.
+    {
+        using c2d::GrblStreamer;
+        GrblStreamer::Modal m;
+        m.haveZ = true; m.z = -1.5; m.haveFeed = true; m.feed = 1000; m.motion = 1;
+        QStringList r = GrblStreamer::resumeLinesFor(m);
+        check(r.contains(QStringLiteral("G0Z2.500")) && r.contains(QStringLiteral("G1Z-1.500F600")),
+              "resume: in the stock, a rapid to 2.5 above the top, then fed down");
+        m.z = 5.0;
+        r = GrblStreamer::resumeLinesFor(m);
+        check(r.contains(QStringLiteral("G0Z7.500")) && r.contains(QStringLiteral("G1Z5.000F600"))
+                  && !r.contains(QStringLiteral("G0Z5.000")),
+              "resume: above the stock, not a rapid all the way to the hold Z");
+        // The approach stays under the top of Z (work Z): the work zero high
+        // up (WCO Z -8: top at work Z 5.5 with 2.5 clearance), hold at Z5.
+        r = GrblStreamer::resumeLinesFor(m, 5.5);
+        check(r.contains(QStringLiteral("G0Z5.500")) && !r.contains(QStringLiteral("G0Z7.500"))
+                  && r.contains(QStringLiteral("G1Z5.000F600")),
+              "resume: the rapid is clamped to the top of Z");
+        r = GrblStreamer::resumeLinesFor(m, 4.0);
+        bool rapid = false;
+        for (const QString &l : r)
+            rapid = rapid || l.startsWith(QStringLiteral("G0Z"));
+        check(!rapid && r.contains(QStringLiteral("G1Z5.000F600")),
+              "resume: top below the approach and the hold Z: no rapid down, never below the hold Z");
+        m.z = -0.05; m.inch = true; m.feed = 40;
+        r = GrblStreamer::resumeLinesFor(m);
+        check(r.contains(QStringLiteral("G0Z0.1000")) && r.contains(QStringLiteral("G1Z-0.0500F24.0")),
+              "resume: inch program, 0.1 in and 24 in/min");
+        r = GrblStreamer::resumeLinesFor(m, 1.27);       // top 1.27 mm = 0.05 in
+        check(r.contains(QStringLiteral("G0Z0.0500")), "resume: the top is converted to inches");
+        check(GrblStreamer::scanModal({"G90G20", "G1Z-1F10"}, 2).inch
+                  && !GrblStreamer::scanModal({"G90G20", "G21", "G1Z-1F10"}, 3).inch,
+              "modal: G20 after G90 on one line is read");
+        m.inch = false; m.motion = 2;
+        r = GrblStreamer::resumeLinesFor(m);
+        for (const QString &l : r)
+            check(!l.startsWith(QStringLiteral("G2")) && !l.startsWith(QStringLiteral("G3")),
+                  "resume: no bare G2 line (GRBL refuses it)");
+    }
+
+    // The arc mode put back past lines that are not moves in it: a G10 L2
+    // with axis words, a G43.1 (a decimal G word, its Z no move), G92.1, a
+    // dwell. They stay as they are; the next modal arc line gets the G2/G3.
+    {
+        using c2d::GrblStreamer;
+        QStringList q = {QStringLiteral("G10L2P2X0"), QStringLiteral("G43.1Z0"), QStringLiteral("G92.1"),
+                         QStringLiteral("G4P0.5"), QStringLiteral("X5.000Y1.000I0.500J0.000"),
+                         QStringLiteral("X6.000Y1.000I0.500J0.000")};
+        GrblStreamer::restoreMotionMode(q, 0, 3);
+        check(q.at(0) == QLatin1String("G10L2P2X0") && q.at(1) == QLatin1String("G43.1Z0")
+                  && q.at(2) == QLatin1String("G92.1") && q.at(3) == QLatin1String("G4P0.5"),
+              "arc mode: non-motion lines are left as they are (no G3G43.1Z0)");
+        check(q.at(4) == QLatin1String("G3X5.000Y1.000I0.500J0.000")
+                  && q.at(5) == QLatin1String("X6.000Y1.000I0.500J0.000"),
+              "arc mode: the next modal arc line gets the G3, once");
+        QStringList r = {QStringLiteral("G43.1Z0"), QStringLiteral("G1X5F300"), QStringLiteral("X6")};
+        GrblStreamer::restoreMotionMode(r, 0, 2);
+        check(r.at(0) == QLatin1String("G43.1Z0") && r.at(1) == QLatin1String("G1X5F300")
+                  && r.at(2) == QLatin1String("X6"),
+              "arc mode: a line selecting its own mode ends the scan");
+        QStringList p = {QStringLiteral("G38.2Z-5F50"), QStringLiteral("X1Y1I1J0")};
+        GrblStreamer::restoreMotionMode(p, 0, 2);
+        check(p.at(0) == QLatin1String("G38.2Z-5F50") && p.at(1) == QLatin1String("X1Y1I1J0"),
+              "arc mode: G38.2 selects its own mode, nothing changed");
+    }
+
+    // Hold between two modal arcs: the post names G2 only on the first arc
+    // line. After the way back down (G1 to go down), the program's next line
+    // must be an arc again, not a straight G1 with stray I/J.
+    {
+        QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
+        QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
+        QStringList prog = {QStringLiteral("G90G21"), QStringLiteral("G0Z2.540"), QStringLiteral("M03S16000"),
+                            QStringLiteral("G1Z-1.000F600.0"), QStringLiteral("G2X1.000Y0.000I0.500J0.000")};
+        for (int i = 0; i < 300; ++i)
+            prog << QStringLiteral("X%1.000Y%2.000I0.500J0.000").arg(i + 2).arg(i % 2);
+        grbl.seen.clear();
+        bool reached = false, finished = false;
+        QObject::connect(&s, &c2d::GrblStreamer::holdPointReached, [&] { reached = true; });
+        QObject::connect(&s, &c2d::GrblStreamer::streamFinished, [&](bool) { finished = true; });
+        s.startStream(prog);
+        check(s.queueHoldPoint({QStringLiteral("G53 G0 Z-5"), QStringLiteral("M5")}), "arc hold: the lines go in");
+        spin(3000, [&] { return reached; });
+        check(reached && s.isHeldAtPoint(), "arc hold: the program stands at the point");
+        const QStringList down = s.resumeLinesAfterHold();
+        check(down.contains(QStringLiteral("G1F600.0")), "arc hold: the feed comes back");
+        const int sentBefore = int(grbl.seen.size());
+        check(s.continueAfterHold(down) == down.size(), "arc hold: every resume line counted");
+        spin(6000, [&] { return finished; });
+        check(finished, "arc hold: the program carries on to its end");
+        const int at = int(grbl.seen.indexOf("G1F600.0", sentBefore));
+        check(at >= 0 && at + 1 < grbl.seen.size(), "arc hold: the resume lines went out");
+        const QByteArray next = grbl.seen.at(at + 1);
+        std::printf("arc hold: first program line after the way down: %s\n", next.constData());
+        check(next.startsWith("G2X") && next.contains("I0.500"),
+              "arc hold: the next line is an arc again (G2 restored), not a G1 with I/J");
+        int g2 = 0;
+        for (int i = at + 1; i < grbl.seen.size(); ++i)
+            g2 += grbl.seen.at(i).startsWith("G2");
+        check(g2 == 1, "arc hold: only that one line gets the G2");
         QObject::disconnect(&s, &c2d::GrblStreamer::holdPointReached, nullptr, nullptr);
         QObject::disconnect(&s, &c2d::GrblStreamer::streamFinished, nullptr, nullptr);
     }
@@ -478,6 +611,131 @@ int main(int argc, char **argv)
         prober.probeNext();
         spin(2000, [&] { return done; });
         check(done && measured == 2 && std::abs(mx - 30) < 1e-6, "map: the run finishes");
+        grbl.positional = false;
+    }
+
+    // R4-MC-3: a feed hold does not stop GRBL answering lines, so the stream
+    // used to run on to a tool marker and park with the machine held in the
+    // cut. The marker now waits until the hold ends.
+    {
+        QList<int> parks;
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+        QObject::connect(&s, &c2d::GrblStreamer::toolChangeRequested, [&](int t) { parks << t; });
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T4"),
+                       QStringLiteral("G0Z5")});
+        s.pauseStream();
+        spin(800, [] { return false; });
+        check(parks.isEmpty() && s.isFeedHeld(), "feed hold: the tool marker is not crossed while held");
+        check(s.resumeStream(), "feed hold: resume goes out");
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 4 && !s.isFeedHeld(),
+              "feed hold: after Resume the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
+
+        // Resume while the door is still open: GRBL ignores the `~` and
+        // stays suspended; the marker waits until a report shows it running.
+        parks.clear();
+        grbl.door = true;
+        grbl.deferAcks = true;
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T6"),
+                       QStringLiteral("G0Z5")});
+        s.pauseStream();
+        spin(600, [] { return false; });
+        check(s.resumeStream(), "door: the resume goes out");
+        grbl.releaseAcks();
+        spin(1500, [] { return false; });
+        check(parks.isEmpty() && s.isFeedHeld(),
+              "door: a ~ while the door keeps it suspended does not cross the tool marker");
+        grbl.door = false;
+        grbl.held = false;                   // door shut, cycle start taken
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 6 && !s.isFeedHeld(),
+              "door: once it reports running, the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
+
+        // A `~` sent while GRBL is still slowing into the hold is ignored,
+        // and a report made before the `!` (Run) arrives after it: that
+        // report must not end the hold.
+        parks.clear();
+        grbl.deferAcks = true;
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T7"),
+                       QStringLiteral("G0Z5")});
+        grbl.staleOnResume = true;
+        s.pauseStream();
+        check(s.resumeStream(), "stale report: the resume goes out");
+        spin(100, [] { return false; });
+        grbl.releaseAcks();
+        spin(1200, [] { return false; });
+        check(parks.isEmpty() && s.isFeedHeld(),
+              "stale report: a Run report made before the ~ does not cross the tool marker");
+        grbl.held = false;                   // a second Resume, taken
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 7 && !s.isFeedHeld(),
+              "stale report: once it reports running again, the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
+
+        // Held by the machine (its hold button, a door), not by us: a report
+        // showing Hold is enough to keep the marker uncrossed.
+        parks.clear();
+        grbl.held = true;
+        grbl.deferAcks = true;
+        s.startStream({QStringLiteral("G90"), QStringLiteral("G1X1F100"), QStringLiteral("M0 ;T5"),
+                       QStringLiteral("G0Z5")});
+        spin(1500, [&] { return s.isFeedHeld(); });
+        check(s.isFeedHeld(), "machine hold: a Hold report while streaming counts as held");
+        grbl.releaseAcks();
+        spin(600, [] { return false; });
+        check(parks.isEmpty(), "machine hold: the tool marker is not crossed while the machine holds");
+        grbl.held = false;                   // released at the machine
+        spin(2000, [&] { return parks.size() == 1; });
+        check(parks.size() == 1 && parks.at(0) == 5 && !s.isFeedHeld(),
+              "machine hold: out of Hold, the tool change follows");
+        s.stopStream();
+        spin(300, [] { return false; });
+        QObject::disconnect(&s, &c2d::GrblStreamer::toolChangeRequested, nullptr, nullptr);
+    }
+
+    // A zero (G10) leaves the held work offset stale until a report after
+    // its answer brings the new one: travel checks must not use the old one.
+    {
+        grbl.positional = true;
+        spin(1000, [&] { return s.workOffsetFresh(); });
+        check(s.hasWorkOffset() && s.workOffsetFresh(), "wco: fresh from the reports");
+        s.sendCommand(QStringLiteral("G10 L20 P1 Z0"));
+        check(s.hasWorkOffset() && !s.workOffsetFresh(), "wco: a zero sent makes the held offset stale");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: fresh again from a report after the zero's answer");
+        s.sendCommand(QStringLiteral("G92.1"));
+        check(!s.workOffsetFresh(), "wco: G92 too");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        for (const char *l : {"G90G10L20P1Z0", "N20G92Z0", "G21G55", "$RST=#"}) {
+            check(s.workOffsetFresh(), "wco: fresh before the next line");
+            s.sendCommand(QString::fromLatin1(l));
+            if (s.workOffsetFresh())
+                std::fprintf(stderr, "not stale after: %s\n", l);
+            check(!s.workOffsetFresh(), "wco: compact offset lines and $RST make it stale");
+            spin(2000, [&] { return s.workOffsetFresh(); });
+        }
+        s.stopStream();                      // a soft reset: G92 is gone
+        check(!s.workOffsetFresh(), "wco: stale after a reset");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: fresh after the reset's next report");
+        // A report written before the reset but read after it carries the
+        // old WCO: only reports after the banner count.
+        grbl.noBanner = true;
+        s.stopStream();
+        spin(1200, [] { return false; });    // reports with WCO, no banner yet
+        check(!s.workOffsetFresh(), "wco: a report before the reset's banner does not make it fresh");
+        grbl.send("\r\nGrbl 1.1h ['$' for help]\r\n");
+        spin(2000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: fresh from the first report after the banner");
+        s.stopStream();                      // and no banner ever: fresh after a few seconds
+        spin(6000, [&] { return s.workOffsetFresh(); });
+        check(s.workOffsetFresh(), "wco: no banner, the wait ends after a few seconds");
+        grbl.noBanner = false;
         grbl.positional = false;
     }
 

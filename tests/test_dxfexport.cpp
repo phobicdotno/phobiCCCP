@@ -7,6 +7,8 @@
 
 #include <QCoreApplication>
 #include <QJsonObject>
+#include <QSet>
+#include <QStringList>
 
 #include <cmath>
 #include <cstdio>
@@ -64,8 +66,11 @@ int main(int argc, char **argv)
     check(text.contains("$INSUNITS\n70\n4\n"), "units are millimetres");
     check(text.count("\nCIRCLE\n") == 1, "circle stays a CIRCLE");
     check(text.count("\nPOLYLINE\n") == 3, "rectangle, path and bezier as polylines");
-    check(text.contains("\nCut_ outside\n"), "':' replaced in the layer name");
-    check(text.contains("\nHoles\n"), "circle on its own layer");
+    check(text.contains("\n8\nCUT__OUTSIDE\n"), "layer name in R12 form: upper case, ':' and ' ' as '_'");
+    check(text.contains("\n8\nHOLES\n"), "circle on its own layer");
+    check(text.contains("0\nTABLE\n2\nLTYPE\n") && text.contains("0\nLTYPE\n2\nCONTINUOUS\n"),
+          "the CONTINUOUS line type the layers name is in an LTYPE table");
+    check(text.indexOf("\nLTYPE\n") < text.indexOf("\n2\nLAYER\n"), "LTYPE table before LAYER table");
     check(text.endsWith("0\nEOF\n"), "ends with EOF");
     check(!text.contains("-0\n"), "no negative zero");
 
@@ -116,6 +121,54 @@ int main(int argc, char **argv)
         t = entities(tri);
         check(tri.entities == 1 && t.count("\nVERTEX\n") == 3 && t.contains("\n70\n1\n"),
               "a triangle is still a closed polyline of three vertices");
+    }
+
+    // Layer names: R12 compares them without regard to case and takes at
+    // most 31 of A-Z 0-9 _ $ -. Names that map onto one another stay
+    // different layers, and the same name always maps the same way.
+    {
+        const QString longA = QStringLiteral("A very long layer name for the outside cuts, part one");
+        const QString longB = QStringLiteral("A very long layer name for the outside cuts, part two");
+        const QVector<Element> ls = {
+            Element::makePath({{0, 0}, {10, 0}}, false, layer(QStringLiteral("Holes"))),
+            Element::makePath({{0, 1}, {10, 1}}, false, layer(QStringLiteral("holes"))),
+            Element::makePath({{0, 2}, {10, 2}}, false, layer(QStringLiteral("Holes"))),
+            Element::makePath({{0, 3}, {10, 3}}, false, layer(longA)),
+            Element::makePath({{0, 4}, {10, 4}}, false, layer(longB)),
+            Element::makePath({{0, 5}, {10, 5}}, false, layer(QStringLiteral("Tiefe ä/ö"))),
+            Element::makePath({{0, 6}, {10, 6}}, false, layer(QString())),
+        };
+        const DxfExportResult lr = exportDxf(ls);
+        const QString t = QString::fromUtf8(lr.data);
+        const QString tables = t.mid(t.indexOf(QStringLiteral("\n2\nLAYER\n")),
+                                     t.indexOf(QStringLiteral("\nENTITIES\n"))
+                                         - t.indexOf(QStringLiteral("\n2\nLAYER\n")));
+        QStringList names;
+        const QStringList lines = tables.split(QLatin1Char('\n'));
+        for (int i = 0; i + 2 < lines.size(); ++i)
+            if (lines[i] == QLatin1String("LAYER") && lines[i + 1] == QLatin1String("2"))
+                names.append(lines[i + 2]);
+        bool safe = true;
+        QSet<QString> upper;
+        for (const QString &n : names) {
+            safe = safe && !n.isEmpty() && n.size() <= 31;
+            for (const QChar ch : n) {
+                const char16_t c = ch.unicode();
+                safe = safe && ((c >= u'A' && c <= u'Z') || (c >= u'0' && c <= u'9') || c == u'_'
+                                || c == u'$' || c == u'-');
+            }
+            upper.insert(n.toUpper());
+        }
+        check(safe, "layer names: at most 31 of A-Z 0-9 _ $ -");
+        check(upper.size() == names.size(), "no two LAYER entries differ only by case");
+        // 0, HOLES, holes, two long names, Tiefe, and none (layer 0 again).
+        check(names.size() == 6, "every distinct layer once, the unnamed one as layer 0");
+        check(names.contains(QStringLiteral("0")) && names.contains(QStringLiteral("HOLES"))
+                  && names.contains(QStringLiteral("TIEFE____")),
+              "plain names keep their R12 form");
+        check(t.count(QStringLiteral("\n8\nHOLES\n")) == 8,
+              "both 'Holes' paths on HOLES (POLYLINE, 2 VERTEX, SEQEND each), 'holes' not");
+        check(exportDxf(ls).data == lr.data, "the same layers map the same way every time");
     }
 
     std::printf("dxfexport: %d checks passed\n", g_checks);

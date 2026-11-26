@@ -47,6 +47,12 @@ public:
     // newest first. Copies older than their source are stale and deleted.
     QVector<Entry> pending() const;
     static void remove(const QString &copy);
+    // The copy is held by no running session (and still there). pending()
+    // only says so as of when it listed: two windows can be offered one copy.
+    static bool isFree(const QString &copy);
+    // Delete the copy unless a running session holds it (taking its lock
+    // for the delete). True when it was deleted.
+    static bool removeIfFree(const QString &copy);
 
 private:
     QString pathFor(const QString &source, bool untitled) const;

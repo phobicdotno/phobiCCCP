@@ -262,6 +262,31 @@ private:
     bool m_fitted = false;                  // fitInView only on first load
     bool m_panning = false;                 // middle-mouse pan
     QPoint m_panLast;                       // viewport coords during pan
+    // A two-finger pinch is under way: the first finger's synthesized mouse
+    // events are ignored until it is lifted (see viewportEvent).
+    bool m_pinching = false;
+    // How far a multi-click shape had got before the last touch press: a
+    // pinch rolls back only what its own first finger added (see pinchStarted).
+    struct TouchPress {
+        bool valid = false;
+        int clicks = 0, tanLines = 0, penNodes = 0, splinePts = 0;
+        QStringList selection;      // what was selected: a pinch puts it back
+        bool emptyPending = false;  // a tap on empty board says so at its release
+    } m_touchPress;
+    void pinchStarted();
+    // A touch press that would add a shape or a constraint at once (a point,
+    // text, the last click of an arc/slot/sketch, a constraint or dimension
+    // pick, closing a path or spline) waits for its release: the first finger
+    // of a pinch must not commit anything, and the pinch swallows the release.
+    struct DeferredPress {
+        bool valid = false;
+        QPointF pos, globalPos;
+        Qt::KeyboardModifiers mods;
+        bool dbl = false;   // a double-click came for it: run that too after it
+    } m_deferredPress;
+    bool m_replaying = false;
+    bool commitsOnPress(const QPoint &viewportPos) const;   // a left press there
+    void cancelDimDrag();   // a dimension label being dragged goes back
     // Select band (viewport coords). Dragged left to right it is a window
     // (only what lies wholly inside); right to left a crossing (whatever
     // line it touches). Ctrl adds to the selection it started with.
@@ -369,6 +394,7 @@ private:
     QString m_dragDim;                            // dimension label being dragged
     QPointF m_dragDimFrom;
     QPointF m_dragDimLabel0;
+    QPointF m_dragDimLast;      // the label the drag last wrote into the design
     bool m_showConstraints = true, m_parametricVisible = true;
     QSet<QString> m_full;
     int m_dof = 0;

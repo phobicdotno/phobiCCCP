@@ -11,11 +11,18 @@
 //
 // Plain asserts, no test framework; exits 0 on success.
 
+// The pinch's start (pinchStarted) is private: a real pinch gesture cannot
+// be made in a test.
+#define private public
 #include "../src/canvas.h"
+#undef private
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
 #include "../src/model3d.h"
 #include "../src/propertiespanel.h"
+#include "../src/shapestrip.h"
+#include "../src/parametric.h"
+#include "../src/toolpathfactory.h"
 
 #include <QApplication>
 #include <QDoubleSpinBox>
@@ -26,7 +33,14 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QLineEdit>
+#include <QContextMenuEvent>
+#include <QListWidgetItem>
+#include <QMenu>
 #include <QMouseEvent>
+#include <QPointingDevice>
+#include <QTemporaryDir>
+#include <QTimer>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSpinBox>
@@ -37,6 +51,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 
 static int g_checks = 0;
 
@@ -1744,6 +1759,27 @@ int main(int argc, char *argv[])
         check(sel() == both, "Ctrl band adds to the selection");
         check(bdoc.elementById(big.id)->painterPath.boundingRect() == QRectF(50, 50, 100, 100),
               "a band moves nothing");
+
+        // The design rebuilt while a Ctrl band is dragged (an edit from the
+        // pad, a preview): what Ctrl held stays held. The band kept the old
+        // scene's items, freed by the rebuild.
+        bc.selectElements({dot.id});
+        QTest::mousePress(bc.viewport(), Qt::LeftButton, Qt::ControlModifier, vp(&bc, {160, 95}));
+        QTest::mouseMove(bc.viewport(), vp(&bc, {150, 100}));
+        bc.rebuild();
+        QTest::mouseMove(bc.viewport(), vp(&bc, {140, 105}));
+        QTest::mouseRelease(bc.viewport(), Qt::LeftButton, Qt::ControlModifier, vp(&bc, {140, 105}));
+        check(sel() == both, "Ctrl band across a rebuild still adds to the selection");
+        // Another design opened under the band: the band ends with the old one.
+        c2d::Document other;
+        bc.selectElements({});
+        QTest::mousePress(bc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&bc, {40, 40}));
+        QTest::mouseMove(bc.viewport(), vp(&bc, {100, 100}));
+        bc.setDocument(&other);
+        bc.setDocument(&bdoc);
+        QTest::mouseMove(bc.viewport(), vp(&bc, {160, 160}));
+        QTest::mouseRelease(bc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&bc, {160, 160}));
+        check(sel().isEmpty(), "a band does not outlive the design it was started on");
     }
 
     // --- Click-cycling: a second click on the same spot steps to the shape underneath ---
@@ -1808,6 +1844,374 @@ int main(int argc, char *argv[])
         check(order() == QStringList({a.id}), "delete takes the listed shapes");
         sc.undoStack()->undo();
         check(sdoc.elements().size() == 3, "undo brings them back");
+    }
+
+    // --- A finger's tap that adds something waits for the finger to lift ----------
+    // The first finger of a pinch also comes as a press; the pinch swallows
+    // its release, so nothing it would have added is ever added. A mouse
+    // press still adds at once.
+    {
+        c2d::Document pdoc;
+        c2d::Canvas pc;
+        pc.resize(900, 700);
+        pc.show();
+        pc.setDocument(&pdoc);
+        pc.resetTransform();
+        pc.scale(3, -3);
+        pc.centerOn(QPointF(60, 60));
+        pc.setTool(c2d::Canvas::DrawPoint);
+        QPointingDevice finger(QStringLiteral("test touchscreen"), 4711, QInputDevice::DeviceType::TouchScreen,
+                               QPointingDevice::PointerType::Finger, QInputDevice::Capability::Position, 10, 0);
+        auto touch = [&](QEvent::Type t, QPointF mm) {
+            const QPoint p = vp(&pc, mm);
+            QMouseEvent e(t, QPointF(p), QPointF(pc.viewport()->mapToGlobal(p)), Qt::LeftButton,
+                          t == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier, &finger);
+            QApplication::sendEvent(pc.viewport(), &e);
+        };
+        touch(QEvent::MouseButtonPress, {50, 50});
+        check(pdoc.elements().isEmpty(), "touch: a point waits for the finger to lift");
+        touch(QEvent::MouseButtonRelease, {50, 50});
+        check(pdoc.elements().size() == 1
+                  && near(pdoc.elements().first().painterPath.boundingRect().center(), {50, 50}, 0.5),
+              "touch: lifted, the point is placed where the finger went down");
+        QTest::mousePress(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {80, 80}));
+        check(pdoc.elements().size() == 2, "mouse: a press places the point at once");
+        QTest::mouseRelease(pc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&pc, {80, 80}));
+        check(pdoc.elements().size() == 2, "mouse: and the release adds nothing more");
+        // A finger that starts a drag-shape (ellipse) still draws as it moves.
+        pc.setTool(c2d::Canvas::DrawEllipse);
+        touch(QEvent::MouseButtonPress, {20, 20});
+        touch(QEvent::MouseMove, {40, 30});
+        touch(QEvent::MouseButtonRelease, {40, 30});
+        check(pdoc.elements().size() == 3, "touch: a dragged ellipse is drawn as before");
+    }
+
+    // --- The first finger of a pinch adds, trims and selects nothing ------------------
+    {
+        QPointingDevice *finger = QTest::createTouchDevice();
+        c2d::Document gdoc;
+        c2d::Canvas gc;
+        gc.resize(900, 700);
+        gc.show();
+        gc.setDocument(&gdoc);
+        gc.resetTransform();
+        gc.scale(3, -3);
+        gc.centerOn(QPointF(50, 50));
+        auto touch = [&](QEvent::Type t, QPointF mm) {
+            const QPoint p = vp(&gc, mm);
+            QMouseEvent e(t, QPointF(p), QPointF(gc.viewport()->mapToGlobal(p)), Qt::LeftButton,
+                          t == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier, finger);
+            QApplication::sendEvent(gc.viewport(), &e);
+        };
+        auto tap = [&](QPointF mm) {
+            touch(QEvent::MouseButtonPress, mm);
+            touch(QEvent::MouseButtonRelease, mm);
+        };
+
+        // A point waiting for its finger to lift: the pinch drops it.
+        gc.setTool(c2d::Canvas::DrawPoint);
+        touch(QEvent::MouseButtonPress, {30, 30});
+        gc.pinchStarted();
+        touch(QEvent::MouseButtonRelease, {30, 30});
+        check(gdoc.elements().isEmpty() && !gc.m_pinching, "pinch: the first finger's point is not placed");
+
+        // Trim on the first finger: nothing trimmed. A plain tap trims.
+        const c2d::Element h = c2d::Element::makePath({{0, 50}, {100, 50}}, false, gdoc.defaultLayer());
+        const c2d::Element v = c2d::Element::makePath({{50, 0}, {50, 100}}, false, gdoc.defaultLayer());
+        gdoc.addElement(h);
+        gdoc.addElement(v);
+        gc.rebuild();
+        gc.setTool(c2d::Canvas::Trim);
+        const QJsonObject h0 = gdoc.elementById(h.id)->raw;
+        const int steps = gc.undoStack()->count();
+        touch(QEvent::MouseButtonPress, {20, 50});
+        gc.pinchStarted();
+        touch(QEvent::MouseButtonRelease, {20, 50});
+        check(gc.undoStack()->count() == steps && gdoc.elements().size() == 2
+                  && gdoc.elementById(h.id) && gdoc.elementById(h.id)->raw == h0,
+              "pinch: the first finger trims nothing");
+        tap({20, 50});
+        check(gc.undoStack()->count() == steps + 1, "touch: a tap with Trim trims");
+        gc.undoStack()->undo();
+
+        // The selection the finger's press changed comes back; the board
+        // tap's "let go of the toolpath" is not said.
+        gc.setTool(c2d::Canvas::Select);
+        gc.selectElements({v.id});
+        int empties = 0;
+        auto conn = QObject::connect(&gc, &c2d::Canvas::emptyPressed, [&] { ++empties; });
+        touch(QEvent::MouseButtonPress, {20, 80});   // empty board
+        gc.pinchStarted();
+        touch(QEvent::MouseButtonRelease, {20, 80});
+        check(gc.selectedElementIds() == QStringList{v.id} && empties == 0,
+              "pinch: the selection is as before the first finger, the toolpath kept");
+        touch(QEvent::MouseButtonPress, {20, 80});
+        check(empties == 0, "touch: an empty-board tap waits for the finger to lift");
+        touch(QEvent::MouseButtonRelease, {20, 80});
+        check(empties == 1 && gc.selectedElementIds().isEmpty(), "touch: and then lets go of everything");
+        QObject::disconnect(conn);
+
+        // A double tap near a path's start closes it once and starts nothing.
+        gc.deleteElements({h.id, v.id});
+        const int before = gdoc.elements().size();
+        gc.setTool(c2d::Canvas::DrawPath);
+        click(&gc, {10, 10});
+        click(&gc, {60, 10});
+        click(&gc, {60, 60});
+        check(gc.m_penNodes.size() == 3, "double tap: three nodes placed");
+        touch(QEvent::MouseButtonPress, {10, 10});
+        touch(QEvent::MouseButtonRelease, {10, 10});
+        touch(QEvent::MouseButtonPress, {10, 10});
+        touch(QEvent::MouseButtonDblClick, {10, 10});
+        touch(QEvent::MouseButtonRelease, {10, 10});
+        bool closed = false;
+        if (gdoc.elements().size() == before + 1)
+            for (const auto &pt : gdoc.elements().last().raw.value("point_type").toArray())
+                closed = closed || pt.toInt() == 4;
+        check(gdoc.elements().size() == before + 1 && closed && gc.m_penNodes.isEmpty(),
+              "double tap: the path is closed, and no new one is started");
+
+        // A finger that went down on the start and slid a little off it
+        // before lifting still closes the path (it went down to close it).
+        click(&gc, {10, 10});
+        click(&gc, {60, 10});
+        click(&gc, {60, 60});
+        touch(QEvent::MouseButtonPress, {10, 10});
+        touch(QEvent::MouseMove, {13.5, 10});
+        touch(QEvent::MouseButtonRelease, {13.5, 10});
+        bool closed2 = false;
+        if (gdoc.elements().size() == before + 2)
+            for (const auto &pt : gdoc.elements().last().raw.value("point_type").toArray())
+                closed2 = closed2 || pt.toInt() == 4;
+        check(closed2 && gc.m_penNodes.isEmpty(), "slide: a close tap that slid off the start still closes");
+        gc.setTool(c2d::Canvas::Select);
+    }
+
+    // --- A delete that leaves a toolpath without vectors marks it ------------------
+    // (Export skips such a toolpath: a Facing left with nothing faced the
+    // whole stock.)
+    {
+        c2d::Document vdoc;
+        c2d::Canvas vc;
+        vc.setDocument(&vdoc);
+        const c2d::Element a = c2d::Element::makeCircle({10, 10}, 3, vdoc.defaultLayer());
+        const c2d::Element b = c2d::Element::makeCircle({30, 10}, 3, vdoc.defaultLayer());
+        vdoc.addElement(a);
+        vdoc.addElement(b);
+        c2d::Toolpath one = c2d::makeToolpath(vdoc, "contour", {a.id});
+        c2d::Toolpath two = c2d::makeToolpath(vdoc, "contour", {a.id, b.id});
+        vdoc.insertToolpath(0, one);
+        vdoc.insertToolpath(1, two);
+        vc.rebuild();
+        vc.deleteElements({a.id});
+        check(vdoc.toolpathByUuid(one.uuid)->json.value("vectors_removed").toBool(),
+              "delete: a toolpath left with no vectors is marked");
+        check(!vdoc.toolpathByUuid(two.uuid)->json.contains("vectors_removed"),
+              "delete: one that keeps a vector is not");
+        vc.undoStack()->undo();
+        check(!vdoc.toolpathByUuid(one.uuid)->json.contains("vectors_removed")
+                  && vdoc.toolpathByUuid(one.uuid)->json.value("elements").toArray().size() == 1,
+              "delete undone: the toolpath is as it was");
+
+        // A sketch point left behind is not cut by a contour (export drops
+        // it), so the contour still counts as emptied; a drilling keeps it.
+        const c2d::Element c = c2d::Element::makeCircle({50, 10}, 3, vdoc.defaultLayer());
+        const c2d::Element pt = c2d::Element::makePoint({50, 30}, vdoc.defaultLayer());
+        vdoc.addElement(c);
+        vdoc.addElement(pt);
+        c2d::Toolpath three = c2d::makeToolpath(vdoc, "contour", {c.id, pt.id});
+        c2d::Toolpath drill = c2d::makeToolpath(vdoc, "drilling_toolpath", {c.id, pt.id});
+        vdoc.insertToolpath(2, three);
+        vdoc.insertToolpath(3, drill);
+        vc.rebuild();
+        vc.deleteElements({c.id});
+        check(vdoc.toolpathByUuid(three.uuid)->json.value("vectors_removed").toBool(),
+              "delete: a contour left with only a sketch point is marked");
+        check(!vdoc.toolpathByUuid(drill.uuid)->json.contains("vectors_removed"),
+              "delete: a drilling left with a sketch point is not");
+    }
+
+    // --- A dimension label dragged when Design is left goes back -------------------
+    // Leaving the Design page ended the drag with the label moved in the
+    // design and no undo step for it.
+    {
+        QTemporaryDir dd;
+        QString err;
+        const QString blank = dd.filePath("dim.c2d");
+        check(c2d::Document::createBlank(blank, 200, 200, 19, &err), "dimension drag: a blank design");
+        c2d::Document ddoc;
+        check(ddoc.load(blank, &err), "dimension drag: it loads");
+        const c2d::Element l = c2d::Element::makePath({{20, 50}, {120, 50}}, false, ddoc.defaultLayer());
+        ddoc.addElement(l);
+        c2d::Constraint c;
+        c.type = c2d::Constraint::Distance;
+        c2d::GeoRef r;
+        r.kind = c2d::GeoRef::Line;
+        r.id = l.id;
+        r.index = 0;
+        c.refs = {r};
+        c.uid = ddoc.parametric().nextUid();
+        c.name = ddoc.parametric().nextDimensionName();
+        c.expr = QStringLiteral("100");
+        c2d::param::prime(ddoc, c);
+        c.label = QPointF(0, -15);
+        ddoc.parametricRef().constraints.append(c);
+        c2d::param::solve(ddoc);
+        c2d::Canvas dc;
+        dc.resize(900, 700);
+        dc.show();
+        dc.setTool(c2d::Canvas::Select);
+        dc.setDocument(&ddoc);
+        dc.resetTransform();
+        dc.scale(3, -3);
+        dc.centerOn(QPointF(70, 50));
+        check(QTest::qWaitForWindowExposed(&dc), "dimension drag: the canvas is shown");
+        dc.viewport()->repaint();
+        const QPointF label0 = ddoc.parametric().constraints.first().label;
+        QTest::mousePress(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {70, 35}));
+        const QPointF at(70, 35);
+        QTest::mouseMove(dc.viewport(), vp(&dc, at + QPointF(10, -10)));
+        check(ddoc.parametric().constraints.first().label != label0, "dimension drag: the label follows the drag");
+        dc.setParametricVisible(false);
+        check(ddoc.parametric().constraints.first().label == label0,
+              "dimension drag: leaving Design puts the label back");
+        QTest::mouseRelease(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {80, 25}));
+        check(ddoc.parametric().constraints.first().label == label0 && dc.undoStack()->count() == 0,
+              "dimension drag: and no step moves it later");
+        // A drag under way when an undo replaces the design: leaving Design
+        // must not put back the label as it was before the undo.
+        dc.setParametricVisible(true);
+        dc.viewport()->repaint();
+        QTest::mousePress(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {70, 35}));
+        QTest::mouseMove(dc.viewport(), vp(&dc, {80, 25}));
+        QTest::mouseRelease(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {80, 25}));
+        const QPointF labelB = ddoc.parametric().constraints.first().label;
+        check(labelB != label0 && dc.undoStack()->count() == 1, "dimension drag: a move is one step");
+        dc.viewport()->repaint();
+        QTest::mousePress(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {80, 25}));
+        QTest::mouseMove(dc.viewport(), vp(&dc, {90, 15}));
+        check(ddoc.parametric().constraints.first().label != labelB, "dimension drag: a second drag moves it");
+        dc.undoStack()->undo();
+        check(ddoc.parametric().constraints.first().label == label0, "dimension drag: undo puts the first move back");
+        dc.setParametricVisible(false);
+        check(ddoc.parametric().constraints.first().label == label0,
+              "dimension drag: leaving Design keeps what the undo put back");
+        QTest::mouseRelease(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {90, 15}));
+        check(ddoc.parametric().constraints.first().label == label0 && dc.undoStack()->index() == 0,
+              "dimension drag: and the release adds no step");
+        // Undo of a step that is not about the label, during a drag: the
+        // label goes back from where the drag left it (no step records it).
+        dc.setParametricVisible(true);
+        dc.duplicateElements({l.id});
+        const int stepAt = dc.undoStack()->index();
+        dc.viewport()->repaint();
+        QTest::mousePress(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {70, 35}));
+        QTest::mouseMove(dc.viewport(), vp(&dc, {80, 25}));
+        check(ddoc.parametric().constraints.first().label != label0, "dimension drag: under way again");
+        dc.undoStack()->undo();
+        check(ddoc.parametric().constraints.first().label == label0,
+              "dimension drag: an undo of another step puts the dragged label back");
+        QTest::mouseRelease(dc.viewport(), Qt::LeftButton, Qt::NoModifier, vp(&dc, {80, 25}));
+        check(ddoc.parametric().constraints.first().label == label0 && dc.undoStack()->index() == stepAt - 1,
+              "dimension drag: and the release records nothing");
+
+        // A double tap on a dimension with the Dimension tool edits it, as a
+        // double-click does (the tap's press waits for its release).
+        {
+            QPointingDevice *finger = QTest::createTouchDevice();
+            auto touchDim = [&](QEvent::Type t, QPointF mm) {
+                const QPoint p = vp(&dc, mm);
+                QMouseEvent e(t, QPointF(p), QPointF(dc.viewport()->mapToGlobal(p)), Qt::LeftButton,
+                              t == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier,
+                              finger);
+                QApplication::sendEvent(dc.viewport(), &e);
+            };
+            dc.setTool(c2d::Canvas::Dimension);
+            dc.viewport()->repaint();
+            touchDim(QEvent::MouseButtonPress, {70, 35});
+            touchDim(QEvent::MouseButtonRelease, {70, 35});
+            touchDim(QEvent::MouseButtonPress, {70, 35});
+            touchDim(QEvent::MouseButtonDblClick, {70, 35});
+            check(!(dc.m_dimEdit && dc.m_dimEdit->isVisible()), "double tap: nothing before the finger lifts");
+            touchDim(QEvent::MouseButtonRelease, {70, 35});
+            check(dc.m_dimEdit && dc.m_dimEdit->isVisible(), "double tap: the dimension's value editor opens");
+            dc.setTool(c2d::Canvas::Select);
+        }
+    }
+
+    // --- The element menu offers Edit nodes on the Design page only ------------------
+    // (Toolpaths hides the drawing palette; the Nodes tool there edited
+    // instead of picking.)
+    {
+        c2d::Document mdoc;
+        c2d::Canvas mc;
+        mc.resize(900, 700);
+        mc.show();
+        mc.setDocument(&mdoc);
+        mc.resetTransform();
+        mc.scale(3, -3);
+        mc.centerOn(QPointF(100, 100));
+        const c2d::Element sq = c2d::Element::makeRectangle({100, 100}, 40, 40, mdoc.defaultLayer());
+        mdoc.addElement(sq);
+        mc.rebuild();
+        mc.setTool(c2d::Canvas::Select);
+        auto menuTexts = [&] {
+            auto texts = std::make_shared<QStringList>();
+            QTimer::singleShot(50, [texts] {
+                if (auto *m = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                    for (QAction *a : m->actions())
+                        *texts << a->text();
+                    m->close();
+                }
+            });
+            mc.selectElements({sq.id});
+            const QPoint at = vp(&mc, {80, 100});   // on the square's left edge
+            QContextMenuEvent ev(QContextMenuEvent::Mouse, at, mc.viewport()->mapToGlobal(at));
+            QApplication::sendEvent(mc.viewport(), &ev);
+            return *texts;
+        };
+        auto hasEditNodes = [](const QStringList &t) {
+            for (const QString &s : t)
+                if (s.startsWith(QLatin1String("Edit nodes")))
+                    return true;
+            return false;
+        };
+        const QStringList design = menuTexts();
+        check(!design.isEmpty() && hasEditNodes(design), "element menu: Edit nodes on the Design page");
+        mc.setParametricVisible(false);
+        const QStringList tp = menuTexts();
+        check(!tp.isEmpty() && !hasEditNodes(tp), "element menu: no Edit nodes off the Design page");
+        check(mc.tool() == c2d::Canvas::Select, "element menu: the tool is untouched");
+    }
+
+    // --- Shape strip: a shape past the strip's tiles stays selected ----------------
+    // A traced image can hold more shapes than the strip shows; picking a
+    // tile let go of every selected shape that had none.
+    {
+        c2d::Document tdoc;
+        c2d::Canvas tc;
+        tc.resize(900, 700);
+        tc.setDocument(&tdoc);
+        QStringList ids;
+        for (int i = 0; i < 405; ++i) {
+            const c2d::Element e = c2d::Element::makeCircle({double(i % 20) * 10, double(i / 20) * 10}, 2,
+                                                            tdoc.defaultLayer());
+            tdoc.addElement(e);
+            ids << e.id;
+        }
+        tc.rebuild();
+        c2d::ShapeStrip strip(&tc);
+        check(strip.count() < ids.size(), "shape strip: not every shape has a tile");
+        tc.selectElements({ids.last()});
+        strip.item(0)->setSelected(true);
+        QStringList sel = tc.selectedElementIds();
+        sel.sort();
+        QStringList want{ids.first(), ids.last()};
+        want.sort();
+        check(sel == want, "shape strip: a tile picked keeps the selected shape that has no tile");
+        strip.clearSelection();
+        check(tc.selectedElementIds() == QStringList{ids.last()},
+              "shape strip: and letting go of the tiles keeps it too");
     }
 
     std::printf("OK: %d checks passed\n", g_checks);

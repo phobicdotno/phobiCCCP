@@ -193,8 +193,18 @@ class NumBox extends StatefulWidget {
   final int decimals;
   final String suffix;
   final bool big;
+
+  /// A depth-like value the computer reads as a size: "-3" means 3, not
+  /// the least the box takes.
+  final bool magnitude;
   const NumBox(this.value, this.onChanged,
-      {super.key, this.min = -10000, this.max = 10000, this.decimals = 3, this.suffix = ' mm', this.big = false});
+      {super.key,
+      this.min = -10000,
+      this.max = 10000,
+      this.decimals = 3,
+      this.suffix = ' mm',
+      this.big = false,
+      this.magnitude = false});
   @override
   State<NumBox> createState() => _NumBoxState();
 }
@@ -241,7 +251,8 @@ class _NumBoxState extends State<NumBox> {
       return;
     }
     final t = _c.text.trim().toLowerCase().replaceAll(',', '.').replaceFirst(RegExp(r'\s*(mm|°)$'), '');
-    final v = double.tryParse(t);
+    final read = double.tryParse(t);
+    final v = read != null && widget.magnitude ? read.abs() : read;
     if (v != null && v.isFinite) {
       // A max under the min (a field whose range a far shape squeezed
       // shut) must not throw.
@@ -281,8 +292,11 @@ class StepperField extends StatelessWidget {
   final ValueChanged<double> onChanged;
   final String suffix;
   final int decimals;
+
+  /// Typed values are taken as sizes (NumBox.magnitude).
+  final bool magnitude;
   const StepperField(this.value, this.onChanged,
-      {super.key, this.step = 0.1, this.min = 0, this.max = 1000, this.suffix = ' mm', this.decimals = 2});
+      {super.key, this.step = 0.1, this.min = 0, this.max = 1000, this.suffix = ' mm', this.decimals = 2, this.magnitude = false});
 
   Widget _btn(String t, double d) => SizedBox(
         width: 46,
@@ -302,7 +316,7 @@ class StepperField extends StatelessWidget {
   Widget build(BuildContext context) => Row(mainAxisSize: MainAxisSize.min, children: [
         _btn('▼', -step),
         const SizedBox(width: 4),
-        SizedBox(width: 118, child: NumBox(value, onChanged, min: min, max: max, decimals: decimals, suffix: suffix, big: true)),
+        SizedBox(width: 118, child: NumBox(value, onChanged, min: min, max: max, decimals: decimals, suffix: suffix, big: true, magnitude: magnitude)),
         const SizedBox(width: 4),
         _btn('▲', step),
       ]);
@@ -374,7 +388,7 @@ class StockFields extends StatelessWidget {
     return Column(crossAxisAlignment: CrossAxisAlignment.stretch, mainAxisSize: MainAxisSize.min, children: [
       FormRow('Width X', NumBox(stock.width, (v) => onStock(stock.copyWith(width: v)), min: 1), labelWidth: 96),
       FormRow('Height Y', NumBox(stock.height, (v) => onStock(stock.copyWith(height: v)), min: 1), labelWidth: 96),
-      FormRow('Thickness Z', NumBox(stock.thickness, (v) => onStock(stock.copyWith(thickness: v)), min: 0.1, max: 1000),
+      FormRow('Thickness Z', NumBox(stock.thickness, (v) => onStock(stock.copyWith(thickness: v)), min: 0.1, max: 1000, magnitude: true),
           labelWidth: 96),
       FormRow(
           'Material',

@@ -1,6 +1,7 @@
 #pragma once
 #include "vectorops.h"
 #include <functional>
+#include <QHash>
 #include <QObject>
 #include <QStringList>
 #include <QVector>
@@ -83,8 +84,12 @@ private:
     void pushCopies(const QVector<Element> &originals, const QVector<QTransform> &placements,
                     bool joinToolpaths, const QString &text);
     void pushMoves(const QStringList &ids, const QVector<QPointF> &deltas, const QString &text);
-    void pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
-                     bool keepInputs, const QString &text);
+    // `from`: input id -> the result ids it became, for retargeting the
+    // toolpaths that machined it. Returns how many toolpaths end up with no
+    // vectors.
+    int pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
+                    bool keepInputs, const QString &text,
+                    const QHash<QString, QStringList> &from);
 
     Canvas *m_canvas;
     QStringList m_order;               // selected ids, first-selected first

@@ -1105,19 +1105,47 @@ MachinePanel::MachinePanel(QWidget *parent)
         // A refused resume (reset after an error, port gone) leaves the
         // machine held, and the button must keep saying so.
         if (m_liftHold) {
-            // Back down: spindle on and up to speed, to where the program
-            // was, its feed and motion mode, then on with the cut.
-            if (!m_grbl->isHeldAtPoint()) {
-                log(QStringLiteral("resume: still lifting - press Resume again in a moment"));
+            // Stopped at once by a second press (below) while the lift was
+            // still queued: let the program finish what it took, then the
+            // lift. The button reads "Hold here now" until the hold point, then
+            // Resume for the way back down (updatePauseButton()).
+            if (m_held) {
+                if (m_resetPending) {
+                    log(QStringLiteral("resume refused: the job is being cancelled"));
+                } else if (m_grbl->resumeStream()) {
+                    setHeld(false);
+                    log(QStringLiteral("resume: carrying on to the lift (Z up, spindle off); "
+                                       "Resume there goes back down"));
+                }
                 return;
             }
-            const QStringList down = m_grbl->resumeLinesAfterHold();
+            // The lift goes in behind everything GRBL has already taken,
+            // which can be minutes of cutting. A second press is the
+            // operator wanting it to stop now: a feed hold, on the spot.
+            if (!m_grbl->isHeldAtPoint()) {
+                m_grbl->pauseStream();
+                setHeld(true);
+                log(QStringLiteral("hold: \"Hold here now\" pressed while the lift waits its turn - stopping at "
+                                   "once (feed hold, spindle still on). Resume carries on to the "
+                                   "lift"));
+                return;
+            }
+            // Back down: spindle on and up to speed, to where the program
+            // was, its feed and motion mode, then on with the cut.
+            // The approach rapid stays under the top of Z (switch clearance)
+            // in work Z: work Z = machine Z - (mz - wz), the offset with TLO.
+            double topWorkZ = std::numeric_limits<double>::infinity();
+            if (m_homed && m_grbl->status().valid) {
+                const MachineStatus &st = m_grbl->status();
+                topWorkZ = -switchClearance() - (st.mz - st.wz);
+            }
+            const QStringList down = m_grbl->resumeLinesAfterHold(topWorkZ);
             log(QStringLiteral("resume: spindle on, back down, then the program"));
-            if (m_jobView)
-                m_jobView->linesInserted(int(down.size()));
             m_liftHold = false;
-            m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
-            m_grbl->continueAfterHold(down);
+            setHeld(false);
+            const int n = m_grbl->continueAfterHold(down);
+            if (m_jobView)
+                m_jobView->linesInserted(n);
         } else if (!m_held && m_homed && !riseToTop().isEmpty() && m_grbl->canLiftHold()) {
             // Z to the top, then the spindle off; XY stays where it is.
             QStringList up = riseToTop();
@@ -1126,8 +1154,9 @@ MachinePanel::MachinePanel(QWidget *parent)
                 if (m_jobView)
                     m_jobView->linesInserted(int(up.size()) + 1);
                 m_liftHold = true;
-                m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
-                log(QStringLiteral("hold: finishing the lines already sent, then Z up and spindle off"));
+                updatePauseButton();
+                log(QStringLiteral("hold: finishing the lines already sent, then Z up and spindle off. "
+                                   "Press Hold here now (or the pad's hold again) to stop at once instead"));
             }
         } else if (!m_held) {
             m_grbl->pauseStream();
@@ -1220,6 +1249,8 @@ MachinePanel::MachinePanel(QWidget *parent)
         emit livePosition(0, 0, 0, false);
     });
     connect(m_grbl, &GrblStreamer::statusChanged, this, [this](const MachineStatus &st) { onStatus(st); });
+    // At the lift-hold's point "Hold here now" turns into Resume.
+    connect(m_grbl, &GrblStreamer::holdPointReached, this, [this] { updatePauseButton(); });
     connect(m_grbl, &GrblStreamer::progressChanged, this, [this](int a, int t) {
         m_progress->setMaximum(qMax(1, t));
         m_progress->setValue(a);
@@ -1237,10 +1268,12 @@ MachinePanel::MachinePanel(QWidget *parent)
         // the port opens and was still booting when the first $$ went out.
         // Ask again, or the jog limits, park spot and $21 fall back to
         // defaults for the whole session.
-        if (l.startsWith(QLatin1String("Grbl "))) {
+        if (l.startsWith(QLatin1String("Grbl ")) || l.startsWith(QLatin1String("GrblHAL "))) {
             // Nothing from before the reset moves the machine after it.
             ++m_resets;
             m_onIdle = nullptr;
+            m_endRisePending = false;
+            stopMapAfterReset();
             m_deferredJogs.clear();
             stopHoldJog();
             QTimer::singleShot(400, this, [this] { m_grbl->sendCommand(QStringLiteral("$$")); });
@@ -1273,6 +1306,7 @@ MachinePanel::MachinePanel(QWidget *parent)
             m_homingStarted = false;
             forgetJogPlan();
             m_onIdle = nullptr;   // a step waiting for Idle (BitZero's last) is void now
+            m_endRisePending = false;
         }
         // Hard limits: the end stops stop all motion in the controller
         // itself. Shipped off on the Shapeoko; turned on here, once.
@@ -1378,11 +1412,11 @@ MachinePanel::MachinePanel(QWidget *parent)
             // Once the machine stands still: the last lines are acked when
             // planned, so the position read now is from before the program's
             // own final retract, and a rise from it could go down.
-            m_endRisePending = true;
             whenIdle([this] {
                 m_endRisePending = false;
                 m_grbl->startMacro(endOfJobMoves());
             });
+            m_endRisePending = true;     // after whenIdle(), which clears it
         }
     });
 
@@ -2166,6 +2200,7 @@ void MachinePanel::continueAfterToolChange()
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_onIdle = nullptr;                  // a prompt still waiting for Idle is void now
+    m_endRisePending = false;
     QStringList first = m_homed ? riseToTop() : QStringList{};
     // After the measurement the spindle stands over the BitSetter, and the
     // program's first line is a retract to ITS safe height in work Z: with
@@ -2182,12 +2217,14 @@ void MachinePanel::continueAfterToolChange()
                                     : QStringLiteral("the tool-change spot (no position report)"))
                 .arg(x, 0, 'f', 3).arg(y, 0, 'f', 3));
     }
-    if (m_jobView) {
-        m_jobView->linesInserted(first.size());
+    if (m_jobView)
         m_jobView->setParked(false);
-    }
     setJobRunning(m_jobView && m_jobView->hasPlan());
-    m_grbl->continueAfterToolChange(first);
+    // What really went in: the crossing to the first cut too, nothing when
+    // the streamer refused (still measuring).
+    const int n = m_grbl->continueAfterToolChange(first);
+    if (m_jobView)
+        m_jobView->linesInserted(n);
 }
 
 // While a job streams the middle column shows the job view and the
@@ -2293,13 +2330,27 @@ void MachinePanel::bitZeroApply()
         const auto machine = appsettings::machine(sset);
         const double tx = qMin(machine.width, m_grbl->setting(130, machine.width));
         const double waitX = qMax(bs.x - 100.0, -tx + 5.0), waitY = bs.y;
+        // The spot comes from the BitSetter's position, which may have been
+        // set unhomed or on another machine: X only / Y only zeroing goes
+        // there too, so check it like every other machine-coordinate move.
+        const bool waitOk = insideTravel(waitX, waitY);
         // What happens after the zero is set: up, then measure the pin on the
         // BitSetter or wait at the spot. Run at once, or after OK when asked.
-        auto moveOn = [this, bs, what, waitX, waitY](QStringList cmds) {
-            if (m_bzWantZ && bs.enabled) {
+        auto moveOn = [this, bs, what, waitX, waitY, waitOk](QStringList cmds) {
+            if (m_bzWantZ && bs.enabled && !insideTravel(bs.x, bs.y)) {
+                log(QStringLiteral("!! BitZero: the BitSetter position X%1 Y%2 is outside the machine's "
+                                   "travel - the tool is not measured. Set the BitSetter position "
+                                   "again (jog over the button, Use here), then Measure bit")
+                        .arg(bs.x, 0, 'f', 1).arg(bs.y, 0, 'f', 1));
+            }
+            if (m_bzWantZ && bs.enabled && insideTravel(bs.x, bs.y)) {
                 m_phase = Phase::MeasureForRef;
+                if (!waitOk)
+                    log(QStringLiteral("BitZero: the wait spot X%1 Y%2 is outside the travel - "
+                                       "staying over the BitSetter after measuring")
+                            .arg(waitX, 0, 'f', 1).arg(waitY, 0, 'f', 1));
                 m_grbl->startMacro(cmds + riseToTop()
-                                   + GrblStreamer::measureToolLines(bs, true, waitX, waitY));
+                                   + GrblStreamer::measureToolLines(bs, waitOk, waitX, waitY));
                 log(QStringLiteral("BitZero: %1set — measuring the tool now in the spindle on the "
                                    "BitSetter as the reference").arg(what));
                 log(QStringLiteral("!! If that was the probing pin: the cutting bit must be measured "
@@ -2309,9 +2360,14 @@ void MachinePanel::bitZeroApply()
             } else {
                 // Then straight up, out of the way of the plate and the magnet.
                 QStringList after = cmds + riseToTop();
-                if (m_homed && bs.enabled)
+                if (m_homed && bs.enabled && waitOk)
                     after << QStringLiteral("G90")
                           << QStringLiteral("G53 G0 X%1 Y%2").arg(waitX, 0, 'f', 3).arg(waitY, 0, 'f', 3);
+                else if (m_homed && bs.enabled)
+                    log(QStringLiteral("!! BitZero: the wait spot X%1 Y%2 (beside the BitSetter) is "
+                                       "outside the machine's travel - not moving there, staying "
+                                       "up over the corner. Check the BitSetter position")
+                            .arg(waitX, 0, 'f', 1).arg(waitY, 0, 'f', 1));
                 for (const QString &c : after)
                     m_grbl->sendCommand(c);
                 if (m_bzWantZ)
@@ -2328,15 +2384,42 @@ void MachinePanel::bitZeroApply()
                 m_grbl->sendCommand(c);
             if (m_bzWantZ && m_manualZero)
                 m_awaitToolZero = true;
+            // The Z zero is sent now: the BitSetter reference from before it
+            // is stale whatever happens to the wait below (a reset, Stop, a
+            // tool change continuing all drop it). A measurement after OK
+            // sets a new one.
+            if (m_bzWantZ)
+                forgetReference();
             log(QStringLiteral("BitZero: %1set — waiting for OK before moving").arg(what));
             const quint64 resets = m_resets;
-            whenIdle([this, moveOn, resets] {
+            whenIdle([this, moveOn, resets, flow = m_flowSeq] {
                 QMessageBox box(QMessageBox::Information, QStringLiteral("BitZero"),
                                 QStringLiteral("Remove the magnet and BitZero, then press OK."),
                                 QMessageBox::Ok, this);
+                // Busy while the box is open: the plate and the magnet are
+                // still on, and a pad must not start a job meanwhile.
+                m_bzAwaitRemove = true;
                 box.exec();
-                if (resets != m_resets || !m_homed)
-                    return;                  // a reset while waiting: the position is gone
+                m_bzAwaitRemove = false;
+                if (resets != m_resets || flow != m_flowSeq || !m_homed)
+                    return;                  // a reset / Stop while waiting: the position is gone
+                // Something else took the machine while the box was open: the
+                // rise and the move to the wait spot would go into it.
+                // (Parked at a tool change is fine: that is where a new bit is zeroed.)
+                if ((m_grbl->isStreaming() && !m_grbl->isParkedForTool())
+                    || m_grbl->isMacroRunning() || !m_grbl->canSendCommand()) {
+                    log(QStringLiteral("!! BitZero: the machine is busy (a job or a move started while "
+                                       "waiting for OK) - not moving to the wait spot"));
+                    return;
+                }
+                // A jog (the pad) still running or just sent: GRBL refuses the
+                // rise (error:9) and may then take the XY move at plate height.
+                if (!standingStill()) {
+                    log(QStringLiteral("!! BitZero: not moving to the wait spot: %1 - the head stays "
+                                       "where it is; jog it up clear of the plate yourself")
+                            .arg(stillMovingWhy()));
+                    return;
+                }
                 moveOn({});
             });
         } else {
@@ -2380,6 +2463,32 @@ void MachinePanel::startSurfaceMap()
                     .arg(-switchClearance(), 0, 'f', 1));
             return;
         }
+    }
+    // The grid is in work XY and the map goes there with G0: a zero set
+    // before homing, or a grid larger than the stock, can put a point past
+    // the travel (an end stop, the position lost). Check the four corners.
+    {
+        const MachineStatus &st = m_grbl->status();
+        if (!st.valid || !m_grbl->workOffsetFresh()) {
+            m_grbl->requestStatus();
+            log(QStringLiteral("!! surface map: waiting for the %1work offset from the controller - "
+                               "try again in a moment")
+                    .arg(m_grbl->hasWorkOffset() ? QStringLiteral("new ") : QString()));
+            return;
+        }
+        const double ox = st.mx - st.wx, oy = st.my - st.wy;
+        for (const double x : {plan.x0, plan.x1})
+            for (const double y : {plan.y0, plan.y1})
+                if (!insideTravel(x + ox, y + oy)) {
+                    shopTell(this, QStringLiteral("Surface map"),
+                             QStringLiteral("The map grid is off the machine"),
+                             QStringLiteral("Grid point X %1  Y %2 is at machine X %3  Y %4, outside "
+                                            "the machine's travel. Check the work zero (set before "
+                                            "homing?) and the grid's size.")
+                                 .arg(x, 0, 'f', 1).arg(y, 0, 'f', 1)
+                                 .arg(x + ox, 0, 'f', 1).arg(y + oy, 0, 'f', 1));
+                    return;
+                }
     }
     log(QStringLiteral("surface map: %1 × %2 points over X%3–%4 Y%5–%6, travelling at "
                        "work Z%7%8")
@@ -2635,6 +2744,8 @@ void MachinePanel::resetFlow()
     m_toolPromptAnswered = false;
     m_rehearsal = false;
     m_onIdle = nullptr;
+    m_endRisePending = false;            // the end-of-job rise waited in m_onIdle
+    stopMapAfterReset();
     // Taps held back for a fresh report would go out on the first Idle
     // report after the reset: a jog after Stop.
     m_deferredJogs.clear();
@@ -2645,12 +2756,70 @@ void MachinePanel::resetFlow()
     m_runBtn->setText(QStringLiteral("▶ Run"));
 }
 
+// A Stop or a controller reset ends a surface map: a map waiting over a
+// point for the plate (no macro running, so nothing reports a failure) would
+// keep the panel busy and the BitZero page on "Probe point" for ever, and a
+// press there would probe from wherever the machine now is.
+void MachinePanel::stopMapAfterReset()
+{
+    if (!m_mapper || !m_mapper->isRunning())
+        return;
+    m_mapper->cancel();
+    if (m_bzPanel) {
+        m_bzPanel->setMapWaiting(0, 0);
+        m_bzPanel->setBusy(false);
+    }
+    log(QStringLiteral("surface map: stopped by the stop / reset; the map in use is unchanged"));
+}
+
 void MachinePanel::setHeld(bool held)
 {
     m_held = held;
     m_holdSeen = false;
     m_heldClock.restart();
-    m_pauseBtn->setText(held ? QStringLiteral("⏵ Resume") : QStringLiteral("⏸ Hold"));
+    updatePauseButton();
+}
+
+// What the next press does, on the button. A lift-hold still queued behind
+// the moves GRBL already has: the next press is a feed hold on the spot
+// (spindle on, in the cut), so it must not read "Resume" - someone undoing a
+// mistaken Hold would get the opposite. Feed-held, or standing at the hold
+// point: Resume. Otherwise Hold. Whatever lifted a feed hold meanwhile (Keep
+// running in Cancel job, a report out of Hold) leaves a lift-hold on Hold
+// here now / Resume, never on Hold, which would run the way back down.
+// The job card's clock waits while held, as at a tool change.
+void MachinePanel::updatePauseButton()
+{
+    if (m_jobView) {
+        const bool atPoint = m_liftHold && m_grbl->isHeldAtPoint();
+        if (m_grbl->isParkedForTool()) {
+            m_holdParked = false;              // the tool change's own park owns it
+        } else {
+            const bool park = m_grbl->isStreaming() && (m_held || atPoint);
+            if (park)
+                m_jobView->setParked(true, atPoint && !m_held ? QStringLiteral("held: Z up, spindle off")
+                                                              : QStringLiteral("held"));
+            else if (m_holdParked)
+                m_jobView->setParked(false);
+            m_holdParked = park;
+        }
+    }
+    if (m_liftHold && !m_held && !m_grbl->isHeldAtPoint()) {
+        m_pauseBtn->setText(QStringLiteral("⏸ Hold here now"));
+        m_pauseBtn->setToolTip(QStringLiteral("The lift (Z up, spindle off) waits until the moves "
+                                              "already sent to the controller are done. Press to "
+                                              "stop at once instead: a feed hold where it is, "
+                                              "spindle still on"));
+    } else if (m_held || m_liftHold) {
+        m_pauseBtn->setText(QStringLiteral("⏵ Resume"));
+        m_pauseBtn->setToolTip(m_liftHold && !m_held
+                                   ? QStringLiteral("Spindle on, back down to where the cut stopped, "
+                                                    "and on with the job")
+                                   : QString());
+    } else {
+        m_pauseBtn->setText(QStringLiteral("⏸ Hold"));
+        m_pauseBtn->setToolTip(QString());
+    }
 }
 
 // ---- gamepad -----------------------------------------------------------------
@@ -3088,6 +3257,7 @@ void MachinePanel::onStatus(const MachineStatus &st)
         if (!homing && moving && !fresh.isEmpty()) {
             ++m_stopSeq;
             m_onIdle = nullptr;
+            m_endRisePending = false;
             m_grbl->stopStream();
             m_homed = false;
             m_unhomedWhy = QStringLiteral("an end stop fired during a move");
@@ -3199,8 +3369,9 @@ bool MachinePanel::isBusy() const
     // the plate are under the tool.
     // A step waiting for Idle (the end-of-job rise, BitZero's zero) counts:
     // a job started under it replaced the step, and the zero was never set.
+    // So does BitZero's "remove the magnet" box: the move after it waits.
     return m_grbl->isStreaming() || m_grbl->isMacroRunning() || m_phase != Phase::Idle
-        || m_onIdle
+        || m_onIdle || m_bzAwaitRemove
         || (m_mapper && m_mapper->isRunning())
         || st == QLatin1String("Run") || st == QLatin1String("Jog")
         || st.startsWith(QLatin1String("Home")) || st.startsWith(QLatin1String("Hold"));
@@ -3551,6 +3722,9 @@ void MachinePanel::whenIdle(std::function<void()> fn)
 {
     m_lastState.clear();
     ++m_idleSeq;
+    // Whatever waited before is replaced: if it was the end-of-job rise, it
+    // is not waiting any more (the caller that is it sets the flag again).
+    m_endRisePending = false;
     m_onIdle = std::move(fn);
 }
 
@@ -3750,6 +3924,28 @@ void MachinePanel::goToXY0()
         return;
     if (movingStill(QStringLiteral("Go to X0 Y0")))
         return;
+    // Where work X0 Y0 is on the machine: the work offset the reports carry.
+    // A zero set before homing, or left from another machine, can be off the
+    // travel, and the G0 there would run into an end stop.
+    const MachineStatus &st = m_grbl->status();
+    if (!st.valid || !m_grbl->workOffsetFresh()) {
+        // Just zeroed (G10): the offset held is the old one until a report
+        // after the zero's ok brings the new one.
+        m_grbl->requestStatus();
+        log(QStringLiteral("!! Go to X0 Y0: waiting for the %1work offset from the controller - "
+                           "try again in a moment")
+                .arg(m_grbl->hasWorkOffset() ? QStringLiteral("new ") : QString()));
+        return;
+    }
+    const double zx = st.mx - st.wx, zy = st.my - st.wy;
+    if (!insideTravel(zx, zy)) {
+        shopTell(this, QStringLiteral("Machine"), QStringLiteral("X0 Y0 is off the machine"),
+                 QStringLiteral("Work X0 Y0 is at machine X %1  Y %2, outside the machine's travel. "
+                                "It was probably set before homing. Jog to the corner of the stock "
+                                "and zero X and Y again.")
+                     .arg(zx, 0, 'f', 1).arg(zy, 0, 'f', 1));
+        return;
+    }
     m_phase = Phase::GoToZero;
     m_grbl->startMacro({QStringLiteral("G90"),
                         QStringLiteral("G53 G0 Z%1").arg(riseZ(), 0, 'f', 3),
@@ -4608,6 +4804,14 @@ QJsonObject MachinePanel::statusJson() const
     o.insert(QStringLiteral("homed"), m_grbl->isConnected() && m_homed);
     o.insert(QStringLiteral("busy"), isBusy());
     o.insert(QStringLiteral("streaming"), m_grbl->isStreaming());
+    // Held (a feed hold, or a lift-hold standing at its point): the pad says
+    // so instead of "Cutting". A lift-hold still queued behind lines GRBL
+    // runs is not held yet: "lifting".
+    const bool atPoint = m_grbl->isHeldAtPoint();
+    o.insert(QStringLiteral("held"), m_grbl->isConnected() && (m_held || atPoint));
+    o.insert(QStringLiteral("lifting"), m_grbl->isConnected() && m_liftHold && !m_held && !atPoint);
+    // Parked at a tool change: the tool the program wants, else -1.
+    o.insert(QStringLiteral("toolChange"), m_grbl->isParkedForTool() ? m_pendingTool : -1);
     o.insert(QStringLiteral("job"), m_doc && !m_doc->filePath().isEmpty()
                                         ? QFileInfo(m_doc->filePath()).fileName() : QString());
     // The running job's steps, for the pad's job list.

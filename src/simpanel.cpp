@@ -51,8 +51,9 @@ public:
         if (m_img.isNull())
             return;
         const QPointF c(width() / 2.0, height() / 2.0);
-        m_off = c - f * (c - m_off);
-        m_scale *= f;
+        const double ns = qBound(1e-3, m_scale * f, 1e5);   // as IsoView
+        m_off = c - (ns / m_scale) * (c - m_off);
+        m_scale = ns;
         m_fitPending = false;
         update();
     }
@@ -66,8 +67,9 @@ public:
                     const double f = pg->scaleFactor();
                     const QPointF pos = mapFromGlobal(pg->centerPoint());
                     if (f > 0.0 && std::isfinite(f)) {
-                        m_off = pos - f * (pos - m_off);
-                        m_scale *= f;
+                        const double ns = qBound(1e-3, m_scale * f, 1e5);   // as IsoView
+                        m_off = pos - (ns / m_scale) * (pos - m_off);
+                        m_scale = ns;
                     }
                     m_off += pg->centerPoint() - pg->lastCenterPoint();
                     m_fitPending = false;
@@ -132,8 +134,9 @@ protected:
             return;
         const double f = qPow(1.02, steps);   // 2 % per wheel notch
         const QPointF pos = e->position();
-        m_off = pos - f * (pos - m_off);
-        m_scale *= f;
+        const double ns = qBound(1e-3, m_scale * f, 1e5);   // as IsoView
+        m_off = pos - (ns / m_scale) * (pos - m_off);
+        m_scale = ns;
         m_fitPending = false;
         update();
         report(pos);

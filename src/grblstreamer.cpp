@@ -1,5 +1,7 @@
 #include "grblstreamer.h"
 
+#include <cmath>
+
 #include <QRegularExpression>
 #ifdef HAVE_SERIALPORT
 #include <QSerialPort>
@@ -110,6 +112,8 @@ bool GrblStreamer::connectPort(const QString &portName, int baud)
     m_settings.clear();
     m_wcoX = m_wcoY = m_wcoZ = 0;
     m_haveWco = false;
+    m_wcoStale = false;
+    m_wcoAwaitBanner = false;
     m_statusTimer->start();
     emit connected(portName);
     return true;
@@ -132,6 +136,7 @@ void GrblStreamer::disconnectPort()
         m_waitingTool = -1;
         m_waitingHold = false;
         m_holdQueued = false;
+        m_feedHeld = false;
         m_macroActive = false;
         m_macroInflight = false;
         m_macroSkipAck = false;
@@ -162,9 +167,23 @@ bool GrblStreamer::canSendCommand() const
            && !m_needsReset && (!m_streaming || m_waitingTool >= 0);
 }
 
+// A line that changes the work offset (G10 L2/L20, G92, a G54..G59
+// switch): the WCO we hold is stale until a report after its answer.
+void GrblStreamer::noteOffsetLine(const QString &line)
+{
+    static const QRegularExpression offset(
+        QStringLiteral("(?<![A-Z])G0*(10|92|5[4-9])(?![0-9])"));
+    // Compact lines too ("G90G10L20P1X0", "N20G92X0Y0", "G21G55"), and $RST
+    // (it can wipe the stored offsets).
+    const QString u = line.trimmed().toUpper();
+    if (offset.match(u).hasMatch() || u.startsWith(QLatin1String("$RST")))
+        m_wcoStale = true;
+}
+
 void GrblStreamer::writeLine(const QString &line)
 {
     const QByteArray data = line.trimmed().toLatin1() + '\n';
+    noteOffsetLine(line);
     m_port->write(data);
     emit consoleLine(QStringLiteral("> %1").arg(line.trimmed()));
 }
@@ -211,6 +230,56 @@ void GrblStreamer::sendRealtime(char c)
         return;
     if (isConnected())
         m_port->write(&c, 1);
+    if (c == '!')
+        noteFeedHold(true);
+    else if (c == '~')
+        noteCycleStart();
+}
+
+// `~` written: it does not end the hold by itself (a door still open keeps
+// GRBL suspended, cycle start ignored). The hold ends on the first report
+// out of Hold/Door; with the `~` sent that may be one that never showed Hold
+// (a `!` and `~` within one poll), without waiting out the 2 s rule.
+void GrblStreamer::noteCycleStart()
+{
+    if (m_feedHeld) {
+        m_feedResumeSent = true;
+        // A report already on its way was made before the `~` (maybe even
+        // before the `!` took): it must not end the hold. Trust the next.
+        m_feedResumeSkip = 1;
+    }
+}
+
+// A feed hold only stops motion: GRBL keeps answering the lines it is
+// sent, so the stream would run on through a tool marker and park (the
+// prompt, the park move queued behind the held cut, the pre-park position
+// read mid-cut) with the machine still holding in the cut. The stream keeps
+// filling the buffer, but does not cross a tool marker until the hold ends:
+// a report out of Hold/Door (after a Resume, or ended elsewhere), or no
+// Hold seen within 2 s (it never took). Writing `~` alone is not enough.
+void GrblStreamer::noteFeedHold(bool held)
+{
+    if (held) {
+        if (!m_streaming)
+            return;
+        m_feedHeld = true;
+        m_feedHeldSeen = false;
+        m_feedHeldNoted = false;
+        m_feedResumeSent = false;
+        m_feedResumeSkip = 0;
+        m_feedHeldClock.start();
+        return;
+    }
+    if (!m_feedHeld)
+        return;
+    m_feedHeld = false;
+    // From the event loop: a tool marker crossed now would emit
+    // toolChangeRequested (and its prompt) inside the caller's resume,
+    // before it has noted that the hold ended.
+    QTimer::singleShot(0, this, [this] {
+        if (m_streaming && !m_feedHeld)
+            pump();
+    });
 }
 
 void GrblStreamer::jogCancel()
@@ -241,6 +310,7 @@ void GrblStreamer::startStream(const QStringList &lines)
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_toolChanges = 0;
     m_streaming = !m_queue.isEmpty();
     m_ackClock.start();
@@ -287,7 +357,9 @@ QString GrblStreamer::crossToFirstCut(const QStringList &lines, int from)
 
 GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
 {
-    static const QRegularExpression gWord(QStringLiteral("(?:^|[^A-Z0-9.])G0*([0-9]+)(?![0-9.])"));
+    // Not after another letter, but after a digit it is a new word: the
+    // post writes "G90G21", and the G21 (or a G1 in "G90G1X5") counts.
+    static const QRegularExpression gWord(QStringLiteral("(?<![A-Z])G0*([0-9]+)(?![0-9.])"));
     static const QRegularExpression fWord(QStringLiteral("(?:^|[^A-Z])F(-?[0-9.]+)"));
     static const QRegularExpression sWord(QStringLiteral("(?:^|[^A-Z])S(-?[0-9.]+)"));
     static const QRegularExpression zWord(QStringLiteral("(?:^|[^A-Z])Z(-?[0-9.]+)"));
@@ -308,6 +380,8 @@ GrblStreamer::Modal GrblStreamer::scanModal(const QStringList &lines, int upTo)
                 m.motion = g;
             else if (g == 91)
                 m.valid = false;             // relative moves: Z cannot be followed
+            else if (g == 20 || g == 21)
+                m.inch = g == 20;
             else if (g == 53)
                 machine = true;
         }
@@ -360,9 +434,13 @@ bool GrblStreamer::queueHoldPoint(const QStringList &lines)
     return true;
 }
 
-QStringList GrblStreamer::resumeLinesAfterHold() const
+QStringList GrblStreamer::resumeLinesAfterHold(double topWorkZ) const
 {
-    const Modal m = scanModal(m_queue, m_holdAt);
+    return resumeLinesFor(scanModal(m_queue, m_holdAt), topWorkZ);
+}
+
+QStringList GrblStreamer::resumeLinesFor(const Modal &m, double topWorkZ)
+{
     QStringList r;
     r << QStringLiteral("G90");
     if ((m.spindle == QChar('3') || m.spindle == QChar('4')) && m.haveSpeed) {
@@ -370,37 +448,94 @@ QStringList GrblStreamer::resumeLinesAfterHold() const
           << QStringLiteral("G4P3.00");                // the post's own spin-up wait
     }
     if (m.haveZ) {
-        // Down to where the program was: a rapid to just above the stock, then
-        // slowly into the cut. The work Z is the program's own (G43.1 and the
-        // zero stand), XY did not change.
-        if (m.z >= 2.5) {
-            r << QStringLiteral("G0Z%1").arg(m.z, 0, 'f', 3);
-        } else {
-            r << QStringLiteral("G0Z2.500")
-              << QStringLiteral("G1Z%1F%2").arg(m.z, 0, 'f', 3)
-                     .arg(qMin(m.haveFeed ? m.feed : 600.0, 600.0), 0, 'f', 0);
-        }
+        // Down to where the program was: a rapid to a little above both the
+        // stock top (work Z0) and the hold point, then slowly the rest of the
+        // way into the cut. A rapid straight to the hold Z ended on the cut
+        // floor at full speed, chips and all. The work Z is the program's own
+        // (G43.1 and the zero stand), XY did not change. In the program's
+        // units: 2.5 mm / 600 mm/min, or 0.1 in / 24 in/min after a G20.
+        const double clear = m.inch ? 0.1 : 2.5;
+        const double cap = m.inch ? 24.0 : 600.0;
+        const int dp = m.inch ? 4 : 3;
+        double above = qMax(m.z, 0.0) + clear;
+        // Never above the top of Z (the switch clearance, in work Z): with
+        // the work zero high up, stock top + 2.5 can be past the Z switch -
+        // a hard-limit alarm and the job lost. The hold lifted to that top,
+        // so then there is no rapid at all, only the feed down.
+        if (std::isfinite(topWorkZ))
+            above = qMin(above, m.inch ? topWorkZ / 25.4 : topWorkZ);
+        if (above > m.z)
+            r << QStringLiteral("G0Z%1").arg(above, 0, 'f', dp);
+        r << QStringLiteral("G1Z%1F%2").arg(m.z, 0, 'f', dp)
+                 .arg(qMin(m.haveFeed ? m.feed : cap, cap), 0, 'f', m.inch ? 1 : 0);
     }
     // The program's modal state: its feed and motion mode, as it left them.
+    // An arc mode cannot be restored on a line of its own (GRBL refuses a G2
+    // with no axis words): continueAfterHold() puts the G2/G3 on the
+    // program's next line instead.
     if (m.haveFeed)
         r << QStringLiteral("G1F%1").arg(m.feed, 0, 'f', 1);
     if (m.motion == 0)
         r << QStringLiteral("G0");
-    else if (m.motion >= 2)
-        r << QStringLiteral("G1");     // arcs always name their own G word
     return r;
 }
 
-void GrblStreamer::continueAfterHold(const QStringList &lines)
+// The program's next line after `at` that moves without naming its motion
+// mode gets `motion` (G2/G3) in front, so a modal arc after a hold is still
+// an arc. Lines whose axis words are not a move in the mode (G10 L2 X0,
+// G43.1 Z0, G92 X0, G28/G30 points, G53) are left alone and the scan goes
+// on; it stops at the first line that selects a motion mode itself (G0..G3,
+// G38.x, G80), or at a marker.
+void GrblStreamer::restoreMotionMode(QStringList &q, int at, int motion)
+{
+    static const QRegularExpression gWord(
+        QStringLiteral("(?<![A-Z])G0*([0-9]+)(?:\\.([0-9]+))?(?![0-9.])"));
+    static const QRegularExpression axis(QStringLiteral("(?<![A-Z])[XYZIJR]\\s*-?[0-9.]"));
+    static const QRegularExpression paren(QStringLiteral("\\([^)]*\\)?"));
+    for (int i = at; i < q.size(); ++i) {
+        QString l = q.at(i);
+        if (l == kHoldMarker || l.startsWith(kToolMarker))
+            return;
+        l = l.left(l.indexOf(QChar(';')) < 0 ? l.size() : l.indexOf(QChar(';')));
+        l.remove(paren);
+        l = l.toUpper();
+        bool other = false;
+        for (auto it = gWord.globalMatch(l); it.hasNext();) {
+            const QRegularExpressionMatch g = it.next();
+            const int n = g.captured(1).toInt();
+            const bool decimal = !g.captured(2).isEmpty();
+            if ((!decimal && n <= 3) || n == 38 || n == 80)
+                return;                  // selects its own motion mode
+            // Axis words that are not a move in the mode: G10 L2/L20, G28 /
+            // G30 (and .1), G43.1, G53, G92 (and .1).
+            if (n == 10 || n == 28 || n == 30 || n == 43 || n == 53 || n == 92)
+                other = true;
+        }
+        if (other)
+            continue;                    // left as it is; the arc comes later
+        if (axis.match(l).hasMatch()) {
+            q[i] = QStringLiteral("G%1").arg(motion) + q.at(i);
+            return;
+        }
+    }
+}
+
+int GrblStreamer::continueAfterHold(const QStringList &lines)
 {
     if (!m_streaming || !m_waitingHold)
-        return;
+        return 0;
+    const int motion = scanModal(m_queue, m_holdAt).motion;
     int at = m_nextIndex;
     for (const QString &l : lines) {
         const QString t = l.trimmed();
         if (!t.isEmpty())
             m_queue.insert(at++, t);
     }
+    const int inserted = at - m_nextIndex;
+    // The post writes arcs modally (a second G2 lacks the word); the lines
+    // above left the mode at G1 or G0.
+    if ((motion == 2 || motion == 3) && scanModal(m_queue, at).motion != motion)
+        restoreMotionMode(m_queue, at, motion);
     m_waitingHold = false;
     m_holdQueued = false;
     m_ackClock.restart();
@@ -408,12 +543,13 @@ void GrblStreamer::continueAfterHold(const QStringList &lines)
     if (at != m_nextIndex)
         emit progressChanged(m_ackedCount, m_queue.size());
     pump();
+    return inserted;
 }
 
-void GrblStreamer::continueAfterToolChange(const QStringList &first)
+int GrblStreamer::continueAfterToolChange(const QStringList &first)
 {
     if (!m_streaming || m_waitingTool < 0)
-        return;
+        return 0;
     // The park travel or the BitSetter probe is still running. Resuming here
     // would put two writers on the line: pump() writes cutting moves while
     // pumpMacro() is still working through M5 / G53 moves, the macro branch
@@ -423,7 +559,7 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
     if (m_macroActive) {
         emit consoleLine(QStringLiteral("== still moving - wait for the tool "
                                         "measurement to finish =="));
-        return;
+        return 0;
     }
     // Lines to run before the program resumes (the rise to the top) go into
     // the program itself, so they are sent and acknowledged like any other
@@ -446,10 +582,12 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
     m_waitingHold = false;
     m_holdQueued = false;
     m_ackClock.restart();
+    const int inserted = at - m_nextIndex;
     emit consoleLine(QStringLiteral("== tool change done, continuing =="));
     if (at != m_nextIndex)
         emit progressChanged(m_ackedCount, m_queue.size());
     pump();
+    return inserted;
 }
 
 // Everything in flight is void after a controller reset we did not ask for.
@@ -457,11 +595,15 @@ void GrblStreamer::continueAfterToolChange(const QStringList &first)
 // ended - unsuccessfully.
 void GrblStreamer::abortAfterReset()
 {
+    // A reset (and a reboot) can leave another offset (G92 is gone): the
+    // held WCO waits for the next report.
+    m_wcoStale = m_haveWco;
     const bool wasProgram = m_streaming, wasMacro = m_macroActive;
     m_streaming = false;
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -482,8 +624,10 @@ void GrblStreamer::abortAfterReset()
 
 void GrblStreamer::pauseStream()
 {
-    if (isConnected())
+    if (isConnected()) {
         m_port->write("!", 1);
+        noteFeedHold(true);
+    }
 }
 
 bool GrblStreamer::resumeStream()
@@ -496,6 +640,7 @@ bool GrblStreamer::resumeStream()
     if (!isConnected())
         return false;
     m_port->write("~", 1);
+    noteCycleStart();
     return true;
 }
 
@@ -518,6 +663,7 @@ void GrblStreamer::abortStream(const QString &why, bool holdMachine)
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -559,12 +705,20 @@ void GrblStreamer::stopStream()
     m_afterReset.clear();                       // a reset of its own: no $H after it
     const char reset = 0x18;                    // ctrl-X: GRBL soft reset
     m_port->write(&reset, 1);
+    // G92 is gone after a reset: wait for a report - one made after the
+    // reset, so not before its "Grbl" banner (a report GRBL wrote just
+    // before the ctrl-X can still be on its way, with the old WCO). No
+    // banner within 3 s: the next WCO counts anyway.
+    m_wcoStale = m_haveWco;
+    m_wcoAwaitBanner = true;
+    m_wcoAwaitClock.start();
     m_errorResetTimer->stop();                  // this is the reset it waited for
     const bool wasProgram = m_streaming;
     m_streaming = false;
     m_waitingTool = -1;
     m_waitingHold = false;
     m_holdQueued = false;
+    m_feedHeld = false;
     m_queue.clear();
     m_inflightSizes.clear();
     m_inflightBytes = 0;
@@ -625,6 +779,15 @@ void GrblStreamer::pump()
             // the operator (and the probe macro) find the machine idle.
             if (!m_inflightSizes.isEmpty())
                 break;
+            // ...and not while a feed hold keeps it standing in the cut.
+            if (m_feedHeld) {
+                if (!m_feedHeldNoted) {
+                    m_feedHeldNoted = true;
+                    emit consoleLine(QStringLiteral("== tool change waits: the machine is held - "
+                                                    "Resume first =="));
+                }
+                break;
+            }
             m_waitingTool = line.mid(kToolMarker.size()).toInt();
             ++m_nextIndex;
             ++m_ackedCount;                      // the marker counts as done
@@ -648,6 +811,7 @@ void GrblStreamer::pump()
         } else if (m_inflightBytes + data.size() > RX_BUFFER) {
             break;
         }
+        noteOffsetLine(line);
         m_port->write(data);
         if (m_conservative)
             emit consoleLine(QStringLiteral(">> %1").arg(line));
@@ -850,6 +1014,14 @@ void GrblStreamer::handleLine(const QByteArray &line)
                     m_wcoZ = c.at(2).toDouble();   // raw: scaled on use
                     m_tloAtWco = m_tlo;            // what this WCO Z carries, if G43.1 was sent
                     m_haveWco = true;
+                    // Fresh once every line is answered: a report read after
+                    // the offset line's ok was made after GRBL applied it
+                    // (and GRBL sends WCO on the first report after a change).
+                    if (m_wcoAwaitBanner && m_wcoAwaitClock.elapsed() > 3000)
+                        m_wcoAwaitBanner = false;
+                    if (m_wcoStale && !m_wcoAwaitBanner && m_adhocPending == 0
+                        && !m_macroInflight && m_inflightSizes.isEmpty())
+                        m_wcoStale = false;
                 }
             } else if (p.startsWith("MPos:") || p.startsWith("WPos:")) {
                 const QList<QByteArray> c = p.mid(5).split(',');
@@ -922,6 +1094,27 @@ void GrblStreamer::handleLine(const QByteArray &line)
         }
         emit statusReport(st.state, st.mx, st.my, st.mz);
         emit statusChanged(st);
+        // The hold ended (our ~ took, or it ended elsewhere) or never took
+        // (`!` in Alarm): the stream may go on to a tool marker again.
+        const bool holdState = st.state.startsWith(QLatin1String("Hold"))
+                               || st.state.startsWith(QLatin1String("Door"));
+        if (m_feedHeld) {
+            const bool stale = m_feedResumeSkip > 0;
+            if (m_feedResumeSkip > 0 && !st.state.isEmpty())
+                --m_feedResumeSkip;
+            if (holdState)
+                m_feedHeldSeen = true;
+            else if (!st.state.isEmpty()
+                     && (m_feedHeldSeen || (m_feedResumeSent && !stale)
+                         || m_feedHeldClock.elapsed() > 2000))
+                noteFeedHold(false);
+        } else if (m_streaming && holdState) {
+            // Held by something other than our `!`: the machine's hold
+            // button, a door switch. GRBL keeps answering lines, so the same
+            // rule applies: no tool marker is crossed until the hold ends.
+            noteFeedHold(true);
+            m_feedHeldSeen = true;
+        }
         // Waiting to reset after an error: do it on the report that shows
         // the hold at rest, not on the next poll, so a Resume can't slip in.
         if (m_errorResetTimer->isActive())
@@ -948,8 +1141,13 @@ void GrblStreamer::handleLine(const QByteArray &line)
     // After a reset GRBL forgets G43.1 (and nothing sent before the reset
     // will be answered). Put the offset back once the controller is ready;
     // if it boots into Alarm the $X / $H ack re-tries it.
-    if (line.startsWith("Grbl ")) {
+    // grblHAL's banner is "GrblHAL 1.1f ...".
+    if (line.startsWith("Grbl ") || line.startsWith("GrblHAL ")) {
         m_heard = true;
+        // A reset or reboot (ours or not): the offset held is from before it
+        // (G92 is gone); reports from now on are from after it.
+        m_wcoStale = m_haveWco;
+        m_wcoAwaitBanner = false;
         m_adhocPending = 0;
         m_adhocLines.clear();
         m_macroSkipAck = false;             // nothing from before is answered now

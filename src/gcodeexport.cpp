@@ -2395,7 +2395,7 @@ public:
                 first = false;
             } else if (job.closed) {
                 if (ramp) {
-                    rampAt = rampDescend(lap, z + cp.stepdown, z, cp.rampAngle);
+                    rampAt = rampDescend(lap, zWas, z, cp.rampAngle);   // from the floor already cut
                 } else {
                     // The first pass below the tab tops after ramped ones:
                     // we stand where the last ramp reached depth, anywhere
@@ -2779,6 +2779,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         // The tab height is measured from `floor`, the cut depth itself: a
         // cutout's break-through goes into the spoilboard under the part,
         // and counting it made every tab thinner by that much.
+        bool tabsThrough = false;   // the tabbed cut reaches the stock bottom
         auto readTabs = [&](double floor) {
             if (j.value("ignore_tabs").toBool(true)
                 || numOr(j.value("tab_height"), 0) <= 0.01)
@@ -2786,6 +2787,27 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             cp.tabTop = floor + numOr(j.value("tab_height"), 0);
             cp.tabWidth = qBound(1.0, numOr(j.value("tab_width"), 6.0), 30.0);
             cp.tabToolR = qMax(0.0, numOr(j.value("tool").toObject().value("diameter"), 3.175) / 2);
+            // Tabs as tall as the whole cut (a 2 mm outline with 3 mm tabs)
+            // would lift over every tab on every pass and leave those
+            // stretches uncut, so the shape comes out with gaps. A cut that
+            // shallow holds nothing: no tabs. (No note: every new contour is
+            // 2.54 mm deep with 3 mm tabs, and a note on each teaches people
+            // to skip notes.) A cut through thin stock keeps them: there a
+            // full-height tab is what holds the part.
+            bool thickOk = false;
+            const double thick = std::abs(doc.params().value(QStringLiteral("thickness")).toDouble(&thickOk));
+            // Through means the cut's deepest Z (a cutout's break-through
+            // included) reaches the stock bottom. No tolerance: a cut that
+            // stops short leaves a skin, and full-height tabs on it would
+            // leave solid bridges standing under the skin.
+            // (As posted: Z goes out to 0.001 mm, so 2.9992 is a Z-2.999
+            // that stops short of 3 mm stock.)
+            const double reach = std::round(-qMin(floor, cp.zBot) * 1000.0) / 1000.0;
+            tabsThrough = thickOk && thick > 0 && reach >= std::round(thick * 1000.0) / 1000.0 - 1e-9;
+            if (!tabsThrough && cp.tabTop >= cp.zTop - 1e-9) {
+                cp.tabTop = -1e9;
+                cp.tabWidth = 0;
+            }
         };
         if (cutout) {
             const double floor = depth(j.value("cut_depth"));
@@ -2846,6 +2868,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             // skipped rather than run over the whole model.
             QVector<const Element *> belems;
             const QVector<const Element *> refd = referenced(doc, j);
+            // Its boundary vectors were deleted or used up by Subtract or
+            // Offset: skipped, not run over the whole model.
+            if (refd.isEmpty() && j.value("vectors_removed").toBool(false)) {
+                res.skipped << QStringLiteral("%1 (its vectors were removed; pick vectors again)").arg(name);
+                continue;
+            }
             for (const Element *e : refd)
                 if (vec::isClosed(*e))
                     belems.append(e);
@@ -2949,8 +2977,14 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
         }
 
         QVector<const Element *> elems = referenced(doc, j);
-        // Facing works on the stock when it has no vectors of its own.
+        // Facing works on the stock when it has no vectors of its own -
+        // unless it had some and lost them (deleted, or used up by Subtract
+        // or Offset): skimming the whole board then is not what was set up.
         const QRectF stock(0, 0, doc.boardWidth(), doc.boardHeight());
+        if (elems.isEmpty() && face && j.value("vectors_removed").toBool(false)) {
+            res.skipped << QStringLiteral("%1 (its vectors were removed; pick vectors again)").arg(name);
+            continue;
+        }
         if (elems.isEmpty() && !(face && stock.width() > 0 && stock.height() > 0)) {
             res.skipped << QStringLiteral("%1 (no vectors)").arg(name);
             continue;
@@ -4344,6 +4378,12 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
                 case RestVerdict::Raised:
                     res.notes << QStringLiteral("%1: starts at %2 mm, the toolpaths above cut to %3 mm")
                                      .arg(name, QString::number(-cp.zTop, 'f', 2), QString::number(-floor, 'f', 2));
+                    // Started lower, tabs can now reach the new top: in a
+                    // groove that does not go through they would leave gaps.
+                    if (!tabsThrough && cp.tabTop >= cp.zTop - 1e-9) {
+                        cp.tabTop = -1e9;
+                        cp.tabWidth = 0;
+                    }
                     break;
                 case RestVerdict::Partial:
                     if (pocket) {

@@ -691,6 +691,18 @@ class MachineStatus {
   /// How the last job ended once nothing streams: 'finished', 'stopped', or
   /// '' (still going, or an older phobiCCCP).
   final String jobEnd;
+
+  /// The job is held (lifted, paused) at the computer and waits for Resume
+  /// there. False from a phobiCCCP that does not say.
+  final bool held;
+
+  /// Hold was pressed but the machine still runs the moves already sent
+  /// before it lifts. False from a phobiCCCP that does not say.
+  final bool lifting;
+
+  /// The tool asked for while parked for a tool change, else -1 (also from
+  /// a phobiCCCP that does not say).
+  final int toolChange;
   const MachineStatus(
       {this.connected = false,
       this.homed = false,
@@ -700,7 +712,10 @@ class MachineStatus {
       this.state = '',
       this.job = '',
       this.steps = const [],
-      this.jobEnd = ''});
+      this.jobEnd = '',
+      this.held = false,
+      this.lifting = false,
+      this.toolChange = -1});
   factory MachineStatus.fromJson(Map<String, Object?> j) => MachineStatus(
         connected: _b(j['connected']),
         homed: _b(j['homed']),
@@ -711,6 +726,9 @@ class MachineStatus {
         job: _s(j['job']),
         steps: _l(j['steps']).map((s) => JobStep.fromJson(_m(s))).toList(),
         jobEnd: _s(j['jobEnd']),
+        held: _b(j['held']),
+        lifting: _b(j['lifting']),
+        toolChange: j['toolChange'] is num ? (j['toolChange'] as num).toInt() : -1,
       );
 
   /// The heading over the job list on the Machine page.
@@ -724,6 +742,9 @@ class MachineStatus {
 
   String words() {
     if (!connected) return 'Not connected';
+    if (toolChange >= 0) return 'Tool change: T$toolChange — answer at the computer';
+    if (held) return 'Held — press Resume at the computer';
+    if (lifting) return 'Finishing the sent moves, then lifting — still cutting';
     if (streaming) return job.isEmpty ? 'Cutting' : 'Cutting $job';
     if (state.startsWith('Alarm')) return 'Alarm: needs Initialize';
     if (!homed) return 'Connected, not homed';

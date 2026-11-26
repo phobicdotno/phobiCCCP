@@ -501,9 +501,26 @@ void Canvas::refreshParametricState()
 
 void Canvas::setConstraintType(Constraint::Type t)
 {
+    m_deferredPress.valid = false;
     m_conType = t;
     if (m_tool == Constrain)
         resetPicks();
+}
+
+// A dimension label being dragged goes back where it was: the drag moves it
+// in the design without an undo step until the release, which now never
+// comes to this drag.
+void Canvas::cancelDimDrag()
+{
+    if (m_dragDim.isEmpty())
+        return;
+    if (m_doc) {
+        const int i = m_doc->parametric().indexOfUid(m_dragDim);
+        if (i >= 0)
+            m_doc->parametricRef().constraints[i].label = m_dragDimLabel0;
+    }
+    m_dragDim.clear();
+    viewport()->update();
 }
 
 void Canvas::setShowConstraints(bool on)
@@ -520,7 +537,7 @@ void Canvas::setParametricVisible(bool on)
         // Hidden tools must not keep taking clicks (Toolpaths mode picks
         // vectors with them): back to Select, with nothing half picked.
         resetPicks();
-        m_dragDim.clear();
+        cancelDimDrag();
         if (m_tool == Constrain || m_tool == Dimension)
             setTool(Select);
     }
@@ -538,6 +555,7 @@ void Canvas::selectConstraint(const QString &uid)
 
 void Canvas::resetPicks()
 {
+    m_deferredPress.valid = false;
     m_picks.clear();
     m_dimPlacing = false;
     m_hasHover = false;
@@ -1849,6 +1867,7 @@ bool Canvas::parametricPress(QMouseEvent *event)
         m_dragDim = uid;
         m_dragDimFrom = pos;
         m_dragDimLabel0 = m_doc->parametric().constraints.at(i).label;
+        m_dragDimLast = m_dragDimLabel0;
     }
     const Constraint &c = m_doc->parametric().constraints.at(i);
     emit statusHint(c.isDimension()
@@ -1867,6 +1886,7 @@ bool Canvas::parametricMove(QMouseEvent *event)
         const int i = m_doc->parametric().indexOfUid(m_dragDim);
         if (i >= 0) {
             m_doc->parametricRef().constraints[i].label = m_dragDimLabel0 + (pos - m_dragDimFrom);
+            m_dragDimLast = m_doc->parametric().constraints.at(i).label;
             viewport()->update();
         }
         event->accept();

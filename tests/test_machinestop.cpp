@@ -18,6 +18,7 @@
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
@@ -762,8 +763,10 @@ int main(int argc, char **argv)
         wait(600);
         grbl.events.clear();
         seen.clear();
+        int tcField = -2;
         answer = [&](const Seen &v) {
             std::printf("prompt: %s\n", qPrintable(v.headline));
+            tcField = panel.statusJson().value("toolChange").toInt(-2);
             return QStringLiteral("Measure and continue");
         };
         panel.m_endOfJobPending = true;
@@ -773,6 +776,8 @@ int main(int argc, char **argv)
         wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         check(seen.size() == 1, "tc: one prompt");
+        check(tcField == 2, "tc: the pad is told the tool change wants T2 while parked");
+        check(panel.statusJson().value("toolChange").toInt(-2) == -1, "tc: and -1 once the job runs on");
         check(!s->isStreaming(), "tc: job finished");
         check(grbl.indexOf("G43.1 Z2") >= 0, "tc: offset applied");
         check(grbl.indexOf("G1X6") > grbl.indexOf("G43.1 Z2"), "tc: rest after offset");
@@ -1937,6 +1942,234 @@ int main(int argc, char **argv)
         view.setProgress(plan.total, plan.total);
         check(view.m_summary->text().startsWith(QLatin1String("All 2 toolpaths done")),
               qPrintable(QStringLiteral("jobcount: all 2 toolpaths done: %1").arg(view.m_summary->text())));
+    }
+    if (mode == "liftdouble" || mode == "liftcancel") {
+        // Hold with a lift while GRBL holds lines it has not answered yet:
+        // the lift waits behind them. M1: a second press stops at once (feed
+        // hold; the button says "Hold here now" until then), Resume carries on
+        // to the lift, Resume at the hold point goes back down.
+        // M3: Cancel job -> Keep running in that wait leaves the button on
+        // "Hold here now" (never Hold), and the next press does not run the way
+        // back down.
+        grbl.holdAcks = true;              // nothing from the dwell on is answered: the lift stays queued
+        QStringList prog = {QStringLiteral("G90G21"), QStringLiteral("G0Z2.000"), QStringLiteral("M3S1000"),
+                            QStringLiteral("G4P1.00"), QStringLiteral("G1Z-1.000F600.0")};
+        for (int i = 0; i < 200; ++i)
+            prog << QStringLiteral("X%1Y%2").arg(i).arg(i % 5);
+        s->startStream(prog);
+        wait(300);
+        grbl.events.clear();
+        panel.m_pauseBtn->click();         // Hold: Z up and spindle off, behind what GRBL took
+        wait(300);
+        check(panel.m_liftHold && s->isHoldQueued() && !s->isHeldAtPoint(),
+              "lift: queued behind the lines GRBL has, not reached");
+        check(!panel.statusJson().value("held").toBool() && panel.statusJson().value("lifting").toBool(),
+              "lift: queued behind running lines, the pad is told lifting, not held");
+        check(grbl.count("!") == 0 && panel.m_pauseBtn->text().contains(QLatin1String("Hold here now"))
+                  && !panel.m_pauseBtn->toolTip().isEmpty(),
+              "lift: first press, no feed hold, the button says Hold here now (not Resume) and why");
+        if (mode == "liftdouble") {
+            panel.m_pauseBtn->click();     // again: stop now
+            wait(300);
+            check(grbl.count("!") == 1 && panel.m_held,
+                  "liftdouble: the second press is a feed hold at once");
+            check(panel.statusJson().value("held").toBool() && !panel.statusJson().value("lifting").toBool(),
+                  "liftdouble: feed-held, the pad is told held");
+            check(panel.m_console->toPlainText().contains(QLatin1String("stopping at once")),
+                  "liftdouble: the log says it stops at once");
+            check(panel.m_pauseBtn->text().contains(QLatin1String("Resume")),
+                  "liftdouble: the button says Resume");
+            panel.m_pauseBtn->click();     // Resume: on to the lift
+            wait(300);
+            check(grbl.count("~") == 1 && !panel.m_held && panel.m_liftHold && s->isHoldQueued()
+                      && grbl.indexOf("M03S") < 0,
+                  "liftdouble: Resume lifts the feed hold, the lift still to come, no way down yet");
+            check(panel.m_pauseBtn->text().contains(QLatin1String("Hold here now")),
+                  "liftdouble: running on to the lift, the button says Hold here now again");
+            grbl.release();                // GRBL takes the rest: the lift goes out
+            spin(5000, [&] { return s->isHeldAtPoint(); });
+            const int up = grbl.indexOf("G53 G0 Z"), off = grbl.indexOf("M5");
+            check(s->isHeldAtPoint() && up >= 0 && off > up, "liftdouble: then Z up and the spindle off");
+            QApplication::processEvents();
+            check(panel.m_pauseBtn->text().contains(QLatin1String("Resume")),
+                  "liftdouble: at the hold point the button says Resume");
+            check(panel.statusJson().value("held").toBool(), "liftdouble: the pad is told it is held");
+            check(panel.m_jobView->m_parked, "liftdouble: the job card's clock waits at the hold point");
+            panel.m_pauseBtn->click();     // back down
+            wait(500);
+            for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+            check(!panel.m_liftHold && panel.m_pauseBtn->text() == QStringLiteral("⏸ Hold"),
+                  "liftdouble: back to Hold after the way down");
+            check(!panel.statusJson().value("held").toBool() && !panel.m_jobView->m_parked,
+                  "liftdouble: not held and the clock runs again after the way down");
+            check(grbl.indexOf("M03S1000", off) > off && grbl.indexOf("G1F600.0", off) > off,
+                  "liftdouble: spindle on and the feed back after the lift");
+        } else {
+            answer = [&](const Seen &) { return QStringLiteral("Keep running"); };
+            button(QStringLiteral("✕ Cancel job"))->click();
+            wait(300);
+            check(panel.m_liftHold && !panel.m_held && panel.m_pauseBtn->text() == QStringLiteral("⏸ Hold here now"),
+                  "liftcancel: Keep running leaves the button on Hold here now (not Hold) while the lift waits");
+            const int before = int(grbl.events.size());
+            panel.m_pauseBtn->click();
+            wait(300);
+            check(grbl.indexOf("M03S", before) < 0 && grbl.indexOf("G1F600.0", before) < 0,
+                  "liftcancel: the next press does not run the way back down");
+            check(panel.m_held && grbl.indexOf("!", before) >= 0, "liftcancel: it stops at once instead");
+        }
+        s->stopStream();
+        wait(500);
+    }
+    if (mode == "bzwait") {
+        // M4: BitZero with "ask before moving": while "Remove the magnet and
+        // BitZero" is open the panel is busy (a pad start is refused), and a
+        // job that started anyway is not moved into after OK.
+        QSettings().setValue(QStringLiteral("machine/bitzero/askBeforeMoving"), true);
+        panel.m_bsEnabled->setChecked(false);
+        panel.m_bzWantX = panel.m_bzWantY = true;
+        panel.m_bzWantZ = false;
+        panel.m_bzCx = -50; panel.m_bzCy = -60;
+        int boxes = 0;
+        bool busyInBox = false, refusedInBox = false, startJob = false, refInBox = true;
+        QString why;
+        QTimer boxer;
+        boxer.setInterval(30);
+        QObject::connect(&boxer, &QTimer::timeout, [&] {
+            auto *mb = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+            if (!mb || mb->property("seen").toBool())
+                return;
+            mb->setProperty("seen", true);
+            ++boxes;
+            busyInBox = panel.isBusy();
+            refInBox = panel.m_haveRef;
+            why.clear();
+            refusedInBox = !panel.startFromRemote(&why);
+            if (startJob) {                // something else took the machine meanwhile
+                grbl.hangDwell = true;
+                s->startStream({QStringLiteral("M3S1000"), QStringLiteral("G4P30.00"), QStringLiteral("G0X1")});
+            }
+            QTimer::singleShot(50, mb->button(QMessageBox::Ok), &QAbstractButton::click);
+        });
+        boxer.start();
+        grbl.events.clear();
+        panel.bitZeroApply();
+        spin(3000, [&] { return boxes == 1 && !QApplication::activeModalWidget(); });
+        wait(800);
+        std::printf("bzwait: busy in the box %d, pad start refused %d (%s)\n", busyInBox, refusedInBox,
+                    qPrintable(why));
+        check(boxes == 1 && busyInBox, "bzwait: busy while the box is open");
+        check(refusedInBox && !s->isStreaming(), "bzwait: a pad start is refused while the box is open");
+        const int g10 = grbl.indexOf("G10 L20");
+        check(g10 >= 0 && grbl.indexOf("G53 G0 Z", g10) > g10, "bzwait: after OK, the rise");
+        startJob = true;
+        grbl.events.clear();
+        panel.bitZeroApply();
+        spin(3000, [&] { return boxes == 2 && !QApplication::activeModalWidget(); });
+        wait(800);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(boxes == 2 && s->isStreaming() && grbl.indexOf("G53 G0") < 0,
+              "bzwait: no rise into a job started while the box was open");
+        s->stopStream();
+        wait(800);
+        grbl.hangDwell = false;
+        // The same with Z: the G10 Z zero is already set when the box opens;
+        // a way out that skips the move must still drop the BitSetter
+        // reference from before the zero.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        panel.m_bzWantZ = true;
+        panel.m_bzStockZ = -70;
+        grbl.events.clear();
+        panel.bitZeroApply();
+        spin(3000, [&] { return boxes == 3 && !QApplication::activeModalWidget(); });
+        wait(800);
+        check(boxes == 3 && grbl.indexOf("G10 L20") >= 0 && grbl.indexOf("G38.2") < 0,
+              "bzwait: Z zero set, nothing measured into the job started meanwhile");
+        check(!refInBox, "bzwait: the stale BitSetter reference is dropped as the Z zero goes out, "
+                         "before the wait (a reset or Stop in it cannot keep it)");
+        check(!panel.m_haveRef, "bzwait: the stale BitSetter reference is dropped");
+        boxer.stop();
+        s->stopStream();
+        wait(500);
+        grbl.hangDwell = false;
+    }
+    if (mode == "endrise") {
+        // L5: the end-of-job rise waits for Idle; Stop forgets it, and a
+        // later step waiting for Idle is not taken for it.
+        panel.m_endOfJobPending = true;
+        grbl.running = true;               // the last moves still run: no Idle
+        wait(300);
+        s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+        spin(2000, [&] { return !s->isStreaming(); });
+        wait(300);
+        check(panel.m_endRisePending && panel.endRiseWaiting(), "endrise: the rise waits for Idle");
+        panel.m_stopBtn->click();
+        wait(500);
+        check(!panel.m_endRisePending && !panel.endRiseWaiting(), "endrise: Stop forgets the waiting rise");
+        panel.whenIdle([] {});
+        check(!panel.endRiseWaiting(), "endrise: a later step waiting for Idle is not the end rise");
+    }
+    if (mode == "mapstop") {
+        // L4: a surface map waiting over a point for the plate; Stop ends it.
+        c2d::SurfaceMapPlan plan;
+        plan.cols = 2;
+        plan.rows = 2;
+        panel.m_mapper->start(plan);
+        spin(3000, [&] { return panel.m_mapper->isWaiting(); });
+        check(panel.m_mapper->isWaiting() && panel.isBusy() && panel.m_bzPanel->m_mapPoint > 0,
+              "mapstop: the map waits for the plate");
+        panel.m_stopBtn->click();
+        wait(800);
+        check(!panel.m_mapper->isRunning() && panel.m_bzPanel->m_mapPoint == 0,
+              "mapstop: Stop ends the map and the BitZero page's Probe point");
+        check(!panel.isBusy(), "mapstop: not busy afterwards");
+    }
+    if (mode == "mapoff") {
+        // MC-R3-1: the surface map's grid (work XY) off the travel is refused
+        // before anything moves; inside it, the map starts.
+        panel.m_bzPanel->m_mapW->setValue(100);
+        panel.m_bzPanel->m_mapH->setValue(100);
+        grbl.wcoX = 50;                    // work X0 right of the X switch
+        wait(800);
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+        grbl.events.clear();
+        seen.clear();
+        panel.startSurfaceMap();
+        wait(800);
+        bool told = false;
+        for (const Seen &v : seen)
+            told = told || v.headline.contains(QLatin1String("off the machine"));
+        check(told && !panel.m_mapper->isRunning() && grbl.indexOf("G0") < 0,
+              "mapoff: a grid past the travel is refused, nothing moves");
+        grbl.wcoX = -200;
+        wait(800);
+        seen.clear();
+        panel.startSurfaceMap();
+        spin(3000, [&] { return panel.m_mapper->isWaiting(); });
+        check(seen.isEmpty() && panel.m_mapper->isRunning(), "mapoff: inside the travel the map starts");
+        panel.m_stopBtn->click();
+        wait(800);
+    }
+    if (mode == "gotooff") {
+        // L2: work X0 Y0 off the travel (set before homing): Go to X0 Y0 refuses.
+        grbl.wcoX = 50;                    // right of the X switch
+        wait(800);
+        answer = [&](const Seen &) { return QStringLiteral("OK"); };
+        grbl.events.clear();
+        panel.goToXY0();
+        wait(800);
+        check(grbl.indexOf("G0 X0 Y0") < 0 && grbl.indexOf("G53 G0 Z") < 0,
+              "gotooff: nothing moves towards a zero off the machine");
+        bool told = false;
+        for (const Seen &v : seen)
+            told = told || v.headline.contains(QLatin1String("off the machine"));
+        check(told, "gotooff: and it says why");
+        grbl.wcoX = -200;
+        wait(800);
+        panel.goToXY0();
+        wait(1000);
+        check(grbl.indexOf("G0 X0 Y0") >= 0, "gotooff: inside the travel it goes");
     }
     check(!mode.isEmpty(), "a scenario was named (R4MODE)");
     std::printf("test_machinestop %s: %d checks OK\n", mode.constData(), g_checks);

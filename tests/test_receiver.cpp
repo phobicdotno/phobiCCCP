@@ -127,6 +127,11 @@ int main(int argc, char **argv)
                   && !r.project().name.startsWith(QLatin1Char('.')), "project name made safe");
     }
     check(safeFileName(QStringLiteral("  ..")) == QLatin1String("project"), "empty name falls back");
+    {
+        const QString longName = QString(90, QLatin1Char('a')) + QStringLiteral(".svg");
+        const QString safe = safeFileName(longName);
+        check(safe.size() <= 80 && safe.endsWith(QLatin1String(".svg")), "a long name keeps its extension");
+    }
 
     // ---- saving ----
     QTemporaryDir tmp;

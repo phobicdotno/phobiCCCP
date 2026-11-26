@@ -132,8 +132,9 @@ protected:
         if (steps == 0) return;
         const double f = qPow(1.02, steps);   // 2 % per wheel notch
         const QPointF pos = e->position();
-        m_off = pos - f * (pos - m_off);
-        m_scale *= f;
+        const double ns = qBound(1e-3, m_scale * f, 1e5);   // as IsoView
+        m_off = pos - (ns / m_scale) * (pos - m_off);
+        m_scale = ns;
         m_fitPending = false;
         update();
         report(pos);

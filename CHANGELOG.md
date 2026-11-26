@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.3.64 (build 154) — 2026-11-26
+
+> Fixes: Hold can stop at once, Resume after a hold on a curve no longer stops the job, shallow contours no longer skip their tab stretches, and the pad drills 0.25 mm through like the computer.
+
+- **Hold:** after Hold the button reads "Hold here now" while the lift waits for the moves already sent; pressing it stops the machine at once (feed hold, spindle still on), and Resume then carries on to the lift. While held, the job clock stops and the pad says Held instead of Cutting. Before, the machine could keep cutting for minutes and a second press did nothing.
+- **Resume after Hold:** a hold between two arcs no longer makes Resume fail with error:36 and stop the job. Resume now comes down fast only to 2.5 mm above where it stopped and feeds the rest.
+- **Hold → Cancel job → Keep running:** the button keeps saying Resume while the head is lifted.
+- **BitZero:** a pad can no longer start a job while "Remove the magnet and BitZero" is open; the wait spot beside the BitSetter is checked against the machine travel first.
+- **Go to X0 Y0 and Surface map** refuse a work zero or map grid that is off the machine instead of driving into the end stop.
+- **Stop** also stops a surface map waiting for the plate, and no longer leaves Zero/Park/Quick move refused as "job still finishing".
+- **Job progress** no longer runs one line ahead after each tool change.
+- **Contours:** tabs as tall as the cut (the default 2.54 mm contour with 3 mm tabs) are left out when the cut does not go through the stock (also when it starts lower because of the toolpaths above); before, every tab stretch was left uncut. A cut through thin stock keeps them. A ramp into a short last pass starts from the floor already cut.
+- **Pad:** a new Drill on the pad goes 0.25 mm through, like the computer (it went 0.5 mm). A contour's tab height and width always go to the pad, so another computer with another default rebuilds the same tabs.
+- **Toolpaths page:** a drawing tool (Trim, Circle, Node edit ...) left on in Design switches to Select, on the computer and the pad, so a tap picks shapes instead of trimming or drawing. A tap on empty board stays let go after the next edit, and picking shapes lets go of the toolpath outline on the pad too. Edit nodes is no longer in the right-click menu there.
+- **Touch:** a pinch no longer drags a band, a shape, a node or a dimension with the first finger, and keeps the path nodes already placed. A finger tap that places something (a point, the last click of an arc, a constraint pick) now acts when the finger lifts, so a pinch's first finger adds nothing.
+- **Rotate 90° undo** keeps 3D and background changes made after the turn, and undoing back to the saved state clears the unsaved mark.
+- **Popups** can be moved by their caption strip (the background and trace windows sat over the drawing).
+- **Export DXF** no longer suggests overwriting the DXF the design was imported from; layer names are DXF-R12 safe (upper case, no spaces) and the file has a line-type table.
+- **Offset** of a shape selected together with an exact copy of itself gives one offset shape (it gave nothing), and works the same with more than 200 shapes.
+- **Bit stock and Collections sync:** a fresh copy's first edit no longer wipes the Collections of another copy (collections now merge one by one, also with copies still on older versions), sync reaches every network adapter, and only bits that are in the library are taken from the network.
+- **Saving:** two copies saving the same file at once no longer trip over each other's temporary file. A design too big to send no longer leaves its copy behind.
+- **Settings and files:** a damaged machine size or 3D blur value in a file or settings can no longer send Quick move into the end stop or crash. Zoom is limited in the simulation and 3D views.
+- **Pad build (Qt):** New, Export and the setup sheet start in Documents/phobiCCCP.
+- **Subtract and Offset:** toolpaths no longer jump onto the wrong shapes. A drill on the holes you subtract from a plate no longer drills the plate's middle (it is left with no shapes, and the status line says so); offsetting two parts keeps each part's toolpath on its own outline.
+- **Pad:** a depth typed as a negative number counts as that depth ("-3" was 0.01 mm), and an edit made while syncing with an older computer is kept.
+- **Hold on the pad:** while the lift waits for the moves already sent, the pad says "still cutting" instead of Held; during a tool change it says which tool to put in. A tool change no longer starts while the machine is held: it waits for Resume.
+- **Zeroing:** Go to X0 Y0 and Surface map wait for the controller's new work offset after a zero before checking the travel.
+- **Facing:** a facing toolpath whose shapes were deleted or used up by Subtract or Offset is skipped (with a note) instead of skimming the whole board.
+- **Tabs:** a cutout through the stock keeps its tabs when its break-through makes it reach the bottom.
+- **Union, Subtract, Offset:** Union of shapes that do not touch keeps each toolpath on its own shape; holes made by Subtract keep the toolpath that was on them; Offset no longer gives a part its neighbour's outline.
+- **Touch:** a pinch's first finger no longer trims, extends or breaks, and no longer changes the selection. A finger tap that was moved before lifting places where the preview showed. A double tap that closes a path closes it once; Esc drops a pending tap.
+- **Resume after Hold** also restores an arc's mode past setup lines (G10, G92, tool length) and leaves those lines as they were.
+- **BitZero:** stopping or leaving the "Remove the magnet" box after a Z zero forgets the old tool length, so the next job measures it again.
+- **Machine hold button or door:** a hold from the machine itself also keeps a tool change from starting until it is released.
+- **3D toolpaths** whose boundary shapes were deleted or used up are skipped instead of running over the whole model. A facing left with only construction lines counts as having lost its shapes.
+- **Subtract:** two holes cut side by side each keep their own toolpath.
+- **BitZero:** a new Z zero always makes the BitSetter measure the tool again, even if a Stop or alarm interrupts the "Remove the magnet" wait.
+- **Recovery:** with two windows open, answering No no longer deletes the recovery copy the other window just opened.
+- **Hold:** pressing Resume while the machine's door is still open no longer lets a tool change start; it waits until the hold really ends.
+- **Toolpaths left with only a sketch point** (other than drilling and keyhole) count as having lost their shapes, so a Facing or 3D toolpath is skipped instead of running over everything.
+- **grblHAL:** its start-up banner is recognised after a reset, so Go to X0 Y0 no longer waits a few seconds after Stop, and the machine panel drops queued jogs and re-reads the settings after a grblHAL reset, as it does for GRBL.
+- **Hold then quick Resume:** a Resume pressed while the machine is still slowing into the hold no longer lets a tool change start too early.
+- **Collections sync:** an empty copy receiving a large set in parts gets all of it, and a collection deleted on another copy stays deleted on a fresh one.
+- **Collections sync:** an old announcement repeated on the network can no longer bring back a bit removed since, and a copy takes at most 500 collections from the network.
+- **Received projects:** a long file name keeps its extension, so it still imports. With more than 400 shapes, picking in the shape strip keeps the selected shapes it has no tile for.
+
 ## v1.3.62 (build 152) — 2026-11-18
 
 > Popup buttons no longer cut off their text.

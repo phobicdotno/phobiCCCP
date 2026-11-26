@@ -96,9 +96,10 @@ public:
     // The controller's feed override, percent: the feed part of every
     // estimate is scaled by it.
     void setOverride(int percent);
-    // The sender stands at a tool change: the clock of the running step
-    // waits, nothing cuts.
-    void setParked(bool parked);
+    // The sender stands at a tool change (or a hold): the clock of the
+    // running step waits, nothing cuts. `why` is what the running step says
+    // meanwhile; empty means the tool change.
+    void setParked(bool parked, const QString &why = QString());
     // The program ended before its end (Stop, Cancel job, a controller
     // reset, an error): the step it was in says so, the clock stops, and
     // nothing reads as still running.
@@ -128,6 +129,7 @@ private:
     int m_acked = 0, m_inserted = 0;
     int m_override = 100;
     bool m_parked = false;
+    QString m_parkedWhy;                           // empty: at the tool change
     bool m_stopped = false;
     int m_running = -1;
     int m_runningPass = -1;

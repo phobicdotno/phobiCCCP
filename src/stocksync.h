@@ -1,6 +1,9 @@
 #pragma once
+#include <QHash>
 #include <QHostAddress>
+#include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 
 class QSettings;
@@ -13,15 +16,20 @@ namespace c2d {
 // on every phobiCCCP copy on the local network: the laptop, the CNC PC, vega.
 // Each copy announces its numbers by UDP broadcast at start, 0.5 s after a
 // change and every 30 s; a copy that hears newer numbers takes them. The
-// newest change per bit wins (and the newest edit of the Collections as a
-// whole). No server, no internet, no login: anyone on the same network can
-// send these packets, so only numbers in range are taken and nothing but
-// stock and collections can be set this way.
+// newest change per bit wins, and per collection the newest edit or deletion.
+// A fresh install's first Collections only add to a peer's (and the peer's to
+// them) until the two have met, so they never replace a richer set. No
+// server, no internet, no login: anyone on the same network can send these
+// packets, so only bits the tool library knows, with numbers in range, are
+// taken and nothing but stock and collections can be set this way.
 class StockSync : public QObject
 {
     Q_OBJECT
 public:
     static constexpr quint16 kPort = 47233;
+    static constexpr int kMaxDatagram = 60000;   // bigger packets are neither sent nor read
+    static constexpr int kMaxStockEntries = 2000; // bits looked at per packet
+    static constexpr int kMaxCollections = 500;   // a peer adds no names beyond this many
     // settingsFile empty: the app's own settings. Tests pass an .ini path and a
     // target of their own so two copies can talk inside one process.
     explicit StockSync(const QString &settingsFile = QString(), quint16 listenPort = kPort,
@@ -29,8 +37,12 @@ public:
                        quint16 targetPort = kPort, QObject *parent = nullptr);
 
     bool start();
+    quint16 localPort() const;             // the port it listens on (0: not started)
     void announce();                       // send everything now
-    QByteArray payload() const;
+    // What announce() sends: one datagram, or more when the stock does not
+    // fit in kMaxDatagram (the Collections ride in the first).
+    QList<QByteArray> payloads() const;
+    QByteArray payload() const;            // the first of payloads()
     bool merge(const QByteArray &payload); // true: something here changed
 
     // The app's one running sync: stamps from stockstamp.h make it announce.
@@ -43,6 +55,7 @@ private:
     QSettings *open() const;
     void incoming();
     void announceSoon();
+    const QSet<int> &knownTools() const;
 
     QString m_file;
     quint16 m_listen, m_targetPort;
@@ -51,6 +64,12 @@ private:
     QTimer *m_soon = nullptr;
     QString m_self;
     qint64 m_lastReply = 0;
+    bool m_tellPeers = false;              // the last merge saw the sender is behind us
+    // Collection parts heard per announce ("sender|whole-set stamp|parts").
+    QHash<QString, QSet<int>> m_partsSeen;
+    mutable QSet<int> m_known;             // tool numbers of the library
+    mutable bool m_knownLoaded = false;
+    mutable QString m_knownIndex;          // the synced index.json it was read with (time, size)
 };
 
 } // namespace c2d

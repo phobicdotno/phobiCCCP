@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.19)
-project(phobiCCCP VERSION 1.3.62 LANGUAGES CXX)
+project(phobiCCCP VERSION 1.3.64 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -205,10 +205,22 @@ add_test(NAME parametric COMMAND test_parametric)
 add_executable(test_vectorops tests/test_vectorops.cpp)
 target_link_libraries(test_vectorops PRIVATE phobicccp_core)
 add_test(NAME vectorops COMMAND test_vectorops)
+add_executable(test_r1geom tests/test_r1geom.cpp)
+target_link_libraries(test_r1geom PRIVATE phobicccp_ui)
+add_test(NAME r1geom COMMAND test_r1geom)
 # Projects sent from Syntexophobic: the protocol reader and a loopback transfer.
 add_executable(test_receiver tests/test_receiver.cpp)
 target_link_libraries(test_receiver PRIVATE phobicccp_ui)
 add_test(NAME receiver COMMAND test_receiver)
+# Bit stock and Collections between copies: a fresh install pools, per-collection
+# merge, only library bits, packets within a datagram.
+add_executable(test_stocksync tests/test_stocksync.cpp)
+target_link_libraries(test_stocksync PRIVATE phobicccp_ui)
+add_test(NAME stocksync COMMAND test_stocksync)
+# Saving stages under a name of its own and clears only stale staging files.
+add_executable(test_r1files tests/test_r1files.cpp)
+target_link_libraries(test_r1files PRIVATE phobicccp_core)
+add_test(NAME r1files COMMAND test_r1files)
 # The phone app's side: pad designs into documents, the design store, machines.
 add_executable(test_machinenames tests/test_machinenames.cpp)
 target_link_libraries(test_machinenames PRIVATE phobicccp_core)
@@ -421,7 +433,7 @@ if(UNIX AND NOT APPLE AND Qt6Test_FOUND)
     add_test(NAME bzprofile COMMAND test_bzprofile)
     add_executable(test_machinestop tests/test_machinestop.cpp)
     target_link_libraries(test_machinestop PRIVATE phobicccp_ui)
-    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2 jobstop jobcancel jobreset jobtcstop jobcount jobclear endalarm endpark quickmove)
+    foreach(mode cancelstop cancelend disconnend bzstale cancelresume safez descend tlo descendlive tc holdend parkend gotoend measureend rehearsetc zeroend zerooff zerounhomed bzoff deaf bztap rehdeaf endtap steptap stephold bzstart jogstart jogsettle jogsettlerun rerun rehtap parktap bzjog measuretap gototap homepark homepark0 homejog tloretry homerej tlospam remoteset ovrreset v1miss v1reboot maphigh connhold envxy envz inch13 inch13wco connrun mapzero mapzeropad mapremeasure mapzeroreconn maptlo tlo2 jobstop jobcancel jobreset jobtcstop jobcount jobclear endalarm endpark quickmove liftdouble liftcancel bzwait endrise mapstop gotooff mapoff)
         add_test(NAME machinestop_${mode} COMMAND test_machinestop)
         set_tests_properties(machinestop_${mode} PROPERTIES SKIP_RETURN_CODE 77
                              ENVIRONMENT "R4MODE=${mode};QT_QPA_PLATFORM=offscreen")

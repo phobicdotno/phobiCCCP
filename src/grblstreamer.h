@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QStringList>
 
+#include <limits>
+
 class QSerialPort;
 class QTimer;
 
@@ -75,10 +77,17 @@ public:
     bool queueHoldPoint(const QStringList &lines);
     bool isHoldQueued() const { return m_streaming && m_holdQueued; }
     bool isHeldAtPoint() const { return m_streaming && m_waitingHold; }
+    // A feed hold sent while streaming and not yet ended.
+    bool isFeedHeld() const { return m_streaming && m_feedHeld; }
     // After the hold: spindle back on (and its spin-up), down to where the
     // program was, and its motion mode and feed as the program left them.
-    QStringList resumeLinesAfterHold() const;
-    void continueAfterHold(const QStringList &lines);
+    // A modal arc (G2/G3 named only on the first of its lines) is put back
+    // by continueAfterHold() on the program's next line, as GRBL takes no
+    // bare G2. Returns the number of lines put into the program.
+    // `topWorkZ`: the highest work Z the approach may rapid to (the top of
+    // Z in work coordinates, mm); infinite when not known.
+    QStringList resumeLinesAfterHold(double topWorkZ = std::numeric_limits<double>::infinity()) const;
+    int continueAfterHold(const QStringList &lines);
     // What the program has sent up to line `upTo`: the last motion mode (G0..G3),
     // feed, spindle command and speed, and work Z. `valid` is false when a
     // line cannot be followed (G91, an unreadable word).
@@ -89,8 +98,19 @@ public:
         QChar spindle;                   // '3', '4', '5' or null
         double speed = 0;    bool haveSpeed = false;
         double z = 0;        bool haveZ = false;
+        bool inch = false;               // G20 in effect
     };
     static Modal scanModal(const QStringList &lines, int upTo);
+    // The way back for a program that left off in state `m`: spindle on,
+    // a rapid to just above the stock and the hold Z, the rest at the feed
+    // (at most 600 mm/min), then the program's feed and motion mode. The
+    // rapid never goes above `topWorkZ` (mm, work Z; see resumeLinesAfterHold).
+    // Puts `motion` (G2/G3) in front of the first line from `at` on that
+    // moves in the modal motion mode without naming it (see
+    // continueAfterHold()); lines that are not such a move stay as they are.
+    static void restoreMotionMode(QStringList &lines, int at, int motion);
+    static QStringList resumeLinesFor(const Modal &m,
+                                      double topWorkZ = std::numeric_limits<double>::infinity());
     // sendCommand() lines written but not yet answered. Continuous jog uses it
     // to stop queueing faster than the controller retires.
     int pendingCommands() const { return m_adhocPending; }
@@ -123,6 +143,9 @@ public:
     double toolLengthOffset() const { return m_tlo; }
     // The work offset's Z (G54, mm) as last reported on this connection.
     bool hasWorkOffset() const { return m_haveWco; }
+    // ...and no G10 / G92 / G54..59 sent since that the reports have caught
+    // up with: a travel check from it is from the offset GRBL now has.
+    bool workOffsetFresh() const { return m_haveWco && !m_wcoStale; }
     double toolLengthOffsetAtWco() const { return m_tloAtWco; }
     // The offset before the latest applyToolLengthOffset: a WCO report that
     // left GRBL before it applied the new G43.1 still carries this one.
@@ -139,7 +162,9 @@ public slots:
     void startStream(const QStringList &lines); // run a whole program
     // Resume past a tool marker; `first` runs ahead of the rest of the
     // program, as part of it (byte-counted and acked like its own lines).
-    void continueAfterToolChange(const QStringList &first = {});
+    // Returns the number of lines put into the program (with the crossing
+    // to the first cut), 0 when it did not continue.
+    int continueAfterToolChange(const QStringList &first = {});
     void pauseStream();                         // '!' feed hold
     bool resumeStream();                        // '~' cycle start (false: refused)
     void stopStream();                          // abort: soft reset (ctrl-X)
@@ -204,6 +229,8 @@ private:
     void pump();                                // fill GRBL's RX window
     void pumpMacro();
     void abortAfterReset();                     // controller rebooted under us
+    void noteFeedHold(bool held);               // `!` (or a Hold report) / a report out of Hold
+    void noteCycleStart();                      // `~` written: the next report out of Hold ends it
     // Stop the running program without pretending it finished. `holdMachine`
     // sends a feed hold first, which stops motion where it is and keeps the
     // position (unlike ctrl-X); pass false when the controller has already
@@ -211,6 +238,7 @@ private:
     void abortStream(const QString &why, bool holdMachine);
     void resetAfterError();                     // the ctrl-X that follows a held abort
     void writeLine(const QString &line);
+    void noteOffsetLine(const QString &line);   // a G10/G92/G54.. line: the WCO is stale
     void flushTlo();                            // send a pending G43.1 if allowed
     void resyncAdhoc(const QString &why);       // forget ad-hoc lines that will never ack
 
@@ -223,6 +251,9 @@ private:
     QHash<int, double> m_settings;   // $n=value lines seen
     double m_wcoX = 0, m_wcoY = 0, m_wcoZ = 0;
     bool m_haveWco = false;
+    bool m_wcoStale = false;                    // an offset line went out after the last WCO
+    bool m_wcoAwaitBanner = false;              // reset sent: a WCO counts only after its banner
+    QElapsedTimer m_wcoAwaitClock;              // ...or 3 s after the reset
     double m_tloAtWco = 0.0;
     double reportScale() const;   // 25.4 when $13=1 (reports in inches)
 
@@ -237,6 +268,15 @@ private:
     int m_waitingTool = -1;                     // >=0: parked at a tool marker
     bool m_holdQueued = false;                  // a lift-hold's lines are in the queue
     bool m_waitingHold = false;                 // standing at its marker
+    // A feed hold (`!`) while streaming: no tool marker is crossed until it
+    // ends: a report out of Hold/Door (after a `~`, or after one showed the
+    // hold), or none showed Hold within 2 s (it never took).
+    bool m_feedHeld = false;
+    bool m_feedHeldSeen = false;                // a report showed Hold since the `!`
+    bool m_feedHeldNoted = false;               // "tool change waits" logged once
+    bool m_feedResumeSent = false;              // `~` written since the hold began
+    int m_feedResumeSkip = 0;                   // reports made before the `~` to ignore
+    QElapsedTimer m_feedHeldClock;
     int m_holdAt = 0;                           // queue index of its first line
     int m_toolChanges = 0;                      // markers parked at in this program
     QElapsedTimer m_ackClock;                   // restarted on stream start + acks

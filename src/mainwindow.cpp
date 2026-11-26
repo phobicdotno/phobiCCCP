@@ -11,6 +11,8 @@
 #include "exportprogress.h"
 
 #include <utility>
+#include <optional>
+#include <QHash>
 #include "backgrounddialog.h"
 #include "gcodeexport.h"
 #include "isopreview.h"
@@ -117,6 +119,27 @@
 #include <QHash>
 #include <QKeyEvent>
 #include <QPointer>
+
+namespace {
+// Where a file dialog starts when nothing better is known: the folder of the
+// last design, else the home folder; on Android the shared Documents folder,
+// since the home folder there is the app's private files, out of reach of a
+// file manager or USB copy.
+QString defaultFileDir()
+{
+    const QStringList recent = QSettings().value(QStringLiteral("recentFiles")).toStringList();
+    for (const QString &r : recent)
+        if (QFileInfo::exists(r))
+            return QFileInfo(r).absolutePath();
+#ifdef Q_OS_ANDROID
+    const QString d = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation) + QStringLiteral("/phobiCCCP");
+    QDir().mkpath(d);
+    return d;
+#else
+    return QDir::homePath();
+#endif
+}
+} // namespace
 
 namespace c2d {
 
@@ -727,7 +750,8 @@ MainWindow::MainWindow(QWidget *parent)
     // change what the 3D toolpaths cut.
     connect(m_model, &ModelPanel::modelChanged, this, [this] {
         m_dirty = true;
-        m_undoMarksSaved = false;   // model edits are not undo steps
+        if (!m_modelByUndo)
+            m_undoMarksSaved = false;   // model edits are not undo steps
         updateTitle();
     });
     connect(m_model, &ModelPanel::modelRebuilt, this, [this] {
@@ -790,7 +814,7 @@ MainWindow::MainWindow(QWidget *parent)
         const QString title = fi.fileName().isEmpty() ? QStringLiteral("Untitled") : fi.completeBaseName();
         const QString dest = QFileDialog::getSaveFileName(
             this, QStringLiteral("Save setup sheet"),
-            (fi.fileName().isEmpty() ? QDir::homePath() : fi.absolutePath())
+            (fi.fileName().isEmpty() ? defaultFileDir() : fi.absolutePath())
                 + QLatin1Char('/') + title + QStringLiteral(" setup sheet.html"),
             QStringLiteral("HTML (*.html)"));
         if (dest.isEmpty())
@@ -914,9 +938,11 @@ MainWindow::MainWindow(QWidget *parent)
     palette->setIconSize(QSize(24, 24));
     addToolBar(Qt::TopToolBarArea, palette);
     auto *grp = new QActionGroup(this);
+    auto toolActs = std::make_shared<QHash<int, QAction *>>();
     auto addTool = [&](const QString &name, const QString &icon, Canvas::Tool t,
                        Qt::Key key, const QString &tip) {
         QAction *a = palette->addAction(toolIcon(icon), name);
+        toolActs->insert(int(t), a);
         a->setObjectName(icon);           // ToolbarOrder saves the order by name
         a->setCheckable(true);
         a->setShortcut(key);
@@ -928,6 +954,7 @@ MainWindow::MainWindow(QWidget *parent)
     QAction *selectAct = addTool(QStringLiteral("Select"), QStringLiteral("select"), Canvas::Select, Qt::Key_V,
             QStringLiteral("Select / move / delete  (V)"));
     selectAct->setChecked(true);
+    m_selectAct = selectAct;
     QAction *handAct = addTool(QStringLiteral("Hand"), QStringLiteral("hand"), Canvas::Pan, Qt::Key_H,
             QStringLiteral("Hand: drag to move the view  (H)"));
     QAction *areaAct = addTool(QStringLiteral("Area"), QStringLiteral("area"), Canvas::SelectArea, Qt::Key_W,
@@ -1043,6 +1070,13 @@ MainWindow::MainWindow(QWidget *parent)
     (new ToolbarOrder(palette, QStringLiteral("ui/toolOrder")))->restore();
 
     m_palette = palette;
+    // The canvas also changes tool by itself (the menu's Edit nodes, back to
+    // Select when Constrain is hidden): the palette ticks the tool in use.
+    connect(m_canvas, &Canvas::toolChanged, this, [toolActs](Canvas::Tool t) {
+        if (QAction *a = toolActs->value(int(t)))
+            if (!a->isChecked())
+                a->setChecked(true);
+    });
 
     // Toolpaths mode swaps the drawing tools for one button per toolpath
     // kind: icon, name, and a one-line explanation as its tooltip. Pressing
@@ -1796,6 +1830,17 @@ void MainWindow::setMode(Mode m, bool autoRun)
     m_rightStack->setCurrentWidget(design ? m_designPage : m_tpPage);
     layoutToolBars();   // the toolpath kinds need more room than the drawing tools
     m_canvas->setParametricVisible(design);
+    // The drawing tools' bar is hidden off the Design page, so its tools
+    // must not keep taking taps there (a tap in Toolpaths trimmed or drew
+    // instead of picking a vector): back to Select. The arrow, hand and
+    // area tools are on the Toolpaths bar too and stay.
+    if (tp && m_selectAct) {
+        const Canvas::Tool t = m_canvas->tool();
+        if (t != Canvas::Select && t != Canvas::Pan && t != Canvas::SelectArea)
+            m_selectAct->trigger();
+        else if (t == Canvas::Select && !m_selectAct->isChecked())
+            m_selectAct->setChecked(true);   // the canvas went back by itself
+    }
     if (design || tp)
         applySplits();
     if (tp) {
@@ -1901,10 +1946,8 @@ void MainWindow::onExportDxf()
                                  QStringLiteral("There are no vectors to export."));
         return;
     }
-    QString suggestion = gcodeSuggestion();
-    suggestion.chop(3);   // ".nc"
     const QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Export DXF"), suggestion + QStringLiteral(".dxf"),
+        this, QStringLiteral("Export DXF"), dxfSuggestion(),
         QStringLiteral("DXF (*.dxf);;All files (*)"));
     if (path.isEmpty())
         return;
@@ -2268,7 +2311,8 @@ void MainWindow::onNew()
     const double t = QInputDialog::getDouble(this, QStringLiteral("New design"),
         QStringLiteral("Stock thickness (mm):"), appsettings::kBlankThickness, 0.1, 500, 2, &ok);
     if (!ok) return;
-    const QString path = askC2dSavePath(this, QStringLiteral("Save new design as"), QStringLiteral("untitled.c2d"));
+    const QString path = askC2dSavePath(this, QStringLiteral("Save new design as"),
+                                         defaultFileDir() + QStringLiteral("/untitled.c2d"));
     if (path.isEmpty())
         return;
     QString err;
@@ -2727,8 +2771,18 @@ void MainWindow::offerRecovery()
                            "has changes that were never saved.\n\nOpen it? (No deletes it.)")
                 .arg(what, QLocale().toString(e.saved, QLocale::ShortFormat)),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        // Another window may have been offered the same copy and opened it
+        // while this box was up: it is that window's now, neither deleted
+        // nor opened a second time here.
         if (r != QMessageBox::Yes) {
-            Recovery::remove(e.copy);
+            if (!Recovery::removeIfFree(e.copy) && QFileInfo::exists(e.copy))
+                statusBar()->showMessage(QStringLiteral("The recovery copy of %1 is open in another "
+                                                        "window; left to it").arg(what), 10000);
+            continue;
+        }
+        if (!Recovery::isFree(e.copy)) {
+            statusBar()->showMessage(QStringLiteral("The recovery copy of %1 is open in another "
+                                                    "window").arg(what), 10000);
             continue;
         }
         if (!confirmDiscard(QStringLiteral("Save before opening the recovered design?")))
@@ -3104,8 +3158,30 @@ QString MainWindow::gcodeSuggestion() const
     // ("untitled-6829"): name the export after where it came from.
     const QFileInfo fi(m_untitled ? m_untitledFrom : m_doc.filePath());
     if (fi.fileName().isEmpty())
-        return QDir::homePath() + QStringLiteral("/Untitled.nc");
+        return defaultFileDir() + QStringLiteral("/Untitled.nc");
     return fi.absolutePath() + QLatin1Char('/') + fi.completeBaseName() + QStringLiteral(".nc");
+}
+
+QString MainWindow::dxfSuggestion() const
+{
+    QString base = gcodeSuggestion();
+    base.chop(3);   // ".nc"
+    const QString plain = base + QStringLiteral(".dxf");
+    // An untitled design imported from a DXF would be offered exactly that
+    // file, and one Yes to "replace?" wrote over the original drawing. Not
+    // the source, and not any file that is already there.
+    const bool isSource = m_untitled && !m_untitledFrom.isEmpty()
+        && QDir::cleanPath(QFileInfo(plain).absoluteFilePath()).compare(
+               QDir::cleanPath(QFileInfo(m_untitledFrom).absoluteFilePath()), Qt::CaseInsensitive) == 0;
+    // (not QFileInfo ==: two files that don't exist compare equal)
+    if (!isSource && !QFileInfo::exists(plain))
+        return plain;
+    // The first "-export" name not already there (a second export does
+    // not offer the first one's file either).
+    QString name = base + QStringLiteral("-export.dxf");
+    for (int n = 2; QFileInfo::exists(name) && n < 1000; ++n)
+        name = base + QStringLiteral("-export-%1.dxf").arg(n);
+    return name;
 }
 
 bool MainWindow::docHeld() const
@@ -3939,8 +4015,13 @@ void MainWindow::refreshInfo()
 
 namespace {
 
-// Rotate 90° as one undo step: the document's vectors, toolpaths and
-// constraints, the 3D model and the background's placement, before and after.
+// Rotate 90° as one undo step. The document's vectors, toolpaths,
+// constraints and stock size go back and forth as they were before and
+// after. The 3D model and the background are not undo steps of their own,
+// so they are not snapshots here: an image placed or a background moved
+// after the turn would be lost. They are turned (redo) or turned back
+// (undo) as they are now; a placement nobody touched since gets exactly the
+// value it had, so undoing back to the design as saved is still that.
 class RotateJobCmd : public QUndoCommand
 {
 public:
@@ -3948,20 +4029,111 @@ public:
         QVector<Element> els;
         QVector<Toolpath> tps;
         Parametric par;
-        Model3D model;
-        double bgX = 0, bgY = 0, bgRot = 0;
         QString stockW, stockH;   // the stock turns with the design
     };
-    RotateJobCmd(Canvas *c, Document *d, ModelPanel *m, BackgroundImage *bg,
-                 const State &before, const State &after, bool hasModel)
-        : m_c(c), m_d(d), m_m(m), m_bg(bg), m_before(before), m_after(after), m_hasModel(hasModel)
+    // Where a component or the background lies, and how big it is: one
+    // resized after the turn but not moved is not "untouched" (its old
+    // corner would not fit its new size).
+    struct Place {
+        double x = 0, y = 0, rot = 0;
+        int turns = 0;
+        bool userChanged = false;
+        QSizeF size;               // footprint / rectMm size, mm
+        double w = 0, w2 = 0;      // component width and tile width; background scale
+        bool operator==(const Place &o) const
+        {
+            return x == o.x && y == o.y && rot == o.rot && turns == o.turns
+                && userChanged == o.userChanged && size == o.size && w == o.w && w2 == o.w2;
+        }
+    };
+    RotateJobCmd(Canvas *c, Document *d, ModelPanel *m, BackgroundImage *bg, bool *modelByUndo,
+                 const State &before, const State &after, const QTransform &q)
+        : m_c(c), m_d(d), m_m(m), m_bg(bg), m_modelByUndo(modelByUndo),
+          m_before(before), m_after(after), m_q(q)
     {
         setText(QStringLiteral("rotate the design 90°"));
     }
-    void redo() override { apply(m_after); }
-    void undo() override { apply(m_before); }
+    void redo() override
+    {
+        apply(m_after);
+        turnExtras(true);
+    }
+    void undo() override
+    {
+        apply(m_before);
+        turnExtras(false);
+    }
 
 private:
+    static Place placeOf(const BackgroundImage &b)
+    {
+        return {b.x, b.y, b.rotationDeg, 0, b.userChanged, b.rectMm().size(), b.scale, 0};
+    }
+    static Place placeOf(const ModelComponent &c)
+    {
+        return {c.x, c.y, 0, c.turns, false, c.footprint().size(), c.width, c.tileWidth};
+    }
+    // A quarter turn clockwise, or (back) three of them, which is the turn
+    // undone: q turns about a fixed point, four times is no turn.
+    void turnModel(Model3D &m, bool forward) const
+    {
+        for (int i = forward ? 1 : 3; i > 0; --i)
+            jobrotate::turnModel(m, m_q);
+    }
+    void turnBg(BackgroundImage &b, bool forward) const
+    {
+        for (int i = forward ? 1 : 3; i > 0; --i)
+            jobrotate::turnBackground(b, m_q);
+    }
+    void turnExtras(bool forward)
+    {
+        const Model3D &cur = m_m->model();
+        if (!cur.components.isEmpty()) {
+            Model3D m = cur;
+            QHash<QString, Place> &from = forward ? m_modelBefore : m_modelAfter;
+            QHash<QString, Place> &to = forward ? m_modelAfter : m_modelBefore;
+            for (ModelComponent &c : m.components) {
+                const auto f = from.constFind(c.id), t = to.constFind(c.id);
+                if (f != from.constEnd() && t != to.constEnd() && placeOf(c) == *f) {
+                    // Untouched since: exactly where it was.
+                    c.x = t->x;
+                    c.y = t->y;
+                    c.turns = t->turns;
+                    continue;
+                }
+                Model3D one;
+                one.components = {c};
+                turnModel(one, forward);
+                from.insert(c.id, placeOf(c));
+                c = one.components.first();
+                to.insert(c.id, placeOf(c));
+            }
+            m.userChanged = true;
+            // Part of this undo step: it does not drop the saved mark.
+            const bool was = m_modelByUndo ? *m_modelByUndo : false;
+            if (m_modelByUndo)
+                *m_modelByUndo = true;
+            m_m->setModel(m);
+            if (m_modelByUndo)
+                *m_modelByUndo = was;
+        }
+        if (!m_bg->isNull()) {
+            const Place now = placeOf(*m_bg);
+            const std::optional<Place> &from = forward ? m_bgBefore : m_bgAfter;
+            const std::optional<Place> &to = forward ? m_bgAfter : m_bgBefore;
+            if (from && to && now == *from) {
+                m_bg->x = to->x;
+                m_bg->y = to->y;
+                m_bg->rotationDeg = to->rot;
+                m_bg->userChanged = to->userChanged;
+            } else {
+                (forward ? m_bgBefore : m_bgAfter) = now;
+                turnBg(*m_bg, forward);
+                (forward ? m_bgAfter : m_bgBefore) = placeOf(*m_bg);
+            }
+        }
+        m_c->viewport()->update();
+    }
     void apply(const State &s)
     {
         m_d->setElements(s.els);
@@ -3969,14 +4141,6 @@ private:
         m_d->setParametric(s.par);
         setStock(QStringLiteral("width"), s.stockW);
         setStock(QStringLiteral("height"), s.stockH);
-        if (m_hasModel)
-            m_m->setModel(s.model);
-        if (!m_bg->isNull()) {
-            m_bg->x = s.bgX;
-            m_bg->y = s.bgY;
-            m_bg->rotationDeg = s.bgRot;
-            m_bg->userChanged = true;
-        }
         m_c->rebuild();
         m_c->viewport()->update();
         emit m_c->documentChanged();
@@ -3993,8 +4157,13 @@ private:
     Document *m_d;
     ModelPanel *m_m;
     BackgroundImage *m_bg;
+    bool *m_modelByUndo;
     State m_before, m_after;
-    bool m_hasModel;
+    QTransform m_q;
+    // Where the model's components and the background were before and after
+    // the last turn this step made: one left there gets exactly that back.
+    QHash<QString, Place> m_modelBefore, m_modelAfter;
+    std::optional<Place> m_bgBefore, m_bgAfter;
 };
 
 } // namespace
@@ -4026,20 +4195,13 @@ void MainWindow::rotateJob()
     const bool swapStock = hasStock
         && (onStock || ((turnedBox.width() > turnedBox.height()) != (stock.width() > stock.height())));
 
-    RotateJobCmd::State before{m_doc.elements(), m_doc.toolpaths(), m_doc.parametric(), model,
-                               m_bg.x, m_bg.y, m_bg.rotationDeg, oldW, oldH};
+    RotateJobCmd::State before{m_doc.elements(), m_doc.toolpaths(), m_doc.parametric(), oldW, oldH};
     Document turned = m_doc;
     const jobrotate::Report rep = jobrotate::turnDocument(turned, q);
-    Model3D turnedModel = model;
-    jobrotate::turnModel(turnedModel, q);
-    BackgroundImage bg = m_bg;
-    jobrotate::turnBackground(bg, q);
-    RotateJobCmd::State after{turned.elements(), turned.toolpaths(), turned.parametric(), turnedModel,
-                              bg.x, bg.y, bg.rotationDeg,
+    RotateJobCmd::State after{turned.elements(), turned.toolpaths(), turned.parametric(),
                               swapStock ? oldH : oldW, swapStock ? oldW : oldH};
-    const bool hasModel = !model.components.isEmpty();
     m_canvas->undoStack()->push(
-        new RotateJobCmd(m_canvas, &m_doc, m_model, &m_bg, before, after, hasModel));
+        new RotateJobCmd(m_canvas, &m_doc, m_model, &m_bg, &m_modelByUndo, before, after, q));
 
     QStringList msg{QStringLiteral("Rotated the design 90° clockwise (%1 vector(s))").arg(rep.vectors)};
     if (swapStock)
