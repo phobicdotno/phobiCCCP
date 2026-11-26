@@ -19,6 +19,12 @@
 #include "toolpathcommands.h"
 #include "dragscroll.h"
 #include "toolpathfactory.h"
+#include "toolpathtemplates.h"
+#include <QDialog>
+#include <QFile>
+#include <QDialogButtonBox>
+#include <QLineEdit>
+#include <QListWidget>
 
 #include <QHBoxLayout>
 #include <QFontInfo>
@@ -568,6 +574,20 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
                            QStringLiteral("Delete the selected toolpath (undoable)"));
     connect(m_delBtn, &QToolButton::clicked, this, &ToolpathPanel::deleteCurrent);
     bar->addWidget(m_delBtn);
+    auto *tplBtn = new QToolButton(this);
+    tplBtn->setText(QStringLiteral("Templates \u25be"));
+    tplBtn->setPopupMode(QToolButton::InstantPopup);
+    tplBtn->setAutoRaise(true);
+    tplBtn->setToolTip(QStringLiteral(
+        "Save toolpath settings (tool, depths, feeds) as a template, without their shapes,\n"
+        "and add a saved set to this design"));
+    auto *tplMenu = new QMenu(tplBtn);
+    tplMenu->addAction(QStringLiteral("Save as template\u2026"), this,
+                       &ToolpathPanel::saveTemplateDialog);
+    tplMenu->addAction(QStringLiteral("Apply template\u2026"), this,
+                       &ToolpathPanel::applyTemplateDialog);
+    tplBtn->setMenu(tplMenu);
+    bar->addWidget(tplBtn);
     bar->addStretch(1);
     m_upBtn = smallButton(this, QStringLiteral("▲"),
                           QStringLiteral("Move up — toolpaths are machined top to bottom"));
@@ -680,6 +700,8 @@ ToolpathPanel::ToolpathPanel(Canvas *canvas, QWidget *parent)
         menu.addAction(QStringLiteral("Rename…"), this, &ToolpathPanel::renameCurrent);
         menu.addAction(QStringLiteral("Duplicate"), this, &ToolpathPanel::duplicateCurrent);
         menu.addAction(QStringLiteral("Delete"), this, &ToolpathPanel::deleteCurrent);
+        menu.addAction(QStringLiteral("Save as template\u2026"), this,
+                       &ToolpathPanel::saveTemplateDialog);
         menu.addSeparator();
         menu.addAction(QStringLiteral("Move up"), this, [this] { moveCurrent(-1); });
         menu.addAction(QStringLiteral("Move down"), this, [this] { moveCurrent(+1); });
@@ -1156,6 +1178,8 @@ QString ToolpathPanel::cardSubtitle(const Toolpath &t, const QString &flute, boo
             break;
         }
     }
+    if (refs.isEmpty())
+        sub += QStringLiteral(" \u00b7 \u26a0 pick shapes");
     if (!flute.isEmpty())
         sub += QStringLiteral(" \u00b7 \u26a0 deeper than the flutes");
     const QString name = t.json.value("name").toString();
@@ -1617,6 +1641,210 @@ void ToolpathPanel::updateListHeight()
     if (h <= 0)
         h = QFontMetrics(m_list->font()).height() * 2 + 22 + kStrip;
     m_list->setFixedHeight(h + 6);
+}
+
+// ---- templates ------------------------------------------------------------
+
+bool ToolpathPanel::saveTemplate(const QString &name, const QStringList &uuids, QString *error)
+{
+    if (!m_doc || name.trimmed().isEmpty() || uuids.isEmpty()) {
+        if (error) *error = QStringLiteral("Give the template a name and tick a toolpath.");
+        return false;
+    }
+    QVector<Toolpath> tps;
+    for (const Toolpath &t : m_doc->toolpaths())   // machining order
+        if (uuids.contains(t.uuid))
+            tps << t;
+    if (tps.isEmpty()) {
+        if (error) *error = QStringLiteral("None of those toolpaths is in this design.");
+        return false;
+    }
+    return tptemplates::save(tptemplates::build(name, tps), error);
+}
+
+int ToolpathPanel::applyTemplate(const QString &name, QStringList *notes, QString *error)
+{
+    flushForm();
+    if (!m_doc)
+        return 0;
+    QJsonObject tpl;
+    if (!tptemplates::load(name, &tpl, error))
+        return 0;
+    const QStringList ids = m_canvas->selectedElementIds();
+    const QVector<Toolpath> tps = tptemplates::instantiate(*m_doc, tpl, ids, notes);
+    if (tps.isEmpty()) {
+        if (error) *error = QStringLiteral("The template has no toolpaths.");
+        return 0;
+    }
+    // One undo step for the whole set.
+    QUndoStack *undo = m_canvas->undoStack();
+    undo->beginMacro(QStringLiteral("apply template %1").arg(name));
+    int at = m_doc->toolpaths().size();
+    m_uuid = tps.first().uuid;   // refresh() selects the first one added
+    for (const Toolpath &t : tps)
+        undo->push(new TpInsertCmd(m_canvas, m_doc, t, at++, QStringLiteral("template")));
+    undo->endMacro();
+    if (ids.isEmpty()) {
+        m_hint->setText(QStringLiteral(
+            "The toolpaths from \"%1\" have no shapes yet: select shapes on the canvas and "
+            "press \"Assign selected vectors\" on each.").arg(name));
+        m_hint->show();
+    }
+    return tps.size();
+}
+
+void ToolpathPanel::saveTemplateDialog()
+{
+    flushForm();
+    if (!m_doc || m_doc->toolpaths().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Save as template"),
+                                 QStringLiteral("This design has no toolpaths to save."));
+        return;
+    }
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Save as template"));
+    auto *lay = new QVBoxLayout(&dlg);
+    lay->addWidget(new QLabel(QStringLiteral(
+        "Tick the toolpaths to keep. Their tool, depths, feeds and settings are saved,\n"
+        "not the shapes they cut."), &dlg));
+    auto *list = new QListWidget(&dlg);
+    list->setStyleSheet(QStringLiteral("QListWidget::item { min-height: 44px; }"));
+    // The selected row alone if there is one, else every ticked (enabled) toolpath.
+    const bool oneRow = !m_list->selectedItems().isEmpty() && !m_uuid.isEmpty();
+    for (const Toolpath &t : m_doc->toolpaths()) {
+        auto *it = new QListWidgetItem(QStringLiteral("%1  (%2)").arg(
+            t.json.value("name").toString(), toolpathLabel(t.type)), list);
+        it->setData(Qt::UserRole, t.uuid);
+        it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        const bool on = oneRow ? t.uuid == m_uuid : t.json.value("enabled").toBool(true);
+        it->setCheckState(on ? Qt::Checked : Qt::Unchecked);
+    }
+    connect(list, &QListWidget::itemClicked, &dlg, [](QListWidgetItem *it) {
+        it->setCheckState(it->checkState() == Qt::Checked ? Qt::Unchecked : Qt::Checked);
+    });
+    lay->addWidget(list, 1);
+    lay->addWidget(new QLabel(QStringLiteral("Template name:"), &dlg));
+    auto *name = new QLineEdit(&dlg);
+    name->setMinimumHeight(44);
+    if (const Toolpath *cur = m_doc->toolpathByUuid(m_uuid); cur && oneRow)
+        name->setText(cur->json.value("name").toString());
+    lay->addWidget(name);
+    auto *box = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel, &dlg);
+    for (QAbstractButton *b : box->buttons())
+        b->setMinimumHeight(48);
+    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    lay->addWidget(box);
+    dlg.resize(520, 480);
+    while (dlg.exec() == QDialog::Accepted) {
+        QStringList uuids;
+        for (int i = 0; i < list->count(); ++i)
+            if (list->item(i)->checkState() == Qt::Checked)
+                uuids << list->item(i)->data(Qt::UserRole).toString();
+        const QString n = name->text().trimmed();
+        if (n.isEmpty() || uuids.isEmpty()) {
+            QMessageBox::information(this, QStringLiteral("Save as template"),
+                                     QStringLiteral("Give the template a name and tick at least one toolpath."));
+            continue;
+        }
+        if (QFile::exists(tptemplates::fileFor(n))
+            && QMessageBox::question(this, QStringLiteral("Save as template"),
+                                     QStringLiteral("A template \"%1\" exists. Replace it?").arg(n))
+                   != QMessageBox::Yes)
+            continue;
+        QString err;
+        if (!saveTemplate(n, uuids, &err)) {
+            QMessageBox::warning(this, QStringLiteral("Save as template"), err);
+            continue;
+        }
+        m_hint->setText(QStringLiteral("Saved template \"%1\" (%2 toolpath%3).")
+                            .arg(n).arg(uuids.size()).arg(uuids.size() == 1 ? "" : "s"));
+        m_hint->show();
+        return;
+    }
+}
+
+void ToolpathPanel::applyTemplateDialog()
+{
+    if (!m_doc)
+        return;
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Apply template"));
+    auto *lay = new QVBoxLayout(&dlg);
+    const bool sel = !m_canvas->selectedElementIds().isEmpty();
+    lay->addWidget(new QLabel(sel
+        ? QStringLiteral("The toolpaths are added for the shapes selected on the drawing.")
+        : QStringLiteral("Nothing is selected: the toolpaths are added without shapes,\n"
+                         "pick them afterwards with \"Assign selected vectors\"."), &dlg));
+    auto *list = new QListWidget(&dlg);
+    list->setStyleSheet(QStringLiteral("QListWidget::item { min-height: 48px; }"));
+    auto fill = [list] {
+        list->clear();
+        for (const QString &n : tptemplates::names()) {
+            QJsonObject tpl;
+            QStringList kinds;
+            if (tptemplates::load(n, &tpl))
+                for (const QJsonValue &v : tpl.value("toolpaths").toArray()) {
+                    const QJsonObject o = v.toObject();
+                    kinds << o.value("json").toObject().value("name").toString(
+                        toolpathLabel(o.value("type").toString()));
+                }
+            auto *it = new QListWidgetItem(QStringLiteral("%1\n    %2").arg(n, kinds.join(QStringLiteral(", "))), list);
+            it->setData(Qt::UserRole, n);
+        }
+        if (list->count() > 0)
+            list->setCurrentRow(0);
+    };
+    fill();
+    lay->addWidget(list, 1);
+    auto *box = new QDialogButtonBox(&dlg);
+    auto *apply = box->addButton(QStringLiteral("Apply"), QDialogButtonBox::AcceptRole);
+    auto *del = box->addButton(QStringLiteral("Delete"), QDialogButtonBox::ActionRole);
+    box->addButton(QDialogButtonBox::Cancel);
+    for (QAbstractButton *b : box->buttons())
+        b->setMinimumHeight(48);
+    auto sync = [list, apply, del] {
+        const bool has = list->currentItem() != nullptr;
+        apply->setEnabled(has);
+        del->setEnabled(has);
+    };
+    sync();
+    connect(list, &QListWidget::currentItemChanged, &dlg, sync);
+    connect(list, &QListWidget::itemDoubleClicked, &dlg, &QDialog::accept);
+    connect(box, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(box, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    connect(del, &QAbstractButton::clicked, &dlg, [&] {
+        const QListWidgetItem *it = list->currentItem();
+        if (!it)
+            return;
+        const QString n = it->data(Qt::UserRole).toString();
+        if (QMessageBox::question(&dlg, QStringLiteral("Delete template"),
+                                  QStringLiteral("Delete the template \"%1\"?").arg(n))
+            != QMessageBox::Yes)
+            return;
+        tptemplates::remove(n);
+        fill();
+        sync();
+    });
+    lay->addWidget(box);
+    dlg.resize(520, 480);
+    if (list->count() == 0)
+        list->addItem(QStringLiteral("No templates yet: use \"Save as template…\" first."));
+    if (dlg.exec() != QDialog::Accepted || !list->currentItem())
+        return;
+    const QString n = list->currentItem()->data(Qt::UserRole).toString();
+    if (n.isEmpty())
+        return;
+    QStringList notes;
+    QString err;
+    if (applyTemplate(n, &notes, &err) == 0) {
+        QMessageBox::warning(this, QStringLiteral("Apply template"), err);
+        return;
+    }
+    if (!notes.isEmpty())
+        QMessageBox::information(this, QStringLiteral("Apply template"),
+            QStringLiteral("These settings were bound to parameters this design does not have; "
+                           "they keep the template's number:\n\n") + notes.join(QLatin1Char('\n')));
 }
 
 } // namespace c2d

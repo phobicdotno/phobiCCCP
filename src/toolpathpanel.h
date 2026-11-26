@@ -49,6 +49,19 @@ public slots:
     void deleteCurrent();
     void renameCurrent();
     void moveCurrent(int delta);  // -1 up, +1 down (machining order)
+    // Templates (toolpathtemplates.h): save the ticked toolpaths' settings
+    // under a name; pick a saved one and add its toolpaths to this design.
+    void saveTemplateDialog();
+    void applyTemplateDialog();
+
+public:
+    // What the dialogs do. saveTemplate stores the toolpaths `uuids` (in
+    // machining order) as template `name`. applyTemplate adds the template's
+    // toolpaths at the end, bound to the canvas selection (or to nothing),
+    // as one undo step; returns how many were added, *notes the bindings
+    // that kept only their number.
+    bool saveTemplate(const QString &name, const QStringList &uuids, QString *error = nullptr);
+    int applyTemplate(const QString &name, QStringList *notes = nullptr, QString *error = nullptr);
 
 private:
     void showToolpath(const QString &uuid);

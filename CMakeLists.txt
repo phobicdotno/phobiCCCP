@@ -63,6 +63,7 @@ add_library(phobicccp_core STATIC
     src/toolcollections.cpp
     src/stockstamp.cpp
     src/toolpathfactory.cpp
+    src/toolpathtemplates.cpp
     src/tiling.cpp
     data/tools.qrc
     src/backgroundimage.cpp
@@ -327,6 +328,11 @@ if(Qt6Test_FOUND)
     target_compile_definitions(test_toollib PRIVATE TOOLLIB_DIR="${CMAKE_SOURCE_DIR}/toollib")
     add_test(NAME toollib COMMAND test_toollib)
     set_tests_properties(toollib PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    # Toolpath templates: save, apply to another design, file round trip.
+    add_executable(test_tptemplates tests/test_tptemplates.cpp)
+    target_link_libraries(test_tptemplates PRIVATE phobicccp_ui)
+    add_test(NAME tptemplates COMMAND test_tptemplates)
+    set_tests_properties(tptemplates PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     add_executable(test_toolpathform tests/test_toolpathform.cpp)
     target_link_libraries(test_toolpathform PRIVATE phobicccp_ui Qt6::Test)
     add_test(NAME toolpathform COMMAND test_toolpathform)
