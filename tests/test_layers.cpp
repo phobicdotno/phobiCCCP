@@ -122,6 +122,37 @@ int main(int argc, char **argv)
     check(canvas->selectedElementIds() == QStringList{c.id}, "an unlocked layer's shape can be picked");
     panel->setLocked(lckKey, true);
 
+    // Group / Ungroup: a click on one grouped shape picks the group.
+    const c2d::Element e1 = c2d::Element::makeCircle({30, 80}, 8, d.defaultLayer());
+    const c2d::Element e2 = c2d::Element::makeCircle({60, 80}, 8, d.defaultLayer());
+    d.addElement(e1);
+    d.addElement(e2);
+    canvas->rebuild();
+    auto sorted = [](QStringList l) { l.sort(); return l; };
+    const QStringList pair = sorted({e1.id, e2.id});
+    canvas->selectElements({e1.id, e2.id});
+    const int before = undo->count();
+    canvas->groupSelected();
+    check(undo->count() == before + 1, "group is one undo step");
+    canvas->selectElements({});
+    QTest::mouseClick(vp, Qt::LeftButton, {}, at(30, 80));
+    check(sorted(canvas->selectedElementIds()) == pair, "a click on a grouped shape picks the group");
+    canvas->selectElements({});
+    QTest::mouseClick(vp, Qt::LeftButton, Qt::AltModifier, at(30, 80));
+    check(canvas->selectedElementIds() == QStringList{e1.id}, "Alt+click picks one shape of a group");
+    const QString gid = c2d::groups::outermost(*d.elementById(e1.id));
+    check(!gid.isEmpty() && gid == c2d::groups::outermost(*d.elementById(e2.id)), "both share the group");
+    undo->undo();
+    check(c2d::groups::outermost(*d.elementById(e1.id)).isEmpty(), "undo takes the group off");
+    undo->redo();
+    canvas->selectElements({e1.id});
+    canvas->ungroupSelected();
+    canvas->selectElements({});
+    QTest::mouseClick(vp, Qt::LeftButton, {}, at(30, 80));
+    check(canvas->selectedElementIds() == QStringList{e1.id}, "after Ungroup a click picks one shape");
+    canvas->selectElements({e1.id, e2.id});
+    canvas->groupSelected();
+
     // Round trip through the file.
     const QString out = tmp.filePath("b.c2d");
     check(d.save(out, &err), "save");
@@ -132,6 +163,9 @@ int main(int argc, char **argv)
     check(rc && c2d::layers::isLocked(*rc) && !c2d::layers::isHidden(*rc), "locked flag round-trips");
     check(ra && ra->raw.value("layer").toObject().value("name").toString() == "Inlays",
           "layer name round-trips");
+    const c2d::Element *r1 = r.elementById(e1.id), *r2 = r.elementById(e2.id);
+    check(r1 && r2 && !c2d::groups::outermost(*r1).isEmpty()
+              && c2d::groups::outermost(*r1) == c2d::groups::outermost(*r2), "a group round-trips");
 
     std::printf("%d failure(s)\n", failures);
     return failures ? 1 : 0;

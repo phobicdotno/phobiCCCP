@@ -1037,6 +1037,50 @@ void Canvas::editLayers(const QVector<Element> &after, const QString &text)
     pushEdit(new LayerCmd(this, m_doc, after, text), ids);
 }
 
+void Canvas::groupSelected()
+{
+    if (!m_doc)
+        return;
+    const QVector<Element> after = groups::grouped(*m_doc, selectedElementIds());
+    if (after.isEmpty()) {
+        emit statusHint(tr("Group: select two or more shapes first"));
+        return;
+    }
+    editLayers(after, tr("group"));
+}
+
+void Canvas::ungroupSelected()
+{
+    if (!m_doc)
+        return;
+    const QVector<Element> after = groups::ungrouped(*m_doc, selectedElementIds());
+    if (after.isEmpty()) {
+        emit statusHint(tr("Ungroup: nothing selected is in a group"));
+        return;
+    }
+    editLayers(after, tr("ungroup"));
+}
+
+// A click on a grouped shape picks its whole outermost group (Alt+click
+// picks the one shape). On the press, so a drag moves the group, and again
+// on the release, where the view narrows a click to the one item.
+void Canvas::pickGroups(QMouseEvent *event)
+{
+    if (m_tool != Select || !m_doc || event->button() != Qt::LeftButton
+        || (event->modifiers() & Qt::AltModifier))
+        return;
+    const QStringList sel = selectedElementIds();
+    const QStringList all = groups::expand(*m_doc, sel);
+    if (all.size() <= sel.size())
+        return;
+    m_scene->blockSignals(true);
+    for (QGraphicsPathItem *it : itemsFor(all))
+        if (it->isVisible())
+            it->setSelected(true);
+    m_scene->blockSignals(false);
+    onSelectionChanged();
+}
+
 void Canvas::selectAll()
 {
     if (!m_doc)
@@ -2883,6 +2927,7 @@ void Canvas::mousePressEvent(QMouseEvent *event)
         }
     }
     QGraphicsView::mousePressEvent(event);
+    pickGroups(event);   // before a drag moves the selection
     pressedEmpty(event);
 }
 
@@ -3169,6 +3214,7 @@ void Canvas::mouseReleaseEvent(QMouseEvent *event)
 
     QGraphicsView::mouseReleaseEvent(event);
     cycleSelection(event);
+    pickGroups(event);
 
     // Select tool: commit any moved items back into the document. An item that
     // was dragged has a non-zero pos(); scene coords are CC mm, so the delta

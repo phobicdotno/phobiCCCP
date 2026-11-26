@@ -106,6 +106,10 @@ public:
     void editLayers(const QVector<Element> &after, const QString &text);
     // Edit > Select all: every shape not on a hidden or locked layer.
     void selectAll();
+    // Edit > Group / Ungroup (layers.h, groups): the selection in one new
+    // group, or its outermost group taken apart. One undo step each.
+    void groupSelected();
+    void ungroupSelected();
     Document *document() const { return m_doc; }
     void selectIds(const QStringList &ids);   // replace the selection (vector ops)
     void selectElements(const QStringList &ids);
@@ -283,6 +287,7 @@ private:
     void applyBand();
     QPoint bandPoint(const QPoint &p) const;   // clamped to the viewport
     void endBand();                            // drop the band, keep what it selected
+    void pickGroups(QMouseEvent *event);       // a click on a grouped shape picks the group
     void pressedEmpty(QMouseEvent *event);     // Select press on empty board: band + emptyPressed
 
     // Click tools (slot, arc, edge polygon) reuse m_clicks (the points

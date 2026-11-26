@@ -869,6 +869,18 @@ MainWindow::MainWindow(QWidget *parent)
     });
     allAct->setShortcut(QKeySequence::SelectAll);
     allAct->setToolTip(QStringLiteral("Select every shape, except those on hidden or locked layers  (Ctrl+A)"));
+    // Ctrl+G is Export G-code; Group takes Ctrl+Alt+G.
+    QAction *groupAct = editMenu->addAction(QStringLiteral("&Group"), this, [this] {
+        m_canvas->groupSelected();
+    });
+    groupAct->setShortcut(QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_G));
+    groupAct->setToolTip(QStringLiteral("Put the selected shapes in one group: a click on one "
+                                        "then picks them all (Alt+click picks one)  (Ctrl+Alt+G)"));
+    QAction *ungroupAct = editMenu->addAction(QStringLiteral("&Ungroup"), this, [this] {
+        m_canvas->ungroupSelected();
+    });
+    ungroupAct->setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G));
+    ungroupAct->setToolTip(QStringLiteral("Take the selected group apart  (Ctrl+Shift+G)"));
 
     // Create: generators that draw ready-made parts as plain vectors.
     auto *createMenu = m_menuBar->addMenu(QStringLiteral("&Create"));

@@ -46,4 +46,20 @@ QVector<Element> movedTo(const Document &d, const QStringList &ids, const QJsonO
 QStringList idsOn(const Document &d, const QString &key);
 
 } // namespace layers
+
+// Groups, as Carbide Create stores them: each element's `group_id` lists the
+// groups it is in, innermost first (Group adds a new outer group, Ungroup
+// takes the outermost one off). A click on a grouped shape picks its whole
+// outermost group.
+namespace groups {
+
+QString outermost(const Element &e);           // empty: in no group
+// Ids of every element sharing `ids`' outermost groups, plus `ids` itself.
+QStringList expand(const Document &d, const QStringList &ids);
+// The elements `ids` put in one new group (empty for fewer than two).
+QVector<Element> grouped(const Document &d, const QStringList &ids);
+// The elements of `ids`' outermost groups with that group taken off.
+QVector<Element> ungrouped(const Document &d, const QStringList &ids);
+
+} // namespace groups
 } // namespace c2d
