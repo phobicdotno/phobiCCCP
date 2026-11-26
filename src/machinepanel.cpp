@@ -1587,7 +1587,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         const bool endJob = m_endOfJobPending && ok && !rehearsal;
         m_endOfJobPending = false;
         // Finished: nothing to continue. Stopped: the place stays saved.
-        if (ok && !m_runPath.isEmpty())
+        // A job that parks keeps it until the machine stands still: the last
+        // lines are acked when planned, not when cut.
+        const bool runSaved = ok && !m_runPath.isEmpty();
+        if (runSaved && !endJob)
             clearResumePoint();
         m_runPath.clear();
         m_runHash.clear();
@@ -1648,8 +1651,10 @@ MachinePanel::MachinePanel(QWidget *parent)
             // planned, so the position read now is from before the program's
             // own final retract, and a rise from it could go down.
             m_endRisePending = true;
-            whenIdle([this] {
+            whenIdle([this, runSaved] {
                 m_endRisePending = false;
+                if (runSaved)
+                    clearResumePoint();
                 m_grbl->startMacro(endOfJobMoves());
             });
         }
@@ -3157,10 +3162,16 @@ void MachinePanel::openSurfacing()
     st.setValue(QStringLiteral("machine/surf/alongY"), dir->currentIndex() == 1);
     st.setValue(QStringLiteral("machine/surf/finish"), finish->isChecked());
 
-    const SurfacingParams p = params();
-    const SurfacingPlan plan = planSurfacing(p);
+    SurfacingParams p = params();
     // Checked again: the machine may have moved its zero while the dialog was open.
     const MachineStatus &now = m_grbl->status();
+    const bool machineCorner = corner->currentIndex() == 1;
+    if (machineCorner) {
+        // Front-left of the machine is machine-fixed: from the zero as it is now.
+        p.x0 = left + kMargin + p.toolDia / 2 - (now.mx - now.wx);
+        p.y0 = front + kMargin + p.toolDia / 2 - (now.my - now.wy);
+    }
+    const SurfacingPlan plan = planSurfacing(p);
     QString why = plan.error;
     if (why.isEmpty())
         why = surfacingFitProblem(plan, now.mx - now.wx, now.my - now.wy, left, right, front, back);
@@ -3176,6 +3187,10 @@ void MachinePanel::openSurfacing()
         return;
     }
     m_ncPath = QStringLiteral("Surfacing %1 × %2 mm").arg(p.width).arg(p.height);
+    // Its coordinates hold the zero of now: Start refuses if XY zero moves.
+    m_surfFixedPath = machineCorner ? m_ncPath : QString();
+    m_surfWcoX = now.mx - now.wx;
+    m_surfWcoY = now.my - now.wy;
     m_ncLines = nc.lines;
     m_ncOps = nc.ops;
     log(QStringLiteral("surfacing loaded: %1 × %2 mm, Ø %3 bit, %4 lines × %5 passes to Z-%6")
@@ -4402,13 +4417,44 @@ void MachinePanel::openControllerSettings()
         auto conn = std::make_shared<QMetaObject::Connection>();
         *conn = connect(m_grbl, &GrblStreamer::macroFinished, &dlg, [this, &dlg, conn](bool ok) {
             disconnect(*conn);
-            dlg.setBusy(false);
-            dlg.setSettings(toMap(m_grbl->settings()));
-            if (!ok)
+            if (ok) {
+                dlg.setBusy(false);
+                dlg.setSettings(toMap(m_grbl->settings()));
+                return;
+            }
+            // The refused line ended the macro before its $$: the cached list
+            // is from before the edit. Read it again before showing values.
+            dlg.setBusy(true, QStringLiteral("A setting was refused. Reading the settings again…"));
+            auto listed = std::make_shared<QMetaObject::Connection>();
+            *listed = connect(m_grbl, &GrblStreamer::settingsListed, &dlg, [this, &dlg, listed] {
+                disconnect(*listed);
+                dlg.setBusy(false);
+                dlg.setSettings(toMap(m_grbl->settings()));
                 shopTell(&dlg, QStringLiteral("Controller settings"),
                          QStringLiteral("The controller refused a setting"),
                          QStringLiteral("The ones before it were stored; the list shows what the "
                                         "controller has now. See the log for its error."));
+            });
+            // Retried while the controller is still settling after the error.
+            auto ask = std::make_shared<std::function<void(int)>>();
+            const std::weak_ptr<std::function<void(int)>> self = ask;   // no cycle
+            *ask = [this, &dlg, listed, self](int left) {
+                if (!*listed)
+                    return;
+                if (m_grbl->sendCommand(QStringLiteral("$$")))
+                    return;
+                if (left > 0) {
+                    QTimer::singleShot(500, &dlg, [again = self.lock(), left] { (*again)(left - 1); });
+                    return;
+                }
+                disconnect(*listed);
+                dlg.setBusy(false);
+                shopTell(&dlg, QStringLiteral("Controller settings"),
+                         QStringLiteral("The controller refused a setting"),
+                         QStringLiteral("The settings could not be read back, so the list may be "
+                                        "out of date. Close it and open it again."));
+            };
+            (*ask)(10);
         });
         m_grbl->startMacro(lines + QStringList{QStringLiteral("$$")});
     });
@@ -5167,6 +5213,11 @@ void MachinePanel::measureTool(Phase why)
     }
     if (why == Phase::MeasureManual && movingStill(QStringLiteral("Measure")))
         return;
+    // Measured by hand outside a job: the bit may have been swapped, so
+    // Start here goes through the tool change again instead of trusting
+    // the one the last job ended on.
+    if (why == Phase::MeasureManual && !m_grbl->isStreaming())
+        m_toolStretch = -1;
     m_phase = why;
     const MachineStatus st = m_grbl->status();
     // Manual measurements return to where the tool was; after a tool change
@@ -5543,6 +5594,14 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     // same checks from here on.
     const bool fromFile = !m_ncPath.isEmpty();
     const QString ncAtStart = m_ncPath;
+    // Surfacing at the front-left of the machine was laid out in the work
+    // coordinates of its load: a new XY zero since would move the area.
+    if (fromFile && m_ncPath == m_surfFixedPath && m_grbl->status().valid) {
+        const MachineStatus &now = m_grbl->status();
+        if (std::abs((now.mx - now.wx) - m_surfWcoX) > 0.01 || std::abs((now.my - now.wy) - m_surfWcoY) > 0.01)
+            return refuse(QStringLiteral("XY zero moved since the surfacing was loaded."),
+                          QStringLiteral("Load Surfacing again so the area stays at the front-left of the machine."));
+    }
     if (!fromFile && !m_doc)
         return refuse(QStringLiteral("Open a .c2d file first."));
     const QString docAtStart = m_doc ? m_doc->filePath() : QString();
@@ -5937,7 +5996,12 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     m_toolOrdBase = toolOrdBase;
     // A design (not a G-code file, not an air cut) leaves its place behind
     // while it runs, to continue from after a crash.
-    m_runPath = (!fromFile && !air) ? m_doc->filePath() : QString();
+    // Edited and not saved: the file is an older revision than what runs, and
+    // continuing from it after a restart would cut the old geometry.
+    const bool unsaved = !fromFile && m_unsaved && m_unsaved();
+    m_runPath = (!fromFile && !air && !unsaved) ? m_doc->filePath() : QString();
+    if (unsaved && !air)
+        log(QStringLiteral("design not saved: no continue point is kept for this run"));
     m_runHash = m_runPath.isEmpty() ? QString() : fileHash(m_runPath);
     if (m_runHash.isEmpty())
         m_runPath.clear();     // never saved: nothing to open again
