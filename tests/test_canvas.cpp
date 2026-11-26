@@ -14,6 +14,7 @@
 #include "../src/canvas.h"
 #include "../src/c2ddocument.h"
 #include "../src/element.h"
+#include "../src/layers.h"
 #include "../src/model3d.h"
 #include "../src/propertiespanel.h"
 
@@ -1804,6 +1805,23 @@ int main(int argc, char *argv[])
                   && sc.selectedElementIds().first() != b.id, "duplicate adds a copy and selects it");
         sc.undoStack()->undo();
         check(sdoc.elements().size() == 3, "undo takes the copy away");
+        {
+            // Copies of a group form their own group, apart from the originals.
+            for (const QString &id : {b.id, c.id}) {
+                c2d::Element g = *sdoc.elementById(id);
+                g.raw.insert(QStringLiteral("group_id"), QJsonArray{QStringLiteral("G")});
+                sdoc.replaceElement(g);
+            }
+            sc.duplicateElements({b.id, c.id});
+            const QStringList copies = sc.selectedElementIds();
+            check(copies.size() == 2, "two copies");
+            const QString g0 = c2d::groups::outermost(*sdoc.elementById(copies.at(0)));
+            check(!g0.isEmpty() && g0 != QLatin1String("G")
+                      && g0 == c2d::groups::outermost(*sdoc.elementById(copies.at(1))),
+                  "copies share a new group id");
+            check(c2d::groups::expand(sdoc, {copies.at(0)}).size() == 2, "a copy picks only its own group");
+            sc.undoStack()->undo();
+        }
         sc.deleteElements({b.id, c.id});
         check(order() == QStringList({a.id}), "delete takes the listed shapes");
         sc.undoStack()->undo();
