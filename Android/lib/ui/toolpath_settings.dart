@@ -32,7 +32,7 @@ class _ToolpathSettingsState extends State<ToolpathSettings> {
       case TpFieldKind.number:
       case TpFieldKind.integer:
         return StepperField(
-          v is num ? v.toDouble().abs() : 0,
+          v is num ? (f.kind == TpFieldKind.depth ? v.toDouble().abs() : v.toDouble()) : 0,
           (d) => put(f.kind == TpFieldKind.integer ? d.round() : d),
           step: f.kind == TpFieldKind.integer ? 1 : f.step,
           min: f.min,
