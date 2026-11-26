@@ -1628,7 +1628,10 @@ MachinePanel::MachinePanel(QWidget *parent)
         // own summary.
         const int stopCode = m_stopCode;
         m_stopCode = 0;
-        if (!rehearsal) {
+        // Finished and parking: every line is answered, but the machine
+        // still cuts the last of them. The history waits for it to stand
+        // still (a Cancel or Stop before that is what it records).
+        if (!rehearsal && !endJob) {
             recordJobEnd(ok ? QStringLiteral("finished")
                          : m_hist.cancelled ? QStringLiteral("cancelled")
                          : stopCode > 0 ? QStringLiteral("alarm")
@@ -1661,6 +1664,8 @@ MachinePanel::MachinePanel(QWidget *parent)
             m_endRisePending = true;
             whenIdle([this, runSaved] {
                 m_endRisePending = false;
+                recordJobEnd(QStringLiteral("finished"), 0);
+                jobhistory::chime(this);
                 if (runSaved)
                     clearResumePoint();
                 startMoves(endOfJobMoves());
@@ -3478,6 +3483,11 @@ void MachinePanel::resetFlow()
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_rehearsal = false;
+    // A finished job's last moves were still running (its history waits for
+    // Idle): stopped or cancelled in them, that is how it ended.
+    if (m_endRisePending && m_onIdle && m_hist.active)
+        recordJobEnd(m_hist.cancelled ? QStringLiteral("cancelled") : QStringLiteral("stopped"), 0);
+    m_endRisePending = false;
     m_onIdle = nullptr;
     // Taps held back for a fresh report would go out on the first Idle
     // report after the reset: a jog after Stop.
@@ -6229,6 +6239,7 @@ void MachinePanel::updateContinueOffer()
     const QString path = set.value(QStringLiteral("resume/path")).toString();
     const bool show = !path.isEmpty() && m_doc && m_ncPath.isEmpty() && m_doc->filePath() == path
                       && !m_docHash.isEmpty() && set.value(QStringLiteral("resume/hash")).toString() == m_docHash
+                      && !(m_unsaved && m_unsaved())   // edited since: the saved point is for the file
                       && m_homed && m_grbl->isConnected() && !m_grbl->isStreaming() && !isBusy() && !m_held
                       && m_machineState == QLatin1String("Idle");
     if (show)
@@ -6248,6 +6259,14 @@ void MachinePanel::continueWhereStopped()
     f.row = set.value(QStringLiteral("resume/row")).toString();
     if (f.title.isEmpty() || isBusy() || m_grbl->isStreaming() || m_held)
         return;
+    // The point is for the saved design; edits since then (a toolpath before
+    // it changed) would be skipped or cut wrong.
+    if (m_unsaved && m_unsaved()) {
+        log(QStringLiteral("!! continue refused: the design was changed and not saved — "
+                           "save it, or start the job again"));
+        updateContinueOffer();
+        return;
+    }
     runProgram(nullptr, &f);
 }
 

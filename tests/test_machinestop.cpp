@@ -1102,6 +1102,17 @@ int main(int argc, char **argv)
         check(panel.m_continueBtn->isVisible()
                   && panel.m_continueBtn->text().contains(QLatin1String("Continue from small (where it stopped)")),
               "continue: offered on the job card");
+        // Edited since (not saved): the point is for the file, not for what is open.
+        panel.setUnsavedCheck([] { return true; });
+        wait(600);
+        check(!panel.m_continueBtn->isVisible(), "continue: not offered once the design is edited and not saved");
+        panel.continueWhereStopped();
+        wait(300);
+        check(!s->isStreaming() && set.value(QStringLiteral("resume/row")).toString() == QLatin1String("small"),
+              "continue: refused for an unsaved design, the point is kept");
+        panel.setUnsavedCheck([] { return false; });
+        spin(5000, [&] { return panel.m_continueBtn->isVisible(); });
+        check(panel.m_continueBtn->isVisible(), "continue: offered again once saved");
         panel.m_homed = false;
         wait(600);
         check(!panel.m_continueBtn->isVisible(), "continue: not offered unhomed");
@@ -1227,6 +1238,36 @@ int main(int argc, char **argv)
             if (e.startsWith("G53 G0 Z") && e.mid(8).toDouble() < -10 - 1e-9)
                 down = true;
         check(!down, "parkend: no move down from the job's final retract");
+    }
+
+    if (mode == "histtail") {
+        // Every line answered is not the job done: the planner still cuts.
+        // The history says "finished" only once the machine stands still; a
+        // Stop in those last moves is what it records.
+        for (int round = 0; round < 2; ++round) {
+            const bool stop = round == 1;   // the Stop last: it leaves an alarm
+            c2d::jobhistory::clear();
+            panel.m_hist = {};
+            panel.m_hist.active = true;
+            panel.m_hist.job = QStringLiteral("tail");
+            panel.m_hist.start = QDateTime::currentDateTime();
+            panel.m_endOfJobPending = true;
+            grbl.running = true;
+            s->startStream({QStringLiteral("G1X5F500"), QStringLiteral("G0Z30")});
+            spin(2000, [&] { return !s->isStreaming(); });
+            wait(400);
+            check(c2d::jobhistory::read().isEmpty(), "histtail: nothing recorded while the last lines still run");
+            if (stop)
+                panel.m_stopBtn->click();
+            QTimer::singleShot(300, [&] { grbl.running = false; });
+            wait(2000);
+            const QVector<QJsonObject> h = c2d::jobhistory::read();
+            const QString end = h.value(0).value("end").toString();
+            check(h.size() == 1 && end == (stop ? QLatin1String("stopped") : QLatin1String("finished")),
+                  qPrintable(QStringLiteral("histtail: history says %1").arg(end)));
+            spin(3000, [&] { return !panel.isBusy() && !s->isMacroRunning(); });
+            wait(500);
+        }
     }
 
     if (mode == "rehearsetc") {
