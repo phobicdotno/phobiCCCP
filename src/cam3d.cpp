@@ -1216,6 +1216,8 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
         return i >= 0 && j >= 0 && i < nx && j < ny && mask.at(idx(i, j));
     };
     for (bool changed = true; changed;) {
+        if (watch && watch->stop(work - 1, work, QStringLiteral("3D pencil")))
+            return QVector<Op>();
         changed = false;
         for (int step = 0; step < 2; ++step) {
             QVector<int> del;
@@ -1255,6 +1257,16 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
             b += at(i + kDi[k], j + kDj[k]);
         return b;
     };
+    // A straight move stays inside the boundary (sampled every 0.05 mm, as
+    // the other 3D strategies clip): a grid edge or a short hop between two
+    // inside nodes can still cross a narrow excluded strip.
+    auto segInside = [&](const QPointF &a, const QPointF &b) {
+        const int n = qMax(1, int(std::ceil(QLineF(a, b).length() / 0.05)));
+        for (int k = 1; k < n; ++k)
+            if (!boundary.contains(a + (b - a) * (double(k) / n)))
+                return false;
+        return boundary.contains(a) && boundary.contains(b);
+    };
     QVector<QVector<QPoint>> chains;
     auto walk = [&](int i, int j) {
         QVector<QPoint> c{QPoint(i, j)};
@@ -1265,7 +1277,7 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
             double bestScore = -1e9;
             for (int k = 0; k < 8; ++k) {
                 const int ii = i + kDi[k], jj = j + kDj[k];
-                if (!at(ii, jj) || seen.at(idx(ii, jj)))
+                if (!at(ii, jj) || seen.at(idx(ii, jj)) || !segInside(pos(i, j), pos(ii, jj)))
                     continue;
                 const double len = std::hypot(kDi[k], kDj[k]);
                 const double score = (pdi || pdj)
@@ -1285,6 +1297,12 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
             seen[idx(i, j)] = 1;
             c.append(QPoint(i, j));
         }
+        // Round a closed crease the start is already seen: close the loop
+        // (a loose-ended chain's start has no other neighbour).
+        const QPoint d = c.last() - c.first();
+        if (c.size() > 3 && qAbs(d.x()) <= 1 && qAbs(d.y()) <= 1
+            && segInside(pos(c.last().x(), c.last().y()), pos(c.first().x(), c.first().y())))
+            c.append(c.first());
         chains.append(c);
     };
     for (int pass = 0; pass < 2; ++pass)
@@ -1368,6 +1386,8 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
     QVector<char> used(runs.size(), 0);
     int n = 0;
     for (int done = 0; done < runs.size(); ++done) {
+        if (watch && watch->stop(work - 1, work, QStringLiteral("3D pencil")))
+            return QVector<Op>();
         int best = -1;
         bool rev = false;
         double bestD = 1e30;
@@ -1384,7 +1404,7 @@ static QVector<Op> pencilOps(const HeightModel &model, const Cam3dParams &p,
         if (rev)
             std::reverse(run.begin(), run.end());
         const P3 &s = run.first();
-        if (haveCur && bestD <= 1.5 * g) {
+        if (haveCur && bestD <= 1.5 * g && segInside(cur, QPointF(s.x, s.y))) {
             const double mx = (cur.x() + s.x) / 2, my = (cur.y() + s.y) / 2;
             const double mz = zAt(mx, my);
             if (mz > (ops.last().z + s.z) / 2 + 0.005)
