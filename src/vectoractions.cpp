@@ -49,7 +49,8 @@ void refresh(Canvas *c, const QStringList &select)
 // result elements instead (so a pocket on two circles becomes a pocket on
 // their weld). Returns (before, after) pairs for the toolpaths that change.
 QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QString> &removed,
-                                                     const QVector<Element> &added)
+                                                     const QVector<Element> &added,
+                                                     const QHash<QString, QString> &resultOf = {})
 {
     QVector<QPair<Toolpath, Toolpath>> out;
     if (removed.isEmpty())
@@ -58,17 +59,22 @@ QVector<QPair<Toolpath, Toolpath>> retargetToolpaths(Document *d, const QSet<QSt
         const QJsonArray refs = t.json.value("elements").toArray();
         bool hit = false;
         QJsonArray kept;
-        QSet<QString> seen;
+        QSet<QString> seen, wanted;   // wanted: results of this toolpath's own inputs
         for (const QJsonValue &v : refs) {
             const QString id = v.toObject().value("uuid").toString();
-            if (removed.contains(id)) { hit = true; continue; }
+            if (removed.contains(id)) {
+                hit = true;
+                if (resultOf.contains(id))
+                    wanted.insert(resultOf.value(id));
+                continue;
+            }
             kept.append(v);
             seen.insert(id);
         }
         if (!hit)
             continue;
         for (const Element &e : added)
-            if (!seen.contains(e.id))
+            if (!seen.contains(e.id) && (resultOf.isEmpty() || wanted.contains(e.id)))
                 kept.append(QJsonObject{{QStringLiteral("uuid"), e.id}});
         Toolpath after = t;
         after.json.insert(QStringLiteral("elements"), kept);
@@ -83,7 +89,8 @@ class ReplaceCmd : public QUndoCommand
 {
 public:
     ReplaceCmd(Canvas *c, Document *d, const QVector<Element> &inputs,
-               const QVector<Element> &results, bool keepInputs, const QString &text)
+               const QVector<Element> &results, bool keepInputs, const QString &text,
+               const QHash<QString, QString> &resultOf = {})
         : m_c(c), m_d(d), m_results(results)
     {
         setText(text);
@@ -97,7 +104,7 @@ public:
             }
             std::sort(m_removed.begin(), m_removed.end(),
                       [](const auto &a, const auto &b) { return a.first < b.first; });
-            m_tps = retargetToolpaths(d, removed, results);
+            m_tps = retargetToolpaths(d, removed, results, resultOf);
             m_removedIds = removed;
         }
         for (const Element &e : results)
@@ -589,13 +596,15 @@ QVector<Element> VectorActions::orderedSelection() const
 }
 
 void VectorActions::pushReplace(const QVector<Element> &inputs, const QVector<Element> &results,
-                                bool keepInputs, const QString &text)
+                                bool keepInputs, const QString &text,
+                                const QHash<QString, QString> &resultOf)
 {
     QStringList ids;
     for (const Element &e : inputs)
         ids << e.id;
     m_canvas->pushEdit(
-        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text), ids);
+        new ReplaceCmd(m_canvas, m_canvas->document(), inputs, results, keepInputs, text,
+                       resultOf), ids);
 }
 
 // The action's own result, with any warning its edit raised (constraints
@@ -1524,7 +1533,8 @@ void VectorActions::joinVectors(double gap)
         return;
     }
     pushReplace(r.consumed, r.results, false,
-                tr("join %1 vector(s) into %2").arg(r.consumed.size()).arg(r.results.size()));
+                tr("join %1 vector(s) into %2").arg(r.consumed.size()).arg(r.results.size()),
+                r.resultOf);
     reportDone(tr("Joined %1 vector(s) into %2 path(s): %3 joint(s), %4 closed")
                    .arg(r.consumed.size()).arg(r.results.size()).arg(r.joints).arg(r.closed));
 }

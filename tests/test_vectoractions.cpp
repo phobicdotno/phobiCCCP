@@ -1129,6 +1129,28 @@ int main(int argc, char *argv[])
         check(undo->index() == at, "join: too small a gap changes nothing");
     }
 
+    // --- join: a toolpath gets only the result its own pieces went into ---------
+    {
+        Document jd;
+        const Element a = Element::makePath({{0, 0}, {10, 0}}, false, layer);
+        const Element b = Element::makePath({{10, 0}, {10, 10}}, false, layer);
+        const Element c = Element::makePath({{50, 0}, {60, 0}}, false, layer);
+        const Element dd = Element::makePath({{60, 0}, {60, 10}}, false, layer);
+        for (const Element &e : {a, b, c, dd})
+            jd.addElement(e);
+        Toolpath tp;
+        tp.uuid = QStringLiteral("{tp-join}");
+        tp.type = QStringLiteral("profile");
+        tp.json.insert("elements", QJsonArray{QJsonObject{{"uuid", a.id}}});
+        jd.addToolpath(tp);
+        canvas->setDocument(&jd);
+        canvas->selectIds({a.id, b.id, c.id, dd.id});
+        va.joinVectors(0.1);
+        check(jd.elements().size() == 2, "join: two pairs become two paths");
+        check(refs(jd, tp.uuid).size() == 1, "join: the toolpath gets only its own joined path");
+        canvas->setDocument(&doc);
+    }
+
     // --- text on path: one undo step, the text becomes vectors, the path stays ---
     {
         const Element t = Element::makeText(QStringLiteral("AB"), {200, 200}, 8, QStringLiteral("Helvetica"), layer);

@@ -1,5 +1,6 @@
 #pragma once
 #include "element.h"
+#include <QHash>
 #include <QJsonObject>
 #include <QPainterPath>
 #include <QPolygonF>
@@ -172,6 +173,7 @@ struct JoinResult {
     QVector<Element> results;
     int joints = 0;   // piece ends welded together
     int closed = 0;   // chains (or single vectors) closed
+    QHash<QString, QString> resultOf;   // consumed id -> id of the result it went into
 };
 JoinResult joinElements(const QVector<Element> &els, double gap);
 

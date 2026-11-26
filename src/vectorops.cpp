@@ -1160,6 +1160,8 @@ JoinResult joinElements(const QVector<Element> &els, double gap)
         const Element &first = els.at(members.first());
         out.results.append(members.size() == 1 ? Element::withPathModel(first, model)
                                                : Element::pieceOf(first, model));
+        for (int m : members)
+            out.resultOf.insert(els.at(m).id, out.results.last().id);
     }
     return out;
 }
