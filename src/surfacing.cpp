@@ -41,9 +41,14 @@ SurfacingPlan planSurfacing(const SurfacingParams &p)
     s.minX = xa; s.maxX = xb; s.minY = ya; s.maxY = yb;
     // A huge area with a tiny bit and stepdown would make a plan too big to
     // hold or send; refuse it before building it.
-    const double nLines = std::ceil(((p.alongX ? yb - ya : xb - xa)) / step) + 1;
+    // Counted as built below: the lines as stations() makes them; fixed:
+    // comment, rapid, spindle on and off; per pass: rapid, plunge, the
+    // raster's 2 * lines - 1 feeds, retract; the finishing round adds seven.
+    const double span = p.alongX ? yb - ya : xb - xa;
+    const double nLines = qMax(1.0, std::ceil(span / step - 1e-9)) + 1;
     const double nPasses = std::ceil(p.depth / p.stepdown - 1e-9);
-    if (nLines * qMax(1.0, nPasses) * 2 > kSurfacingMaxOps) {
+    const double nOps = 4 + (2 * nLines + 2) * qMax(1.0, nPasses) + (p.finishClimb ? 7 : 0);
+    if (nOps > kSurfacingMaxOps) {
         s.error = QStringLiteral("Too many moves for this area, bit, stepover and depth per pass: "
                                  "use a bigger stepover or depth per pass, or a smaller area.");
         return s;

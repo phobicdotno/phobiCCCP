@@ -93,6 +93,23 @@ int main()
         check(c.ok() && !c.ops.isEmpty() && c.ops.last().kind == Op::Arc && near(c.ops.last().x, 0)
                   && near(c.ops.last().ci, 5) && c.ops.last().cw,
               "nc: G2 with I/J only is a full-circle arc op");
+        check(c.lines.last() == QLatin1String("G2 I5 J0 F800 X0.0000 Y0.0000"),
+              "nc: the circle is sent with its end point (GRBL refuses an arc without X/Y/Z)");
+    }
+
+    // The size guard counts every move the plan makes: 1000 lines by 1000
+    // passes is 2,002,004 moves, over the limit (2,000,000 counted lines alone).
+    {
+        SurfacingParams big = p;
+        big.toolDia = 1.0;
+        big.stepoverPct = 50;
+        big.alongX = false;
+        big.width = 498.5;
+        big.depth = 10.0;
+        big.stepdown = 0.01;
+        big.finishClimb = false;
+        const SurfacingPlan b = planSurfacing(big);
+        check(!b.ok() && b.ops.isEmpty(), "surfacing: a plan just over the move limit is refused");
     }
 
     // Two passes of 0.5 for 1 mm, lines along Y, climb finish round.
