@@ -1735,7 +1735,8 @@ int main(int argc, char **argv)
         wait(2000);
         for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
         const int g10 = grbl.indexOf("G10 L20");
-        const int g21 = grbl.indexOf("G21");
+        // The first G21 is BitZero's own (millimetres before probing).
+        const int g21 = grbl.indexOf("G21", grbl.indexOf("G21") + 1);
         std::printf("r14bzstart: G10 at %d, job's first line at %d\n", g10, g21);
         check(!(started && (g10 < 0 || g10 > g21)), "r14bzstart: no job starts before BitZero's zero is set");
         s->stopStream();
@@ -1897,6 +1898,7 @@ int main(int argc, char **argv)
         panel.m_bzPanel->m_holeDia->setValue(20.0);
         panel.m_bzPanel->m_tipDia->setValue(6.35);
         grbl.r = 6.35 / 2.0;
+        panel.m_rightStack->setCurrentWidget(panel.m_bzPanel);
         wait(600);
         grbl.events.clear();
         panel.bitZeroBegin();
@@ -1906,11 +1908,35 @@ int main(int argc, char **argv)
                     grbl.hcx, grbl.hcy, qPrintable(panel.m_bzPanel->m_centreResult->text()));
         check(std::abs(panel.m_bzCx - grbl.hcx) < 0.01 && std::abs(panel.m_bzCy - grbl.hcy) < 0.01,
               "holecentre: the centre found is the hole's");
-        check(grbl.count("G10 L20 P1 X") == 1 && grbl.count(" Z") >= 0, "holecentre: X0 Y0 set");
+        const int hg10 = grbl.indexOf("G10 L20 P1");
+        const QByteArray hset = hg10 >= 0 ? grbl.events.at(hg10) : QByteArray();
+        std::printf("holecentre: %s\n", hset.constData());
+        check(grbl.count("G10 L20 P1") == 1 && hset.contains(" X") && hset.contains(" Y")
+                  && !hset.contains(" Z"),
+              "holecentre: X0 Y0 set, Z left alone");
+        const int hmm = grbl.indexOf("G21"), hprobe = grbl.indexOf("G38");
+        check(hmm >= 0 && hmm < hprobe, "holecentre: millimetres set before probing");
+        check(panel.m_rightStack->currentWidget() == panel.m_bzPanel,
+              "holecentre: stays on the probe page so the diameter shows");
         check(panel.m_bzPanel->m_centreResult->text().contains("diameter 20.000"),
               "holecentre: diameter is the hole's, pin added back");
         check(std::abs(grbl.mx - grbl.hcx) < 0.01 && std::abs(grbl.my - grbl.hcy) < 0.01,
               "holecentre: the pin ends over the centre");
+    }
+
+    if (mode == "holetight") {
+        // A 3 mm pin in a 4 mm hole has 1 mm to move: the 2 mm back-off
+        // would rapid it into the far wall. Refused before any motion.
+        panel.m_bzPanel->m_modes->button(c2d::BitZeroPanel::Hole)->click();
+        panel.m_bzPanel->m_holeDia->setValue(4.0);
+        panel.m_bzPanel->m_tipDia->setValue(3.0);
+        panel.m_bzPanel->m_retract->setValue(2.0);
+        wait(600);
+        grbl.events.clear();
+        panel.bitZeroBegin();
+        wait(1500);
+        check(grbl.indexOf("G38") < 0 && grbl.indexOf("G0") < 0, "holetight: nothing moves");
+        check(panel.m_phase == c2d::MachinePanel::Phase::Idle, "holetight: no cycle started");
     }
 
     if (mode == "bosscentre") {
@@ -1940,7 +1966,11 @@ int main(int argc, char **argv)
         check(panel.m_bzPanel->m_centreResult->text().contains("diameter 30.000"),
               "bosscentre: diameter is the boss's, pin taken off");
         check(grbl.minZ >= startZ - 8.0 - 1e-6, "bosscentre: never lower than the boss height");
-        check(grbl.count("G10 L20 P1 X") == 1, "bosscentre: X0 Y0 set");
+        const int bg10 = grbl.indexOf("G10 L20 P1");
+        const QByteArray bset = bg10 >= 0 ? grbl.events.at(bg10) : QByteArray();
+        check(grbl.count("G10 L20 P1") == 1 && bset.contains(" X") && bset.contains(" Y")
+                  && !bset.contains(" Z"),
+              "bosscentre: X0 Y0 set, Z left alone");
     }
     if (mode == "plateany") {
         // Any touch plate: Z0 the plate thickness under the contact.

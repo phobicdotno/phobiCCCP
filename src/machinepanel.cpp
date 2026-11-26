@@ -2198,6 +2198,16 @@ void MachinePanel::bitZeroBegin()
     m_bz = m_bzPanel->config();
     m_bzMode = m_bzPanel->mode();
     const bool round = m_bzMode == BitZeroPanel::Hole || m_bzMode == BitZeroPanel::Boss;
+    // In a hole the pin backs off from one wall with a rapid: it needs that
+    // much room (and a little) before the far wall.
+    if (m_bzMode == BitZeroPanel::Hole
+        && m_bz.holeDiameter - m_bz.toolDiameter < m_bz.retract + 1.0) {
+        log(QStringLiteral("!! Hole centre: a %1 mm pin in a %2 mm hole has no room for the "
+                           "%3 mm back-off. Use a thinner pin or a shorter back-off")
+                .arg(m_bz.toolDiameter, 0, 'f', 2).arg(m_bz.holeDiameter, 0, 'f', 2)
+                .arg(m_bz.retract, 0, 'f', 1));
+        return;
+    }
     m_bzWantX = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::XOnly || round;
     m_bzWantY = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::YOnly || round;
     m_bzWantZ = m_bzMode == BitZeroPanel::Corner || m_bzMode == BitZeroPanel::ZOnly
@@ -2244,7 +2254,9 @@ void MachinePanel::bitZeroStage(Phase stage, QStringList prefix)
     m_bzStageResets = m_resets;
     m_hits.clear();
     m_phase = stage;
-    QStringList lines = {QStringLiteral("G90")};
+    // Millimetres: a G20 typed on the console must not turn the probe
+    // distances into inches.
+    QStringList lines = {QStringLiteral("G21"), QStringLiteral("G90")};
     lines += prefix;
     if (m_bzMode == BitZeroPanel::Hole || m_bzMode == BitZeroPanel::Boss
         || m_bzMode == BitZeroPanel::Plate) {
@@ -2775,8 +2787,9 @@ void MachinePanel::bitZeroApply()
         if (m_bzPanel)
             m_bzPanel->setBusy(false);
         // Done: back to the job card. A failed cycle stays on the probe
-        // page so it can be run again.
-        if (m_rightStack)
+        // page so it can be run again; a hole or boss stays so its measured
+        // diameter can be read.
+        if (m_rightStack && m_bzMode != BitZeroPanel::Hole && m_bzMode != BitZeroPanel::Boss)
             m_rightStack->setCurrentWidget(m_jobPage);
     });
 }
