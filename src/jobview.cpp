@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QPainter>
 #include <QProgressBar>
+#include <QPushButton>
 #include <QSet>
 #include <QStyledItemDelegate>
 #include <QTimer>
@@ -685,6 +686,40 @@ JobView::JobView(QWidget *parent) : QWidget(parent)
     v->addWidget(m_current);
     v->addWidget(m_passBar);
     v->addWidget(m_tree, 1);
+    // Start the job again from a chosen toolpath or pass (a broken bit, a
+    // stall, a Stop): tap the row, then this.
+    m_startHere = new QPushButton(this);
+    m_startHere->setMinimumHeight(52);
+    m_startHere->setCursor(Qt::PointingHandCursor);
+    m_startHere->setStyleSheet(QStringLiteral(
+        "QPushButton { background: #f2a536; color: #16181d; border: none; border-radius: 8px;"
+        " font-size: 16px; font-weight: 700; padding: 6px 14px; }"
+        "QPushButton:pressed { background: #c8861f; }"));
+    m_startHere->hide();
+    v->addWidget(m_startHere);
+    connect(m_startHere, &QPushButton::clicked, this, [this] {
+        if (m_startAllowed && m_chosenSec >= 0)
+            emit startHereRequested(m_chosenSec, m_chosenPass);
+    });
+    connect(m_tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem *item, int) {
+        int sec = -1, pass = -1;
+        for (int i = 0; i < m_sectionItems.size() && sec < 0; ++i) {
+            if (static_cast<QTreeWidgetItem *>(m_sectionItems.at(i)) == item)
+                sec = i;
+            else if (i < m_passItems.size())
+                for (int k = 0; k < m_passItems.at(i).size(); ++k)
+                    if (m_passItems.at(i).at(k) == item) {
+                        sec = i;
+                        pass = k;
+                    }
+        }
+        // A tool change is not a place to start: the toolpath after it is.
+        if (sec < 0 || m_plan.sections.at(sec).kind != JobSection::Toolpath)
+            return;
+        m_chosenSec = sec;
+        m_chosenPass = pass;
+        updateStartHere();
+    });
     m_tick = new QTimer(this);
     m_tick->setInterval(1000);
     connect(m_tick, &QTimer::timeout, this, [this] { refresh(); });
@@ -713,6 +748,8 @@ void JobView::clear()
     m_rowShown.clear();
     m_toolpathsUpTo.clear();
     m_passItems.clear();
+    m_chosenSec = m_chosenPass = -1;
+    updateStartHere();
     m_tree->clear();
     m_title->setText(QStringLiteral("No job running"));
     m_summary->clear();
@@ -721,6 +758,34 @@ void JobView::clear()
     m_passBar->setRange(0, 1000);
     m_passBar->setValue(0);
     m_tick->stop();
+}
+
+void JobView::setStartHereAllowed(bool on)
+{
+    if (on == m_startAllowed)
+        return;
+    m_startAllowed = on;
+    updateStartHere();
+}
+
+QString JobView::rowName(int section, int pass) const
+{
+    if (section < 0 || section >= m_plan.sections.size())
+        return {};
+    const JobSection &s = m_plan.sections.at(section);
+    if (pass < 0 || pass >= s.passes.size() || s.passes.size() == 1)
+        return s.title();
+    return s.title() + QStringLiteral("  \u00b7  ") + s.passes.at(pass).what;
+}
+
+void JobView::updateStartHere()
+{
+    if (!m_startHere)
+        return;
+    const bool show = m_startAllowed && m_chosenSec >= 0 && m_chosenSec < m_plan.sections.size();
+    if (show)
+        m_startHere->setText(QStringLiteral("\u25b6 Start here: %1").arg(rowName(m_chosenSec, m_chosenPass)));
+    m_startHere->setVisible(show);
 }
 
 void JobView::setPlan(const JobPlan &plan, const QString &jobName)

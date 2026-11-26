@@ -10,6 +10,7 @@
 
 class QLabel;
 class QProgressBar;
+class QPushButton;
 class QTimer;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -122,9 +123,20 @@ public:
         return (m_stopped || m_running < 0 || m_running >= m_plan.sections.size())
                    ? nullptr : &m_plan.sections.at(m_running);
     }
+    const JobPlan &plan() const { return m_plan; }
+    // "Start here": a tapped toolpath or pass row can start the job again
+    // from its first line. The button shows only while `on` (idle, homed,
+    // nothing streaming) and a row is chosen.
+    void setStartHereAllowed(bool on);
+    // The row's name as the list shows it: "Pocket", "Pocket · to Z -3.0 mm".
+    QString rowName(int section, int pass) const;
+
+signals:
+    void startHereRequested(int section, int pass);
 
 private:
     void refresh();
+    void updateStartHere();
     double leftFrom(int q) const;                  // seconds from queue line q to the end
     double spanSec(int a, int b) const;            // estimate for queue lines [a, b)
     static QString clock(double sec);
@@ -170,6 +182,9 @@ private:
     QVector<QString> m_previewPng;                     // the cut preview alone, base64 PNG, for the pad
     QVector<QVector<QTreeWidgetItem *>> m_passItems;
     QTimer *m_tick = nullptr;
+    QPushButton *m_startHere = nullptr;
+    bool m_startAllowed = false;
+    int m_chosenSec = -1, m_chosenPass = -1;
 };
 
 } // namespace c2d

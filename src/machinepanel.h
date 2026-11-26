@@ -155,7 +155,18 @@ private:
     void forgetReference();
     // `remoteWhy` set: started from a pad, nothing is asked here and a
     // refusal is written there instead of shown.
-    bool runProgram(QString *remoteWhy = nullptr);
+    // `from` set: start again from that toolpath or pass of the program
+    // (a row of the last job's list, found again in the new plan by its
+    // name, pass count and place counted from the end).
+    struct StartFrom {
+        QString title;       // the section's title()
+        int passes = 0;
+        int rank = 0;        // sections with that title and pass count after it
+        int pass = -1;       // -1: the section's first line
+        QString row;         // as the list names it
+    };
+    bool runProgram(QString *remoteWhy = nullptr, const StartFrom *from = nullptr);
+    void startHere(int section, int pass);
     void log(const QString &line);
 
     Document *m_doc = nullptr;
@@ -295,6 +306,14 @@ private:
     // index of the one parked at: names the bit when two share a number.
     QVector<Op> m_jobTools;
     int m_pendingOrdinal = -1;
+    // Which bit is in the spindle, as the stretch of the program it cuts:
+    // n = after the program's n-th tool marker (counted over the whole
+    // program); -1 unknown. Good only for the design it was set with.
+    int m_toolStretch = -1;
+    quint64 m_toolStretchSeq = 0;
+    QString m_toolStretchNc;
+    int m_pendingStretch = -1;
+    int m_toolOrdBase = 0;               // markers of the whole program before the streamed one's first
     // BitSetter off: the operator closed the prompt to jog and zero Z by hand
     // and will press Continue; m_zeroedForTool once Z was zeroed meanwhile.
     bool m_manualZero = false;

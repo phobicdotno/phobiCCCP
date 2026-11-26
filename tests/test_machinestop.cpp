@@ -907,6 +907,74 @@ int main(int argc, char **argv)
         check(grbl.indexOf("M5", grbl.indexOf("G1X6")) > 0, "tc: spindle off at end");
     }
 
+    if (mode == "starthere") {
+        // Start again from the second toolpath ("small", its own bit): the
+        // bit in is not known, so the tool change comes first, then the way
+        // in, then that toolpath and nothing of the first. Started from it
+        // again, the bit is known to be in: no tool change.
+        panel.m_bsEnabled->setChecked(true);
+        panel.m_haveRef = true;
+        panel.m_refZ = -50;
+        grbl.probeZ = -48;
+        panel.m_bsSafeZ->setValue(-30.0);
+        grbl.wcoX = -200;
+        grbl.wcoY = -200;
+        grbl.wcoZ = -60;
+        wait(800);
+        const c2d::GcodeResult g = c2d::exportGcode(doc);
+        const QStringList all = g.gcode.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        const c2d::JobPlan plan = c2d::planJob(all, g.ops, &doc);
+        int smallPasses = -1;
+        for (const c2d::JobSection &sec : plan.sections)
+            if (sec.kind == c2d::JobSection::Toolpath && sec.title() == QLatin1String("small"))
+                smallPasses = int(sec.passes.size());
+        check(smallPasses >= 1, "starthere: the plan has the second toolpath");
+        c2d::MachinePanel::StartFrom f;
+        f.title = QStringLiteral("small");
+        f.passes = smallPasses;
+        f.row = QStringLiteral("small");
+        int asked = 0, tools = 0;
+        answer = [&](const Seen &v) {
+            if (v.headline.startsWith(QLatin1String("Start from small"))) {
+                ++asked;
+                return QStringLiteral("▶ Start here");
+            }
+            if (v.headline.startsWith(QLatin1String("Insert tool")))
+                ++tools;
+            return QStringLiteral("Measure and continue");
+        };
+        grbl.events.clear();
+        check(panel.runProgram(nullptr, &f), "starthere: started");
+        spin(20000, [&] { return !s->isStreaming(); });
+        wait(1500);
+        for (const QByteArray &e : grbl.events) std::printf("  sent: %s\n", e.constData());
+        check(asked == 1 && tools == 1, "starthere: asked once, then the tool change prompt");
+        // The toolpath's first line is before its own spindle start (the post
+        // starts it after the tool change): over the start at the top, then
+        // the program's spindle start and wait.
+        const int m5 = grbl.indexOf("M5"), tlo = grbl.indexOf("G43.1"), m3 = grbl.indexOf("M03S10000");
+        const int across = grbl.indexOf("G90 G0 X46.825 Y19.525");
+        check(across > tlo && across < m3, "starthere: across at the top after the change, before the spindle");
+        check(m5 >= 0 && tlo > m5 && m3 > tlo && grbl.indexOf("G4P3.00", m3) == m3 + 1,
+              "starthere: spindle off, the change measured, then spindle on and its wait");
+        // Each pocket goes down once (one pass to 1 mm), and only the
+        // second, the smaller bit, steps over to X42.063.
+        const int first = grbl.indexOf("G1Z-1.000F300.0");
+        check(first > m3 && grbl.count("G1Z-1.000F300.0") == 1,
+              "starthere: the second toolpath after the way in, nothing of the first");
+        check(grbl.indexOf("X42.063") > first && grbl.indexOf("Y13.175") > first,
+              "starthere: the second toolpath to its end");
+
+        // Again from there: the bit for it is in now.
+        asked = tools = 0;
+        grbl.events.clear();
+        check(panel.runProgram(nullptr, &f), "starthere: started again");
+        spin(20000, [&] { return !s->isStreaming(); });
+        wait(1500);
+        check(asked == 1 && tools == 0 && grbl.indexOf("G43.1") < 0 && grbl.indexOf("M03S10000") >= 0,
+              "starthere: the bit in is the one wanted, no tool change");
+    }
+
     if (mode == "tcspin") {
         // 2026-10-26: after the BitSetter measured the bit, the resume rose,
         // went back to where the program had paused (the Park spot beside the

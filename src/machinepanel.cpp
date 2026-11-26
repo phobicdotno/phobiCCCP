@@ -677,6 +677,7 @@ MachinePanel::MachinePanel(QWidget *parent)
     auto *jvv = static_cast<QVBoxLayout *>(jobViewCard->layout());
     jvv->addWidget(caption(QStringLiteral("Job progress"), jobViewCard));
     m_jobView = new JobView(jobViewCard);
+    connect(m_jobView, &JobView::startHereRequested, this, [this](int sec, int pass) { startHere(sec, pass); });
     jvv->addWidget(m_jobView, 1);
     m_midStack->addWidget(jobViewCard);
     m_midStack->setCurrentIndex(0);
@@ -2441,6 +2442,9 @@ void MachinePanel::continueAfterToolChange()
     m_awaitToolZero = false;
     m_toolPromptAnswered = false;
     m_onIdle = nullptr;                  // a prompt still waiting for Idle is void now
+    m_toolStretch = m_pendingStretch;
+    m_toolStretchSeq = m_docSeq;
+    m_toolStretchNc = m_ncPath;
     QStringList first = m_homed ? riseToTop() : QStringList{};
     // After the measurement the spindle stands over the BitSetter, and the
     // program's first line is a retract to ITS safe height in work Z: with
@@ -3933,8 +3937,11 @@ void MachinePanel::onStatus(const MachineStatus &st)
     if (st.ovFeed != 100)
         extra += QStringLiteral("   FEED %1 %").arg(st.ovFeed);
     m_extra->setText(extra);
-    if (m_jobView)
+    if (m_jobView) {
         m_jobView->setOverride(st.ovFeed);
+        m_jobView->setStartHereAllowed(m_homed && m_grbl->isConnected() && !m_grbl->isStreaming()
+                                       && !isBusy() && !m_held && m_machineState == QLatin1String("Idle"));
+    }
     if ((st.flood || st.mist) != m_coolantOn)
         showCoolant(st.flood || st.mist);
     if (m_ovLabel) {
@@ -4969,6 +4976,9 @@ void MachinePanel::onToolChange(int tool, int ordinal)
 {
     m_pendingTool = tool;
     m_pendingOrdinal = ordinal;
+    // The bit comes out now: which one is in is known again on Continue.
+    m_pendingStretch = m_rehearsal ? -1 : m_toolOrdBase + ordinal + 1;
+    m_toolStretch = -1;
     m_toolMeasured = false;
     m_manualZero = false;
     m_zeroedForTool = false;
@@ -5264,6 +5274,7 @@ void MachinePanel::rehearseToolChange()
     setHeld(false);
     m_rehearsal = true;
     m_jobTools.clear();
+    m_toolOrdBase = 0;
     // Not the last job's: its list followed the rehearsal's progress and
     // came back as a running job at the rehearsal's tool change.
     if (m_jobView)
@@ -5296,7 +5307,7 @@ void MachinePanel::finishRehearsal(bool ok, bool measured)
 
 // ---- program -------------------------------------------------------------------
 
-bool MachinePanel::runProgram(QString *remoteWhy)
+bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
 {
     const bool remote = remoteWhy != nullptr;
     // Here a refusal is a message on screen; from a pad it goes back there.
@@ -5595,7 +5606,9 @@ bool MachinePanel::runProgram(QString *remoteWhy)
     }
     ask.okText = QStringLiteral("▶ Start");
     ask.defaultOk = false;
-    if (remote) {
+    if (from) {
+        // Asked below, once the step is found in the program.
+    } else if (remote) {
         // Asked on the pad instead; what it would have said goes in the log.
         log(QStringLiteral("started from pad: %1 — %2").arg(ask.headline, ask.note));
     } else if (!shopAsk(this, ask)) {
@@ -5628,6 +5641,64 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         log(QStringLiteral("dust/coolant: %1 after the spindle starts, M9 before it stops")
                 .arg(coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8")));
     }
+    // Start here: the program from the chosen step, behind the way in to it.
+    QVector<Op> jobTools = toolChanges(ops);
+    int toolOrdBase = 0;
+    if (from) {
+        const JobPlan full = planJob(lines, ops, fromFile ? nullptr : m_doc,
+                                     qMin(m_grbl->setting(110, 5000), m_grbl->setting(111, 5000)));
+        int found = -1;
+        for (int i = full.sections.size() - 1, rank = 0; i >= 0 && found < 0; --i) {
+            const JobSection &sec = full.sections.at(i);
+            if (sec.kind != JobSection::Toolpath || sec.title() != from->title
+                || sec.passes.size() != from->passes)
+                continue;
+            if (rank++ == from->rank)
+                found = i;
+        }
+        if (found < 0 || from->pass >= full.sections.at(found).passes.size())
+            return refuse(QStringLiteral("%1 is not in the program any more.").arg(from->row),
+                          QStringLiteral("The design changed since that job. Run it from the start."));
+        const JobSection &sec = full.sections.at(found);
+        const int fromQ = from->pass >= 0 ? sec.passes.at(from->pass).qStart : sec.qStart;
+        int lastTool = -1;
+        const int k = GrblStreamer::toolMarkersBefore(lines, fromQ, &lastTool);
+        // The bit for that step is in when the last tool change of this
+        // design ended on it; anything else (another bit, unknown after a
+        // restart) goes through the tool change as a job does.
+        const bool bitIn = m_toolStretch == k && m_toolStretchSeq == m_docSeq && m_toolStretchNc == m_ncPath;
+        const bool change = k > 0 && !bitIn;
+        if (change && m_bsEnabled->isChecked() && !m_haveRef)
+            return refuse(QStringLiteral("There is no BitSetter reference yet."),
+                          QStringLiteral("Zero Z with the BitSetter on (or press Measure tool "
+                                         "with the bit Z was zeroed with), then start again."));
+        const QString coolant = coolantWithJob() ? (coolantMist() ? QStringLiteral("M7") : QStringLiteral("M8"))
+                                                 : QString();
+        QString why;
+        const QStringList cut = GrblStreamer::startFromLines(lines, fromQ, riseToTop(), change ? lastTool : -1,
+                                                             coolant, &why);
+        if (cut.isEmpty())
+            return refuse(QStringLiteral("Cannot start from %1: %2.").arg(from->row, why));
+        lines = cut;
+        toolOrdBase = change ? k - 1 : k;
+        jobTools = jobTools.mid(qMin(toolOrdBase, int(jobTools.size())));
+        if (!remote) {
+            ask.headline = QStringLiteral("Start from %1?").arg(from->row);
+            QString body = QStringLiteral("The machine will go up, move over the start, spin up and go down.");
+            if (change)
+                body += QStringLiteral("\n\nFirst a tool change: it parks and asks for T%1%2.")
+                            .arg(lastTool)
+                            .arg(m_bsEnabled->isChecked() ? QStringLiteral(", then measures it on the BitSetter")
+                                                          : QString());
+            body += QStringLiteral("\n\nEverything before this step is left out.");
+            ask.body = body;
+            ask.okText = QStringLiteral("\u25b6 Start here");
+            if (!shopAsk(this, ask))
+                return false;
+        }
+        log(QStringLiteral("== start from %1%2 ==").arg(from->row,
+                change ? QStringLiteral(" (tool change to T%1 first)").arg(lastTool) : QString()));
+    }
     // Preparing and asking ran the event loop: a pad may have started a job
     // or opened another design meanwhile.
     if (isBusy() || m_held || m_grbl->isParkedForTool() || !m_grbl->isConnected())
@@ -5653,7 +5724,8 @@ bool MachinePanel::runProgram(QString *remoteWhy)
         return refuse(QStringLiteral("Another design was opened meanwhile; run it again."));
     m_endOfJobPending = true;
     m_progress->setFormat(QStringLiteral("%p%"));
-    m_jobTools = toolChanges(ops);
+    m_jobTools = jobTools;
+    m_toolOrdBase = toolOrdBase;
     m_jobFromFile = fromFile;
     {
         QSettings ps;
@@ -5664,6 +5736,8 @@ bool MachinePanel::runProgram(QString *remoteWhy)
                                                    : QFileInfo(m_doc->filePath()).fileName();
         if (air)
             m_hist.job += QStringLiteral(" (air cut)");
+        if (from)
+            m_hist.job += QStringLiteral(" (from %1)").arg(from->row);
         m_hist.machine = machineprofiles::nameOf(ps, machineprofiles::activeId(ps));
         m_hist.start = QDateTime::currentDateTime();
         m_hist.estSec = computeStats(ops).timeSec;
@@ -5674,8 +5748,9 @@ bool MachinePanel::runProgram(QString *remoteWhy)
                                 : m_doc->filePath().isEmpty()
                                     ? QStringLiteral("Untitled job")
                                     : QFileInfo(m_doc->filePath()).completeBaseName();
+        const QString shown = air ? jobName + QStringLiteral("  (air cut)") : jobName;
         m_jobView->setPlan(planJob(lines, ops, fromFile ? nullptr : m_doc, qMin(m_grbl->setting(110, 5000), m_grbl->setting(111, 5000))),
-                           air ? jobName + QStringLiteral("  (air cut)") : jobName);
+                           from ? shown + QStringLiteral("  (from %1)").arg(from->row) : shown);
     }
     setJobRunning(true);
     // GRBL keeps overrides until M2 or a reset, and the job's M2 is stripped:
@@ -5712,6 +5787,30 @@ void MachinePanel::recordJobEnd(const QString &how, int code)
     o.insert(QStringLiteral("toolChanges"), m_hist.toolChanges);
     if (!jobhistory::append(o))
         log(QStringLiteral("!! could not write the job history (%1)").arg(jobhistory::filePath()));
+}
+
+// A row of the last job's list was chosen: start the job again from there.
+void MachinePanel::startHere(int section, int pass)
+{
+    if (!m_jobView || section < 0 || section >= m_jobView->plan().sections.size())
+        return;
+    const JobPlan &plan = m_jobView->plan();
+    const JobSection &sec = plan.sections.at(section);
+    StartFrom f;
+    f.title = sec.title();
+    f.passes = int(sec.passes.size());
+    f.pass = f.passes > 1 ? pass : -1;
+    for (int i = section + 1; i < plan.sections.size(); ++i) {
+        const JobSection &o = plan.sections.at(i);
+        if (o.kind == JobSection::Toolpath && o.title() == f.title && o.passes.size() == f.passes)
+            ++f.rank;
+    }
+    f.row = m_jobView->rowName(section, f.pass);
+    if (isBusy() || m_grbl->isStreaming() || m_held) {
+        log(QStringLiteral("!! busy — cannot start from a step now"));
+        return;
+    }
+    runProgram(nullptr, &f);
 }
 
 bool MachinePanel::startFromRemote(QString *why)
