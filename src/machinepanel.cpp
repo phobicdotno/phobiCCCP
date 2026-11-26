@@ -1480,6 +1480,9 @@ MachinePanel::MachinePanel(QWidget *parent)
         if (l.startsWith(QLatin1String("Grbl "))) {
             // Nothing from before the reset moves the machine after it.
             ++m_resets;
+            if (m_endRisePending && m_onIdle && m_hist.active)
+                recordJobEnd(m_hist.cancelled ? QStringLiteral("cancelled") : QStringLiteral("stopped"), 0);
+            m_endRisePending = false;
             m_onIdle = nullptr;
             m_deferredJogs.clear();
             stopHoldJog();
@@ -1512,6 +1515,11 @@ MachinePanel::MachinePanel(QWidget *parent)
                                    "Initialize to home it again.").arg(l.trimmed()));
             m_homingStarted = false;
             forgetJogPlan();
+            // A finished job's last moves were still running (its history
+            // waits for Idle to say "finished"): the alarm is how it ended.
+            if (m_endRisePending && m_onIdle && m_hist.active)
+                recordJobEnd(QStringLiteral("alarm"), n);
+            m_endRisePending = false;
             m_onIdle = nullptr;   // a step waiting for Idle (BitZero's last) is void now
         }
         // Hard limits: the end stops stop all motion in the controller
@@ -5616,6 +5624,7 @@ void MachinePanel::rehearseToolChange()
     // came back as a running job at the rehearsal's tool change.
     if (m_jobView)
         m_jobView->clear();
+    endWarmup(QStringLiteral("warm-up ended: a tool-change rehearsal is running"));
     m_grbl->startStream(GrblStreamer::toolChangeRehearsalLines(bitSetter(), 1));
 }
 
@@ -6131,6 +6140,9 @@ bool MachinePanel::runProgram(QString *remoteWhy, const StartFrom *from)
     m_grbl->sendRealtime(char(0x90));   // feed
     m_grbl->sendRealtime(char(0x95));   // rapids
     m_grbl->sendRealtime(char(0x99));   // spindle
+    // The job takes the spindle: a warm-up stage still to come would start
+    // it again (or stop it) under the job, or after it.
+    endWarmup(QStringLiteral("warm-up ended: a job is running"));
     m_grbl->startStream(lines);
     return true;
 }
