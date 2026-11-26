@@ -778,6 +778,46 @@ static void testDeletedShapesToolpath(const QString &dir, QJsonObject d)
     check(pockets == 1, "a toolpath without shapes is not added again on every save");
 }
 
+// A raster pocket set on the computer goes to the pad and back as raster,
+// at its angle, and is not reported as a lost setting.
+static void testRasterPocketRoundTrip(const QString &dir, QJsonObject d)
+{
+    QJsonArray tps = d.value("toolpaths").toArray();
+    QJsonObject pocket = tps.at(0).toObject();
+    pocket.insert("strategy", "raster");
+    pocket.insert("rasterAngle", 30.0);
+    tps.replace(0, pocket);
+    d.insert("toolpaths", tps);
+    const QString path = QDir(dir).filePath("raster.c2d");
+    QString err;
+    check(padlink::buildDocument(d, path, nullptr, &err), "a design with a raster pocket builds");
+    Document doc;
+    doc.load(path);
+    const QJsonObject j = doc.toolpaths().first().json;
+    check(j.value("pocket_strategy").toString() == QLatin1String("raster")
+              && std::abs(j.value("raster_angle").toDouble() - 30) < 1e-9,
+          "the pad's raster pocket is a raster pocket at 30 degrees here");
+    QStringList lost;
+    const QJsonObject out = padlink::designFromDocument(path, d, &lost);
+    const QJsonObject back = out.value("toolpaths").toArray().first().toObject();
+    check(back.value("strategy").toString() == QLatin1String("raster")
+              && std::abs(back.value("rasterAngle").toDouble() - 30) < 1e-9,
+          "and goes back to the pad as raster at 30 degrees");
+    check(lost.isEmpty(), "nothing reported lost for the raster strategy");
+    // A pocket the form gave "offset" (rings) is not a lost setting either.
+    Document doc2;
+    doc2.load(path);
+    QVector<Toolpath> tv = doc2.toolpaths();
+    tv[0].json.insert("pocket_strategy", "offset");
+    tv[0].json.insert("raster_angle", 0.0);
+    doc2.setToolpaths(tv);
+    doc2.save(path, &err);
+    lost.clear();
+    const QJsonObject out2 = padlink::designFromDocument(path, d, &lost);
+    check(lost.isEmpty() && !out2.value("toolpaths").toArray().first().toObject().contains("strategy"),
+          "an offset pocket goes back with no strategy and nothing lost");
+}
+
 // The same edit put again after its answer was lost lands on the fork already
 // made (item 6); a stored copy this build cannot read is not written over (item 8).
 static void testForkRetryAndUnreadable(const QString &dir, QJsonObject d)
@@ -1218,6 +1258,7 @@ int main(int argc, char **argv)
     testStore(tmp.path(), d);
     testConflicts(tmp.path(), d);
     testDeletedShapesToolpath(tmp.path(), d);
+    testRasterPocketRoundTrip(tmp.path(), d);
     testForkRetryAndUnreadable(tmp.path(), d);
     testVersions(tmp.path(), d);
     testFollowDesign(tmp.path(), d);

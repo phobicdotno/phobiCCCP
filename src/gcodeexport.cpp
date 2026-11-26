@@ -1002,6 +1002,9 @@ struct Job {
     // the rough ring has one.
     QList<QPolygonF> finish;
     QList<Lead> finishLeads;
+    // Raster pockets: open zigzag lines cut after the wall rings at each
+    // depth (see runRasterJob). Empty for every other job.
+    QList<QPolygonF> lines;
     // Contours and cutouts: the outline the rings are offset from. Tabs are
     // measured on it, so each holds its width of the part's own edge.
     QList<QPolygonF> edge;
@@ -2345,8 +2348,98 @@ public:
         forgetTabs();
     }
 
+    // A raster pocket, one depth at a time: down on the wall rings (ramped
+    // or plunged at the first ring's start), a lap of each, then the zigzag
+    // lines inside them. With a helix the descent is in the open middle
+    // instead, the lines are cut first and the wall rings last. Each move
+    // between lines or rings stays down when it is short and inside the
+    // pocket (cp.linkOk), else up, over and down.
+    void runRasterJob(const Job &job, const CutParams &cp)
+    {
+        auto linkTo = [&](const QPointF &p, double z) {
+            const double d = QLineF(pos(), p).length();
+            if (d < 1e-6)
+                return;
+            if (d <= cp.linkDist && (!cp.linkOk || cp.linkOk(pos(), p))) {
+                feedAt(p, z, m_feed);
+            } else {
+                retract();
+                rapidTo(p);
+                plungeTo(p, z);
+            }
+        };
+        auto cutRings = [&](double z, int from) {
+            for (int i = from; i < job.rings.size(); ++i) {
+                const QPolygonF ring = startNearest(job.rings.at(i), pos());
+                linkTo(ring.first(), z);
+                followRing(ring, z, cp);
+            }
+        };
+        auto cutLines = [&](double z) {
+            if (job.lines.isEmpty())
+                return;
+            // Run the set from whichever end is nearer, so a pass that ends
+            // at one side starts the next lines from there.
+            const bool rev = QLineF(pos(), job.lines.last().last()).length()
+                             < QLineF(pos(), job.lines.first().first()).length();
+            for (int k = 0; k < job.lines.size(); ++k) {
+                QPolygonF l = job.lines.at(rev ? job.lines.size() - 1 - k : k);
+                if (rev)
+                    std::reverse(l.begin(), l.end());
+                linkTo(l.first(), z);
+                followRing(l, z, cp);
+            }
+        };
+        const Job::Helix &h = job.helix;
+        const QPointF p0 = h.c + QPointF(h.r, 0), p1 = h.c - QPointF(h.r, 0);
+        const double drop = qMax(0.02, M_PI * h.r * qTan(qDegreesToRadians(qBound(0.5, h.angle, 45.0))));
+        double z = cp.zTop;
+        bool first = true, more = true;
+        while (more) {
+            const double zPrev = z;
+            z = qMax(cp.zBot, z - cp.stepdown);
+            more = z > cp.zBot + 1e-9;
+            if (!first)
+                retract();
+            if (h.on) {
+                rapidTo(p0);
+                plungeTo(p0, zPrev);
+                double hz = zPrev;
+                bool atP0 = true;
+                for (int k = 0; k < 100000 && hz > z + 1e-9; ++k) {
+                    hz = qMax(z, hz - drop);
+                    arcTo(atP0 ? p1 : p0, hz, h.c, false);
+                    atP0 = !atP0;
+                }
+                arcTo(atP0 ? p1 : p0, z, h.c, false);   // flat lap at depth
+                arcTo(atP0 ? p0 : p1, z, h.c, false);
+                cutLines(z);
+                cutRings(z, 0);
+            } else {
+                QPolygonF lap = job.rings.first();
+                rapidTo(lap.first());
+                int rampAt = 0;
+                if (cp.rampAngle > 0 && lap.size() > 3 && lap.first() == lap.last()) {
+                    plungeTo(lap.first(), zPrev);
+                    rampAt = rampDescend(lap, zPrev, z, cp.rampAngle);
+                } else {
+                    plungeTo(lap.first(), z);
+                }
+                followRing(restartAt(lap, rampAt), z, cp);
+                cutRings(z, 1);
+                cutLines(z);
+            }
+            first = false;
+        }
+        retract();
+    }
+
     void runJobRings(const Job &job, const CutParams &cp)
     {
+        if (!job.lines.isEmpty()) {
+            runRasterJob(job, cp);
+            return;
+        }
         if (job.lead.on && job.closed && job.rings.size() == 1) {
             runLeadJob(job, cp);
             return;
@@ -4304,10 +4397,30 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             const double helixAngle = numOr(j.value("helix_angle"), 2);
             bool capped = false;
             pocketStep = stepover;
+            // Raster (zigzag) clearing: one lap of the wall, then parallel
+            // lines inside it. Rest machining keeps the rings.
+            const bool raster = j.value("pocket_strategy").toString() == QLatin1String("raster") && !useRest;
+            if (j.value("pocket_strategy").toString() == QLatin1String("raster") && useRest)
+                res.notes << QStringLiteral("%1: rest machining cuts in rings, not raster").arg(name);
+            const double rasterAngle = numOr(j.value("raster_angle"), 0);
             const QPainterPath pocketRegion = withCornerRelief(regionOf(elems), false, 2 * toolR,
                                                                cornerStyleOf(j.value("corners")));
             for (const QPainterPath &comp : components(pocketRegion)) {
-                if (useRest) {
+                if (raster) {
+                    const QList<QPolygonF> wall = insetRings(comp, toolR + leave);
+                    if (wall.isEmpty())
+                        continue;
+                    Job job;
+                    job.rings = wall;
+                    // The lines' ends stay a radius (or a stepover, if less)
+                    // inside the wall lap, which cuts that band.
+                    const QList<QPolygonF> inner = insetRings(comp, toolR + leave + qMin(toolR, stepover));
+                    job.lines = hatchRings(inner, stepover, rasterAngle);
+                    pocketMine << regionFromRings(wall);
+                    if (helix)
+                        addHelix(job, wall, helixWant, helixAngle);
+                    jobs.append(job);
+                } else if (useRest) {
                     for (const QPainterPath &rc : restRegions(comp, toolR, prevR, leave)) {
                         capped |= !ringFillJob(rc, 0.0, stepover, jobs, toolR);
                         pocketMine << rc;
@@ -4360,6 +4473,7 @@ GcodeResult exportGcode(Document &doc, const ExportWatch *watch,
             for (const Job &job : jobs) {
                 for (const QPolygonF &r : job.rings) { centres << r; addAlong(pts, r, along, pocket); }
                 for (const QPolygonF &r : job.finish) { centres << r; addAlong(pts, r, along, pocket); }
+                for (const QPolygonF &r : job.lines) { centres << r; addAlong(pts, r, along, false); }
                 if (!job.rings.isEmpty())
                     addLead(job.lead, job.rings.first().first());
                 for (int k = 0; k < job.finishLeads.size() && k < job.finish.size(); ++k)

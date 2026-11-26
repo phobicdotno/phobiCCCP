@@ -330,6 +330,15 @@ bool buildDocument(const QJsonObject &d, const QString &c2dPath, QStringList *no
         if ((ccType == QLatin1String("contour") || ccType == QLatin1String("pocket_toolpath"))
             && cornerStyleOf(t.value(QStringLiteral("corners"))) != CornerStyle::Sharp)
             j.insert(QStringLiteral("corners"), t.value(QStringLiteral("corners")).toString().trimmed().toLower());
+        // A pocket's raster strategy, set on the computer: the pad has no
+        // field for it but carries it through.
+        if (ccType == QLatin1String("pocket_toolpath")
+            && t.value(QStringLiteral("strategy")).toString() == QLatin1String("raster")) {
+            j.insert(QStringLiteral("pocket_strategy"), QStringLiteral("raster"));
+            if (t.value(QStringLiteral("rasterAngle")).isDouble())
+                j.insert(QStringLiteral("raster_angle"),
+                         qBound(-180.0, t.value(QStringLiteral("rasterAngle")).toDouble(), 180.0));
+        }
         if (!name.isEmpty())
             j.insert(QStringLiteral("name"), name);
         j.insert(QStringLiteral("enabled"), t.value(QStringLiteral("enabled")).toBool(true));
@@ -686,6 +695,22 @@ QJsonObject designFromDocument(const QString &c2dPath, const QJsonObject &base,
             tp.insert(QStringLiteral("corners"), t.json.value(QStringLiteral("corners")));
             toolpaths.replace(toolpaths.size() - 1, tp);
             j.insert(QStringLiteral("corners"), t.json.value(QStringLiteral("corners")));
+        }
+        if (type == QLatin1String("pocket_toolpath")) {
+            // Raster or rings: carried (strategy / rasterAngle), not lost.
+            // "offset" is the rings a pocket cuts without the key.
+            const QJsonObject tc = t.json;
+            if (tc.value(QStringLiteral("pocket_strategy")).toString() == QLatin1String("raster")) {
+                QJsonObject tp = toolpaths.last().toObject();
+                tp.insert(QStringLiteral("strategy"), QStringLiteral("raster"));
+                const double a = tc.value(QStringLiteral("raster_angle")).toDouble(0);
+                if (a != 0)
+                    tp.insert(QStringLiteral("rasterAngle"), a);
+                toolpaths.replace(toolpaths.size() - 1, tp);
+            }
+            for (const char *k : {"pocket_strategy", "raster_angle"})
+                if (tc.contains(QLatin1String(k)))
+                    j.insert(QLatin1String(k), tc.value(QLatin1String(k)));
         }
         ToolLibrary::applyToToolpath(j, *tool, *feeds);
         sizeToTool(j, *tool);

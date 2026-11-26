@@ -336,6 +336,25 @@ int main(int argc, char *argv[])
         check(ramp && ramp->maximum() == 15.0 && ramp->minimum() == 0.5, "adaptive ramp angle is 0.5 to 15");
     }
 
+    // Pocket strategy: Offset unless set; the raster angle shows only for
+    // Raster, and appears once Raster is picked.
+    {
+        QJsonObject jp = j;
+        jp.insert("uuid", "{ps}");
+        form.setToolpath("{ps}", "pocket_toolpath", jp);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        app.processEvents();
+        auto *strat = editorFor<QComboBox>(&form, "pocket_strategy");
+        check(strat && strat->currentText() == QStringLiteral("Offset (rings)"), "pocket: strategy offered, rings when absent");
+        check(!editorFor<QDoubleSpinBox>(&form, "raster_angle"), "pocket: no raster angle for rings");
+        strat->setCurrentIndex(1);
+        emit strat->activated(1);
+        check(last.value("pocket_strategy").toString() == QLatin1String("raster"), "pocket: picking Raster writes it");
+        app.processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        check(editorFor<QDoubleSpinBox>(&form, "raster_angle") != nullptr, "pocket: raster angle shown for Raster");
+    }
+
     std::printf("test_toolpathform: %d checks OK\n", g_checks);
     return 0;
 }

@@ -457,6 +457,18 @@ static QList<QPair<QString, ToolpathForm::Field>> catalog(const QString &type)
              {QStringLiteral("conventional"), QStringLiteral("Conventional")},
              {QStringLiteral("zigzag"), QStringLiteral("Zigzag")}}));
     }
+    if (type == QLatin1String("pocket_toolpath")) {
+        F f = choice(QStringLiteral("cut"), QStringLiteral("Strategy"),
+            {{QStringLiteral("offset"), QStringLiteral("Offset (rings)")},
+             {QStringLiteral("raster"), QStringLiteral("Raster")}});
+        f.tip = QStringLiteral("Offset: rings that follow the walls inward. Raster: one lap of the "
+                               "wall, then straight back-and-forth lines. With \"Only what a bigger "
+                               "tool left\" on, rings are cut either way");
+        add(QStringLiteral("pocket_strategy"), f);
+        F a = deg(QStringLiteral("cut"), QStringLiteral("Raster angle"), -180, 180);
+        a.tip = QStringLiteral("Direction of the raster lines; 0 = along X, 90 = along Y");
+        add(QStringLiteral("raster_angle"), a);
+    }
     add(QStringLiteral("stepover"), mm(QStringLiteral("cut"), QStringLiteral("Stepover"), 100,
                                        QStringLiteral("Sideways step between passes")));
     add(QStringLiteral("stock_to_leave"), mm(QStringLiteral("cut"), QStringLiteral("Leave"), 50,
@@ -624,6 +636,14 @@ void ToolpathForm::setToolpath(const QString &uuid, const QString &type, const Q
          || type == QLatin1String("cutout"))
         && !json.contains(QStringLiteral("corners")))
         json.insert(QStringLiteral("corners"), QStringLiteral("off"));
+    // Pockets: the clearing strategy, rings unless set (raster_angle shows
+    // only with Raster; see rebuild()).
+    if (type == QLatin1String("pocket_toolpath")) {
+        if (!json.contains(QStringLiteral("pocket_strategy")))
+            json.insert(QStringLiteral("pocket_strategy"), QStringLiteral("offset"));
+        if (!json.contains(QStringLiteral("raster_angle")))
+            json.insert(QStringLiteral("raster_angle"), 0.0);
+    }
     const QStringList keys = flatKeys(json);
     const bool same = uuid == m_uuid && type == m_type && keys == m_keys;
     m_uuid = uuid;
@@ -861,6 +881,12 @@ void ToolpathForm::rebuild()
     for (const auto &kf : catalog(m_type)) {
         if (!flatGet(m_json, kf.first).isUndefined() && !designed.contains(kf.first)
             && !unusedFor(m_type, kf.first)) {
+            // The raster angle only means something for a raster pocket.
+            if (kf.first == QLatin1String("raster_angle")
+                && m_json.value(QStringLiteral("pocket_strategy")).toString() != QLatin1String("raster")) {
+                designed.insert(kf.first);
+                continue;
+            }
             byCard[kf.second.card].append(kf);
             designed.insert(kf.first);
         }
@@ -1076,6 +1102,9 @@ void ToolpathForm::commit(const QString &key, const QJsonValue &v)
     flatSet(m_json, key, v);
     refreshEnabled();
     emit edited(m_json);
+    // Show or hide the raster angle: rebuilt once the combo's signal is done.
+    if (key == QLatin1String("pocket_strategy"))
+        QMetaObject::invokeMethod(this, [this] { rebuild(); }, Qt::QueuedConnection);
 }
 
 } // namespace c2d
