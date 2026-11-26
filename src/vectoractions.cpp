@@ -428,6 +428,10 @@ VectorActions::VectorActions(Canvas *canvas, QMenu *editMenu, QMainWindow *windo
         [this] { checkVectors(); },
         QStringLiteral("Find open, doubled, zero-length and self-crossing vectors "
                        "(selection, or all vectors) and select them"));
+    add(m, QStringLiteral("&Text on path…"), QKeySequence(), m_needTwo,
+        [this] { textOnPathDialog(); },
+        QStringLiteral("Lay the selected text along the selected vector, letter by letter "
+                       "(the text becomes plain vectors)"));
     m->addSeparator();
 
     QMenu *al = m->addMenu(QStringLiteral("&Align"));
@@ -1304,6 +1308,76 @@ void VectorActions::checkVectors()
         m_canvas->selectIds(ids);
     }
     QMessageBox::information(m_canvas->window(), tr("Check vectors"), text);
+}
+
+// ---- text on path --------------------------------------------------------------
+
+// The one text and the one vector of the selection, or false.
+static bool textAndPath(const QVector<Element> &sel, Element *text, Element *path)
+{
+    int texts = 0, others = 0;
+    for (const Element &e : sel) {
+        if (e.geometryType == QLatin1String("text")) { *text = e; ++texts; }
+        else { *path = e; ++others; }
+    }
+    return texts == 1 && others == 1;
+}
+
+void VectorActions::textOnPath(const vec::TextOnPathOptions &opt)
+{
+    Element text, path;
+    if (!textAndPath(orderedSelection(), &text, &path)) {
+        emit m_canvas->statusHint(tr("Text on path: select one text and one vector"));
+        return;
+    }
+    const QVector<Element> results = vec::textOnPathElements(text, path, opt);
+    if (results.isEmpty()) {
+        emit m_canvas->statusHint(tr("Text on path: nothing to lay out (empty text or no path length)"));
+        return;
+    }
+    pushReplace({text}, results, false, tr("text on path"));
+    reportDone(tr("Text on path: %1 vector(s)").arg(results.size()));
+}
+
+void VectorActions::textOnPathDialog()
+{
+    Element text, path;
+    if (!textAndPath(orderedSelection(), &text, &path)) {
+        QMessageBox::information(m_canvas->window(), tr("Text on path"),
+                                 tr("Select one text and one vector (open or closed), then try again."));
+        return;
+    }
+    QDialog dlg(m_canvas->window());
+    dlg.setWindowTitle(tr("Text on path"));
+    auto *form = new QFormLayout;
+    auto *offset = mmBox(&dlg, -1000, 1000, 0.0);
+    offset->setToolTip(tr("Lifts the letters off the line: positive above it, negative below"));
+    form->addRow(tr("Distance from path"), offset);
+    auto *centre = new QCheckBox(tr("Centre the text on the path"), &dlg);
+    centre->setChecked(true);
+    form->addRow(QString(), centre);
+    auto *start = new QDoubleSpinBox(&dlg);
+    start->setRange(0, 100);
+    start->setDecimals(1);
+    start->setSuffix(QStringLiteral(" %"));
+    start->setToolTip(tr("Where the first letter starts, as a share of the path's length"));
+    start->setEnabled(false);
+    connect(centre, &QCheckBox::toggled, start, [start](bool on) { start->setEnabled(!on); });
+    form->addRow(tr("Start along path"), start);
+    auto *flip = new QCheckBox(tr("Flip to the other side (runs the other way)"), &dlg);
+    form->addRow(QString(), flip);
+    auto *note = new QLabel(tr("The text becomes plain vectors (Carbide Create has no text on a "
+                               "path); Undo brings the text back."), &dlg);
+    note->setWordWrap(true);
+    form->addRow(note);
+    okCancel(dlg, form);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+    vec::TextOnPathOptions opt;
+    opt.offset = offset->value();
+    opt.startPercent = centre->isChecked() ? -1 : start->value();
+    opt.flip = flip->isChecked();
+    textOnPath(opt);
 }
 
 } // namespace c2d

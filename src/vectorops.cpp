@@ -1262,5 +1262,108 @@ VectorCheck checkElements(const QVector<Element> &els)
     return out;
 }
 
+// ---- text on path -------------------------------------------------------------
+
+QPainterPath textOnPathOutline(const QJsonObject &textObj, const QPainterPath &path,
+                               const TextOnPathOptions &opt, QVector<GlyphPlace> *places)
+{
+    QPainterPath out;
+    if (places)
+        places->clear();
+    double width = 0;
+    const QVector<TextGlyph> glyphs = Element::textGlyphs(textObj, &width);
+    if (glyphs.isEmpty())
+        return out;
+    // The first subpath, flattened finely so curves are measured by their
+    // true length (Qt's own flattening is coarse at millimetre scale).
+    const double k = 100.0;
+    const QList<QPolygonF> polys = path.toSubpathPolygons(QTransform::fromScale(k, k));
+    if (polys.isEmpty() || polys.first().size() < 2)
+        return out;
+    QPolygonF poly;
+    for (const QPointF &p : polys.first())
+        if (poly.isEmpty() || QLineF(poly.last(), p / k).length() > 1e-9)
+            poly.append(p / k);
+    if (poly.size() < 2)
+        return out;
+    if (opt.flip)
+        std::reverse(poly.begin(), poly.end());
+    QVector<double> acc{0.0};
+    for (int i = 1; i < poly.size(); ++i)
+        acc.append(acc.last() + QLineF(poly.at(i - 1), poly.at(i)).length());
+    const double total = acc.last();
+    if (total < 1e-9)
+        return out;
+    const bool closed = path.elementCount() > 0
+                        && QLineF(poly.first(), poly.last()).length() < 1e-6;
+    // Point at arc length s: wrapped on a closed path, carried on along the
+    // end direction past an open path's ends.
+    auto pointAt = [&](double s) -> QPointF {
+        if (closed) {
+            s = std::fmod(s, total);
+            if (s < 0)
+                s += total;
+        } else if (s < 0) {
+            const QLineF a(poly.at(0), poly.at(1));
+            return poly.at(0) + (a.p2() - a.p1()) * (s / a.length());
+        } else if (s > total) {
+            const QLineF b(poly.at(poly.size() - 2), poly.last());
+            return poly.last() + (b.p2() - b.p1()) * ((s - total) / b.length());
+        }
+        int i = int(std::upper_bound(acc.begin(), acc.end(), s) - acc.begin());
+        i = qBound(1, i, int(poly.size()) - 1);
+        const double len = acc.at(i) - acc.at(i - 1);
+        return QLineF(poly.at(i - 1), poly.at(i)).pointAt(len > 0 ? (s - acc.at(i - 1)) / len : 0);
+    };
+    const double s0 = opt.startPercent < 0 ? (total - width) / 2.0
+                                           : total * opt.startPercent / 100.0;
+    // Direction from a short chord either side (smooth on a flattened curve).
+    const double h = qMin(0.05, total / 4);
+    for (const TextGlyph &g : glyphs) {
+        const double mid = g.cluster + g.advance / 2;
+        const double s = s0 + mid;
+        const QPointF p = pointAt(s);
+        const QLineF chord(pointAt(s - h), pointAt(s + h));
+        const double ang = std::atan2(chord.dy(), chord.dx());
+        const QPointF normal(-std::sin(ang), std::cos(ang));   // left of travel = letters' top
+        const QPointF base = p + normal * opt.offset;
+        QTransform t;
+        t.translate(base.x(), base.y());
+        t.rotateRadians(ang);
+        t.translate(-mid, 0);
+        out.addPath(t.map(g.path));
+        if (places)
+            places->append({s0 + g.cluster, t.map(QPointF(g.cluster, 0)), qRadiansToDegrees(ang)});
+    }
+    return out;
+}
+
+QVector<Element> textOnPathElements(const Element &text, const Element &path,
+                                    const TextOnPathOptions &opt)
+{
+    if (text.geometryType != QLatin1String("text"))
+        return {};
+    const QPainterPath placed = textOnPathOutline(text.raw, path.painterPath, opt);
+    if (placed.isEmpty())
+        return {};
+    // A text whose outlines are already where they belong (identity
+    // transform, no arc), turned into paths the same way Convert to path
+    // does, so ids, groups, layer and tabs follow the same rules.
+    QJsonArray contours;
+    const double k = 20.0;   // flatten in a scaled space: ~0.025 mm tolerance
+    for (const QPolygonF &poly : placed.toSubpathPolygons(QTransform::fromScale(k, k))) {
+        QJsonArray c;
+        for (const QPointF &q : poly)
+            c.append(QJsonArray{q.x() / k, q.y() / k});
+        if (c.size() >= 3)
+            contours.append(c);
+    }
+    QJsonObject o = text.raw;
+    o.insert("rendered", contours);
+    o.insert("arc_enabled", false);
+    o.insert("transform", QJsonArray{1, 0, 0, 0, 1, 0, 0, 0, 1});
+    return Element::toPaths(Element::fromJson(o));
+}
+
 } // namespace vec
 } // namespace c2d

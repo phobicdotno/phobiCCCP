@@ -187,5 +187,42 @@ struct VectorCheck {
 };
 VectorCheck checkElements(const QVector<Element> &els);
 
+// ---- text on path -------------------------------------------------------------
+// Lays a text element's letters along the first subpath of a vector (open or
+// closed, lines or beziers, sampled by arc length): each letter's baseline
+// midpoint sits on the path at its straight-layout distance from the start
+// and the letter turns with the path's direction there. `offset` mm moves
+// the baseline off the path (positive: to the letters' top side, negative:
+// under them). `startPercent` puts the first letter's left edge that far
+// along the path; below 0 centres the text on the path's length. `flip`
+// runs the text the other way round the path, on its other side. Letters
+// past an open path's ends carry on along the end direction; on a closed
+// path they wrap round.
+struct TextOnPathOptions {
+    double offset = 0;
+    double startPercent = -1;
+    bool flip = false;
+};
+// Where each glyph of Element::textGlyphs landed: `arcPos` is the distance
+// along the path of its cluster's left edge, `at` the point that left edge's
+// baseline went to (offset applied), `angleDeg` its turn (counter-clockwise,
+// Y-up).
+struct GlyphPlace {
+    double arcPos = 0;
+    QPointF at;
+    double angleDeg = 0;
+};
+// The placed outlines (absolute mm), and the per-glyph placement. Empty
+// when the text has no glyphs or the path has no length.
+QPainterPath textOnPathOutline(const QJsonObject &textObj, const QPainterPath &path,
+                               const TextOnPathOptions &opt,
+                               QVector<GlyphPlace> *places = nullptr);
+// The text element as plain closed vectors along `path` (one per glyph
+// contour, the first keeping the text's id, all in its group and layer),
+// like Convert to path. Carbide Create has no text on a path, so the
+// result is ordinary geometry that opens anywhere.
+QVector<Element> textOnPathElements(const Element &text, const Element &path,
+                                    const TextOnPathOptions &opt);
+
 } // namespace vec
 } // namespace c2d

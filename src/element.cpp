@@ -423,17 +423,10 @@ static QPainterPath solidGlyphOf(const QPainterPath &g)
     return up.inverted().map(ws);
 }
 
-// Rebuild `rendered` from the element's own keys. Layout is in local Y-up
-// space with the straight baseline on y = 0 starting at x = 0 (what CC
-// writes: the first glyph's left bearing is the smallest x). font_height is
-// the font's ascent in mm (CC's "P" tops out at 0.93 * font_height for
-// Helvetica, i.e. the Windows ascent). Arc mode places each glyph with its
-// advance midpoint on the circle |q - arc_center| = arc_radius, baseline
-// tangent to it, the whole string centred on the top point (90 deg) or the
-// bottom point (270 deg, glyphs upright, extending inwards) rotated by
-// arc_angle_offset degrees (counter-clockwise positive). Glyph advances are
-// measured along the arc, so the letters keep their straight spacing.
-void Element::renderText(QJsonObject &o)
+// The straight layout renderText starts from: each glyph outline in local
+// mm (Y-up, baseline on y = 0 from x = 0) with its grapheme cluster's left
+// edge and advance, letter spacing applied. `width` gets the whole advance.
+QVector<TextGlyph> Element::textGlyphs(const QJsonObject &o, double *widthOut)
 {
     const QString text = o.value("text").toString();
     const double h = o.value("font_height").toDouble(10.0);
@@ -453,8 +446,7 @@ void Element::renderText(QJsonObject &o)
     // with the straight-baseline grapheme cluster it belongs to, so letter
     // spacing and arc placement move a cluster as one piece and the marks
     // stay on their letter.
-    struct Glyph { QPainterPath path; double cluster; double advance; };
-    QVector<Glyph> glyphs;
+    QVector<TextGlyph> glyphs;
     double width = 0;
     if (!text.isEmpty()) {
         QTextLayout layout(text, font);
@@ -537,13 +529,32 @@ void Element::renderText(QJsonObject &o)
             width = line.horizontalAdvance() * scale * spacing;
         }
     }
+    if (widthOut)
+        *widthOut = width;
+    return glyphs;
+}
+
+// Rebuild `rendered` from the element's own keys. Layout is in local Y-up
+// space with the straight baseline on y = 0 starting at x = 0 (what CC
+// writes: the first glyph's left bearing is the smallest x). font_height is
+// the font's ascent in mm (CC's "P" tops out at 0.93 * font_height for
+// Helvetica, i.e. the Windows ascent). Arc mode places each glyph with its
+// advance midpoint on the circle |q - arc_center| = arc_radius, baseline
+// tangent to it, the whole string centred on the top point (90 deg) or the
+// bottom point (270 deg, glyphs upright, extending inwards) rotated by
+// arc_angle_offset degrees (counter-clockwise positive). Glyph advances are
+// measured along the arc, so the letters keep their straight spacing.
+void Element::renderText(QJsonObject &o)
+{
+    double width = 0;
+    const QVector<TextGlyph> glyphs = textGlyphs(o, &width);
     o.insert("straight_width", width);
 
     QPainterPath out;
     const bool arc = o.value("arc_enabled").toBool();
     const double R = o.value("arc_radius").toDouble();
     if (!arc || R <= 1e-6) {
-        for (const Glyph &g : glyphs)
+        for (const TextGlyph &g : glyphs)
             out.addPath(g.path);
     } else {
         const QJsonArray ca = o.value("arc_center").toArray();
@@ -551,7 +562,7 @@ void Element::renderText(QJsonObject &o)
         const bool bottom = o.value("arc_text_on_bottom").toBool();
         const double offset = qDegreesToRadians(o.value("arc_angle_offset").toDouble());
         const double mid = (bottom ? 1.5 * M_PI : 0.5 * M_PI) + offset;
-        for (const Glyph &g : glyphs) {
+        for (const TextGlyph &g : glyphs) {
             const double c = g.cluster + g.advance / 2;   // cluster midpoint on the baseline
             // Top text reads clockwise (angle decreases with x); bottom text
             // reads counter-clockwise so it stays upright for the reader.

@@ -62,6 +62,10 @@ public:
     // selects them.
     void joinVectors(double gap);
     void checkVectors();
+    // Text on path (vec::textOnPathElements): the one selected text laid
+    // along the one selected vector, replaced by plain closed vectors; the
+    // path stays. One undo step.
+    void textOnPath(const vec::TextOnPathOptions &opt);
 
     // Runs before every Vectors action: the window commits a number typed in
     // a panel (no Enter yet), or the action's refresh would drop it.
@@ -84,6 +88,7 @@ private:
     void moveCopyDialog();
     void cornersDialog(vec::CornerStyle style);
     void joinDialog();
+    void textOnPathDialog();
     void reportDone(const QString &msg);
     void pushReshape(const QVector<Element> &before, const QVector<Element> &after,
                      const QString &text, const QTransform &moved = QTransform());

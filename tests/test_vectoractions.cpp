@@ -1129,6 +1129,32 @@ int main(int argc, char *argv[])
         check(undo->index() == at, "join: too small a gap changes nothing");
     }
 
+    // --- text on path: one undo step, the text becomes vectors, the path stays ---
+    {
+        const Element t = Element::makeText(QStringLiteral("AB"), {200, 200}, 8, QStringLiteral("Helvetica"), layer);
+        const Element arc = Element::makeCircle({250, 250}, 40, layer);
+        doc.addElement(t);
+        doc.addElement(arc);
+        canvas->rebuild();
+        const int before = doc.elements().size();
+        const int at = undo->index();
+        canvas->selectIds({t.id});
+        vec::TextOnPathOptions opt;
+        va.textOnPath(opt);
+        check(undo->index() == at, "text on path needs a text and a vector");
+        canvas->selectIds({arc.id, t.id});
+        va.textOnPath(opt);
+        check(undo->index() == at + 1, "text on path is one undo step");
+        check(doc.elementById(arc.id) != nullptr, "text on path keeps the path");
+        const Element *first = doc.elementById(t.id);
+        check(first && first->geometryType == QLatin1String("path"), "the text became paths");
+        check(doc.elements().size() > before, "every glyph contour is a vector");
+        undo->undo();
+        check(doc.elements().size() == before && doc.elementById(t.id)
+                  && doc.elementById(t.id)->geometryType == QLatin1String("text"),
+              "undo brings the text back");
+    }
+
     std::printf("OK: %d checks passed\n", g_checks);
     return 0;
 }
